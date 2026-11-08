@@ -34,10 +34,12 @@ import QuartzCore
         case "scroll_step":
             // Time spent here is the UI thread's share of a frame: the scroll, Rust's call, and applying what it said.
             let started = CACurrentMediaTime()
+            let cpuStarted = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             controller?.pages.scroll(by: Double(value) ?? 0)
             let took = CACurrentMediaTime() - started
+            let cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStarted
             let contents = controller?.sidebar.contentsSample() ?? (y: 0, currentVisible: true)
-            delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), contentsY: contents.y, currentVisible: contents.currentVisible)
+            delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), cpuMicros: cpu / 1000, contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
             answer(id, state())
@@ -91,14 +93,16 @@ import QuartzCore
             guard let controller else { return fail(id, "The window is closed.") }
             let parts = value.split(separator: ",").compactMap { Double($0) }
             guard parts.count == 4 else { return fail(id, "That isn't a place.") }
-            let inWindow = controller.pages.documentView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
+            // The pane being read, as Rust worked the place out in it.
+            let pane = controller.readingPane
+            let inWindow = pane.documentView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
             switch verb {
-            case "mouse_down": controller.pages.pointerDown(atWindow: inWindow, clicks: Int(parts[2]), shift: parts[3] != 0)
-            case "mouse_drag": controller.pages.pointerDragged(atWindow: inWindow)
-            default: controller.pages.pointerMoved(atWindow: inWindow)
+            case "mouse_down": pane.pointerDown(atWindow: inWindow, clicks: Int(parts[2]), shift: parts[3] != 0)
+            case "mouse_drag": pane.pointerDragged(atWindow: inWindow)
+            default: pane.pointerMoved(atWindow: inWindow)
             }
         case "mouse_up":
-            controller?.pages.pointerUp()
+            controller?.readingPane.pointerUp()
         case "notice_button":
             guard let controller, !controller.copyNotice.isHidden, !controller.copyNotice.button.isHidden else { return fail(id, "No notice with a button is showing.") }
             controller.copyNotice.button.performClick(nil)
@@ -131,9 +135,30 @@ import QuartzCore
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return
         case "scroll":
-            controller?.pages.scroll(by: Double(value) ?? 0)
+            controller?.readingPane.scroll(by: Double(value) ?? 0)
         case "zoom":
-            controller?.pages.setZoom(Double(value) ?? 1)
+            controller?.readingPane.setZoom(Double(value) ?? 1)
+        case "pane_scroll":
+            // A scroll in a pane, by what a scroll does: the reader's own, so synced scroll follows it and it's the pane being read.
+            let parts = value.split(separator: ":")
+            guard let controller, parts.count == 2, let pane = Int(parts[0]), pane < controller.paneAreas.count, let points = Double(parts[1]) else { return fail(id, "That isn't a pane and a scroll.") }
+            controller.paneAreas[pane].scroll(by: points)
+            controller.drainAll()
+        case "pane_focus":
+            // As a right-click on the pane reaches it, by the method AppKit calls for one: the menu's made and not shown.
+            guard let controller, let pane = Int(value), pane < controller.paneAreas.count else { return fail(id, "There's no such pane.") }
+            _ = controller.paneAreas[pane].documentView.menu(for: rightClick(in: controller.paneAreas[pane], window: controller.window))
+        case "pane_context_menu":
+            // A right-click on a pane, by what AppKit calls for one, then the item, as a person would choose it.
+            let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let controller, parts.count == 2, let pane = Int(parts[0]), pane < controller.paneAreas.count else { return fail(id, "That isn't a pane and an item.") }
+            guard let menu = controller.paneAreas[pane].documentView.menu(for: rightClick(in: controller.paneAreas[pane], window: controller.window)) else { return fail(id, "There's no menu.") }
+            menu.update()
+            guard let item = menu.items.first(where: { ($0.representedObject as? String) == parts[1] }), let action = item.action else { return fail(id, "That isn't in the pane's right-click menu.") }
+            guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
+            NSApp.sendAction(action, to: item.target, from: item)
+        case "compare_click":
+            controller?.sidebar.compareClickRow(Int(value) ?? 0)
         case "hover":
             controller?.sidebar.setHover(value == "none" ? nil : Int(value))
         case "click_row":
@@ -162,7 +187,7 @@ import QuartzCore
             }
         case "context_menu":
             guard let controller else { return fail(id, "The window is closed.") }
-            let menu = controller.pages.contextMenu()
+            let menu = controller.readingPane.contextMenu()
             menu.update()
             guard let item = menu.items.first(where: { ($0.representedObject as? String) == value }), let action = item.action else { return fail(id, "That isn't in the right-click menu.") }
             guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
@@ -187,7 +212,7 @@ import QuartzCore
             controller.zoomField.stringValue = value
             // Return, by the field's own action.
             controller.zoomField.sendAction(controller.zoomField.action, to: controller.zoomField.target)
-            controller.pages.drain()
+            controller.drainAll()
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
             guard let button = value == "toggle" ? sidebar.moreButton : sidebar.panel?.buttons[value] else { return fail(id, "That isn't in the panel, or it isn't open.") }
@@ -220,6 +245,12 @@ import QuartzCore
         answer(id, state())
     }
 
+    /// A right-click in the middle of a pane, made and handed over by selector, as the entry points are: nothing's posted.
+    private func rightClick(in pane: PageArea, window: NSWindow) -> NSEvent {
+        let place = pane.scrollView.convert(NSPoint(x: pane.scrollView.bounds.midX, y: pane.scrollView.bounds.midY), to: nil)
+        return NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
     /// An item of the real menu bar, by its id.
     private func menuItem(_ id: String) -> NSMenuItem? {
         NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { ($0.representedObject as? String) == id && !$0.isHidden }
@@ -233,6 +264,7 @@ import QuartzCore
         let sidebar = controller.sidebar
         var pages = controller.pages.report()
         pages["visible"] = !controller.pages.scrollView.isHidden
+        let overPages = { (rect: NSRect) in controller.paneAreas.contains { $0.pagesOverlap(rect, in: controller.root) } }
         let frame = controller.window.frame
         return [
             "window_open": true,
@@ -243,7 +275,7 @@ import QuartzCore
             "sidebar_hidden": reader.sidebarHidden,
             "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
             "window_buttons_shown": controller.windowButtonsShown,
-            "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !controller.pages.pagesOverlap(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0), in: controller.root), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.pages.scrollView.scrollerInsets.top] as [String: Any],
+            "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !overPages(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0)), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.paneAreas[controller.paneAreas.count - 1].scrollView.scrollerInsets.top] as [String: Any],
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
@@ -260,11 +292,11 @@ import QuartzCore
             "place_label_in_lower_right": !controller.placeLabel.isHidden && controller.placeLabel.frame.maxX > controller.root.bounds.maxX - 40 && controller.placeLabel.frame.maxY > controller.root.bounds.maxY - 40 && controller.root.bounds.contains(controller.placeLabel.frame),
             "agent_icon": !controller.agentIcon.isHidden,
             "document_edited": controller.window.isDocumentEdited,
-            "agent_icon_margins": ["top": controller.agentIcon.frame.minY, "right": controller.root.bounds.maxX - controller.agentIcon.frame.maxX, "clear_of_pages": controller.agentIcon.isHidden || !controller.pages.pagesOverlap(controller.agentIcon.frame, in: controller.root)] as [String: Any],
+            "agent_icon_margins": ["top": controller.agentIcon.frame.minY, "right": controller.root.bounds.maxX - controller.agentIcon.frame.maxX, "clear_of_pages": controller.agentIcon.isHidden || !overPages(controller.agentIcon.frame)] as [String: Any],
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
             // From Rust's list and its word on what's enabled, as the real menu is built from. Building an NSMenu on every state read costs the app megabytes that the budgets would count; `qa context-menu` goes through the real one.
-            "context_menu": delegate.core.contextMenu().filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
+            "context_menu": delegate.core.contextMenu(pane: delegate.core.readingPane()).filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
             "layout": reader.layout,
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
@@ -272,6 +304,7 @@ import QuartzCore
                 return ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }]
             },
             "pages": pages,
+            "panes": controller.paneReport(),
             "backing": controller.window.backingScaleFactor,
         ]
     }
@@ -454,6 +487,20 @@ import QuartzCore
         let nothing = NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.nothing.\(ProcessInfo.processInfo.processIdentifier)"))
         found["services_write_nothing_with_nothing_selected"] = !delegate.writeSelection(to: nothing, types: [.string]) && nothing.string(forType: .string) == nil
         nothing.releaseGlobally()
+        // A control-click on a tab's row, as AppKit hands it to the table: taken for comparing, by the row under it, and not left to become a right-click. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view". What it does is `qa compare-click`'s.
+        if sidebar.table.numberOfRows > 1 {
+            let rowRect = sidebar.table.rect(ofRow: 1)
+            let place = sidebar.table.convert(NSPoint(x: rowRect.midX, y: rowRect.midY), to: nil)
+            // What it would do is swapped for a note of the row for the check, so the comparison is as it was after.
+            let real = sidebar.table.controlClicked
+            var taken: [Int] = []
+            sidebar.table.controlClicked = { row in taken.append(row) }
+            if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: place, modifierFlags: .control, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                sidebar.table.perform(#selector(NSResponder.mouseDown(with:)), with: event)
+            }
+            sidebar.table.controlClicked = real
+            found["tab_row_control_click_compares"] = taken == [1]
+        }
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
         found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification
         NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)
@@ -539,14 +586,20 @@ import QuartzCore
         let bounds = view.bounds
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width * 2), pixelsHigh: Int(bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return fail(id, "The picture couldn't be made.") }
         rep.size = bounds.size
-        let tint = controller.pages.tintRectsForShot(in: view)
-        let highlights = controller.pages.highlightsForShot(in: view)
-        controller.pages.hideTintForShot(true)
-        controller.pages.hideHighlightsForShot(true)
+        // Each pane's: a comparison has several.
+        let tints = controller.paneAreas.compactMap { $0.tintRectsForShot(in: view) }
+        let tint = tints.first.map { (rgb: $0.rgb, rects: tints.flatMap(\.rects)) }
+        let highlights = controller.paneAreas.compactMap { $0.highlightsForShot(in: view) }.first
+        for area in controller.paneAreas {
+            area.hideTintForShot(true)
+            area.hideHighlightsForShot(true)
+        }
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
-        controller.pages.hideTintForShot(false)
-        controller.pages.hideHighlightsForShot(false)
+        for area in controller.paneAreas {
+            area.hideTintForShot(false)
+            area.hideHighlightsForShot(false)
+        }
         let flipped = view.isFlipped
         let core = delegate.core
         // The encoding and the write are slow, so they stay off this thread.

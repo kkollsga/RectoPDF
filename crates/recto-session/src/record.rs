@@ -664,6 +664,20 @@ pub struct SessionRecord {
     pub next_id: u32,
     #[serde(deserialize_with = "capped::<_, _, MAX_TABS>")]
     pub tabs: Vec<TabEntry>,
+    /// Tabs side by side, if they were. Added after version 1, so an older record has none and an older app ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparisonRecord>,
+}
+
+/// A comparison as the record keeps it: which tabs, left to right, synced scroll, and where each pane was when it went on. Each pane's place is its tab's own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonRecord {
+    #[serde(deserialize_with = "capped::<_, _, { crate::compare::MAX_PANES }>")]
+    pub tabs: Vec<u32>,
+    #[serde(default)]
+    pub synced: bool,
+    #[serde(default, deserialize_with = "capped::<_, _, { crate::compare::MAX_PANES }>")]
+    pub sync_from: Vec<u32>,
 }
 
 /// A run of pages in order, as `[source, first page, how many, quarter turns]`. A long document with one page rotated is three of these, not its length.
@@ -1131,6 +1145,16 @@ pub fn validate_record(record: &SessionRecord) -> Result<(), RecordError> {
     }
     let mut ids = HashSet::with_capacity(record.tabs.len());
     for tab in &record.tabs {
+        ids.insert(tab.id);
+    }
+    if let Some(comparison) = &record.comparison {
+        let tabs: Vec<crate::TabId> = comparison.tabs.iter().copied().map(crate::TabId).collect();
+        if crate::compare::Comparison::check(&tabs).is_err() || comparison.tabs.iter().any(|id| !ids.contains(id)) || !(comparison.sync_from.is_empty() || comparison.sync_from.len() == comparison.tabs.len()) || comparison.sync_from.iter().any(|page| *page as usize > MAX_PAGES) {
+            return Err(bad("a comparison"));
+        }
+    }
+    ids.clear();
+    for tab in &record.tabs {
         if tab.id == 0 || tab.id >= record.next_id || !ids.insert(tab.id) {
             return Err(bad("a tab's number"));
         }
@@ -1356,7 +1380,7 @@ mod tests {
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {
-        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs }
+        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None }
     }
 
     fn found(path: &str, stamp: FileStamp) -> Option<(PathBuf, FileStamp)> {

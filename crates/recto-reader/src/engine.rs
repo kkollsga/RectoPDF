@@ -73,6 +73,21 @@ struct Shared {
     last_note: Mutex<Option<String>>,
     last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
+    /// This page view's done with, as a comparison's pane is when it closes: its thread ends, and its workers and everything it drew go with it.
+    stopping: AtomicBool,
+    /// What a comparison's other panes asked of this view from the UI thread while its own thread held it: the latest of each, taken by that thread the next time it holds its lock. See [`Engine::follow_soon`].
+    pending: Mutex<Pending>,
+}
+
+/// What's waiting for a page view that was busy when the UI thread asked. Only the latest of each counts.
+#[derive(Default)]
+struct Pending {
+    /// Synced scroll's place: a page and how far down it.
+    follow: Option<(u32, f64)>,
+    /// The one zoom of a comparison.
+    zoom: Option<f64>,
+    /// Another pane took the selection.
+    clear_selection: bool,
 }
 
 /// The page view's running half.
@@ -88,12 +103,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
     /// Starts the thread the first time there's a document, and wakes it. `unpark` costs one atomic when it's already running.
     fn wake(&self) {
+        if self.shared.stopping.load(Ordering::SeqCst) {
+            return;
+        }
         let mut thread = lock(&self.thread);
         match &*thread {
             Some(running) => running.unpark(),
@@ -121,10 +139,110 @@ impl Engine {
         self.wake();
     }
 
+    /// **Ends this page view for good:** what's on screen comes off, its thread ends at its next turn, and its workers and everything drawn go with it. A comparison's pane closing does this, so a pane that's gone costs no thread, worker or surface.
+    pub fn shut_down(&self) {
+        let mut reader = lock(&self.shared.reader);
+        *lock(&self.shared.pending) = Pending::default();
+        reader.deactivate();
+        drop(reader);
+        self.shared.stopping.store(true, Ordering::SeqCst);
+        if let Some(thread) = &*lock(&self.thread) {
+            thread.unpark();
+        }
+    }
+
+    /// Whether this page view's thread is running, for QA: a pane that's closed has none.
+    pub fn has_thread(&self) -> bool {
+        lock(&self.thread).is_some() && !self.shared.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Shares what's kept off screen with this many page views in all.
+    pub fn set_share(&self, views: usize) {
+        lock(&self.shared.reader).set_share(views);
+    }
+
+    /// The least room either side of the pages, as a comparison's pane has it.
+    pub fn set_margins(&self, left: f64, right: f64) {
+        let mut reader = lock(&self.shared.reader);
+        reader.set_margins(left, right);
+        self.after(reader);
+    }
+
+    /// The tab showing's magnification.
+    pub fn magnification(&self) -> Option<f64> {
+        lock(&self.shared.reader).magnification()
+    }
+
+    /// Where the reader is in the tab showing, as a page and how far down it.
+    pub fn reading_anchor(&self) -> Option<(u32, f64)> {
+        lock(&self.shared.reader).reading_anchor()
+    }
+
+    /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
+    pub fn follow_soon(&self, page: u32, within: f64) -> bool {
+        self.now_or_soon(|pending| pending.follow = Some((page, within)), |reader, pending| {
+            pending.follow = None;
+            reader.follow(page, within);
+        })
+    }
+
+    /// The comparison's one zoom, from the UI thread, the same way: now if the page view's free, and otherwise left for its thread, the latest only.
+    pub fn zoom_soon(&self, value: f64) -> bool {
+        self.now_or_soon(|pending| pending.zoom = Some(value), |reader, pending| {
+            pending.zoom = None;
+            reader.zoom(Zoom::To(value));
+        })
+    }
+
+    /// Another pane took the selection, from the UI thread, the same way.
+    pub fn clear_selection_soon(&self) -> bool {
+        self.now_or_soon(|pending| pending.clear_selection = true, |reader, pending| {
+            pending.clear_selection = false;
+            reader.clear_selection();
+        })
+    }
+
+    /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
+    fn now_or_soon(&self, leave: impl FnOnce(&mut Pending), now: impl FnOnce(&mut Reader, &mut Pending)) -> bool {
+        let reader = match self.shared.reader.try_lock() {
+            Ok(reader) => reader,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                leave(&mut lock(&self.shared.pending));
+                self.wake();
+                return false;
+            }
+        };
+        let mut reader = reader;
+        now(&mut reader, &mut lock(&self.shared.pending));
+        self.after(reader);
+        true
+    }
+
+    /// Sends the view to a place in a page, for synced scroll. Says which page, held to the document.
+    pub fn follow(&self, page: u32, within: f64) -> Option<u32> {
+        let mut reader = lock(&self.shared.reader);
+        let went = reader.follow(page, within);
+        self.after(reader);
+        went
+    }
+
+    /// Whether two handles are the same page view.
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// Which tab this page view shows.
+    pub fn hot_tab(&self) -> Option<u32> {
+        lock(&self.shared.reader).hot_tab()
+    }
+
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
     #[allow(clippy::too_many_arguments)]
     pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread) {
         let mut reader = lock(&self.shared.reader);
+        // A place synced scroll left for what was showing isn't about what's coming: it would land a middle pane's place on the tab that moves into it.
+        lock(&self.shared.pending).follow = None;
         reader.activate(tab, pages, page, map, warm, saved, spread);
         self.after(reader);
     }
@@ -217,6 +335,7 @@ impl Engine {
 
     pub fn deactivate(&self) {
         let mut reader = lock(&self.shared.reader);
+        lock(&self.shared.pending).follow = None;
         reader.deactivate();
         self.after(reader);
     }
@@ -235,10 +354,21 @@ impl Engine {
 
     /// From the UI thread, on every scroll. A short lock and a few map lookups. What comes back is for the host to apply now.
     pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op> {
+        self.set_viewport_scrolled(viewport).ops
+    }
+
+    /// The same, and what synced scroll and zoom need of it, from the one lock: whether it was the reader scrolling, the magnification the view's taken, and where the reader is.
+    pub fn set_viewport_scrolled(&self, viewport: Viewport) -> ViewportOutcome {
         // What this returns is what was waiting, so nothing's waiting to be told about.
         self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.set_viewport(viewport);
+        let scrolled = reader.take_user_scrolled();
+        if scrolled {
+            // The reader's own scroll here is newer than any place synced scroll left for this pane.
+            lock(&self.shared.pending).follow = None;
+        }
+        let (magnification, anchor) = (reader.magnification(), reader.reading_anchor());
         let moved = reader.has_moved_page();
         let more = reader.has_ops();
         let note = reader.note().map(str::to_string);
@@ -251,7 +381,7 @@ impl Engine {
             signal_ops(&self.shared);
         }
         self.wake();
-        ops
+        ViewportOutcome { ops, scrolled, magnification, anchor }
     }
 
     /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
@@ -437,6 +567,30 @@ impl Engine {
     }
 }
 
+/// What a viewport did, for a comparison's other panes.
+pub struct ViewportOutcome {
+    pub ops: Vec<Op>,
+    /// It was the reader's own scroll.
+    pub scrolled: bool,
+    pub magnification: Option<f64>,
+    pub anchor: Option<(u32, f64)>,
+}
+
+/// Takes what the UI thread left for this view, with the lock held. Says whether there was any.
+fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
+    let pending = std::mem::take(&mut *lock(&shared.pending));
+    if let Some(value) = pending.zoom {
+        reader.zoom(Zoom::To(value));
+    }
+    if pending.clear_selection {
+        reader.clear_selection();
+    }
+    if let Some((page, within)) = pending.follow {
+        reader.follow(page, within);
+    }
+    pending.zoom.is_some() || pending.clear_selection || pending.follow.is_some()
+}
+
 fn note_change(shared: &Shared, note: Option<String>) {
     let mut last = lock(&shared.last_note);
     if *last != note {
@@ -513,6 +667,12 @@ fn run(shared: &Shared) {
     let mut resting_since: Option<Instant> = None;
     let mut openings: HashMap<PathBuf, Receiver<Result<File, RenderFailure>>> = HashMap::new();
     loop {
+        if shared.stopping.load(Ordering::SeqCst) {
+            // Dropping them kills each worker and closes its file.
+            renderers.clear();
+            publish_workers(shared, &mut renderers);
+            return;
+        }
         let plan = {
             let mut reader = lock(&shared.reader);
             let files = reader.wanted_files();
@@ -523,6 +683,9 @@ fn run(shared: &Shared) {
             for file in reader.take_reopen_files() {
                 renderers.remove(&file);
                 openings.remove(&file);
+            }
+            if take_pending_follow(shared, &mut reader) && reader.has_ops() {
+                signal_ops(shared);
             }
             reader.next_plan()
         };
@@ -606,6 +769,7 @@ fn run(shared: &Shared) {
         // What a text job read isn't about what's selected now, if that's gone with the file.
         let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) { Outcome::Cancelled } else { outcome };
         reader.finish(job, outcome);
+        take_pending_follow(shared, &mut reader);
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
@@ -825,6 +989,119 @@ fn whole_file(failure: RenderFailure) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Quiet;
+    impl EngineEvents for Quiet {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Failure: synced scroll makes the UI thread wait for another pane's page view while that pane's own thread holds it, which is how a scroll step reached 4 to 9 ms. With the page view busy, the place is left for its own thread, the latest only, and it gets there as soon as that thread lets go.
+    #[test]
+    fn synced_scroll_never_waits_for_a_busy_pane() {
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(1, 100, 0, PageMap { files: vec![PathBuf::from("/nowhere/a.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
+        engine.set_viewport(crate::tiles::Viewport { x: 0.0, y: 0.0, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: 0 });
+        assert!(engine.follow_soon(10, 0.5), "free: it goes now");
+        assert_eq!(engine.reading_anchor(), Some((10, 0.5)));
+        let held = engine.shared.reader.lock().unwrap();
+        let started = Instant::now();
+        assert!(!engine.follow_soon(20, 0.25), "busy: left for later");
+        assert!(!engine.follow_soon(30, 0.75), "and the latest is what's kept");
+        assert!(started.elapsed() < Duration::from_millis(50), "it didn't wait: {:?}", started.elapsed());
+        drop(held);
+        let began = Instant::now();
+        while engine.reading_anchor() != Some((30, 0.75)) {
+            assert!(began.elapsed() < Duration::from_secs(5), "its own thread takes it: {:?}", engine.reading_anchor());
+            engine.wake();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        engine.shut_down();
+    }
+
+    /// A page view with no thread of its own, so what's left pending stays until a test looks: as a busy thread would leave it.
+    fn without_its_thread() -> Engine {
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.shut_down();
+        engine.activate(1, 100, 0, PageMap { files: vec![PathBuf::from("/nowhere/a.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
+        let view = |y: f64, scrolled_to: u64| crate::tiles::Viewport { x: 0.0, y, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to };
+        let mut seq = 0;
+        let mut y = 0.0;
+        for _ in 0..3 {
+            for op in engine.set_viewport(view(y, seq)) {
+                if let Op::ScrollTo { y: to, seq: sent } = op {
+                    (y, seq) = (to, sent);
+                }
+            }
+        }
+        engine
+    }
+
+    /// Failure (review 1): a place left while the pane was busy is applied after a newer one that got the lock, so the pane goes to step k after step k+1. The newer one drops it.
+    #[test]
+    fn a_newer_place_drops_one_left_before() {
+        let engine = without_its_thread();
+        let held = engine.shared.reader.lock().unwrap();
+        assert!(!engine.follow_soon(20, 0.25));
+        drop(held);
+        assert!(engine.follow_soon(30, 0.5));
+        assert!(lock(&engine.shared.pending).follow.is_none(), "nothing older left to land after it");
+        let mut reader = lock(&engine.shared.reader);
+        assert!(!take_pending_follow(&engine.shared, &mut reader));
+        assert_eq!(reader.reading_anchor(), Some((30, 0.5)));
+    }
+
+    /// Failure (review 1): a place left by synced scroll lands after the reader has scrolled this pane themselves, and takes them back.
+    #[test]
+    fn the_readers_own_scroll_drops_a_place_left_for_the_pane() {
+        let engine = without_its_thread();
+        let held = engine.shared.reader.lock().unwrap();
+        assert!(!engine.follow_soon(60, 0.0));
+        drop(held);
+        let seq = lock(&engine.shared.reader).viewport_scrolled_to();
+        let outcome = engine.set_viewport_scrolled(crate::tiles::Viewport { x: 0.0, y: 3000.0, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: seq });
+        assert!(outcome.scrolled);
+        assert!(lock(&engine.shared.pending).follow.is_none());
+    }
+
+    /// Failure (review 1): with a middle pane gone, the tab that moves into its page view gets the place synced scroll left for the one before.
+    #[test]
+    fn another_tab_in_the_pane_drops_a_place_left_for_the_last() {
+        let engine = without_its_thread();
+        let held = engine.shared.reader.lock().unwrap();
+        assert!(!engine.follow_soon(70, 0.5));
+        assert!(!engine.zoom_soon(1.5));
+        drop(held);
+        engine.activate(2, 40, 3, PageMap { files: vec![PathBuf::from("/nowhere/b.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
+        let pending = lock(&engine.shared.pending);
+        assert!(pending.follow.is_none(), "the old tab's place is gone");
+        assert_eq!(pending.zoom, Some(1.5), "the comparison's one zoom still holds");
+        drop(pending);
+        engine.deactivate();
+        let held = engine.shared.reader.lock().unwrap();
+        drop(held);
+        assert!(lock(&engine.shared.pending).follow.is_none());
+    }
+
+    /// Failure (review 1): another pane's zoom or a selection taken in another pane makes the UI thread wait on this pane's lock while its thread holds it. Both are left for that thread instead, and taken when it next holds its lock.
+    #[test]
+    fn zoom_and_a_selection_elsewhere_never_wait_for_a_busy_pane() {
+        let engine = without_its_thread();
+        let held = engine.shared.reader.lock().unwrap();
+        let started = Instant::now();
+        assert!(!engine.zoom_soon(2.0));
+        assert!(!engine.clear_selection_soon());
+        assert!(started.elapsed() < Duration::from_millis(50));
+        drop(held);
+        let mut reader = lock(&engine.shared.reader);
+        assert!(take_pending_follow(&engine.shared, &mut reader));
+        assert_eq!(reader.magnification(), Some(2.0));
+        drop(reader);
+        assert!(engine.zoom_soon(1.25), "free: now");
+        assert_eq!(engine.magnification(), Some(1.25));
+    }
 
     /// Failure: a blank tile of a lower-resolution page keeps its surface, but only its colour number is dimmed, so a tile at full white sits beside dimmed ones. Its pixels are what's shown, so they're what's changed.
     #[test]

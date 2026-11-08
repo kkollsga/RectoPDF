@@ -16,6 +16,8 @@ pub const READING_WIDTH: f64 = 760.0;
 pub const MIN_SIDE_MARGIN: f64 = 56.0;
 /// The least room to the right of a fitted page: the top right corner holds the agent icon and the zoom level beside it, and the owner's rule is that nothing sits over the page. The icon is 20 points, 12 from the edge, and the level's words, up to five characters, end 8 points left of it: about 84 points, and a little more so they don't touch. A margin the whole way down, as the left one is, so a page doesn't change width as it scrolls past the corner.
 pub const CORNER_MARGIN: f64 = 96.0;
+/// The least room either side of a page in a comparison's pane, where the window's margins are shared out among several pages side by side. The pane at the right keeps [`CORNER_MARGIN`] on its right, for the agent icon and the zoom level.
+pub const PANE_MARGIN: f64 = 20.0;
 /// How far a fit may enlarge a tiny page, so a hostile page of a few points doesn't ask for a huge scale.
 pub const MAX_FIT: f64 = 8.0;
 /// Pages taken to be US Letter until one is known.
@@ -89,6 +91,8 @@ pub struct PageLayout {
     turned_other_way: usize,
     /// [`MAX_OVERRIDES`], smaller in a test so reaching it doesn't take a long time.
     cap: usize,
+    /// The least room to the left and the right of the pages: [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or less in a comparison's pane.
+    margins: (f64, f64),
 }
 
 impl PageLayout {
@@ -97,7 +101,7 @@ impl PageLayout {
     }
 
     pub fn with_spread(count: u32, spread: Spread) -> Self {
-        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false, turned_other_way: 0, cap: MAX_OVERRIDES }
+        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false, turned_other_way: 0, cap: MAX_OVERRIDES, margins: (MIN_SIDE_MARGIN, CORNER_MARGIN) }
     }
 
     pub fn count(&self) -> u32 {
@@ -206,6 +210,18 @@ impl PageLayout {
             .map(|(page, size)| Override { page, size, row_extra: 0.0, before: 0.0 })
             .collect();
         self.reckon();
+    }
+
+    /// The least room to the left and the right of the pages, as a pane of a comparison has it. Returns whether anything moved. Held to sense.
+    pub fn set_margins(&mut self, left: f64, right: f64) -> bool {
+        let fit = |value: f64| if value.is_finite() { value.clamp(0.0, CORNER_MARGIN) } else { MIN_SIDE_MARGIN };
+        let margins = (fit(left), fit(right));
+        if margins == self.margins {
+            return false;
+        }
+        self.margins = margins;
+        self.refit();
+        true
     }
 
     /// Sets the window's reading area. Returns whether anything moved.
@@ -334,7 +350,7 @@ impl PageLayout {
 
     /// The fit follows the first page known, so pages keep their relative sizes, as they do on paper. Two side by side share the room.
     fn refit(&mut self) -> bool {
-        let room = (self.frame_width - MIN_SIDE_MARGIN - CORNER_MARGIN).max(1.0);
+        let room = (self.frame_width - self.margins.0 - self.margins.1).max(1.0);
         let fit = match self.spread {
             Spread::Single => READING_WIDTH.min(room) / f64::from(self.usual.width),
             Spread::TwoUp | Spread::TwoUpCover => ((2.0 * READING_WIDTH + PAGE_GAP).min(room) - PAGE_GAP).max(1.0) / (2.0 * f64::from(self.usual.width)),
@@ -402,7 +418,7 @@ impl PageLayout {
         let half = self.frame_width / 2.0;
         let width = |page: u32| f64::from(self.size(page).width) * self.fit;
         let (lowest, highest) = match self.spread {
-            Spread::Single => (MIN_SIDE_MARGIN + width(page) / 2.0, self.frame_width - CORNER_MARGIN - width(page) / 2.0),
+            Spread::Single => (self.margins.0 + width(page) / 2.0, self.frame_width - self.margins.1 - width(page) / 2.0),
             _ => {
                 let (first, second) = self.row_pages(self.row_of(page));
                 let pages = [Some(first), second];
@@ -410,7 +426,7 @@ impl PageLayout {
                 let usual = f64::from(self.usual.width) * self.fit;
                 let left = pages.into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(usual, width);
                 let right = pages.into_iter().flatten().find(|page| self.on_the_right(*page)).map_or(usual, width);
-                (MIN_SIDE_MARGIN + left + PAGE_GAP / 2.0, self.frame_width - CORNER_MARGIN - right - PAGE_GAP / 2.0)
+                (self.margins.0 + left + PAGE_GAP / 2.0, self.frame_width - self.margins.1 - right - PAGE_GAP / 2.0)
             }
         };
         half.min(highest).max(lowest)
@@ -423,7 +439,7 @@ impl PageLayout {
             Spread::Single => widest,
             Spread::TwoUp | Spread::TwoUpCover => 2.0 * widest + PAGE_GAP,
         };
-        self.frame_width.max(pages + MIN_SIDE_MARGIN + CORNER_MARGIN)
+        self.frame_width.max(pages + self.margins.0 + self.margins.1)
     }
 
     pub fn document_height(&self) -> f64 {
@@ -839,6 +855,25 @@ mod tests {
             assert_eq!(layout.page_at(layout.document_height() + 5.0), layout.first_of_row(layout.rows() - 1));
         }
         const { assert!(END_MARGIN > PAGE_GAP, "it reads as the document's end, not another gap") };
+    }
+
+    /// Failure: a comparison's pane keeps the whole window's margins, the agent icon's 96 points among them, so three panes in a laptop's window leave pages a thumbnail wide; or a pane's page runs under the pane beside it.
+    #[test]
+    fn a_pane_has_narrower_margins_and_keeps_inside_them() {
+        let mut layout = PageLayout::new(4);
+        layout.set_page_size(0, letter());
+        layout.set_frame(360.0);
+        let whole = layout.rect(0).width;
+        assert!(layout.set_margins(PANE_MARGIN, PANE_MARGIN));
+        assert!(!layout.set_margins(PANE_MARGIN, PANE_MARGIN), "the same again moves nothing");
+        let pane = layout.rect(0);
+        assert!(pane.width > whole + 100.0, "{} against {whole}", pane.width);
+        assert!(pane.x >= PANE_MARGIN - 1e-6 && pane.x + pane.width <= 360.0 - PANE_MARGIN + 1e-6, "{pane:?}");
+        assert!(layout.set_margins(PANE_MARGIN, CORNER_MARGIN), "the pane at the right keeps the corner");
+        let right = layout.rect(0);
+        assert!(right.x + right.width <= 360.0 - CORNER_MARGIN + 1e-6, "{right:?}");
+        layout.set_margins(f64::NAN, 1e9);
+        assert!(layout.fit().is_finite() && layout.rect(0).width > 0.0, "nonsense is held to sense");
     }
 
     /// Failure: a tiny or a huge hostile page gives a scale off the end of what can be drawn.

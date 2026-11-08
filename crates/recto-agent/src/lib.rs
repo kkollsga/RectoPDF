@@ -171,6 +171,18 @@ pub enum Command {
         #[serde(default)]
         layout: Option<String>,
     },
+    /// Tabs side by side: which, and separate or synced scroll. With nothing, only says.
+    Compare {
+        /// Tabs by selector, with commas between: `#1,#3`.
+        #[serde(default)]
+        tabs: Option<String>,
+        /// `on` for synced scroll, `off` for separate.
+        #[serde(default)]
+        sync: Option<String>,
+        /// Back to one tab, the one being read.
+        #[serde(default)]
+        off: bool,
+    },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
         verb: String,
@@ -508,6 +520,7 @@ impl Command {
             Self::Close { .. } => "close",
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
+            Self::Compare { .. } => "compare",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
@@ -565,6 +578,8 @@ impl Command {
             // Asking how things are shown changes nothing. Changing it is moving around.
             Self::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
             Self::View { .. } => Access::At(Level::Control),
+            Self::Compare { tabs: None, sync: None, off: false } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            Self::Compare { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // A command with no row can't run: the table is the list.
@@ -599,6 +614,7 @@ impl Command {
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
+            Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
             Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
@@ -1028,6 +1044,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             }
             Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         }),
+        Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
         Command::Budget {} => Ok(json!({
@@ -1257,6 +1274,71 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 }
 
 /// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
+/// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
+const MAX_COMPARE_SELECTORS: usize = 8;
+
+/// `recto compare`: what the sidebar's ⌘-click and the right-click menu's scroll items do, for an agent. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
+fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>, off: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let usage = |words: String| AgentError::new("usage", words, exit::USAGE);
+    let refused = |error: recto_session::compare::CompareError| AgentError::new(error.code(), error.message(), exit::FAILED);
+    if off && (tabs.is_some() || sync.is_some()) {
+        return Err(usage("`--off` goes alone: it ends the comparison.".into()));
+    }
+    let sync = match sync {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(other) => return Err(usage(format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other)))),
+    };
+    let before = access.with(|s| compare_json(s));
+    if off {
+        access.with(|s| s.end_compare());
+    }
+    if let Some(list) = tabs {
+        let selectors: Vec<&str> = list.split(',').map(str::trim).filter(|word| !word.is_empty()).take(MAX_COMPARE_SELECTORS + 1).collect();
+        if selectors.len() > MAX_COMPARE_SELECTORS {
+            return Err(refused(recto_session::compare::CompareError::TooMany));
+        }
+        let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
+        recto_session::compare::Comparison::check(&ids).map_err(refused)?;
+        // Each pane is a live document, so each cold one is read here with the session free, as a tap's is, and none with it held.
+        let reading = access.with(|s| s.active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
+        let cold = access.with(|s| s.wake_for_compare(&ids));
+        let loader = access.with(|s| s.loader().clone());
+        for (id, path) in cold {
+            let stamp = recto_platform::file_stamp(&path).ok();
+            let loaded = loader.load(&path);
+            access.with(|s| s.give_woken(id, loaded, stamp));
+        }
+        access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
+    }
+    if let Some(on) = sync {
+        access.with(|s| s.set_compare_synced(on)).then_some(()).ok_or_else(|| AgentError::new("not_comparing", "There's no comparison to sync.", exit::NOT_FOUND).then("`recto compare --tabs \"#1,#2\"` puts two side by side first."))?;
+    }
+    let after = access.with(|s| compare_json(s));
+    if after != before {
+        events.push(Event::new("view_changed", json!({ "comparison": after["panes"].as_array().map(|panes| panes.iter().map(|pane| pane["tab"].clone()).collect::<Vec<_>>()), "sync": after["sync"] })));
+    }
+    Ok(after)
+}
+
+/// What's side by side: each pane's tab, its page and length, the one being read, synced or separate, and what's said about lengths.
+pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
+    let panes: Vec<Value> = session
+        .comparison()
+        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tab(*id).map(|tab| json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages_in(*id), "reading": session.active() == Some(*id), "untrusted": { "name": &*tab.name } }))).collect())
+        .unwrap_or_default();
+    let comparison = session.comparison();
+    json!({
+        "comparing": comparison.is_some(),
+        "panes": panes,
+        "sync": comparison.map_or("off", |comparison| if comparison.synced { "on" } else { "off" }),
+        "sync_from": comparison.filter(|comparison| comparison.synced).map(|comparison| comparison.sync_from.iter().map(|page| page + 1).collect::<Vec<_>>()),
+        "note": session.compare_note(),
+        "max_panes": recto_session::compare::MAX_PANES,
+    })
+}
+
 fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
     let Some((id, path)) = access.with(|s| plan(s)) else { return };
     let loader = access.with(|s| s.loader().clone());
@@ -1882,6 +1964,8 @@ mod tests {
             Command::Goto { tab: tab(), page: 1 },
             Command::Close { tab: tab() },
             Command::Budget {},
+            Command::Compare { tabs: None, sync: None, off: false },
+            Command::Compare { tabs: None, sync: None, off: true },
             Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
             Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false },
             Command::Text { tab: tab(), page: 1 },
@@ -1980,6 +2064,35 @@ mod tests {
         for spec in table::TABLE.iter().filter(|spec| spec.route == table::Route::Session) {
             assert!(commands.iter().any(|command| command.tag() == spec.tag), "row {} has no command", spec.name);
         }
+    }
+
+    /// Failure: an agent can't do what ⌘-click and the right-click menu do: put tabs side by side, sync them, and go back to one; or asking changes something, or what's wrong isn't said in words with a way on.
+    #[test]
+    fn compare_puts_tabs_side_by_side_and_says_so() {
+        let mut session = with_tabs(&["a", "b", "c", "d"]);
+        let compare = |tabs: Option<&str>, sync: Option<&str>, off: bool| Command::Compare { tabs: tabs.map(str::to_string), sync: sync.map(str::to_string), off };
+        let asked = run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap();
+        assert_eq!(asked["comparing"], false);
+        assert_eq!(run(&mut session, Level::ReadOnly, &compare(Some("#1,#2"), None, false)).unwrap_err().exit, exit::PERMISSION, "changing it is Control");
+        let two = run(&mut session, Level::Control, &compare(Some("#1, #3"), None, false)).unwrap();
+        assert_eq!(two["comparing"], true);
+        assert_eq!(two["panes"].as_array().unwrap().iter().map(|pane| pane["tab"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(two["sync"], "off", "separate is the default");
+        let synced = run(&mut session, Level::Control, &compare(None, Some("on"), false)).unwrap();
+        assert_eq!(synced["sync"], "on");
+        assert_eq!(synced["sync_from"], json!([1, 1]));
+        assert_eq!(run(&mut session, Level::Control, &compare(Some("#1,#2,#3,#4"), None, false)).unwrap_err().code, "too_many_panes");
+        assert_eq!(run(&mut session, Level::Control, &compare(Some("#1"), None, false)).unwrap_err().code, "too_few_panes");
+        assert_eq!(run(&mut session, Level::Control, &compare(Some("#1,#1"), None, false)).unwrap_err().code, "same_tab_twice");
+        assert_eq!(run(&mut session, Level::Control, &compare(Some("#1,#9"), None, false)).unwrap_err().code, "no_such_tab");
+        assert_eq!(run(&mut session, Level::Control, &compare(None, Some("maybe"), false)).unwrap_err().code, "usage");
+        assert_eq!(run(&mut session, Level::Control, &compare(Some("#1,#2"), None, true)).unwrap_err().code, "usage");
+        let ended = run(&mut session, Level::Control, &compare(None, None, true)).unwrap();
+        assert_eq!(ended["comparing"], false);
+        assert_eq!(run(&mut session, Level::Control, &compare(None, Some("on"), false)).unwrap_err().code, "not_comparing");
+        run(&mut session, Level::Control, &compare(Some("#2,#4"), None, false)).unwrap();
+        run(&mut session, Level::Control, &Command::Tap { tab: "#4".into() }).unwrap();
+        assert_eq!(run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap()["comparing"], false, "a tap goes back to one");
     }
 
     /// Failure: two faces of one command disagree on what they need, so which row is found first decides who gets in.

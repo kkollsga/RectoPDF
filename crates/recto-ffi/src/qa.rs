@@ -28,6 +28,8 @@ const SWEEP_STEP: Duration = Duration::from_micros(8333);
 #[derive(Clone, Copy)]
 struct Step {
     micros: u32,
+    /// Of those, the time the UI thread was on a processor: the rest it was waiting, for a lock or for its turn.
+    cpu_micros: u32,
     at: Instant,
     contents_y: f64,
     current_visible: bool,
@@ -135,6 +137,24 @@ impl QaBridge {
         self.inner.get().and_then(Weak::upgrade)
     }
 
+    /// Every page view: one, or a comparison's panes.
+    fn engines(&self) -> Vec<Engine> {
+        self.inner().map_or_else(|| vec![self.engine.clone()], |inner| inner.panes.engines(&inner.engine))
+    }
+
+    /// The page view of the pane being read, which QA's pointer goes to, as the reader's would.
+    fn reading_engine(&self) -> Engine {
+        self.inner().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine))
+    }
+
+    /// The workers of every page view, now and at their peaks.
+    fn workers_footprint(&self) -> (u64, u64, usize) {
+        self.engines().iter().fold((0, 0, 0), |(now, peak, count), engine| {
+            let (one, top) = engine.workers_footprint();
+            (now + one, peak + top, count + engine.worker_pids().len())
+        })
+    }
+
     pub(crate) fn answer(&self, id: u64, ok: bool, json: String) {
         let mut answers = lock(&self.answers);
         if let Some(slot) = answers.get_mut(&id) {
@@ -143,12 +163,12 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn note_step(&self, micros: u64, contents_y: f64, current_visible: bool) {
+    pub(crate) fn note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
         self.step_waiting.store(false, Ordering::SeqCst);
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
         if steps.len() < 16_384 {
-            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
+            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), cpu_micros: u32::try_from(cpu_micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
         }
     }
 
@@ -265,12 +285,12 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
                 let place = parse_page_place(value)?;
-                let (x, y) = self.engine.document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
+                let (x, y) = self.reading_engine().document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
                 self.ask(verb, &format!("{x},{y},{},{}", place.clicks, u8::from(place.shift)))?;
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
@@ -296,7 +316,16 @@ impl QaBridge {
 
     fn state(&self) -> Result<Value, AgentError> {
         let app = self.ask("state", "")?;
-        let (worker_bytes, worker_peak) = self.engine.workers_footprint();
+        let (worker_bytes, worker_peak, workers) = self.workers_footprint();
+        let comparison = self.inner().map_or(Value::Null, |inner| {
+            let engines = inner.panes.engines(&inner.engine);
+            let panes: Vec<Value> = engines.iter().map(|engine| {
+                let report = engine.report().0;
+                json!({ "tab": report["tab"], "page": report["page"], "pages": report["pages"], "scroll_y": report["scroll_y"], "magnification": report["magnification"], "fit": report["fit"], "settled": report["settled"], "spread": report["spread"], "thread": engine.has_thread() })
+            }).collect();
+            let held: u64 = engines.iter().map(|engine| engine.report().0["documents_held"].as_u64().unwrap_or(0)).sum();
+            json!({ "panes": panes, "reading": inner.panes.reading(), "documents_held": held })
+        });
         let own = recto_platform::footprint_bytes().unwrap_or(0);
         let mine = recto_platform::own_memory().unwrap_or_default();
         let counters = recto_platform::local::process_counters(std::process::id());
@@ -304,6 +333,7 @@ impl QaBridge {
         Ok(json!({
             "app": app,
             "reader": self.engine.report().0,
+            "panes": comparison,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
             "update": self.inner().map_or(Value::Null, |inner| inner.update_report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
@@ -311,7 +341,7 @@ impl QaBridge {
                 "footprint_bytes": own,
                 "compressed_bytes": mine.compressed,
                 "heap_bytes": mine.heap,
-                "workers": self.engine.worker_pids().len(),
+                "workers": workers,
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,
@@ -326,7 +356,7 @@ impl QaBridge {
     fn settled(&self, limit: Duration) -> Result<Value, AgentError> {
         let started = Instant::now();
         // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
-        if self.core.flush(limit) && self.engine.wait_settled(limit.saturating_sub(started.elapsed())) {
+        if self.core.flush(limit) && self.engines().iter().all(|engine| engine.wait_settled(limit.saturating_sub(started.elapsed()))) {
             Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64 }))
         } else {
             Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."))
@@ -357,7 +387,7 @@ impl QaBridge {
             if sampled.elapsed() >= Duration::from_millis(20) {
                 sampled = Instant::now();
                 let own = recto_platform::footprint_bytes().unwrap_or(0);
-                let (worker, _) = self.engine.workers_footprint();
+                let (worker, _, _) = self.workers_footprint();
                 peak_own = peak_own.max(own);
                 peak_worker = peak_worker.max(worker);
                 peak_tree = peak_tree.max(own + worker);
@@ -375,6 +405,12 @@ impl QaBridge {
         let recorded = lock(&self.steps).clone();
         let mut steps: Vec<u32> = recorded.iter().map(|step| step.micros).collect();
         steps.sort_unstable();
+        let mut cpu: Vec<u32> = recorded.iter().map(|step| step.cpu_micros).collect();
+        cpu.sort_unstable();
+        // The slowest steps, by how much of each was on a processor: a step that waited is a lock or the Mac being busy, and one that worked is this code.
+        let mut slowest: Vec<(u32, u32)> = recorded.iter().map(|step| (step.micros, step.cpu_micros)).collect();
+        slowest.sort_unstable_by(|one, two| two.cmp(one));
+        slowest.truncate(5);
         // What the contents did, step by step, while the page scrolled.
         let began = recorded.first().map_or_else(Instant::now, |step| step.at);
         let positions: Vec<(f64, f64)> = recorded.iter().map(|step| (step.at.duration_since(began).as_secs_f64(), step.contents_y)).collect();
@@ -388,6 +424,8 @@ impl QaBridge {
             "sent": sent,
             "skipped_because_the_last_was_still_running": skipped,
             "step_us": { "p50": at(0.5), "p99": at(0.99), "worst": steps.last().copied().unwrap_or(0) },
+            "step_cpu_us": { "p50": cpu.get(cpu.len() / 2).copied().unwrap_or(0), "p99": cpu.get(((cpu.len() as f64 - 1.0) * 0.99).round() as usize).copied().unwrap_or(0), "worst": cpu.last().copied().unwrap_or(0) },
+            "slowest_steps_us_and_cpu_us": slowest,
             "blank_seen_steps": after["counts"]["blank_seen_steps"].as_u64().unwrap_or(0) - before["counts"]["blank_seen_steps"].as_u64().unwrap_or(0),
             "blank_steps": after["counts"]["blank_steps"].as_u64().unwrap_or(0) - before["counts"]["blank_steps"].as_u64().unwrap_or(0),
             "cancelled": after["counts"]["cancelled"].as_u64().unwrap_or(0) - before["counts"]["cancelled"].as_u64().unwrap_or(0),
@@ -453,12 +491,15 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
         "key_action" => one_of(&["undo", "redo"]),
-        "context_menu" => crate::menus::context_menu(None).iter().any(|item| !item.id.is_empty() && item.id == value),
+        "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
-        "contents_scroll" => row(),
+        "contents_scroll" | "compare_click" => row(),
+        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && crate::menus::context_menu(None, Some(false)).iter().any(|entry| !entry.id.is_empty() && entry.id == item)),
+        "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
+        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)),
         "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
         _ => false,
     };

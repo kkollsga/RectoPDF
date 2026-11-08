@@ -194,6 +194,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
     ("reader.counts.", "Jobs and steps of its own run."),
     ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),
+    ("panes.documents_held", "The same, over every pane's page view."),
     ("reader.tiles.kept", "Tiles held off screen, which a new process doesn't have until it's been somewhere."),
     ("reader.tiles.previews_attached", "Previews behind sharp tiles, which depend on what the first draw was."),
     ("reader.tiles.attached", "Fewer are on layers if there's no preview under them: drawing, not state. What's visible is settled either way."),
@@ -305,6 +306,13 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     run.ok(&["qa", "contents-scroll", "60"]);
     run.ok(&["qa", "scroll", "42"]);
+    run.settled();
+    // Side by side with the second, synced, each pane in its own place, and the third still the one read (owner, 2026-11-08: comparison view).
+    run.ok(&["compare", "--tabs", "#2,#3", "--sync", "on"]);
+    run.settled();
+    run.ok(&["qa", "pane-scroll", "0:120"]);
+    run.settled();
+    run.ok(&["qa", "pane-focus", "1"]);
     run.settled();
     // Everything else there is.
     run.ok(&["qa", "resize", "1300x820"]);
@@ -440,6 +448,18 @@ const KNOWN_PATHS: &[&str] = &[
     "app.pages.system_scroller_style",
     "app.pages.view_width",
     "app.pages.visible",
+    "app.panes.len",
+    "app.panes[].highlight_rects",
+    "app.panes[].label",
+    "app.panes[].label_in_lower_left",
+    "app.panes[].magnification",
+    "app.panes[].note",
+    "app.panes[].pane",
+    "app.panes[].pages_inside",
+    "app.panes[].reading",
+    "app.panes[].scroll_y",
+    "app.panes[].width",
+    "app.panes[].x",
     "app.panel.height",
     "app.panel.items.len",
     "app.panel.items[].enabled",
@@ -493,6 +513,17 @@ const KNOWN_PATHS: &[&str] = &[
     "app.zoom_level.reset",
     "app.zoom_level.text",
     "app.zoom_level.visible",
+    "panes.panes.len",
+    "panes.panes[].fit",
+    "panes.panes[].magnification",
+    "panes.panes[].page",
+    "panes.panes[].pages",
+    "panes.panes[].scroll_y",
+    "panes.panes[].settled",
+    "panes.panes[].spread",
+    "panes.panes[].tab",
+    "panes.panes[].thread",
+    "panes.reading",
     "reader.document_height",
     "reader.fit",
     "reader.low_res_pages.len",
@@ -535,6 +566,11 @@ const KNOWN_PATHS: &[&str] = &[
     "session.app.window.frame.y",
     "session.app.window.full_screen",
     "session.app.window.screen",
+    "session.comparison.sync_from.len",
+    "session.comparison.sync_from[]",
+    "session.comparison.synced",
+    "session.comparison.tabs.len",
+    "session.comparison.tabs[]",
     "session.edit_mode",
     "session.edits_full.N.added.len",
     "session.edits_full.N.added[].file.device",

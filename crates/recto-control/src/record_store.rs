@@ -471,7 +471,7 @@ impl RecordStore {
                 }
                 record
             }
-            None => SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: None, next_id: 1, tabs: Vec::new() },
+            None => SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: None, next_id: 1, tabs: Vec::new(), comparison: None },
         };
         // What the disk has, so what loading the journals changes in it does get written.
         let as_read = had_record.then(|| crc_of(&record));
@@ -1318,6 +1318,7 @@ mod tests {
             active: (tabs > 0).then_some(1),
             next_id: tabs + 1,
             tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }).collect(),
+            comparison: None,
         }
     }
 
