@@ -195,6 +195,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
     ("reader.counts.", "Jobs and steps of its own run."),
     ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),
+    ("reader.left_picture_bytes", "Pictures warm tabs were left with, held for their sleep files: warm tabs come back cold, and a cold tab holds none."),
     ("panes.documents_held", "The same, over every pane's page view."),
     ("reader.tiles.kept", "Tiles held off screen, which a new process doesn't have until it's been somewhere."),
     ("reader.tiles.previews_attached", "Previews behind sharp tiles, which depend on what the first draw was."),
@@ -1013,6 +1014,27 @@ fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
             (file.file_name().unwrap().to_string_lossy().to_string(), colours.collect())
         })
         .collect()
+}
+
+/// Failure (full check, 2026-11-08, reproduced with 3 GB memory spikes beside the run): a tab left for another has what it showed marked discardable, and the system takes that back whenever it needs the pages, with no word to the app. Put to sleep after that, the tab's sleep file had no picture at all (`left: []` in `a_new_version_of_a_file_has_none_of_the_old_ones_pictures`), and it woke to bare paper. It sleeps with what it showed when it was left.
+#[test]
+fn a_tab_put_to_sleep_has_its_picture_after_the_system_takes_its_tiles() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["qa", "sleep-write-gap", "0"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
+    std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let on_tab = tab_on(&run, "colour.pdf");
+    run.ok(&["qa", "memory-pressure", "discard"]);
+    assert_eq!(run.ok(&["session", "sleep", "--tab", &on_tab])["dormant"], true);
+    assert_eq!(colours_in_sleep_files(&state).iter().flat_map(|(_, colours)| colours.clone()).collect::<Vec<_>>(), ["red"], "what it showed when it was left");
 }
 
 /// Failure (review, blocks the merge): a sleep file keeps the old file's picture under the new file's name, for good: a red PDF replaced by a blue one, or saved over, has red in the next sleep file and every wake after it, restarts included. With a redaction, that picture would be what was removed. Everything drawn of a file goes with that version of it, on this route and on a save.

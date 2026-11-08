@@ -1315,7 +1315,14 @@ impl Inner {
                     self.core.push(CoreCall::MemoryPressure(value == "critical"));
                     Ok(())
                 }
-                _ => Err(usage("It's `warning` or `critical`.".to_string())),
+                // The system taking back what's marked discardable, which it does without a word whenever it needs the pages.
+                "discard" => {
+                    for engine in self.panes.engines(&self.engine) {
+                        engine.empty_discardable();
+                    }
+                    Ok(())
+                }
+                _ => Err(usage("It's `warning`, `critical` or `discard`.".to_string())),
             },
             "note_input" => {
                 self.note_input();

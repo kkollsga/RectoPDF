@@ -243,6 +243,8 @@ struct DocView {
     size_on_trust: bool,
     /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown, or goes in a sleep file:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
     versions: HashMap<PathBuf, u64>,
+    /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
+    left_pictures: Option<Vec<RawPicture>>,
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -306,6 +308,8 @@ const WAKE_FOLLOWED_FOR: Duration = Duration::from_secs(5);
 
 /// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
 const MAX_SLEEP_SHOTS: usize = 12;
+/// What a tab held off screen keeps of the pictures it was left with, in all. A letter page at a Retina window's fit is 730 KiB, so a page to a row has its view kept, and a view of many small pages keeps the first few: the rest come from what's here when it goes to sleep, as before.
+const MAX_LEFT_PICTURE_BYTES: usize = 4 * 1024 * 1024;
 
 /// How a tab's wake went, for QA and the budgets: from being asked to the first frame showing something on every page, and to sharp.
 #[derive(Clone, Copy, Debug, Default)]
@@ -734,6 +738,8 @@ impl Reader {
             if was == Some(version) {
                 continue;
             }
+            // Of the version it was left with.
+            doc.left_pictures = None;
             let stale: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab && !matches!((entry.version, was), (Some(drawn), _) if drawn == version)).filter(|entry| was.is_some() || entry.version.is_some_and(|drawn| drawn != version) || entry.version.is_none() && entry.preview && self.from_sleep.contains(&entry.id)).map(|entry| entry.id).collect();
             if stale.is_empty() {
                 continue;
@@ -879,15 +885,40 @@ impl Reader {
             let height = (window_height / doc.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
             if doc.layout.count() == 0 { Vec::new() } else { doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect() }
         };
+        // What it was left with first, page by page: what's here now may have been taken by the system since.
+        let mut left = doc.left_pictures.clone().unwrap_or_default();
         let mut pictures = Vec::new();
         for page in pages.into_iter().take(MAX_SLEEP_SHOTS) {
-            if version.is_some()
-                && let Some(picture) = self.picture_of(tab, page)
-            {
+            if version.is_none() {
+                break;
+            }
+            if let Some(at) = left.iter().position(|picture| picture.page == page) {
+                pictures.push(left.swap_remove(at));
+            } else if let Some(picture) = self.picture_of(tab, page) {
                 pictures.push(picture);
             }
         }
         Some(SleepMaterial { version, usual, sizes, pictures })
+    }
+
+    /// A picture of each page of the tab showing that's in view, while it's on the screen. Nothing if no worker's said which version it's of, as there'd be no saying what they're of.
+    fn pictures_in_view(&mut self, tab: u32) -> Vec<RawPicture> {
+        let Some(doc) = self.docs.get(&tab) else { return Vec::new() };
+        if doc.map.files.first().and_then(|file| doc.versions.get(file)).is_none() {
+            return Vec::new();
+        }
+        let pages: Vec<u32> = self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect();
+        let mut pictures: Vec<RawPicture> = Vec::new();
+        let mut bytes = 0;
+        for page in pages {
+            let Some(picture) = self.picture_of(tab, page) else { continue };
+            bytes += picture.bgra.len();
+            if bytes > MAX_LEFT_PICTURE_BYTES {
+                break;
+            }
+            pictures.push(picture);
+        }
+        pictures
     }
 
     fn picture_of(&mut self, tab: u32, page: u32) -> Option<RawPicture> {
@@ -984,10 +1015,28 @@ impl Reader {
 
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
     pub fn memory_pressure(&mut self, critical: bool) {
+        // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
+        if critical {
+            for doc in self.docs.values_mut() {
+                doc.left_pictures = None;
+            }
+        }
         let ids: Vec<u64> = self.entries.values().filter(|entry| !entry.attached && (critical || !entry.preview)).map(|entry| entry.id).collect();
         for id in ids {
             self.forget_entry(id);
         }
+    }
+
+    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
+    pub fn empty_discardable(&mut self) -> usize {
+        let mut emptied = 0;
+        for entry in self.entries.values().filter(|entry| entry.discardable) {
+            if let Some(surface) = &entry.surface {
+                surface.empty_now();
+                emptied += 1;
+            }
+        }
+        emptied
     }
 
     /// How many surfaces are held, for QA.
@@ -1038,6 +1087,13 @@ impl Reader {
             doc.scroll_x = self.viewport.x;
         }
         if self.hot != Some(tab) {
+            // While what it showed is still on the screen, and so all there.
+            if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
+                let pictures = self.pictures_in_view(left);
+                if let Some(doc) = self.docs.get_mut(&left) {
+                    doc.left_pictures = Some(pictures);
+                }
+            }
             let last_page = self.last_view_page;
             let (left_x, left_y) = (self.viewport.x, self.viewport.y);
             if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
@@ -1068,7 +1124,7 @@ impl Reader {
             let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
             let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
             let exact_y = saved.filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite()).map(|saved| (saved.y, saved.document_height));
-            DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor, size_on_trust: false, versions: HashMap::new() }
+            DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor, size_on_trust: false, versions: HashMap::new(), left_pictures: None }
         });
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
@@ -1120,6 +1176,10 @@ impl Reader {
             if let Some(range) = carried_selection {
                 self.selecting.set_range(range);
             }
+        }
+        // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
+        if let Some(doc) = self.docs.get_mut(&tab) {
+            doc.left_pictures = None;
         }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
@@ -1877,6 +1937,9 @@ impl Reader {
     pub fn window_closed(&mut self) {
         self.window_open = false;
         self.clear_screen();
+        for doc in self.docs.values_mut() {
+            doc.left_pictures = None;
+        }
         let ids: Vec<u64> = self.entries.keys().copied().collect();
         for id in ids {
             self.forget_entry(id);
@@ -2591,6 +2654,7 @@ impl Reader {
                 "discards_lost": self.counts.discards_lost,
             },
             "documents_held": self.docs.len(),
+            "left_picture_bytes": self.docs.values().filter_map(|doc| doc.left_pictures.as_ref()).flatten().map(|picture| picture.bgra.len()).sum::<usize>(),
             "last_wake": self.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames })),
             "window_open": self.window_open,
             "selection": self.selecting.report(),
@@ -3092,6 +3156,42 @@ mod tests {
         settle(&mut reader);
         let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
         assert_eq!(pictures, shown, "a picture for each page it showed");
+    }
+
+    /// Failure (full check, 2026-11-08, `a_new_version_of_a_file_has_none_of_the_old_ones_pictures`): a tab left for another has its previews and tiles marked discardable, and the system takes that memory back whenever it likes, with no word to the app. Put to sleep after that, its sleep file had no picture at all, and it woke to bare paper. What it showed when it was left is what it sleeps with, whatever the system has taken since.
+    #[test]
+    fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
+        let mut reader = reader_on(40);
+        reader.note_version(Path::new("/d/a.pdf"), 1);
+        settle(&mut reader);
+        let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(MAX_SLEEP_SHOTS).collect();
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        settle(&mut reader);
+        assert!(reader.entries.values().any(|entry| entry.tab == 1 && entry.discardable && entry.surface.is_some()), "what the tab left showed is discardable now");
+        // What the kernel does to discardable memory when it needs pages.
+        assert!(reader.empty_discardable() > 0);
+        assert!(reader.entries.values().filter(|entry| entry.tab == 1 && entry.discardable).filter_map(|entry| entry.surface.as_ref()).all(PixelSurface::was_emptied));
+        let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+        assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
+        // Shown again, it's drawn again, and what was kept for its sleep file goes.
+        reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+        assert!(reader.docs[&1].left_pictures.is_none());
+        assert_eq!(reader.report().0["left_picture_bytes"], 0);
+    }
+
+    /// Failure: a tab left showing one version of its file keeps its pictures after a worker says the file is another version now, so its sleep file shows the old pages.
+    #[test]
+    fn pictures_kept_of_a_tab_left_go_with_its_version() {
+        let mut reader = reader_on(10);
+        reader.note_version(Path::new("/d/a.pdf"), 1);
+        settle(&mut reader);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        settle(&mut reader);
+        let kept = reader.report().0["left_picture_bytes"].as_u64().unwrap();
+        assert!(kept > 0 && kept <= MAX_LEFT_PICTURE_BYTES as u64, "kept as it was left, within its limit: {kept}");
+        reader.note_version(Path::new("/d/a.pdf"), 2);
+        assert!(reader.docs[&1].left_pictures.is_none());
+        assert!(reader.sleep_material(1, None).unwrap().pictures.is_empty(), "nothing of version 1 is left to give");
     }
 
     /// Failure (review of f05c998, finding 1): Rotate, Undo or Redo of a turn sends the reader to the top of their page and back to the left edge, as the tab showing was taken up again as if it had just been come to.
