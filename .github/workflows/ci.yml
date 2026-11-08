@@ -28,6 +28,12 @@ jobs:
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
+        id: nextest
+        continue-on-error: true
+      # Its download host returned 504 for every try on 2026-11-08, failing every job before anything was built. Built from source then.
+      - name: nextest from source, when the download failed
+        if: steps.nextest.outcome == 'failure'
+        run: cargo install cargo-nextest --locked
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -58,6 +64,12 @@ jobs:
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
+        id: nextest
+        continue-on-error: true
+      # Its download host returned 504 for every try on 2026-11-08, failing every job before anything was built. Built from source then.
+      - name: nextest from source, when the download failed
+        if: steps.nextest.outcome == 'failure'
+        run: cargo install cargo-nextest --locked
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
