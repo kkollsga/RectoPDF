@@ -1736,6 +1736,17 @@ impl<L: DocLoader> Session<L> {
         self.journals.get(&id).map(|name| &**name)
     }
 
+    /// **The close a prompt's Save asked for, once the save is done.** If an edit or an undo came in since, the file doesn't have it, so the tab stays open and this says `false`: nothing is lost unasked. Otherwise it closes, letting go of undone steps, as the prompt said they would go.
+    pub fn close_after_save(&mut self, id: TabId) -> Result<bool, SessionError> {
+        if self.is_edited(id) {
+            return Ok(false);
+        }
+        if self.has_undone_owner_steps(id) {
+            self.discard_edits(id);
+        }
+        self.close(id).map(|()| true)
+    }
+
     /// Whether a save of this tab is under way.
     pub fn is_saving(&self, id: TabId) -> bool {
         self.saving.contains(&id)
@@ -2689,6 +2700,26 @@ mod tests {
 
     fn session(pages: u32) -> Session<FakeLoader> {
         Session::new(FakeLoader { pages, loads: Cell::new(0) })
+    }
+
+    /// Failure (review round 2): the close a prompt's Save asked for goes ahead though an edit came in after the save, so that edit is lost unasked; or undone steps hold the close up after a Save that was asked to close. An edit or an undo since keeps the tab open with it standing; with none, it closes over undone steps.
+    #[test]
+    fn a_close_after_save_keeps_what_came_in_since() {
+        let mut s = session(3);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
+        s.saved(id, FileStamp { size: 2, mtime_ns: 2, device: 2, inode: 2 }, 3, None, None);
+        s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
+        assert_eq!(s.close_after_save(id), Ok(false), "an edit since: it stays");
+        assert!(s.tab(id).is_some() && s.is_edited(id), "and the edit stands");
+        s.undo_edit(id);
+        s.undo_edit(id);
+        assert!(s.is_edited(id), "an undo past the save is a change from the file too");
+        assert_eq!(s.close_after_save(id), Ok(false));
+        s.redo_edit(id);
+        assert!(!s.is_edited(id) && s.has_undone_owner_steps(id), "back at the saved point, with a step undone");
+        assert_eq!(s.close_after_save(id), Ok(true), "closes over the undone step, as the prompt said");
+        assert!(s.tab(id).is_none());
     }
 
     /// Failure (review): an edit made while a save writes comes back reading as saved, with its turn not in the file. Every way of changing a tab's edits waits while it's saved; a save that fails lets go and forgets what it noted, and the edits stand.

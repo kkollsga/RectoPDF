@@ -105,6 +105,18 @@ pub enum CloseChoice {
     Cancel,
 }
 
+/// What the window says when the prompt's Save saved but an edit since kept the tab open.
+pub(crate) const SAVED_NOT_CLOSED: &str = "It was saved, but not closed: there are new changes since.";
+
+/// **What Save As's answer at `answered` agreed to:** replacing a file that was at that name then (the sheet asked), `Ok(true)`; a new file, `Ok(false)`; and a file made there after the answer, which nobody agreed to replace, `Err(())` (review round 2).
+pub(crate) fn replace_answered(out: &std::path::Path, answered: std::time::SystemTime) -> Result<bool, ()> {
+    match std::fs::symlink_metadata(out) {
+        Err(_) => Ok(false),
+        Ok(there) if there.created().is_ok_and(|made| made > answered) => Err(()),
+        Ok(_) => Ok(true),
+    }
+}
+
 /// The decided words for signed copies (SPEC decision 27).
 pub(crate) const UNSIGNED_COPY: &str = "The new copy won't be signed. The original keeps its signature.";
 /// Whether Save As makes that copy yet. It's the streaming rewrite's, the next stage of Save.
@@ -217,12 +229,14 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std:
 /// that's there was agreed to; it's looked at here, off the UI thread (review).
 fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
     use recto_control::host::Host;
-    let there = out.as_deref().and_then(|out| std::fs::symlink_metadata(out).ok());
-    if there.as_ref().is_some_and(|there| there.created().is_ok_and(|made| made > answered)) {
-        inner.save_ui.set_problem(Some(SaveProblem { title: "The document couldn't be saved.".into(), message: "A file appeared at that name after you chose it, so it wasn't replaced. Nothing was written.".into(), save_as_title: Some("Save As…".into()), ok_title: "OK".into() }));
-        return;
-    }
-    let replace = there.is_some();
+    let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
+        Some(Err(())) => {
+            inner.save_ui.set_problem(Some(SaveProblem { title: "The document couldn't be saved.".into(), message: "A file appeared at that name after you chose it, so it wasn't replaced. Nothing was written.".into(), save_as_title: Some("Save As…".into()), ok_title: "OK".into() }));
+            return;
+        }
+        Some(Ok(replace)) => replace,
+        None => false,
+    };
     let command = recto_agent::Command::Save { tab: format!("#{}", id.0), out, replace };
     let mut events = Vec::new();
     match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
@@ -239,4 +253,27 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
         Err(error) => inner.save_ui.set_problem(Some(problem_for(&error))),
     }
     inner.core.push(crate::CoreCall::Events(events));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review round 2): Save As decides "replace" from the disk at save time, so a file someone makes at the chosen name after the person answered "new" is replaced, though nobody agreed to that. A file there at the answer is replaced, as the sheet asked; one made after is refused; none is a new file.
+    #[test]
+    fn save_as_keeps_the_answer_the_person_gave() {
+        let dir = std::env::temp_dir().join(format!("recto-answer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let before = dir.join("there-before.pdf");
+        std::fs::write(&before, b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let answered = std::time::SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let after = dir.join("made-after.pdf");
+        std::fs::write(&after, b"y").unwrap();
+        assert_eq!(replace_answered(&before, answered), Ok(true), "there at the answer: the sheet asked");
+        assert_eq!(replace_answered(&after, answered), Err(()), "made after the answer: refused");
+        assert_eq!(replace_answered(&dir.join("none.pdf"), answered), Ok(false), "nothing there: a new file");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
