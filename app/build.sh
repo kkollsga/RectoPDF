@@ -29,6 +29,7 @@ sign_app() {
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-headings"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
     codesign "${SIGN_ARGS[@]}" "$APP"
