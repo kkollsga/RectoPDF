@@ -102,10 +102,13 @@ pub struct TabRecord {
     trail: Option<Box<trail::Trail>>,
 }
 
+/// A trail stop's page, and which file and file page that was, if it was any.
+type StopSource = (u32, Option<(u16, u32)>);
+
 /// What an edit needs of before it: where the reader's page came from, and each trail stop's.
 struct Before {
     place: Option<(u16, u32, u32)>,
-    stops: Option<Vec<(u32, Option<(u16, u32)>)>>,
+    stops: Option<Vec<StopSource>>,
 }
 
 /// Where a page of a tab comes from now.
