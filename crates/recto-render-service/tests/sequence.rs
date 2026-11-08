@@ -32,6 +32,10 @@ fn fake_worker() {
     let Ok(mode) = std::env::var("RECTO_FAKE") else { return };
     let limit: u64 = std::env::var("RECTO_WORKER_LIMIT").unwrap().parse().unwrap();
     let channel = Channel::inherited().unwrap();
+    if mode == "slow_hello" {
+        // Starting as slowly as a loaded runner can, and longer than the idle rule the test gives it.
+        std::thread::sleep(Duration::from_millis(300));
+    }
     send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
     let mut reader = FrameReader::default();
     let mut cancel_word = None;
@@ -328,6 +332,18 @@ fn a_heavy_worker_gone_idle_gives_the_slot_back() {
     // Nobody touches the document, so this is the process going that frees the slot.
     common::wait_until("the slot to free", || !slot.is_taken());
     assert!(!doc.has_worker());
+}
+
+/// Failure: a worker counts as idle from the moment it's started, so one slower to say hello than its idle rule is killed while it starts, and the page fails as
+/// "couldn't be started". On a loaded CI runner a 60 ms rule did that to `a_heavy_worker_gone_idle_gives_the_slot_back`. In the app a heavy worker's rule is 8 s, under
+/// the 10 s it may take to start. Starting isn't being idle: only `start_timeout` decides how long a start may take.
+#[test]
+fn a_worker_slow_to_start_isnt_killed_as_idle() {
+    let quick = Policy { idle_exit: Duration::from_millis(30), idle_grace: Duration::from_millis(30), ..policy() };
+    let (mut doc, _file) = doc_with("slow_hello", quick, &HeavySlot::new());
+    let tile = done(doc.render_tile(&request(1), &surface()));
+    assert_eq!(tile.low_res, None);
+    assert_eq!((doc.stats().spawns, doc.stats().crashes, doc.stats().too_busy), (1, 0, 0), "{:?}", doc.stats());
 }
 
 fn export(doc: &mut DocRenderer) -> Result<recto_render_service::PageDrawn, RenderFailure> {
