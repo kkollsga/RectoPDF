@@ -251,21 +251,21 @@ fn draw_turned(
             match turns {
                 // Column `step` of the band, read from the bottom up.
                 1 => {
-                    for (c, to) in out.chunks_exact_mut(3).enumerate() {
+                    for (c, to) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                         to.copy_from_slice(pixel(step, band_high - 1 - c));
                     }
                 }
                 // The band's columns from its right, each read from the top down.
                 3 => {
                     let x = band_wide - 1 - step;
-                    for (c, to) in out.chunks_exact_mut(3).enumerate() {
+                    for (c, to) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                         to.copy_from_slice(pixel(x, c));
                     }
                 }
                 // The band's rows from its bottom, each read from the right.
                 _ => {
                     let y = band_high - 1 - step;
-                    for (c, to) in out.chunks_exact_mut(3).enumerate() {
+                    for (c, to) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                         to.copy_from_slice(pixel(band_wide - 1 - c, y));
                     }
                 }
