@@ -27,7 +27,7 @@ fn view(y: f64) -> Viewport {
 /// What's at the top left of the page, as red, green, blue, on dark paper: the colour of a tile with none of its own, or a surface's first pixel. And whether it came out at a lower resolution.
 #[allow(unsafe_code)]
 fn corner_on_dark_paper(file: &Path, pages: u32, page: u32, policy: Policy) -> (u32, bool) {
-    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, Arc::new(Quiet));
+    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy), keys: None }, Arc::new(Quiet));
     engine.set_viewport(view(0.0));
     engine.set_paper(PaperKind::Dark);
     engine.activate(1, pages, page, PageMap { files: vec![file.to_path_buf()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, recto_reader::layout::Spread::Single);

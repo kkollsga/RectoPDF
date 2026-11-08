@@ -308,6 +308,16 @@ final class Bridge: AppListener, @unchecked Sendable {
             let holder = NSMenuItem()
             let menu = NSMenu(title: model.title)
             for entry in model.entries {
+                // An item of a submenu, such as Open Recent's: it goes in the submenu of the item it names, made the first time.
+                var menu = menu
+                if !entry.parent.isEmpty, let owner = menu.items.first(where: { ($0.representedObject as? String) == entry.parent }) {
+                    if owner.submenu == nil {
+                        // Setting a submenu gives the item AppKit's own action for opening it, which is what keeps it and its items enabled.
+                        owner.target = nil
+                        owner.submenu = NSMenu(title: owner.title)
+                    }
+                    menu = owner.submenu!
+                }
                 if entry.id.isEmpty {
                     menu.addItem(.separator())
                     continue

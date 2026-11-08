@@ -1967,6 +1967,239 @@ fn the_palettes_run_keeps_to_each_commands_level() {
     assert_ne!(code, 0, "running is doing: {refused}");
 }
 
+/// Waits for the sheet over the window to be of this kind, and gives the state then.
+fn sheet_of(run: &Run, kind: &str) -> Value {
+    wait_for(run, |state| state["app"]["sheet"]["kind"] == kind)
+}
+
+/// Types a password into the sheet through `qa password`, which reads it from stdin, never the command line.
+fn type_password(run: &Run, password: &str) -> Value {
+    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], password);
+    assert_eq!((code, &reply["ok"]), (0, &json!(true)), "qa password: {reply}");
+    reply["data"].clone()
+}
+
+/// Every file under a folder, and how many there were.
+fn walk(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut waiting = vec![root.to_path_buf()];
+    while let Some(folder) = waiting.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { waiting.push(path) } else { out.push(path) }
+        }
+    }
+    out
+}
+
+/// The files under a folder that hold these bytes, after asserting there were files to look in, so an empty or missing folder can't pass for one without the password.
+fn files_holding(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
+    let files = walk(root);
+    assert!(files.iter().any(|file| std::fs::metadata(file).is_ok_and(|meta| meta.len() > 0)), "there were no files to look in under {root:?}: {files:?}");
+    files.into_iter().filter(|file| std::fs::read(file).is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))).collect()
+}
+
+/// Failure (review O1, O9): a protected PDF just says it needs a password and can't be opened; a wrong password opens it, or the tries aren't counted; the right one doesn't draw its pages or show its contents to the person; once it's open an agent gets anything decrypted from it, at any level, through `sidebar`, `where`, `tabs`, `contents`, `facts`, `search` or `text`; or the password reaches the state folder, while the app runs or after it quits.
+#[test]
+fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    let asked = sheet_of(&run, "password");
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("locked.pdf"), "{asked}");
+    type_password(&run, "not it");
+    wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains("4 tries left")));
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    // The sidebar shows its one chapter, read with the password: there's something to keep from agents.
+    let open = wait_for(&run, |state| state["app"]["contents"]["count"] == 1);
+    assert!(open["reader"]["tiles"]["attached"].as_u64().unwrap() > 0 && open["reader"]["note"].is_null(), "its pages are drawn, and the person sees its contents: {open}");
+    // What an agent gets, at every level: refused, or nothing read from the file.
+    let decrypted = |value: &Value| {
+        let text = value.to_string();
+        text.contains(common::LOCKED_CHAPTER) || text.contains("Locked page") || text.contains("\"pages\":2") || text.contains("of 2")
+    };
+    let commands: [&[&str]; 7] = [&["sidebar"], &["where"], &["tabs"], &["contents"], &["facts"], &["search", "Locked"], &["text", "1"]];
+    for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+        run.state.set_level(level);
+        for args in commands {
+            let (reply, code) = run.state.json(args);
+            assert!(!decrypted(&reply), "{args:?} at {level:?} gave what's decrypted: {reply}");
+            if code != 0 {
+                assert!([exit::PERMISSION, exit::PROTECTED].contains(&code), "{args:?} at {level:?}: {reply}");
+            } else if args[0] == "where" {
+                assert_eq!(reply["data"]["protected"], true, "and says why: {reply}");
+            }
+            if level >= Level::ReadOnly && ["contents", "facts", "search", "text"].contains(&args[0]) {
+                assert_eq!((code, &reply["error"]["code"]), (exit::PROTECTED, &json!("protected")), "{args:?} at {level:?}: {reply}");
+            }
+        }
+    }
+    run.state.set_level(Level::Full);
+    run.ok(&["session", "save"]);
+    assert!(files_holding(&run.state.root, b"open sesame").is_empty(), "the password is on disk while it runs");
+    let pid = run.pid;
+    run.ok(&["stop"]);
+    for _ in 0..500 {
+        if !still_running(pid) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!still_running(pid), "the app didn't quit");
+    assert!(files_holding(&run.state.root, b"open sesame").is_empty(), "the password is on disk after a quit");
+}
+
+/// Failure: wrong passwords are asked for without end, or Cancel leaves the sheet coming back at once; the person isn't told why it stopped.
+#[test]
+fn wrong_passwords_are_bounded_and_cancel_is_heard() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("right", 1));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    run.ok(&["qa", "sheet-answer", "second"]);
+    let cancelled = wait_for(&run, |state| state["app"]["sheet"] == json!({}));
+    assert_eq!(cancelled["app"]["home"], true, "nothing opened: {cancelled}");
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    for tries_left in (1..5).rev() {
+        sheet_of(&run, "password");
+        type_password(&run, "wrong");
+        wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains(&format!("{tries_left} tr"))));
+    }
+    type_password(&run, "wrong");
+    let stopped = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("stopped asking")));
+    assert_eq!((&stopped["app"]["sheet"], &stopped["app"]["home"]), (&json!({}), &json!(true)), "{stopped}");
+}
+
+/// Failure (review O2): with two protected files opened together, the second's ask takes the first's place, or a password typed for the file the sheet names is tried on the other, so neither opens, or the wrong one does.
+#[test]
+fn two_protected_files_opened_together_each_get_their_own_password() {
+    let Some(run) = Run::start() else { return };
+    let first = TempPdf::new("first.pdf", &common::locked_with("one", 1));
+    let second = TempPdf::new("second.pdf", &common::locked_with("two", 2));
+    run.ok(&["qa", "open-file", first.0.to_str().unwrap()]);
+    run.ok(&["qa", "open-file", second.0.to_str().unwrap()]);
+    let mut opened = Vec::new();
+    for _ in 0..2 {
+        let asked = sheet_of(&run, "password");
+        let names = asked["app"]["sheet"]["informative"].as_str().unwrap().to_string();
+        // Whichever's asked about first, its own password opens it.
+        let (password, name) = if names.contains("first.pdf") { ("one", "first") } else { assert!(names.contains("second.pdf"), "{asked}"); ("two", "second") };
+        assert!(!opened.contains(&name), "asked about {name} twice: {asked}");
+        type_password(&run, password);
+        wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&format!("{name}.pdf"))))));
+        opened.push(name);
+    }
+    let both = wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    assert!(both["app"]["copy_notice"].to_string().find("didn't open").is_none(), "{both}");
+}
+
+/// Failure (review O5): passwords are kept by path, so a protected file moved while it's open loses its password, and its pages, drawn again, say it needs one, with no sheet to type it in.
+#[test]
+fn a_protected_file_moved_while_open_keeps_its_password() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let moved = file.0.with_file_name("moved away.pdf");
+    std::fs::rename(&file.0, &moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| state["session"]["tabs"][0]["path"].as_str().is_some_and(|path| path.ends_with("moved away.pdf")));
+    // Drawn again at another zoom, by a renderer opened on the file where it is now.
+    run.ok(&["qa", "zoom", "2"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["app"]["sheet"], json!({}), "it didn't need asking again: {after}");
+    assert!(after["reader"]["note"].is_null() && after["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "its pages are drawn: {after}");
+    std::fs::rename(&moved, &file.0).ok();
+}
+
+/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it.
+#[test]
+fn qa_password_is_only_for_a_tests_own_file() {
+    let Some(run) = Run::start() else { return };
+    let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("not-a-test-folder-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = outside.join("locked.pdf");
+    std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();
+    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], "open sesame");
+    assert_ne!(code, 0, "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("test's own file"), "{reply}");
+    assert_eq!(run.report()["session"]["tabs"].as_array().map_or(0, Vec::len), 0, "nothing opened");
+    let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
+    assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+/// Failure (review O8): File > Open Recent misses files opened, lists them out of order, opens another file than the item showed once the list has moved, doesn't open one, or Clear Menu leaves any.
+#[test]
+fn open_recent_lists_opens_and_clears() {
+    let Some(run) = Run::start() else { return };
+    let (a, b) = (long_document(3), outlined());
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["open", b.0.to_str().unwrap()]);
+    run.settled();
+    let recent_items = |state: &Value| -> Vec<(String, String)> {
+        let file = state["app"]["menu_bar"].as_array().unwrap().iter().find(|menu| menu["title"] == "File").unwrap()["items"].as_array().unwrap().clone();
+        file.iter().filter_map(|item| Some((item["id"].as_str()?.to_string(), item["title"].as_str()?.to_string()))).filter(|(id, _)| id.starts_with("recent.") && id != "recent.clear").collect()
+    };
+    let state = run.report();
+    let ids: Vec<String> = state["app"]["menu_bar"].as_array().unwrap().iter().find(|menu| menu["title"] == "File").unwrap()["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap().to_string()).collect();
+    let at = ids.iter().position(|id| id == "file.open_recent").expect("Open Recent in File");
+    assert!(ids[at + 1].starts_with("recent.") && ids[at + 2].starts_with("recent.") && ids[at + 3] == "recent.clear", "{ids:?}");
+    let items = recent_items(&state);
+    let name = |document: &TempPdf| document.0.file_stem().unwrap().to_str().unwrap().to_string();
+    assert_eq!(items.iter().map(|(_, title)| title.clone()).collect::<Vec<_>>(), [name(&b), name(&a)], "newest first: {items:?}");
+    let listed = run.ok(&["recent"]);
+    assert_eq!(listed["count"], 2);
+    assert_eq!(listed["files"][0]["untrusted"]["path"], b.0.to_str().unwrap(), "newest first: {listed}");
+    // The item for the older file, kept from before the list moves: it opens that file, not whatever's at its old place in the list.
+    let older = items[1].0.clone();
+    run.ok(&["close", "--tab", "#1"]);
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["close"]);
+    run.settled();
+    assert_eq!(recent_items(&run.report())[0].1, name(&a), "the list moved, and only the other file is open");
+    run.ok(&["qa", "menu", &older]);
+    let a_name = a.0.file_name().unwrap().to_str().unwrap().to_string();
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2 && tabs.iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&a_name)))));
+    run.ok(&["qa", "menu", "recent.clear"]);
+    let cleared = wait_for(&run, |state| state["session"]["recent"].is_null() || state["session"]["recent"].as_array().is_some_and(Vec::is_empty));
+    assert!(recent_items(&cleared).is_empty(), "{cleared}");
+}
+
+/// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
+#[test]
+fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let moved = file.0.with_file_name("moved away.pdf");
+    std::fs::rename(&file.0, &moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let followed = wait_for(&run, |state| state["session"]["tabs"][0]["path"].as_str().is_some_and(|path| path.ends_with("moved away.pdf")));
+    assert!(followed["session"]["tabs"][0]["notice"]["moved"].is_object(), "and says so: {followed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::write(&moved, recto_testpdf::pages(&[Page::new(text_lines(&["Another version"]))])).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let changed = wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("changed on disk")));
+    assert_eq!(changed["session"]["tabs"][0]["page_count"], 1, "the new version is what's shown: {changed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::remove_file(&moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("can't be found")));
+    std::fs::rename(&moved, &file.0).ok();
+}
+
 fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
     let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), &format!("Here the word {word} shows")]))).collect();
     TempPdf::new(&format!("{name}.pdf"), &pages(&list))
@@ -2356,4 +2589,32 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     run.ok(&["qa", "menu", "find.previous"]);
     let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
     assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
+}
+
+/// Failure: the person's own Find in a document they opened with its password finds nothing, or says nothing about why, because it reads pages with no password; or it gets there by writing the decrypted text to a corpus or index; or an agent's `recto find` gets its hits, at any level, as status or with a query.
+#[test]
+fn find_in_a_protected_document_works_for_the_person_and_never_for_an_agent() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == true);
+    run.ok(&["qa", "find-type", "locked page"]);
+    let found = wait_for(&run, |state| state["app"]["find"]["status"].as_str().is_some_and(|status| status.contains("2 matches")));
+    assert_eq!(found["app"]["find"]["rows"], 4, "two pages, a hit on each, read through the password: {}", found["app"]["find"]);
+    // Nothing decrypted was written: no corpus file anywhere in the state folder holds the pages' words.
+    assert!(files_holding(&run.state.root, b"Locked page").is_empty() && files_holding(&run.state.root, b"locked page").is_empty(), "decrypted text is on disk");
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        run.state.set_level(level);
+        for args in [&["find"][..], &["find", "Locked"], &["find", "--next"]] {
+            let (reply, code) = run.state.json(args);
+            assert!(!reply.to_string().contains("ocked page"), "{args:?} at {level:?} gave a hit: {reply}");
+            assert!([exit::PERMISSION, exit::PROTECTED].contains(&code), "{args:?} at {level:?}: {reply}");
+        }
+    }
+    run.state.set_level(Level::Full);
 }

@@ -307,6 +307,15 @@ impl QaBridge {
                     return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
                 }
             }
+            // A test's password, for a test's own file: the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so this can't type into a sheet for one of the person's own (review O6).
+            "password" => {
+                check_drive_value(verb, value)?;
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                let path = lock(&inner.password_asks).showing().map(|ask| ask.path.clone()).ok_or_else(|| bad("No password sheet is open."))?;
+                if !is_a_tests_file(&path, inner.paths.as_ref().map(|paths| paths.root.as_path())) {
+                    return Err(bad("`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder."));
+                }
+            }
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -508,6 +517,13 @@ fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
 }
 
 /// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
+/// Whether a file is one a quiet run's test made: in its state folder, or a temp folder. Compared by the folders the paths really are, so a link out of one doesn't count.
+fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
+    let Ok(file) = path.canonicalize() else { return false };
+    let roots = [state.map(std::path::Path::to_path_buf), Some(std::env::temp_dir()), Some(std::path::PathBuf::from("/private/tmp"))];
+    roots.into_iter().flatten().filter_map(|root| root.canonicalize().ok()).any(|root| file.starts_with(root))
+}
+
 fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
     let one_of = |words: &[&str]| words.contains(&value);
     let row = || value.parse::<u32>().is_ok();
@@ -531,6 +547,8 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
+        // A test's password, typed as a person would: the app takes it once and keeps it only for the open tab.
+        "password" => !value.is_empty() && value.len() <= recto_core::MAX_PASSWORD_BYTES,
         "page_type" => value.len() <= crate::linking::MAX_TYPED_PAGE,
         "swipe" => value.parse::<f64>().is_ok_and(|delta| delta.is_finite() && delta.abs() <= 100.0),
         "hover" | "reveal" => value == "none" || row(),

@@ -184,6 +184,10 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
+    /// Files opened lately, as File > Open Recent lists them.
+    Recent {},
+    /// Clears that list, as Open Recent > Clear Menu does.
+    RecentClear {},
     Budget {},
     /// How the app shows pages.
     View {
@@ -578,6 +582,8 @@ impl Command {
             Self::Back { .. } => "back",
             Self::Forward { .. } => "forward",
             Self::Close { .. } => "close",
+            Self::Recent {} => "recent",
+            Self::RecentClear {} => "recent_clear",
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
@@ -687,7 +693,7 @@ impl Command {
             Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
             // Not what's looked for: that's the document's business, as a search's words are.
             Self::Find { query, next, previous, close, .. } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
-            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
+            Self::Recent {} | Self::RecentClear {} | Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
 }
@@ -766,6 +772,7 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_allowed" => "Ask the user to give this user account access to the file.",
         "not_pdf" => "This file can't be opened. Try another file.",
         "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
+        "protected" => "Tell the user. Only they can allow an agent to read a protected document, and this version can't ask them, so work on another file.",
         "ambiguous" => "Use one of the candidates, written as `#id`.",
         "unsaved_changes" => "`recto discard` throws them away, then `recto close` or `recto stop` can go on. It needs Full access only if some are the user's. `recto save` puts them in the file instead, if the user wants that.",
         "last_page" => "Keep at least one page, or delete fewer.",
@@ -975,6 +982,14 @@ pub fn view_changed(view: recto_session::ViewSettings) -> Event {
     Event::new("view_changed", json!({ "paper": paper_name(view), "sidebar": !view.sidebar_hidden }))
 }
 
+/// What's said about a protected document wherever an agent would otherwise get something read from it.
+pub const PROTECTED_NOTE: &str = "The user opened this PDF with its password, so nothing read from it is given to an agent: not its text, contents, pages, length or facts. Only they can allow that.";
+
+/// The refusal for anything that would read a protected document the person opened with its password. Exit 8, as a file that needs a password is.
+pub fn protected_refusal() -> AgentError {
+    AgentError::new("protected", PROTECTED_NOTE, exit::PROTECTED)
+}
+
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 /// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 pub fn only_the_user_quits() -> AgentError {
@@ -995,6 +1010,10 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
+            // A protected document's place and length were read with its password.
+            if session.withheld_from_agents(tab.id) {
+                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": place.map(|place| place.zoom), "within_page": null, "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice });
+            }
             json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
@@ -1020,6 +1039,15 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     let needed = command.access();
     if !allowed(level, needed) {
         return Err(refusal(table::display_name(command.tag()), level, needed));
+    }
+    // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
+    // Find has no tab of its own: it's in the document being read, so that's the one asked about.
+    let about = command.tab_selector().or_else(|| matches!(command, Command::Find { .. }).then_some("active"));
+    if let Some(selector) = about
+        && !matches!(command, Command::Close { .. } | Command::Tap { .. } | Command::Where { .. })
+        && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
+    {
+        return Err(protected_refusal());
     }
     // A command about a tab is someone working on it, so it doesn't go dormant from under them, and what it reads is there to read. Every route's through here.
     let held = command.tab_selector().and_then(|selector| {
@@ -1066,6 +1094,11 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             go_to(s, id, *page)?;
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
             Ok(where_json(s, id))
+        }),
+        Command::Recent {} => Ok(access.with(|s| recent_json(s, level))),
+        Command::RecentClear {} => access.with(|s| {
+            let cleared = s.clear_recent();
+            Ok(json!({ "cleared": cleared }))
         }),
         Command::Goto { tab, page: None, label: Some(label) } => linking::goto_label(access, tab, label, events),
         Command::Goto { .. } => Err(AgentError::new("usage", "`goto` takes a page number, or `goto label` what the file calls a page, and not both.", exit::USAGE).then("`recto goto 12`, or `recto goto label iv`.")),
@@ -1425,7 +1458,7 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
 pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     let panes: Vec<Value> = session
         .comparison()
-        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tab(*id).map(|tab| json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages_in(*id), "reading": session.active() == Some(*id), "untrusted": { "name": &*tab.name } }))).collect())
+        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tab(*id).map(|tab| if session.withheld_from_agents(*id) { json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": session.active() == Some(*id), "untrusted": { "name": &*tab.name } }) } else { json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages_in(*id), "reading": session.active() == Some(*id), "untrusted": { "name": &*tab.name } }) })).collect())
         .unwrap_or_default();
     let comparison = session.comparison();
     json!({
@@ -1457,6 +1490,10 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_file(path, stamp)?;
+        // Whether a page is in a protected document would say how long it is.
+        if page.is_some() && s.withheld_from_agents(id) {
+            return Some(Err(protected_refusal()));
+        }
         let pages = s.pages_in(id);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
@@ -1649,8 +1686,15 @@ pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
     edits_event(session, id)
 }
 
+/// What watchers are told when the person moves to another page: which tab, and its page, unless it's a protected document's, whose place was read with its password.
+pub fn page_changed<L: DocLoader>(session: &Session<L>, id: TabId, page: u32) -> Event {
+    let page = (!session.withheld_from_agents(id)).then_some(page);
+    Event::new("page_changed", json!({ "tab": id.0, "page": page }))
+}
+
 fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    Event::new("edits_changed", json!({ "tab": id.0, "pages": session.pages_in(id), "edited": session.is_edited(id) }))
+    let pages = (!session.withheld_from_agents(id)).then(|| session.pages_in(id));
+    Event::new("edits_changed", json!({ "tab": id.0, "pages": pages, "edited": session.is_edited(id) }))
 }
 
 /// The plain truth about unsaved edits, wherever a tab reports them.
@@ -1788,6 +1832,10 @@ pub enum ConditionState {
 
 /// Looks at a condition once. Blocks for nothing but the session's lock.
 pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    // Whether a protected document's page is drawn, indexed or has contents is something read from it. Only its being open or closed is said.
+    if !matches!(condition, Condition::TabOpen | Condition::TabClosed) && access.with(|s| select(s, tab).is_ok_and(|id| s.withheld_from_agents(id))) {
+        return ConditionState::Failed(protected_refusal());
+    }
     // Looks at files, so it goes outside the lock.
     if condition == Condition::IndexingDone {
         return index::look(access, tab);
@@ -1834,6 +1882,23 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
     }
 }
 
+/// Files opened lately, newest first. A name comes from outside, so it's under `untrusted`. The command needs Control, the coordinator's decision (review O7): names of files someone's closed say what they've been reading. Paths are held to Control here too, whatever the row says.
+fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
+    let files: Vec<Value> = session
+        .recent_files()
+        .iter()
+        .enumerate()
+        .map(|(at, file)| {
+            let mut out = json!({ "file": at + 1, "open_tab": file.open.map(|id| format!("#{}", id.0)), "untrusted": { "name": recto_core::clean_line(&file.name) } });
+            if level >= Level::Control {
+                out["untrusted"]["path"] = json!(file.path.to_string_lossy());
+            }
+            out
+        })
+        .collect();
+    json!({ "count": files.len(), "files": files, "paths_shown": level >= Level::Control })
+}
+
 /// Puts each hit's page label on it, under `untrusted` as it's the file's words, where the file calls the page something other than its number, as Find shows it.
 fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
     access.with(|s| {
@@ -1852,6 +1917,10 @@ fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
 fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let Some(tab) = session.tab(id) else { return Value::Null };
     let edited = session.is_edited(id);
+    // Its file's name is the person's, and not read from the file. Its place, length and the rest were read with its password.
+    if session.withheld_from_agents(id) {
+        return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": session.active() == Some(id), "edited": edited, "untrusted": { "name": &*tab.name } });
+    }
     json!({
         "tab": id.0,
         "sel": format!("#{}", id.0),
@@ -1886,10 +1955,17 @@ fn tabs_json<L: DocLoader>(session: &Session<L>, from: Option<u32>, limit: Optio
 
 fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
     let model = session.sidebar();
+    // A protected document's contents rows and notes, its place and how far into its contents the rail is were read with its password: its tab row stays, with no page.
+    let withheld = |id: TabId| session.withheld_from_agents(id);
+    let active_withheld = session.active().is_some_and(withheld);
     let rows: Vec<Value> = model
         .rows
         .iter()
+        .filter(|row| row.kind == RowKind::Tab || !withheld(row.tab))
         .map(|row| {
+            if row.kind == RowKind::Tab && withheld(row.tab) {
+                return json!({ "kind": "tab", "tab": row.tab.0, "protected": true, "page": null, "depth": row.depth, "current": row.current, "expandable": false, "expanded": false, "untrusted": { "text": row.text } });
+            }
             // A note's words are Rust's, so they're not marked as the file's.
             if row.kind == RowKind::Note {
                 return json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) });
@@ -1906,6 +1982,9 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             })
         })
         .collect();
+    if active_withheld {
+        return json!({ "rows": rows, "rail_filled": 0, "toc_open": false, "place": "", "protected": true, "protected_note": PROTECTED_NOTE, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps });
+    }
     json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps })
 }
 
@@ -2089,6 +2168,8 @@ mod tests {
             Command::Follow { tab: tab(), page: 1, link: 1 },
             Command::Back { tab: tab() },
             Command::Forward { tab: tab() },
+            Command::Recent {},
+            Command::RecentClear {},
             Command::Close { tab: tab() },
             Command::Budget {},
             Command::Compare { tabs: None, sync: None, off: false },
@@ -2756,6 +2837,121 @@ mod tests {
         assert_eq!((&ok["v"], &ok["ok"]), (&json!(VERSION), &json!(true)));
         let failed = envelope(&Err(AgentError::new("c", "m", exit::FAILED)));
         assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("c")));
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+    use recto_session::DiskLoader;
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+
+    /// Failure: an agent below Control sees what was opened lately, names or paths (review O7: names of closed files say what someone's been reading); Control can't see them or the tab each is open in; or `recent clear` leaves any.
+    #[test]
+    fn recent_needs_control_for_names_and_paths() {
+        let file = TempPdf::new("report.pdf", &pages(&[Page::new(text_lines(&["a"]))]));
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        assert_eq!(run(&mut session, Level::ReadOnly, &Command::Recent {}).unwrap_err().code, "permission_denied");
+        let control = run(&mut session, Level::Control, &Command::Recent {}).unwrap();
+        assert_eq!((control["count"].as_u64(), control["files"][0]["untrusted"]["name"].as_str(), control["files"][0]["open_tab"].as_str()), (Some(1), Some("report"), Some("#1")));
+        assert_eq!(control["files"][0]["untrusted"]["path"], file.0.to_str().unwrap());
+        assert_eq!(run(&mut session, Level::ReadOnly, &Command::RecentClear {}).unwrap_err().code, "permission_denied");
+        assert_eq!(run(&mut session, Level::Control, &Command::RecentClear {}).unwrap()["cleared"], true);
+        assert_eq!(run(&mut session, Level::Control, &Command::Recent {}).unwrap()["count"], 0);
+    }
+}
+
+#[cfg(test)]
+mod protected_tests {
+    use super::*;
+    use recto_core::{DocFacts, NONE, OpenError, Toc, TocLine};
+    use std::path::Path;
+
+    /// A file whose facts were read with a password: its contents name a chapter nothing else would.
+    #[derive(Clone)]
+    struct Unlocked;
+
+    impl DocLoader for Unlocked {
+        fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
+            if path.ends_with("plain.pdf") {
+                return Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false });
+            }
+            let lines = [TocLine { title: "Secret chapter", page: 1, parent: NONE, depth: 0 }];
+            Ok(DocFacts { page_count: 7, byte_len: 1, encrypted: true, version: "1.7".into(), title: Some("Secret title".into()), toc: Toc::from_lines(&lines, false), renderer_only: false })
+        }
+    }
+
+    /// Failure (review O1): once the person types a protected PDF's password, what was decrypted reaches an agent: its chapter titles in `sidebar`, its length or place in `where`, `tabs`, `session show` or a comparison, its pages through `goto`, `goto label`, `links`, `follow`, `back`, `forward`, `wait` or an open with `--page`, Find's hits through `find`, or anything from `contents`, `facts`, `search` or `text`, at any level. `encrypted` isn't the gate, as a file anyone may open is encrypted too.
+    #[test]
+    fn nothing_decrypted_reaches_an_agent_at_any_level() {
+        let mut session = Session::new(Unlocked);
+        let id = session.open(Path::new("/d/locked.pdf")).unwrap();
+        let other = session.open(Path::new("/d/plain.pdf")).unwrap();
+        session.note_password_used(id);
+        session.tap(id).unwrap();
+        assert!(session.withheld_from_agents(id) && !session.withheld_from_agents(other));
+        assert!(session.sidebar().rows.iter().any(|row| row.text == "Secret chapter"), "the person's sidebar has it, so there's something to keep from agents");
+        let leaks = |value: &Value| {
+            let text = value.to_string();
+            text.contains("Secret chapter") || text.contains("Secret title") || text.contains("\"pages\":7") || text.contains("of 7")
+        };
+        let tab = "#1".to_string();
+        for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+            let commands = [
+                Command::Sidebar {},
+                Command::Tabs { from: None, limit: None },
+                Command::Where { tab: tab.clone() },
+                Command::Facts { tab: tab.clone() },
+                Command::Contents { tab: tab.clone(), from: None, limit: None, depth: None, generated: false },
+                Command::Search { tab: tab.clone(), query: "Secret".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
+                Command::Text { tab: tab.clone(), page: 1 },
+                Command::Goto { tab: tab.clone(), page: Some(2), label: None },
+                Command::Goto { tab: tab.clone(), page: None, label: Some("ii".into()) },
+                Command::Links { tab: tab.clone(), page: 1 },
+                Command::Follow { tab: tab.clone(), page: 1, link: 1 },
+                Command::Back { tab: tab.clone() },
+                Command::Forward { tab: tab.clone() },
+                Command::Find { query: Some("Secret".into()), next: false, previous: false, close: false, limit: None },
+                Command::Find { query: None, next: true, previous: false, close: false, limit: None },
+                Command::Find { query: None, next: false, previous: false, close: false, limit: None },
+                Command::Edits { tab: tab.clone() },
+                Command::Signatures { tab: tab.clone() },
+                Command::Open { path: "/d/locked.pdf".into(), page: Some(7) },
+                Command::Open { path: "/d/locked.pdf".into(), page: None },
+                Command::Compare { tabs: Some("#1,#2".into()), sync: None, off: false },
+            ];
+            for command in &commands {
+                match run(&mut session, level, command) {
+                    Ok(data) => assert!(!leaks(&data), "{} at {level:?} gave {data}", command.tag()),
+                    Err(error) => {
+                        assert!(error.exit == exit::PROTECTED || error.exit == exit::PERMISSION, "{} at {level:?}: {error:?}", command.tag());
+                        assert!(!error.message.contains("Secret"), "{error:?}");
+                    }
+                }
+            }
+            if level >= Level::ReadOnly {
+                for command in [Command::Facts { tab: tab.clone() }, Command::Contents { tab: tab.clone(), from: None, limit: None, depth: None, generated: false }, Command::Text { tab: tab.clone(), page: 1 }, Command::Where { tab: tab.clone() }] {
+                    let result = run(&mut session, level, &command);
+                    if command.tag() == "where" {
+                        assert_eq!(result.unwrap()["protected"], true, "said, not just left blank");
+                    } else {
+                        assert_eq!(result.unwrap_err().code, "protected", "{} at {level:?} is refused as protected, not as something else", command.tag());
+                    }
+                }
+            }
+            let _ = run(&mut session, Level::Full, &Command::Compare { tabs: None, sync: None, off: true });
+            if session.active() != Some(id) {
+                session.tap(id).unwrap();
+            }
+        }
+        let shown = session_show_json(&session, Level::Full, Value::Null);
+        assert!(!leaks(&shown), "{shown}");
+        assert!(!leaks(&page_changed(&session, id, 3).data) && !leaks(&edits_changed(&session, id).data));
+        assert_eq!(page_changed(&session, other, 3).data["page"], 3, "another tab's place is said as ever");
+        let access = Direct(std::cell::RefCell::new(&mut session), None);
+        assert!(matches!(check_condition(&access, Condition::PageDrawn, "#1", Some(1)), ConditionState::Failed(error) if error.code == "protected"));
+        assert!(matches!(check_condition(&access, Condition::TabOpen, "#1", None), ConditionState::Met(data) if !leaks(&data)));
     }
 }
 

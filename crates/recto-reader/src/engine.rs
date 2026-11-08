@@ -42,6 +42,64 @@ pub struct EngineConfig {
     /// Where the worker is. Found beside this program if left out.
     pub service: Option<ServiceConfig>,
     pub policy: Option<Policy>,
+    /// Passwords the person has typed for protected files, shared by every page view, for their workers to open those files with.
+    pub keys: Option<Arc<Keyring>>,
+}
+
+/// **Passwords for protected files, while they're open,** by which file each is for: its device and inode (`recto_platform::secret::file_identity`), not its path, so a file moved while it's open keeps its password, and another file put at its path doesn't get it. In memory only: never written, logged or journaled, and each is overwritten when its last holder lets go (`recto_core::Password`). The app forgets one when no tab has its file open. At most [`MAX_KEYS`].
+#[derive(Default)]
+pub struct Keyring {
+    keys: Mutex<Vec<(FileIdentity, Arc<recto_core::Password>)>>,
+}
+
+/// A file's device and inode: which file it is, wherever it's moved to on its volume.
+pub type FileIdentity = (u64, u64);
+
+/// Passwords held at once: one per protected file open, and more open protected files than this is past anything a person types passwords for. Past it, the oldest goes, and its file asks again.
+pub const MAX_KEYS: usize = 64;
+
+impl std::fmt::Debug for Keyring {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Keyring({} held)", lock(&self.keys).len())
+    }
+}
+
+impl Keyring {
+    /// Keeps a password for the file with this identity, in place of any it had.
+    pub fn set(&self, identity: (u64, u64), password: Arc<recto_core::Password>) {
+        let mut keys = lock(&self.keys);
+        keys.retain(|(known, _)| *known != identity);
+        if keys.len() >= MAX_KEYS {
+            keys.remove(0);
+        }
+        keys.push((identity, password));
+    }
+
+    /// The password for the file with this identity, if one was typed.
+    pub fn get(&self, identity: (u64, u64)) -> Option<Arc<recto_core::Password>> {
+        lock(&self.keys).iter().find(|(known, _)| *known == identity).map(|(_, password)| Arc::clone(password))
+    }
+
+    /// The password for the file at this path now, if one was typed for it.
+    pub fn for_path(&self, path: &Path) -> Option<Arc<recto_core::Password>> {
+        if self.is_empty() {
+            return None;
+        }
+        self.get(recto_platform::secret::file_identity(path)?)
+    }
+
+    /// Keeps only the passwords for these files, the ones open in tabs: any other goes, and is overwritten.
+    pub fn keep_only(&self, open: &[(u64, u64)]) {
+        lock(&self.keys).retain(|(identity, _)| open.contains(identity));
+    }
+
+    pub fn len(&self) -> usize {
+        lock(&self.keys).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -341,6 +399,18 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         lock(&self.shared.pending).follow = None;
         reader.deactivate();
+        self.after(reader);
+    }
+
+    /// Files whose renderer found they need a password it has none for: see [`Reader::take_keyless`].
+    pub fn take_keyless(&self) -> Vec<PathBuf> {
+        lock(&self.shared.reader).take_keyless()
+    }
+
+    /// A password's been given for a file: see [`Reader::key_given`].
+    pub fn key_given(&self, path: &Path) {
+        let mut reader = lock(&self.shared.reader);
+        reader.key_given(path);
         self.after(reader);
     }
 
@@ -831,7 +901,7 @@ fn run(shared: &Shared) {
                 }
                 outcome
             }
-            Err(Unopened::Failed(failure)) => Outcome::DocumentFailed(failure.message()),
+            Err(Unopened::Failed(failure)) => document_failed(failure),
             Err(Unopened::NotWanted) => Outcome::Cancelled,
             Err(Unopened::NotAnswering) => Outcome::PageFailed { message: NOT_ANSWERING.to_string(), may_pass: true },
         } };
@@ -999,10 +1069,17 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         };
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
-        let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
+        // By the file that was opened, not whatever's at its path now.
+        let key = shared.config.keys.as_ref().filter(|keys| !keys.is_empty()).and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
+        let doc = DocRenderer::with_file(file, path, key, config, policy.clone()).map_err(Unopened::Failed)?;
         renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new(), replaced: false });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
+}
+
+/// A failure that's about the whole file, saying when it's for want of a password, which the app can ask for again.
+fn document_failed(failure: RenderFailure) -> Outcome {
+    Outcome::DocumentFailed { message: failure.message(), needs_key: matches!(failure, RenderFailure::NeedsPassword) }
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
@@ -1023,14 +1100,14 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
-            Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),
+            Err(failure) if whole_file(failure) => document_failed(failure),
             Err(failure) => Outcome::PageFailed { message: failure.message(), may_pass: false },
         },
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
             Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
-            Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),
+            Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
         JobKind::Draw { scale, rect, surface, what, paper } => {
@@ -1066,7 +1143,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
-                Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),
+                Err(failure) if whole_file(failure) => document_failed(failure),
                 Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed { message: failure.message(), may_pass: true },
                 Err(failure) => Outcome::PageFailed { message: failure.message(), may_pass: false },
             }

@@ -237,7 +237,7 @@ mod tests {
     /// Failure: a shortcut shown in the palette isn't the one the menu has, so the reader learns the wrong key.
     #[test]
     fn shortcuts_read_as_a_macs_do() {
-        let entry = |key: &str, with_control: bool| MenuEntry { id: "x".into(), title: "x".into(), key: key.into(), with_control, checked: false, hidden: false, system_action: String::new() };
+        let entry = |key: &str, with_control: bool| MenuEntry { id: "x".into(), title: "x".into(), key: key.into(), with_control, checked: false, hidden: false, system_action: String::new(), parent: String::new() };
         assert_eq!(shortcut(&entry("f", false)), "⌘F");
         assert_eq!(shortcut(&entry("G", false)), "⇧⌘G");
         assert_eq!(shortcut(&entry("s", true)), "⌃⌘S");

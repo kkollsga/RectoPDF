@@ -282,7 +282,8 @@ fn reveal(inner: &Inner, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
     if engine.hot_tab() == Some(tab) {
         engine.reveal(hit.page, hit.start, hit.end);
     }
-    events.push(Event::new("page_changed", json!({ "tab": tab, "page": hit.page + 1 })));
+    // What watchers hear: no page for a document opened with a password.
+    events.push(inner.host.session.with_session(|session| recto_agent::page_changed(session, recto_session::TabId(tab), hit.page + 1)));
 }
 
 /// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change. A query in the field is found again when its hits are about something else: another document being read (after a tap, a move into another pane or a restart), pages moved, added or taken away, the file replaced, or the page count learnt.
@@ -312,6 +313,11 @@ pub(crate) fn keep_up(inner: &Inner) {
         && let Some(needle) = find::needle(&record.query)
         && let Ok(plan) = session.with_session(|s| find::plan(s, active))
     {
+        // The person's own Find, with their passwords, so a document they opened with one is searched through its key, page by page, and nothing of it goes to a corpus.
+        let plan = match session.find_keys() {
+            Some(keys) => plan.with_keys(keys),
+            None => plan,
+        };
         // The hit gone to was a place in hits about something else, which may be another word now. After a restart there were none, and it's kept to be chosen again.
         if had.0.is_some() {
             session.with_session(|s| s.set_find_current(None, None));

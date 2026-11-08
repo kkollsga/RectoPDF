@@ -241,6 +241,9 @@ final class BookMark: NSView {
     let saveButton = NSButton(title: "", target: nil, action: nil)
     /// The save problem showing as a sheet, so the same one isn't shown twice.
     private var problemShowing: SaveProblem?
+    /// The password sheet showing, and its secure field, which QA types into as a person would.
+    private var passwordShowing: PasswordPrompt?
+    let passwordField = NSSecureTextField(string: "")
     /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
     let zoomButton = NSButton(title: "", target: nil, action: nil)
     let zoomField = NSTextField(string: "")
@@ -888,6 +891,40 @@ final class BookMark: NSView {
         }
     }
 
+    /// A protected PDF's password, on the system's sheet with a secure field, in Rust's words. What's typed goes to Rust once and the field is emptied; nothing here keeps it.
+    private func showPasswordPromptIfAny() {
+        guard let prompt = reader.passwordPrompt else {
+            passwordShowing = nil
+            return
+        }
+        guard passwordShowing != prompt, window.attachedSheet == nil else { return }
+        passwordShowing = prompt
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = prompt.title
+        alert.informativeText = prompt.message
+        alert.addButton(withTitle: prompt.openTitle)
+        alert.addButton(withTitle: prompt.cancelTitle)
+        passwordField.stringValue = ""
+        passwordField.placeholderString = prompt.placeholder
+        passwordField.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = passwordField
+        alert.window.initialFirstResponder = passwordField
+        let core = delegate.core
+        core.sheetChanged(open: true)
+        delegate.sheetShowing = ["kind": "password", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle]]
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            core.sheetChanged(open: false)
+            self.delegate.sheetShowing = nil
+            let typed = response == .alertFirstButtonReturn ? self.passwordField.stringValue : nil
+            self.passwordField.stringValue = ""
+            self.passwordShowing = nil
+            // With the id of the prompt it answers, so it goes to that file whatever's waiting by now.
+            core.passwordAnswered(id: prompt.id, password: typed)
+        }
+    }
+
     private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
 
     private func buildZoomLevel() {
@@ -994,6 +1031,7 @@ final class BookMark: NSView {
         window.isDocumentEdited = reader.edited
         updateSaveButton()
         showSaveProblemIfAny()
+        showPasswordPromptIfAny()
         showLinkPromptIfAny()
         if reader.home { endPageEditing() }
         if reader.home { endZoomEditing() }

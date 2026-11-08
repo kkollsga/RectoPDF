@@ -208,6 +208,8 @@ pub struct PageEdits {
     changes: u64,
     /// Saving writes the file anew: see [`Self::rewrites`].
     rewrites: bool,
+    /// A journal is being replayed, so `differs` and `rewrites` are worked out once at its end rather than after each step.
+    replaying: bool,
 }
 
 /// What a journal hasn't got yet.
@@ -238,7 +240,7 @@ impl AddedSource {
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0 }
+        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0, replaying: false }
     }
 
     /// Keeps this list's operations for a journal, from now on.
@@ -306,7 +308,7 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
-        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0 };
+        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0, replaying: false };
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
         Ok(edits)
@@ -358,6 +360,7 @@ impl PageEdits {
             None => Self::new(file_pages),
         };
         edits.may_push_owner = true;
+        edits.replaying = true;
         let mut applied = 0;
         let mut work = 0u64;
         for op in ops {
@@ -369,6 +372,7 @@ impl PageEdits {
             applied += 1;
         }
         edits.may_push_owner = false;
+        edits.replaying = false;
         edits.journal = Some(Outbox::default());
         edits.acting = Author::Owner;
         edits.differs = edits.differs_from_the_file();
@@ -502,6 +506,8 @@ impl PageEdits {
 
     /// Whether saving writes the file anew: each of the file's pages isn't there exactly once. `recto_core::save::writer_for`'s rule, worked out when the list changes rather than each time it's asked.
     fn rewrites_the_file(&self) -> bool {
+        #[cfg(test)]
+        tests::count_look();
         let mut seen = vec![false; self.file_pages];
         for slot in self.slots.iter().filter(|slot| slot.source == 0) {
             match seen.get_mut(slot.page as usize) {
@@ -518,6 +524,8 @@ impl PageEdits {
     }
 
     fn differs_from_the_file(&self) -> bool {
+        #[cfg(test)]
+        tests::count_look();
         // Every page in its own place, from its own file, with no turn.
         self.slots.iter().enumerate().any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position) || self.slots.len() != self.file_pages
     }
@@ -858,8 +866,7 @@ impl PageEdits {
         self.history_bytes += inverse.held_bytes();
         self.redo.push(Entry { step: inverse, by });
         self.trim_history();
-        self.differs = self.differs_from_the_file();
-        self.rewrites = self.rewrites_the_file();
+        self.settle();
         true
     }
 
@@ -872,8 +879,7 @@ impl PageEdits {
         self.history_bytes += inverse.held_bytes();
         self.undo.push(Entry { step: inverse, by });
         self.trim_history();
-        self.differs = self.differs_from_the_file();
-        self.rewrites = self.rewrites_the_file();
+        self.settle();
         true
     }
 
@@ -919,9 +925,16 @@ impl PageEdits {
             self.history_bytes -= dropped.step.held_bytes();
         }
         self.trim_history();
-        self.differs = self.differs_from_the_file();
-        self.rewrites = self.rewrites_the_file();
+        self.settle();
         Ok(())
+    }
+
+    /// Works out what a step changed about the list as a whole: whether it differs from the file, and whether saving rewrites it. Each is a look along the whole document, so a replay leaves them to its end, where it works both out once: two looks at 200,000 pages after each step made a long journal's replay take minutes.
+    fn settle(&mut self) {
+        if !self.replaying {
+            self.differs = self.differs_from_the_file();
+            self.rewrites = self.rewrites_the_file();
+        }
     }
 
     /// Holds the history to its caps, oldest undo first. Anything dropped means the original can't be reached by undoing, and `is_edited` keeps saying so. A dropped undo step's effect stays in the page order, so nothing of it is lost. A dropped redo step is gone, so an owner's isn't dropped, and the steps deeper than it can't be either, since a redo step only applies to the state before it. That can't go far over the cap: the pages a list can hold to redo are the pages of its steps, which a document's length and this cap bound to [`MAX_HISTORY_BYTES`] plus one document.
@@ -1011,6 +1024,19 @@ impl PageEdits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    std::thread_local! {
+        /// Looks along the whole document, on this thread, for tests that count them.
+        static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn count_look() {
+        LOOKS.with(|looks| looks.set(looks.get() + 1));
+    }
+
+    fn looks() -> usize {
+        LOOKS.with(std::cell::Cell::get)
+    }
 
     fn order(edits: &PageEdits) -> Vec<u32> {
         edits.slots().iter().map(|s| s.page).collect()
@@ -1352,14 +1378,36 @@ mod tests {
         assert!(!edits.can_undo() && edits.journal_waiting().unwrap().1.is_empty());
     }
 
+    /// Failure (CI run 42471845371): a replay looked along the whole document after every step, for whether it differs from the file and whether saving rewrites it, and threw both answers away, as the replay works them out once at its end. So a journal of one-page turns on a long document cost two looks at 200,000 pages a step, and `a_replay_has_a_budget` ran for minutes on a slower machine. A replay looks along the document a fixed number of times, however many steps it has, and comes to the same answers.
+    #[test]
+    fn a_replay_looks_along_the_document_once_not_per_step() {
+        let by = AuthorName::Owner;
+        let ops: Vec<JournalOp> = (0..100).map(|at| JournalOp::Rotate(at, 1, 1, by)).collect();
+        let before = looks();
+        let (edits, applied) = PageEdits::replay(MAX_PAGES as u32, None, &ops).unwrap();
+        let looked = looks() - before;
+        assert_eq!(applied, ops.len());
+        assert!(looked <= 4, "{looked} looks along the document for {} steps", ops.len());
+        assert!(edits.is_edited() && !edits.rewrites(), "the answers are worked out at the end");
+        // And the same as a list that was looked at after every step.
+        let mut live = PageEdits::new(MAX_PAGES as u32);
+        for at in 0..100 {
+            live.rotate(at, 1, 1).unwrap();
+        }
+        assert_eq!(edits.summary(), live.summary());
+        assert_eq!(edits.order_mark(), live.order_mark());
+    }
+
     /// Failure (review T18): a forged journal of a million inserts and deletes of a whole long document holds a launch for hours. A replay stops at its budget, and says how far it got.
     #[test]
     fn a_replay_has_a_budget() {
         let by = AuthorName::Owner;
         let ops: Vec<JournalOp> = std::iter::repeat_with(|| JournalOp::Rotate(0, 1, 1, by)).take(200_000).collect();
         let (_, applied) = PageEdits::replay(MAX_PAGES as u32, None, &ops).unwrap();
-        assert!(applied < ops.len() && applied > 1000, "{applied}");
-        assert!(applied as u64 * MAX_PAGES as u64 <= crate::record::MAX_REPLAY_WORK);
+        // The budget counts work, not time, so where it stops is the same on any machine: each step is charged a look along the document, whatever it really took.
+        let affordable = crate::record::MAX_REPLAY_WORK / (MAX_PAGES as u64 + 1);
+        assert!(affordable < ops.len() as u64, "the journal must be past the budget to test it");
+        assert_eq!(applied as u64, affordable);
     }
 
     /// Failure: the bytes of what an agent's delete would hold are forgotten, so a single huge delete pushes the owner's steps out where the count wouldn't have.

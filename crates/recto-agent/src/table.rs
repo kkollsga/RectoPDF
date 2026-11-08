@@ -380,6 +380,8 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "follow", tag: "follow", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Follows a link within the document, as a click does, so `recto back` comes back. A web address is refused: only the person can open one, in the app, after it asks them.", args: &[PAGE, Arg { key: "link", flag: Some("--link"), kind: Kind::Positive(1024), required: true, help: "Which, counted from 1, as `recto links` lists them." }, TAB], data: "What `where` gives, and `went`: `page`, `back` or `forward`. A web address is exit 5, `web_link_needs_user`, with the address under `untrusted`, and a refused link exit 1, `link_refused`.", emits: &["page_changed"], examples: &["recto follow --page 1 --link 2"], ..BASE },
     Spec { name: "tap", tag: "tap", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }], data: "The sidebar, as `sidebar` gives it.", emits: &["tab_activated"], examples: &["recto tap \"#2\"", "recto tap report"], ..BASE },
+    Spec { name: "recent", tag: "recent", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Files opened lately, newest first, as File > Open Recent lists them, with the tab each is open in and its whole path, which `recto open` can open. Needs Control: what someone's been reading, closed files included, is theirs, and more than Read-only's look at what's open.", data: "`{ count, files: [ { file, open_tab, untrusted: { name, path } } ], paths_shown }`. At most 20.", examples: &["recto recent", "recto recent --json"], ..BASE },
+    Spec { name: "recent clear", tag: "recent_clear", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Empties the list of files opened lately, as Open Recent > Clear Menu does. Opens and closes nothing.", data: "`{ cleared }`: whether there was anything.", examples: &["recto recent clear"], ..BASE },
     Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits, so `recto discard` first, and below Full if undone steps of the user's would go. Undone steps of an agent's own go with it. The refusal says what's at stake and each way on.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
     Spec {
         name: "page move",
@@ -705,6 +707,7 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "qa zoom-type", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a zoom level into the field the zoom level opens, and presses Return, through the field's own action. Something that isn't a level changes nothing, and the field shows what it was.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What's typed, as `150` or `150%`." }], fixed: &[("verb", "zoom_type")], data: "`qa state`'s `app`.", examples: &["recto qa zoom-type 150"], ..BASE },
     Spec { name: "qa context-menu", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All. `qa state`'s `context_menu` lists them.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The item's id, as `layout.two_up`." }], fixed: &[("verb", "context_menu")], data: "`qa state`'s `app`.", examples: &["recto qa context-menu layout.two_up_cover"], ..BASE },
     Spec { name: "qa key-action", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Does Undo or Redo as its key or menu item does with the window key: given to the first in the window's own chain that answers it, if that says it can be chosen. A quiet window isn't key, so `qa menu` goes past the window; this doesn't.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["undo", "redo"]), required: true, help: "Which." }], fixed: &[("verb", "key_action")], data: "`qa state`'s `app`.", examples: &["recto qa key-action undo"], ..BASE },
+    Spec { name: "qa password", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a password into the sheet a protected PDF asks with, and presses Open, through the sheet's own ending. The password is the first line of stdin, never the command line, where other processes and shell history would see it. Only for a quiet run's own test file, in its state folder or a temp folder: the sheet for any other file is refused. The app keeps it for the open tab and nowhere else, and no agent command gives or takes one. `qa sheet-answer second` is Cancel.", fixed: &[("verb", "password")], data: "`qa state`'s `app`, with `app.sheet` while it's open.", examples: &["recto qa password"], ..BASE },
     Spec { name: "qa page-type", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types into the go-to field the page number opens, and presses Return, through the field's own action: a page number, or what the document calls a page, such as `iv`. One that names no page says so by the page.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What's typed, as `12` or `iv`." }], fixed: &[("verb", "page_type")], data: "`qa state`'s `app`, with `app.links.page_field` while it's open.", examples: &["recto qa page-type iv"], ..BASE },
     Spec { name: "qa page-escape", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Presses Escape in the go-to field, by the method AppKit calls for it: the field closes and the page stays as it was.", fixed: &[("verb", "page_escape"), ("value", "all")], data: "`qa state`'s `app`.", examples: &["recto qa page-escape"], ..BASE },
     Spec { name: "qa swipe", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Swipes on the page, by what the system's swipe calls, with its sideways amount: as in Safari, a positive one goes back and a negative one forward.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The swipe's sideways amount, as `1` or `-1`." }], fixed: &[("verb", "swipe")], data: "`qa state`'s `app`.", examples: &["recto qa swipe 1"], ..BASE },
@@ -746,7 +749,7 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "qa update-clock", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Moves the updater's clock on, in a test run with its own update server and nowhere else, so the once-a-day and 30-minute rules can be tested with no waiting.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "Milliseconds ahead of the real time." }], fixed: &[("verb", "update_clock")], data: "`qa state`'s `app`.", examples: &["recto qa update-clock 1800000"], client_wait_s: 35, ..BASE },
     Spec { name: "qa settings", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Opens or closes the Settings window, off every screen, or clicks one of its switches, through the switch itself.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "`open`, `close`, or a switch's id as `qa state` lists it." }], fixed: &[("verb", "settings")], data: "`qa state`'s `app`.", examples: &["recto qa settings open", "recto qa settings update.automatic"], client_wait_s: 35, ..BASE },
     Spec { name: "qa shot-settings", tag: "qa_read", group: GROUP_QA, summary: "Writes a PNG of the Settings window, drawn inside the app at 2x. It has to be open.", args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The PNG to write." }], fixed: &[("verb", "shot_settings")], data: "`{ out, width, height, bytes }`.", examples: &["recto qa shot-settings --out /tmp/settings.png"], client_wait_s: 35, ..BASE },
-    Spec { name: "qa shot-menus", tag: "qa_read", group: GROUP_QA, summary: "Writes a PNG of every menu of the menu bar side by side, drawn as `qa shot-menu` draws one.", args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The PNG to write." }], fixed: &[("verb", "shot_menus")], data: "`{ out, width, height, bytes }`.", examples: &["recto qa shot-menus --out /tmp/menus.png"], client_wait_s: 35, ..BASE },
+    Spec { name: "qa shot-menus", tag: "qa_read", group: GROUP_QA, summary: "Writes a PNG of every menu of the menu bar side by side, each followed by any submenu of its items, such as File > Open Recent, drawn as `qa shot-menu` draws one.", args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The PNG to write." }], fixed: &[("verb", "shot_menus")], data: "`{ out, width, height, bytes }`.", examples: &["recto qa shot-menus --out /tmp/menus.png"], client_wait_s: 35, ..BASE },
     Spec { name: "qa shot-menu", tag: "qa_read", group: GROUP_QA, summary: "Writes a PNG of a menu's real items, drawn inside the app at 2x in the menu's place. It's a drawing of what the menu holds and what's enabled, since a real menu can't be opened without a screen.", args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The PNG to write." }], fixed: &[("verb", "shot_menu")], data: "`{ out, width, height, bytes }`.", examples: &["recto qa shot-menu --out /tmp/menu.png"], client_wait_s: 35, ..BASE },
     Spec { name: "qa quit", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Quits the app, by what the Quit menu item does. Unsaved edits are kept for the next launch.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["now"]), required: true, help: "`now`." }], fixed: &[("verb", "quit")], data: "`qa state`'s `app`.", examples: &["recto qa quit now"], client_wait_s: 35, ..BASE },
     Spec { name: "qa handoff", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Hands off as an update does: flushes, reads back, and quits with no prompt. Refuses if something is in flight.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["now"]), required: true, help: "`now`." }], fixed: &[("verb", "handoff")], data: "`qa state`'s `app`.", examples: &["recto qa handoff now"], client_wait_s: 35, ..BASE },
@@ -824,6 +827,11 @@ impl Invocation {
 
 fn usage_error(message: impl Into<String>, next: impl Into<String>) -> AgentError {
     AgentError::new("usage", message, exit::USAGE).then(next)
+}
+
+/// The rows whose value is a secret read from stdin rather than the command line, under this field: a password typed for a test (review O6).
+pub fn stdin_secret_field(spec: &Spec) -> Option<&'static str> {
+    (spec.name == "qa password").then_some("value")
 }
 
 /// Reads a command line. Unknown commands and flags are refused, with the closest real ones, never guessed at.
@@ -1468,8 +1476,12 @@ mod tests {
             assert!(!spec.examples.is_empty(), "{} has no example", spec.name);
             assert!(!spec.summary.is_empty() && !spec.data.is_empty(), "{}", spec.name);
             for example in spec.examples {
-                let line = parse_line(example).unwrap_or_else(|error| panic!("{example}: {}", error.message));
+                let mut line = parse_line(example).unwrap_or_else(|error| panic!("{example}: {}", error.message));
                 assert_eq!(line.spec.name, spec.name, "{example}");
+                // What `recto` reads from stdin for this row, as it puts it in.
+                if let Some(field) = stdin_secret_field(spec) {
+                    line.fields.insert(field.into(), json!("from stdin"));
+                }
                 if spec.route == Route::Session {
                     let command = line.command().unwrap_or_else(|error| panic!("{example}: {}", error.message));
                     assert_eq!(command.tag(), spec.tag, "{example}");
@@ -1517,7 +1529,11 @@ mod tests {
                     line.push(sample.to_string());
                 }
             }
-            let parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
+            let mut parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
+            // What's read from stdin rather than the line, as `recto` itself puts it in.
+            if let Some(field) = stdin_secret_field(spec) {
+                parsed.fields.insert(field.into(), json!("from stdin"));
+            }
             parse(&parsed.wire()).unwrap_or_else(|_| panic!("{} sends a field its command doesn't know: {}", spec.name, parsed.wire()));
         }
     }
