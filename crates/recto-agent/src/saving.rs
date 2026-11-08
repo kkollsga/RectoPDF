@@ -82,12 +82,20 @@ fn bad_path(message: &str) -> AgentError {
     AgentError::new("bad_save_path", message, exit::USAGE).then("Choose a name ending in .pdf, in a folder that isn't hidden or in ~/Library.")
 }
 
-/// **Where a Save As may write** (review): a PDF's bytes are a hostile file's, so they never go where something reads them as anything else. The name ends
-/// in `.pdf`; no part of the path, as given or as it leads, is hidden (a dotfile like `~/.zshenv` is run by a shell); and nothing goes in `~/Library`,
-/// where the system and apps keep files they act on.
-pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
-    if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf")) {
-        return Err(bad_path("A saved PDF's name has to end in .pdf."));
+/// What's wrong with a place to write a file, by the rules every write path keeps (review of Save): the name has the right ending; no part of the path, as given or as it leads, is hidden (a dotfile like `~/.zshenv` is run by a shell); and nothing goes in `~/Library`, where the system and apps keep files they act on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathProblem {
+    Ending,
+    LeadsToAnotherKind,
+    Hidden,
+    Library,
+}
+
+/// Which of the rules a path breaks, if any. `endings` are without their dot, and any of them will do.
+pub(crate) fn path_problem(out: &Path, endings: &[&str]) -> Option<PathProblem> {
+    let ends_right = |path: &Path| path.extension().is_some_and(|extension| endings.iter().any(|ending| extension.eq_ignore_ascii_case(ending)));
+    if !ends_right(out) {
+        return Some(PathProblem::Ending);
     }
     // Where it really goes: through its folder's links, and through itself if it's there already, as a replaced link leads somewhere else (review).
     let real = if std::fs::symlink_metadata(out).is_ok() {
@@ -95,21 +103,46 @@ pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
     } else {
         out.parent().and_then(|folder| folder.canonicalize().ok()).map(|folder| folder.join(out.file_name().unwrap_or_default()))
     };
-    if real.as_deref().is_some_and(|real| !real.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))) {
-        return Err(bad_path("That name leads to a file that isn't a .pdf, which a PDF isn't saved over."));
+    if real.as_deref().is_some_and(|real| !ends_right(real)) {
+        return Some(PathProblem::LeadsToAnotherKind);
     }
     let hidden = |path: &Path| path.components().any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')));
     if hidden(out) || real.as_deref().is_some_and(hidden) {
-        return Err(bad_path("That's a hidden file or folder, which a PDF isn't saved to."));
+        return Some(PathProblem::Hidden);
     }
     if let Some(home) = recto_platform::local::real_home() {
         let library = home.join("Library");
         let library_real = library.canonicalize().unwrap_or_else(|_| library.clone());
         if out.starts_with(&library) || real.as_deref().is_some_and(|real| real.starts_with(&library_real)) {
-            return Err(bad_path("That's inside ~/Library, where the system and apps keep files of their own, so a PDF isn't saved there."));
+            return Some(PathProblem::Library);
         }
     }
-    Ok(())
+    None
+}
+
+/// **Where a Save As may write** (review): a PDF's bytes are a hostile file's, so they never go where something reads them as anything else. [`path_problem`]'s rules, with `.pdf`.
+pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
+    match path_problem(out, &["pdf"]) {
+        None => Ok(()),
+        Some(PathProblem::Ending) => Err(bad_path("A saved PDF's name has to end in .pdf.")),
+        Some(PathProblem::LeadsToAnotherKind) => Err(bad_path("That name leads to a file that isn't a .pdf, which a PDF isn't saved over.")),
+        Some(PathProblem::Hidden) => Err(bad_path("That's a hidden file or folder, which a PDF isn't saved to.")),
+        Some(PathProblem::Library) => Err(bad_path("That's inside ~/Library, where the system and apps keep files of their own, so a PDF isn't saved there.")),
+    }
+}
+
+/// **Where an export may write**: a picture, an SVG or a snapshot carries a hostile file's content too, so it keeps the same rules as a Save As, with its own endings (review of Save: every write path needs them). `kind` names it, as "picture" or "SVG"; `endings` are what it may end in, the first being what's suggested.
+pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(), AgentError> {
+    let suggested = endings.first().copied().unwrap_or("");
+    let bad = |message: String| AgentError::new("bad_output", message, exit::FAILED).then(format!("Choose a name ending in .{suggested}, in a folder that isn't hidden or in ~/Library."));
+    let listed = endings.iter().map(|ending| format!(".{ending}")).collect::<Vec<_>>().join(" or ");
+    match path_problem(out, endings) {
+        None => Ok(()),
+        Some(PathProblem::Ending) => Err(bad(format!("The output file must end in {listed}."))),
+        Some(PathProblem::LeadsToAnotherKind) => Err(bad(format!("That name leads to a file that doesn't end in {listed}, which a {kind} isn't written to."))),
+        Some(PathProblem::Hidden) => Err(bad(format!("That's a hidden file or folder, which a {kind} isn't written to."))),
+        Some(PathProblem::Library) => Err(bad(format!("That's inside ~/Library, where the system and apps keep files of their own, so a {kind} isn't written there."))),
+    }
 }
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.

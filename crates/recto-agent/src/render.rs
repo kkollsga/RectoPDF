@@ -139,10 +139,8 @@ fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &Outpu
 
 fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
     let page = page_index(page)?;
-    // Only ever a new picture. This also keeps `out` off the PDF itself, because only the append writer may change one.
-    if out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("png")) {
-        return Err(AgentError::new("bad_output", "The output file must end in .png.", exit::FAILED));
-    }
+    // Only ever a new picture, where nothing reads it as anything else. The ending also keeps `out` off the PDF itself, because only the append writer may change one.
+    crate::saving::check_export_path(out, &["png"], "picture")?;
     let largest = scale == LARGEST_THAT_FITS;
     if !largest && !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
         return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
@@ -701,6 +699,31 @@ mod tests {
         assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
         assert_eq!(folder_entries(&file), before);
+    }
+
+    /// Failure: a picture is written somewhere a shell or an app acts on what it finds: a hidden folder like `~/.config`, a name that leads through a link to a file of another kind, or `~/Library`. A review of Save found every write path needs the rules a Save As keeps.
+    #[test]
+    fn a_picture_is_never_written_where_something_acts_on_it() {
+        let file = doc();
+        let hidden = file.0.with_file_name(".hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        assert_eq!(render(&file.0, 1, 1.0, &hidden.join("a.png")).unwrap_err().code, "bad_output");
+        let script = file.0.with_file_name("run.sh");
+        std::fs::write(&script, b"").unwrap();
+        let link = file.0.with_file_name("innocent.png");
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let led = render(&file.0, 1, 1.0, &link).unwrap_err();
+        assert_eq!(led.code, "bad_output", "{}", led.message);
+        assert_eq!(render(&file.0, 1, 1.0, &file.0.with_file_name("a.jpg")).unwrap_err().code, "bad_output");
+        if let Some(home) = recto_platform::local::real_home() {
+            assert_eq!(render(&file.0, 1, 1.0, &home.join("Library/recto-never.png")).unwrap_err().code, "bad_output");
+            assert!(!home.join("Library/recto-never.png").exists());
+        }
+        assert_eq!(std::fs::read(&script).unwrap(), b"", "nothing went through the link");
+        for path in [&link, &script] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(&hidden).unwrap();
     }
 
     /// Failure: nobody can tell a slow draw from a fast one, so a slow page or a bad scale goes unnoticed.

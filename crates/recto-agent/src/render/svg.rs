@@ -290,10 +290,8 @@ pub(crate) fn export_svg(args: &SvgArgs<'_>) -> Result<Value, AgentError> {
 
 pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &OutputCaps) -> Result<Value, AgentError> {
     let page = page_index(args.page)?;
-    // Only ever a new file. This also keeps `out` off the PDF itself, because only the append writer may change one.
-    if args.out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("svg")) {
-        return Err(AgentError::new("bad_output", "The output file must end in .svg.", exit::FAILED).then("Choose a file name ending in .svg."));
-    }
+    // Only ever a new file, where nothing reads it as anything else. The ending also keeps `out` off the PDF itself, because only the append writer may change one.
+    crate::saving::check_export_path(args.out, &["svg"], "SVG")?;
     if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&args.scale) {
         return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
     }
