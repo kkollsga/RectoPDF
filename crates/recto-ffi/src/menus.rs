@@ -34,6 +34,10 @@ pub enum HostAction {
     ShowSettings,
     Quit,
     CloseWindow,
+    /// Save As's sheet, with what `AppCore::save_panel` says.
+    ShowSavePanel,
+    /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
+    ConfirmClose,
 }
 
 /// What an item does.
@@ -58,6 +62,10 @@ pub(crate) enum Action {
     TogglePanel,
     /// *Check for Updates…*, or *Update to X.Y.Z…* once there's one.
     Update,
+    /// ⌘S, the Save icon beside the window's controls, and File > Save.
+    Save,
+    /// File > Close, ⌘W: the document showing, asking first if it has unsaved edits.
+    CloseDocument,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -98,7 +106,7 @@ pub(crate) fn context_menu(shown: Option<Spread>) -> Vec<MenuEntry> {
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" => has_document,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -113,7 +121,8 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
-        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "w")] },
+        // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
+        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")] },
         MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
@@ -210,6 +219,9 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
         "file.close_window" => Action::Host(HostAction::CloseWindow),
+        "file.save" | "save.button" => Action::Save,
+        "file.save_as" => Action::Host(HostAction::ShowSavePanel),
+        "file.close" => Action::CloseDocument,
         "view.zoom_in" => Action::Zoom(Zoom::In),
         "view.zoom_out" => Action::Zoom(Zoom::Out),
         "view.actual_size" => Action::Zoom(Zoom::Actual),

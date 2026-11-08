@@ -61,7 +61,7 @@ fn page_edits_work_through_the_session() {
     assert_eq!(code, 0, "{moved}");
     assert_eq!(moved["data"]["edited"], true);
     assert_eq!(moved["cmd"], "page_move");
-    assert!(moved["data"]["note"].as_str().unwrap().contains("Saving isn't built"));
+    assert!(moved["data"]["note"].as_str().unwrap().contains("aren't saved"));
     assert!(page_text(&state, "1").contains("Gamma"), "reading must follow the move");
     let (read, _) = state.json(&["text", "--page", "1"]);
     assert_eq!(read["data"]["page"], 1);
@@ -1092,7 +1092,7 @@ fn a_refused_close_says_what_would_be_lost() {
     assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
     assert!(message.contains("unsaved edits and undone steps"), "{message}");
-    assert!(next.contains("Saving isn't built") && next.contains("recto discard"), "{next}");
+    assert!(next.contains("recto save") && next.contains("recto discard"), "{next}");
     let (tabs, _) = state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 1);
     let (shown, said, _) = state.text(&["close"]);

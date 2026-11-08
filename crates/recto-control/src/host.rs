@@ -4,6 +4,9 @@ use crate::indexing::{Indexer, Notifier};
 use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
 use crate::state::StatePaths;
 use recto_agent::index::Indexing;
+use recto_agent::saving::SaveSupport;
+use std::path::PathBuf;
+use std::sync::Arc;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
@@ -43,12 +46,29 @@ pub struct SessionHost<L = DrawableLoader> {
     indexer: Option<Indexer>,
     /// A session with no window keeps a record of its own, written only when it's told to.
     record: Option<RecordStore>,
+    /// What a save needs beyond the session: where backups go, and the app's journals. Set once.
+    saving: std::sync::OnceLock<Arc<dyn SaveSupport + Send>>,
+}
+
+/// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
+pub struct BackupsOnly(pub PathBuf);
+
+impl SaveSupport for BackupsOnly {
+    fn backups(&self) -> Option<PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+/// Where the one backup of each original goes: `.noindex`, so Spotlight leaves the copies alone, and out of Time Machine.
+pub fn backups_folder(paths: &StatePaths) -> PathBuf {
+    paths.root.join("backups.noindex")
 }
 
 /// The session and its indexer, the way a command reaches them.
 struct Hosted<'a, L> {
     session: &'a Mutex<Session<L>>,
     indexer: Option<&'a Indexer>,
+    saving: Option<&'a (dyn SaveSupport + Send)>,
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
@@ -58,6 +78,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn indexing(&self) -> Option<&dyn Indexing> {
         self.indexer.map(|indexer| indexer as &dyn Indexing)
+    }
+    fn saving(&self) -> Option<&dyn SaveSupport> {
+        self.saving.map(|saving| saving as &dyn SaveSupport)
     }
 }
 
@@ -69,7 +92,7 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, record: None }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, record: None, saving: std::sync::OnceLock::new() }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
@@ -77,6 +100,20 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
         self.indexer = Some(Indexer::new(&paths.corpus));
         self
+    }
+
+    /// With the one backup of each original kept on its first save, in the state folder. Old backups go now, as a session starts, never on a timer.
+    #[must_use]
+    pub fn with_backups(self, paths: &StatePaths) -> Self {
+        let folder = backups_folder(paths);
+        recto_core::save::prune_backups(&folder, std::time::SystemTime::now());
+        self.set_saving(Arc::new(BackupsOnly(folder)));
+        self
+    }
+
+    /// What saves need of whoever holds this session. The first one set stays.
+    pub fn set_saving(&self, support: Arc<dyn SaveSupport + Send>) {
+        let _ = self.saving.set(support);
     }
 
     /// With `session save` and `session restore`, to a record of its own.
@@ -87,7 +124,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 
     fn access(&self) -> Hosted<'_, L> {
-        Hosted { session: &self.session, indexer: self.indexer.as_ref() }
+        Hosted { session: &self.session, indexer: self.indexer.as_ref(), saving: self.saving.get().map(|saving| &**saving) }
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.

@@ -815,6 +815,7 @@ const BLUE: &str = "0 0 1";
 const GREEN: &str = "0 1 0";
 
 /// A PDF of pages of one colour with a file ID, as anything that writes PDFs gives one: what a version is told by when a stamp can't.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn coloured_with_id(colours: &[&str], id: &str) -> Vec<u8> {
     let mut document = lopdf::Document::load_mem(&pages(&colours.iter().map(|colour| page_of(colour)).collect::<Vec<_>>())).unwrap();
     document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal(id), lopdf::Object::string_literal(id)]));
@@ -1037,6 +1038,7 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
 
 /// Failure (review, blocks the merge): a protected PDF's pages go in a sleep file in the clear, when it's been added to a plain document: only the tab's own file was looked at. A document with a page from one has no pictures, and that's known after a restart.
 #[test]
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
     let state = State::at(Level::Full);
@@ -1256,6 +1258,7 @@ fn a_launch_goes_up_from_the_sleep_file() {
 }
 
 /// What a Save would write, for this test: the document's pages, as lopdf has them.
+#[allow(clippy::disallowed_methods)] // The stand-in for a save that deletes pages, until the rewrite saves those.
 fn written_without(source: &Path, delete: &[u32], to: &Path) {
     let mut document = lopdf::Document::load(source).unwrap();
     document.delete_pages(delete);

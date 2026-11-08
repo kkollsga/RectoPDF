@@ -268,7 +268,7 @@ fn serve(invocation: &Invocation) -> i32 {
     };
     let ready = json!({ "running": true, "pid": std::process::id(), "socket": paths.socket, "already": false });
     finish("serve", json_wanted, &Ok(ready));
-    match server.run(Arc::new(SessionHost::default().with_indexing(&paths).with_own_record(&paths)), Limits::default()) {
+    match server.run(Arc::new(SessionHost::default().with_indexing(&paths).with_own_record(&paths).with_backups(&paths)), Limits::default()) {
         Ok(()) => exit::OK,
         Err(_) => {
             print_err("The session stopped because its socket failed.");

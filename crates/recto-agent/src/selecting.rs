@@ -319,6 +319,8 @@ mod tests {
         Pick { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None, all: true, anyway: false }
     }
 
+    // An encrypted test file, built into memory: lopdf's eager writer is the only one that encrypts, and nothing here goes near a user's file.
+    #[allow(clippy::disallowed_methods)]
     fn restricted(count: usize) -> Vec<u8> {
         let mut document = lopdf::Document::load_mem(&words("Words that ask not to be copied", count)).unwrap();
         document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));

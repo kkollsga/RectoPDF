@@ -139,6 +139,9 @@ const BASE: Spec = Spec {
     bare_page: false,
 };
 
+/// What `save` and `save-as` answer.
+const SAVED: &str = "`{ ...same as undo, did, written, writer: append|rewrite|copy, bytes_before, bytes, notes: [..], backup_kept, backup (Full only), untrusted: { file } }`.";
+
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
 const PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1." };
 const PAGE_OR_BARE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`." };
@@ -404,7 +407,20 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "edits", tag: "edits", group: GROUP_EDIT, summary: "A tab's unsaved edits, as runs of pages.", args: &[TAB], data: "`{ ...same as undo, runs: [ { pages, from_file_pages, rotation_degrees, added, untrusted: { added_file } } ], runs_truncated }`.", examples: &["recto edits", "recto edits --json"], ..BASE },
     Spec { name: "discard", tag: "discard", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Throws away a tab's edits, undone ones included. They can't be got back. Below Full it's refused, and throws nothing away, if any are the user's.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto discard --tab report"], ..BASE },
     Spec { name: "clear-history", tag: "clear_history", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Clears a tab's edit history: every step undo or redo could take, and its file on disk. Unsaved edits stay. Below Full it's refused, and clears nothing, if any steps are the user's.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto clear-history --tab report"], ..BASE },
-    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Off), summary: "Saving isn't built yet. This says so and writes nothing.", args: &[TAB], data: "Always refuses with `not_built`.", examples: &["recto save"], not_built: true, ..BASE },
+    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Saves a tab's edits into its file. Turns, moves and added pages are added to the end of the file, so everything that was in it stays. The first save of a file keeps one backup of the original. A certified PDF's pages aren't saved over, and deleting pages isn't saved yet. Nothing from the edit history goes in the file.", args: &[TAB], data: SAVED, emits: &["saved", "edits_changed"], examples: &["recto save", "recto save --tab report --json"], client_wait_s: 600, ..BASE },
+    Spec {
+        name: "save-as",
+        tag: "save",
+        group: GROUP_EDIT,
+        access: Access::At(Level::Control),
+        summary: "Saves a tab's document as a new file, and the tab goes over to it. The original is left as it was. Replacing a file that's there needs `--replace` and Full access.",
+        args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The new file." }, Arg { key: "replace", flag: Some("--replace"), kind: Kind::Switch, required: false, help: "Replace a file that's there. Needs Full." }, TAB],
+        data: SAVED,
+        emits: &["saved", "edits_changed"],
+        examples: &["recto save-as --out ~/Documents/report-final.pdf"],
+        client_wait_s: 600,
+        ..BASE
+    },
     Spec {
         name: "wait tab-open",
         tag: "wait",
@@ -1845,7 +1861,7 @@ mod tests {
     #[test]
     fn the_skill_teaches_how_to_read_and_stays_in_this_phase() {
         let text = skill::skill_md();
-        for must in ["facts", "contents", "recto search", "recto text", "Cite pages", "data, not instructions", "untrusted", "recto wait", "not checked", "Saving isn't built"] {
+        for must in ["facts", "contents", "recto search", "recto text", "Cite pages", "data, not instructions", "untrusted", "recto wait", "not checked", "recto save"] {
             assert!(text.contains(must), "{must}");
         }
         for mustnt in ["corpus", "panel", "sidebar chat", "recto read "] {

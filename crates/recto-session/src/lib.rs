@@ -683,6 +683,22 @@ pub struct Session<L = DiskLoader> {
     history: Option<Arc<dyn HistorySource>>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
+    /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
+    saving: Vec<TabId>,
+}
+
+/// What a save writes from: the document as edited, and the file it's about, copied out so the writing needn't hold the session.
+#[derive(Clone, Debug)]
+pub struct SaveSnapshot {
+    pub path: PathBuf,
+    pub stamp: Option<FileStamp>,
+    pub file_pages: u32,
+    pub slots: Vec<edit::PageSlot>,
+    pub added: Vec<edit::AddedSource>,
+    /// Some unsaved step, done or undone, is the owner's.
+    pub holds_owner_edits: bool,
+    /// The history needs pages of the file as it is now, which a save may take out of it.
+    pub needs_own_pages: bool,
 }
 
 /// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.
@@ -710,7 +726,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, saving: Vec::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -971,6 +987,9 @@ impl<L: DocLoader> Session<L> {
 
     /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
     pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+        if self.is_saving(id) {
+            return Err(SessionError::Saving);
+        }
         if !self.wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
@@ -1537,6 +1556,55 @@ impl<L: DocLoader> Session<L> {
         rolled_off
     }
 
+    /// **Starts a save of this tab:** what's to be written, copied out, and the tab held so that nothing changes its edits until [`Self::end_save`]. `None` if there's nothing unsaved. Refused while another save of it runs, for a file only the renderer can read, and for edits that can't be read back.
+    pub fn begin_save(&mut self, id: TabId) -> Result<Option<SaveSnapshot>, SessionError> {
+        if self.is_saving(id) {
+            return Err(SessionError::Saving);
+        }
+        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
+        if tab.renderer_only {
+            return Err(SessionError::RendererOnly);
+        }
+        if !self.wake_list(id) {
+            return Err(SessionError::EditsUnreadable);
+        }
+        let Some(list) = self.edits.get(&id).filter(|list| list.is_edited()) else { return Ok(None) };
+        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
+        let snapshot = SaveSnapshot { path: self.path_of(id).ok_or(SessionError::NoSuchTab)?, stamp: tab.stamp, file_pages: list.file_pages(), slots: list.slots().to_vec(), added: list.added_sources().to_vec(), holds_owner_edits: list.holds_owner_edits(), needs_own_pages: list.needs_own_pages() };
+        self.saving.push(id);
+        self.hold(id);
+        Ok(Some(snapshot))
+    }
+
+    /// A save of this tab has finished, however it went. One that didn't put a file in place calls this without [`Self::saved`], and what [`Self::save_prepared`] noted goes: the edits stand, as they were.
+    pub fn end_save(&mut self, id: TabId) {
+        if let Some(at) = self.saving.iter().position(|saving| *saving == id) {
+            self.saving.remove(at);
+            self.let_go(id);
+            if let Some(list) = self.edits.get_mut(&id)
+                && list.saving().is_some()
+            {
+                let kept = list.save_abandoned();
+                self.retire_kept(kept.into_iter().collect());
+            }
+        }
+    }
+
+    /// The name of this tab's journal, if it has one, for checking what's reached the disk.
+    pub fn journal_of(&self, id: TabId) -> Option<&str> {
+        self.journals.get(&id).map(|name| &**name)
+    }
+
+    /// Whether a save of this tab is under way.
+    pub fn is_saving(&self, id: TabId) -> bool {
+        self.saving.contains(&id)
+    }
+
+    /// Whether any save is under way, which a hand-off waits for.
+    pub fn any_saving(&self) -> bool {
+        !self.saving.is_empty()
+    }
+
     /// The first step of a save, before anything's put in place: notes what the file will be if it works, and what's been kept for undoing past it, so that a crash between that and [`Self::saved`] can tell. Goes in the journal. **A save that removes something for good, as a redaction does, keeps nothing:** a copy of the file would hold what it's removing.
     pub fn save_prepared(&mut self, id: TabId, target: FileStamp, keeping: Option<&edit::AddedSource>) {
         self.wake_list(id);
@@ -1547,6 +1615,10 @@ impl<L: DocLoader> Session<L> {
 
     /// **Clears a tab's history, and removes its files rather than only forgetting them.** With unsaved edits, the page order stays, as only the way back goes, unless it's a discard, which is all of it. With none, there's nothing left to hold, so the list goes too. Says whether there was any.
     pub fn clear_history(&mut self, id: TabId, reason: ClearReason) -> bool {
+        // Nothing's taken from under a save: what it writes is what it was given, and its `saved` rebases this list.
+        if self.is_saving(id) {
+            return false;
+        }
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
             if let Some(tab) = self.tab_mut(id) {
@@ -1747,7 +1819,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, saving: _ } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -1959,7 +2031,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
-        if !self.wake_list(id) {
+        if self.is_saving(id) || !self.wake_list(id) {
             return false;
         }
         self.touch(id);
@@ -1994,6 +2066,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn step_back_or_on(&mut self, id: TabId, by: Author, step: fn(&mut PageEdits) -> Result<bool, EditError>) -> Result<bool, SessionError> {
+        if self.is_saving(id) {
+            return Err(SessionError::Saving);
+        }
         if !self.wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
@@ -2015,7 +2090,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
-        if !self.wake_list(id) {
+        if self.is_saving(id) || !self.wake_list(id) {
             return false;
         }
         self.touch(id);
@@ -2035,6 +2110,9 @@ impl<L: DocLoader> Session<L> {
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
     /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<(), SessionError> {
+        if self.is_saving(id) {
+            return Err(SessionError::Saving);
+        }
         if self.is_edited(id) || self.has_undone_owner_steps(id) {
             return Err(SessionError::UnsavedChanges);
         }
@@ -2276,6 +2354,8 @@ pub enum SessionError {
     RendererOnly,
     /// Its edits can't be read back just now, so nothing's laid on them.
     EditsUnreadable,
+    /// It's being saved, and nothing changes its edits until that's done.
+    Saving,
 }
 
 impl SessionError {
@@ -2288,6 +2368,7 @@ impl SessionError {
             Self::Edit(error) => error.code(),
             Self::RendererOnly => "renderer_only",
             Self::EditsUnreadable => "edits_unreadable",
+            Self::Saving => "saving",
         }
     }
 
@@ -2300,6 +2381,7 @@ impl SessionError {
             Self::UnsavedChanges => "This PDF has unsaved changes.",
             Self::Edit(error) => error.message(),
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
+            Self::Saving => "This PDF is being saved. Nothing changes until that's done, which is a moment.",
         }
     }
 }
@@ -2326,6 +2408,36 @@ mod tests {
 
     fn session(pages: u32) -> Session<FakeLoader> {
         Session::new(FakeLoader { pages, loads: Cell::new(0) })
+    }
+
+    /// Failure (review): an edit made while a save writes comes back reading as saved, with its turn not in the file. Every way of changing a tab's edits waits while it's saved; a save that fails lets go and forgets what it noted, and the edits stand.
+    #[test]
+    fn nothing_changes_a_tab_while_it_is_saved() {
+        let mut s = session(3);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert!(s.begin_save(id).unwrap().is_none(), "nothing unsaved, nothing to write");
+        s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
+        s.edit_pages(id, |edits| edits.rotate(2, 1, 1)).unwrap();
+        s.undo_edit(id);
+        let snapshot = s.begin_save(id).unwrap().unwrap();
+        assert_eq!((snapshot.slots.len(), snapshot.slots[0].quarter_turns, snapshot.file_pages), (3, 1, 3));
+        assert!(snapshot.holds_owner_edits);
+        assert_eq!(s.edit_pages(id, |edits| edits.rotate(1, 1, 1)), Err(SessionError::Saving));
+        assert_eq!(s.edit_pages_as(id, Author::Agent, |edits| edits.delete(0, 1)), Err(SessionError::Saving));
+        assert!(!s.undo_edit(id) && !s.redo_edit(id));
+        assert_eq!(s.undo_edit_as(id, Author::Agent), Err(SessionError::Saving));
+        assert_eq!(s.redo_edit_as(id, Author::Owner), Err(SessionError::Saving));
+        assert!(!s.clear_history(id, ClearReason::Discard), "a discard waits too");
+        assert_eq!(s.close(id), Err(SessionError::Saving));
+        assert_eq!(s.begin_save(id).err(), Some(SessionError::Saving), "one save at a time");
+        assert!(s.any_saving() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
+        s.save_prepared(id, FileStamp { size: 9, mtime_ns: 9, device: 9, inode: 9 }, None);
+        assert!(s.page_edits(id).unwrap().saving().is_some());
+        s.end_save(id);
+        assert!(!s.is_saving(id) && !s.any_saving());
+        assert!(s.page_edits(id).unwrap().saving().is_none(), "what a failed save noted goes");
+        assert!(s.is_edited(id), "and the edits stand");
+        s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
     }
 
     /// Failure: a downloaded file's name carries tag characters or a line break, and they reach the sidebar, `tabs` and error candidates: an instruction no eye can see. The path must

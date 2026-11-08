@@ -1514,6 +1514,7 @@ fn the_chrome_script_passes() {
 }
 
 /// A file anyone can read and that asks not to be copied.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn restricted_pdf() -> TempPdf {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
     let bytes = pages(&[Page::new(text_lines(&["Words that ask not to be copied"]))]);

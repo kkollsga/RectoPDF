@@ -903,6 +903,15 @@ impl RecordStore {
         }
     }
 
+    /// **Whether a journal on disk says a save is about to put a file of this identity in place,** read back from the file itself. A save checks this before its file's moved, so a crash after the move always finds the note it needs (review: "check the save marker again once it's on disk").
+    pub fn journal_says_saving(&self, name: &str, target: FileStamp) -> bool {
+        if !is_journal_name(name) {
+            return false;
+        }
+        let path = self.dir().join(JOURNALS).join(name);
+        matches!(read_journal(&path), Ok(Some((parsed, _))) if saved_into_its_file(&parsed, Some(target)))
+    }
+
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
         if is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name) {

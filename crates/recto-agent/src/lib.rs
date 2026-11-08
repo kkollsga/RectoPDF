@@ -8,6 +8,7 @@ pub mod human;
 pub mod index;
 mod loader;
 mod reading;
+pub mod saving;
 mod render;
 pub use render::{output_exists, publish_picture};
 mod search;
@@ -427,6 +428,12 @@ pub enum Command {
     Save {
         #[serde(default = "active_tab")]
         tab: String,
+        /// Save As: the new file. Without it, the file itself.
+        #[serde(default)]
+        out: Option<PathBuf>,
+        /// Save As over a file that's there, which the person chose to replace.
+        #[serde(default)]
+        replace: bool,
     },
     /// Never reachable by an agent. It exists to say so.
     Sign {},
@@ -580,6 +587,7 @@ impl Command {
         match self {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
+            Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
             Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             // Which pages, and not where on them or what's there.
@@ -587,7 +595,7 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, out: None, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
@@ -605,7 +613,7 @@ impl Command {
 
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -671,7 +679,7 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_pdf" => "This file can't be opened. Try another file.",
         "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
         "ambiguous" => "Use one of the candidates, written as `#id`.",
-        "unsaved_changes" => "`recto discard` throws them away, then `recto close` or `recto stop` can go on. It needs Full access only if some are the user's. Saving isn't built yet.",
+        "unsaved_changes" => "`recto discard` throws them away, then `recto close` or `recto stop` can go on. It needs Full access only if some are the user's. `recto save` puts them in the file instead, if the user wants that.",
         "last_page" => "Keep at least one page, or delete fewer.",
         "too_many_pages" | "too_many_sources" => "Add less to this document.",
         "too_many_tabs" => "`recto close` closes a tab.",
@@ -818,6 +826,10 @@ pub trait SessionAccess {
     fn with<R>(&self, step: impl FnOnce(&mut Session<Self::Loader>) -> R) -> R;
     /// How documents get indexed here, if they do.
     fn indexing(&self) -> Option<&dyn index::Indexing> {
+        None
+    }
+    /// What a save needs of the host beyond the session, if anything.
+    fn saving(&self) -> Option<&dyn saving::SaveSupport> {
         None
     }
 }
@@ -1168,11 +1180,14 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             data["did"] = json!(if had_any { "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now." } else { "There was no edit history to clear." });
             Ok(with_place_note(s, id, data))
         }),
-        Command::Save { .. } => Err(AgentError::new(
-            "not_built",
-            "Saving isn't built yet, so nothing was written. Page edits stay in this session only, the file on disk is unchanged, and they're lost when the session ends.",
-            exit::FAILED,
-        )),
+        Command::Save { tab, out, replace } => {
+            let to = match out {
+                Some(out) => saving::SaveTo::As { out: out.clone(), replace: *replace },
+                None if *replace => return Err(AgentError::new("usage", "`--replace` goes with Save As's `--out`.", exit::USAGE)),
+                None => saving::SaveTo::Same,
+            };
+            saving::save(access, level, tab, &to, events)
+        }
         Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
         Command::SessionSleep { .. } | Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
@@ -1427,7 +1442,7 @@ fn refuse_close_that_loses_something<L: DocLoader>(session: &Session<L>, id: Tab
     } else {
         ways.push(format!("{discard}."));
     }
-    ways.push("Saving isn't built yet, so they can't be kept on disk.".to_string());
+    ways.push("`recto save` puts them in the file, if the user wants that.".to_string());
     let message = format!("This tab wasn't closed: closing it would lose its {what}.{whose}");
     // The user's undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level, and `discard` is the way on.
     let mut error = if owners_undone { AgentError::new("would_clear_redo", message, exit::PERMISSION) } else { AgentError::new("unsaved_changes", message, exit::FAILED) };
@@ -1459,7 +1474,7 @@ fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
 }
 
 /// The plain truth about unsaved edits, wherever a tab reports them.
-pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn't built yet, so the file on disk is unchanged and they're lost when the session ends.";
+pub const UNSAVED_NOTE: &str = "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.";
 
 /// What's true when an agent has undone the user's edits: the page matches the file, and they're not gone yet.
 pub const USER_EDITS_UNDONE_NOTE: &str = "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
@@ -1481,6 +1496,9 @@ fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }
+
+/// What `edits` calls pages from a copy the history keeps of the file as it was before a save.
+pub const KEPT_LABEL: &str = "this file, as it was before a save";
 
 /// Most runs `edits` lists, so a hostile edit history can't make an enormous answer.
 const MAX_EDIT_RUNS: usize = 1000;
@@ -1509,7 +1527,8 @@ fn edits_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         }
         let file = match first.source {
             0 => None,
-            source => edits.added_sources().get(usize::from(source) - 1).map(|added| file_label(&added.path)),
+            // A copy the history keeps is in the app's own folder: no level sees where, only what it is.
+            source => edits.added_sources().get(usize::from(source) - 1).map(|added| if added.kept { KEPT_LABEL.to_string() } else { file_label(&added.path) }),
         };
         runs.push(json!({
             "pages": page_span(position + 1, position + len),
@@ -1885,7 +1904,7 @@ mod tests {
             Command::Discard { tab: tab() },
             Command::ClearHistory { tab: tab() },
             Command::SessionSleep { tab: tab() },
-            Command::Save { tab: tab() },
+            Command::Save { tab: tab(), out: None, replace: false },
             Command::Sign {},
             Command::Status {},
             Command::PermissionShow {},
@@ -2061,7 +2080,7 @@ mod tests {
         let moved = run(&mut s, Level::Control, &Command::PageMove { tab: "#1".into(), pages: "3".into(), to: 1 }).unwrap();
         assert_eq!(moved["edited"], true);
         assert_eq!(moved["saved"], false);
-        assert!(moved["note"].as_str().unwrap().contains("Saving isn't built"), "it must say so plainly: {moved}");
+        assert!(moved["note"].as_str().unwrap().contains("aren't saved"), "it must say so plainly: {moved}");
         let id = TabId(1);
         assert_eq!(s.page_edits(id).unwrap().slots()[0].page, 2);
         let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
@@ -2110,14 +2129,17 @@ mod tests {
         assert_eq!(s.pages_in(id), 10);
     }
 
-    /// Failure: `save` pretends to work, so someone believes their edits are on disk. And closing must not lose them without saying.
+    /// Failure: a save that can't write pretends it did, so someone believes their edits are on disk; and a save is open to a level that can't edit. Here the file isn't there, so it fails, says nothing was written, and the edits stay. And closing must not lose them without saying.
     #[test]
-    fn saving_says_plainly_that_it_isnt_built_and_closing_keeps_edits() {
+    fn a_save_that_cant_write_says_so_and_closing_keeps_edits() {
         let mut s = edit_session();
         run(&mut s, Level::Control, &Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 }).unwrap();
-        let save = run(&mut s, Level::Full, &Command::Save { tab: "#1".into() }).unwrap_err();
-        assert_eq!(save.code, "not_built");
-        assert!(save.message.contains("nothing was written"), "{}", save.message);
+        assert_eq!(run(&mut s, Level::ReadOnly, &Command::Save { tab: "#1".into(), out: None, replace: false }).unwrap_err().code, "permission_denied");
+        let save = run(&mut s, Level::Full, &Command::Save { tab: "#1".into(), out: None, replace: false }).unwrap_err();
+        assert!(save.message.contains("Nothing was written") || save.message.contains("nothing was changed"), "{}", save.message);
+        assert!(s.is_edited(TabId(1)) && !s.is_saving(TabId(1)), "the edits stand, and the tab isn't held");
+        let replace = run(&mut s, Level::Control, &Command::Save { tab: "#1".into(), out: Some("/nowhere/x.pdf".into()), replace: true }).unwrap_err();
+        assert_eq!(replace.code, "permission_denied", "replacing another file is Full's");
         for level in [Level::Control, Level::Full] {
             let close = run(&mut s, level, &Command::Close { tab: "#1".into() }).unwrap_err();
             assert_eq!(close.code, "unsaved_changes", "{level:?}");
@@ -2334,7 +2356,7 @@ mod tests {
         assert_eq!((both.code, both.exit), ("would_clear_redo", exit::PERMISSION), "below Full, this is still that refusal");
         assert_eq!(both.ask.as_deref(), Some(ASK_FULL));
         assert!(both.message.contains("unsaved edits and undone steps") && both.message.contains("user's"), "{}", both.message);
-        for must in ["recto redo", "anything you undid on purpose", "recto undo", "recto discard", "needs Full", "Saving isn't built", "Leave the tab open"] {
+        for must in ["recto redo", "anything you undid on purpose", "recto undo", "recto discard", "needs Full", "recto save", "Leave the tab open"] {
             assert!(both.next.contains(must), "{must}: {}", both.next);
         }
 
