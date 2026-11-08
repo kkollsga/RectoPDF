@@ -341,9 +341,9 @@ impl QaBridge {
                 return self.ask(verb, value);
             }
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
-            | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type"
-            | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost"
-            | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
+            | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus"
+            | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.palette_open()) {
@@ -636,6 +636,14 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "appearance" => one_of(&["light", "dark"]),
         "window" => one_of(&["open", "close"]),
         "contents_pointer" => one_of(&["in", "out"]),
+        "corner_pointer" => one_of(&[
+            "top-left:in",
+            "top-left:out",
+            "top-right:in",
+            "top-right:out",
+            "lower-right:in",
+            "lower-right:out",
+        ]),
         "reduce_motion" => one_of(&["on", "off"]),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "frontmost" => one_of(&["on", "off"]),
@@ -647,7 +655,14 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "menu" => {
             !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::snapshot_tool::is_menu_id(value))
         }
-        "panel" => value == "toggle" || value == "edit_mode.done" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
+        "panel" => {
+            value == "toggle"
+                || value == "edit_mode.done"
+                || value.starts_with("paper.")
+                || value.starts_with("view.")
+                || value.starts_with("rotate.")
+                || value.starts_with("tools.")
+        }
         "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),

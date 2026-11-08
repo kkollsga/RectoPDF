@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 /// Space between pages, in document points.
 pub const PAGE_GAP: f64 = 10.0;
-/// Space above the first page and below the last, a little over twice the gap between pages, so the document starts and ends on the margin's colour. Owner, 2026-11-08: "add some margin above the first page, and below the last page".
+/// Space above the first page and below the last that's part of the document, a little over twice the gap between pages, so the document starts and ends on the margin's colour, and what a document opens at and going to page 1 show. Owner, 2026-11-08: "add some margin above the first page, and below the last page".
 pub const END_MARGIN: f64 = 24.0;
+/// The whole margin above the first page and below the last, as a share of that row's height: past [`END_MARGIN`], the rest is room the view can scroll into beyond the document's ends ([`PageLayout::end_room`]), so the first page can be brought down to the middle of the window and the last one up to it, and nothing about where pages are changes. Owner, 2026-11-08: "The margin above first page, and below last page should be 50% of page height". In document points, so it's half the page at any zoom.
+pub const END_MARGIN_SHARE: f64 = 0.5;
 /// How wide a page is drawn when there's room, in document points. Concepts: `docs/concepts/reader-light.png`.
 pub const READING_WIDTH: f64 = 760.0;
 /// The least room either side of a fitted page, so the agent icon's margin stays empty.
@@ -533,6 +535,16 @@ impl PageLayout {
         self.row_top(rows - 1) + self.row_height(rows - 1) + END_MARGIN
     }
 
+    /// How far the view may scroll above the document's top and below its end, in document points: what makes the margin at each end [`END_MARGIN_SHARE`] of that row's height, less the [`END_MARGIN`] inside the document.
+    pub fn end_room(&self) -> (f64, f64) {
+        let rows = self.rows();
+        if rows == 0 {
+            return (0.0, 0.0);
+        }
+        let room = |row: u32| (self.row_height(row) * END_MARGIN_SHARE - END_MARGIN).max(0.0);
+        (room(0), room(rows - 1))
+    }
+
     /// The row at or just below a height. Above the first it's the first, and past the end the last.
     fn row_at(&self, y: f64) -> u32 {
         let rows = self.rows();
@@ -1002,6 +1014,42 @@ mod tests {
             assert_eq!(layout.page_at(layout.document_height() + 5.0), layout.first_of_row(layout.rows() - 1));
         }
         const { assert!(END_MARGIN > PAGE_GAP, "it reads as the document's end, not another gap") };
+    }
+
+    /// Failure: the margin above the first page or below the last isn't half that row's height, at any width or layout, with pages of other sizes at the ends, so the first page can't be brought down to the middle of the window or the last one up to it; or the room is taken inside the document, which would move every page and where a document opens. Owner, 2026-11-08: "The margin above first page, and below last page should be 50% of page height".
+    #[test]
+    fn the_margin_at_each_end_is_half_a_page() {
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            for frame in [700.0, 1200.0, 2400.0] {
+                let mut layout = PageLayout::with_spread(5, spread);
+                layout.set_frame(frame);
+                layout.set_page_size(0, letter());
+                layout.set_page_size(4, PageBox { width: 612.0, height: 400.0 });
+                let (above, below) = layout.end_room();
+                let first = layout.rect(0);
+                assert!((first.y - END_MARGIN).abs() < 1e-9, "pages stay where they were: {spread:?} at {frame}");
+                assert!(
+                    (above + first.y - first.height * END_MARGIN_SHARE).abs() < 1e-9,
+                    "{spread:?} at {frame}: {above} above"
+                );
+                let last_row = (layout.first_of_row(layout.rows() - 1)..5).map(|page| layout.rect(page)).collect::<Vec<_>>();
+                let row_height = last_row.iter().map(|rect| rect.height).fold(0.0, f64::max);
+                let under = layout.document_height() - (last_row[0].y + row_height);
+                assert!(
+                    (below + under - row_height * END_MARGIN_SHARE).abs() < 1e-9,
+                    "{spread:?} at {frame}: {below} below"
+                );
+            }
+        }
+        assert_eq!(PageLayout::new(0).end_room(), (0.0, 0.0), "no pages, no room");
+        let mut tiny = PageLayout::new(1);
+        tiny.set_frame(1200.0);
+        tiny.set_page_size(0, PageBox { width: 20.0, height: 20.0 });
+        let (above, below) = tiny.end_room();
+        assert!(
+            above >= 0.0 && below >= 0.0,
+            "a page shorter than twice the margin has none extra, never less than none"
+        );
     }
 
     /// Failure: a comparison's pane keeps the whole window's margins, the agent icon's 96 points among them, so three panes in a laptop's window leave pages a thumbnail wide; or a pane's page runs under the pane beside it.

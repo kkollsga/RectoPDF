@@ -1072,6 +1072,14 @@ final class ThumbView: NSView {
     private var area: NSTrackingArea?
     /// Told when the reader moves the list with it, as a wheel would.
     var userScrolled: (() -> Void)?
+    /// Room at the top it keeps clear of, as the page area's does for the agent icon and the zoom level.
+    var topInset: CGFloat = 0 {
+        didSet { if topInset != oldValue { refresh() } }
+    }
+    /// How far the view may scroll past the document's top and its end, in the document's points: the page area's margin past each end.
+    var room: () -> (top: CGFloat, bottom: CGFloat) = { (0, 0) }
+    /// How it moves the view, if not as below: the page area's goes as the reader's own scroll.
+    var scrollTo: ((CGFloat) -> Void)?
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -1110,13 +1118,14 @@ final class ThumbView: NSView {
         guard let scrollView, let document = scrollView.documentView, let look = Self.look else { return nil }
         let visible = scrollView.contentView.bounds.height
         // A table's frame can stay taller than its rows after the area it's in has shrunk, so its rows are what count.
-        let total = (document as? NSTableView).map { table in table.numberOfRows > 0 ? table.rect(ofRow: table.numberOfRows - 1).maxY : 0 } ?? document.frame.height
-        guard total > visible + 0.5, visible > 0, bounds.height > CGFloat(look.minLength) + 4 else { return nil }
+        let extra = room()
+        let total = ((document as? NSTableView).map { table in table.numberOfRows > 0 ? table.rect(ofRow: table.numberOfRows - 1).maxY : 0 } ?? document.frame.height) + extra.top + extra.bottom
+        guard total > visible + 0.5, visible > 0, bounds.height - topInset > CGFloat(look.minLength) + 4 else { return nil }
         let width = CGFloat(hovering || dragging != nil ? look.hoverWidth : look.width)
-        let room = bounds.height - 4
+        let room = bounds.height - 4 - topInset
         let length = min(max(room * visible / total, CGFloat(look.minLength)), room)
-        let along = min(max(scrollView.contentView.bounds.minY / (total - visible), 0), 1)
-        return NSRect(x: bounds.maxX - CGFloat(look.inset) - width, y: 2 + (room - length) * along, width: width, height: length)
+        let along = min(max((scrollView.contentView.bounds.minY + extra.top) / (total - visible), 0), 1)
+        return NSRect(x: bounds.maxX - CGFloat(look.inset) - width, y: topInset + 2 + (room - length) * along, width: width, height: length)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1171,9 +1180,10 @@ final class ThumbView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let scrollView, let dragging, let document = scrollView.documentView, let place = knob() else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let travel = bounds.height - 4 - place.height
+        let travel = bounds.height - 4 - topInset - place.height
         guard travel > 0 else { return }
-        let total = document.frame.height - scrollView.contentView.bounds.height
+        let extra = room()
+        let total = document.frame.height + extra.top + extra.bottom - scrollView.contentView.bounds.height
         scroll(to: dragging.origin + (point.y - dragging.start) / travel * total)
     }
 
@@ -1186,6 +1196,7 @@ final class ThumbView: NSView {
     func scroll(to y: CGFloat) {
         guard let scrollView else { return }
         userScrolled?()
+        if let scrollTo { return scrollTo(y) }
         let clip = scrollView.contentView
         clip.setBoundsOrigin(clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size)).origin)
         scrollView.reflectScrolledClipView(clip)

@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
+pub mod chrome;
 mod find;
 mod generated_contents;
 pub mod linking;
@@ -565,9 +566,12 @@ pub struct ViewportInput {
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum ReaderOp {
     Clear,
+    /// The document's size, and how far the view may scroll past its top and its end: the rest of the margin at each end.
     Document {
         width: f64,
         height: f64,
+        top_room: f64,
+        bottom_room: f64,
     },
     Magnify {
         value: f64,
@@ -627,7 +631,17 @@ impl From<Op> for ReaderOp {
     fn from(op: Op) -> Self {
         match op {
             Op::Clear => Self::Clear,
-            Op::Document { width, height } => Self::Document { width, height },
+            Op::Document {
+                width,
+                height,
+                top_room,
+                bottom_room,
+            } => Self::Document {
+                width,
+                height,
+                top_room,
+                bottom_room,
+            },
             Op::Magnify { value } => Self::Magnify { value },
             Op::ScrollTo { y, seq } => Self::ScrollTo { y, seq },
             Op::ScrollAcross { x } => Self::ScrollAcross { x },
@@ -1355,6 +1369,7 @@ struct Inner {
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     tool: snapshot_tool::Tool,
+    chrome: chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
     printing: printing::Printing,
     /// ⌘K's palette, on the UI thread.
@@ -1976,6 +1991,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             tool: snapshot_tool::Tool::default(),
+            chrome: chrome::Chrome::default(),
             printing: printing::Printing::default(),
             keys,
             password_asks: Mutex::new(passwords::Asks::default()),
@@ -4577,6 +4593,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
     if inner.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
         lock(&inner.action_notice).take();
+        snapshot_tool::tab_came_forward(inner);
     }
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
     // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.

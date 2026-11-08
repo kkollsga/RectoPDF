@@ -340,6 +340,13 @@ pub(crate) fn add_to_panel(panel: &mut PanelModel, snapshot_on: bool, edit_mode:
     }
 }
 
+/// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
+pub(crate) fn tab_came_forward(inner: &crate::Inner) {
+    if inner.tool.is_on() {
+        inner.tool.toggle();
+    }
+}
+
 /// Whether a menu item is the tool's, for QA's `menu`, which takes only what a menu has.
 pub(crate) fn is_menu_id(id: &str) -> bool {
     id == TOGGLE_ID
@@ -609,6 +616,15 @@ mod tests {
         *lock(&tool.refused) = Some((serial, job(3.0)));
         tool.dismiss_notice();
         assert_eq!(tool.take_refused(serial), None);
+    }
+
+    /// Failure: the snapshot tool starts on, so a drag at launch draws a box instead of selecting text. Owner, 2026-11-08: "Text selection should be the default tool (not camera tool)". It starts off, and a toggle turns it on and off again.
+    #[test]
+    fn the_tool_starts_off() {
+        let tool = Tool::default();
+        assert!(!tool.is_on());
+        assert!(tool.toggle() && tool.is_on());
+        assert!(!tool.toggle() && !tool.is_on());
     }
 
     /// Failure: the tool can't be found or doesn't say whether it's on, in the menu bar or the panel, or its key is one something else takes.
