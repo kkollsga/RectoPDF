@@ -159,7 +159,11 @@ fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
 
 /// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
 fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
-    let reader = opened.map_err(|_| OpenError::NotPdf)?;
+    // A file that needs a password the reader wasn't given, or was given wrongly, says so: it's a PDF, and only the person can open it.
+    let reader = opened.map_err(|error| match error {
+        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => OpenError::PasswordNeeded,
+        _ => OpenError::NotPdf,
+    })?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
