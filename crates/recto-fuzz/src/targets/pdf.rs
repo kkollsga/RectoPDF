@@ -35,6 +35,36 @@ pub fn check_save(data: &[u8]) {
         let _ = recto_core::save::plan_in_memory(&plain, &hostile);
         let _ = recto_core::save::plan_in_memory(&hostile, &plain);
     });
+    // The rewrite: a delete in a hostile file, with and without pages added, and hostile pages added to a plain file. What it writes passes the fork's verify, or it refuses.
+    within("planning and writing a rewrite", BUDGET, || {
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, false);
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, true);
+        let _ = recto_core::save::rewrite_in_memory(&plain, &hostile, true);
+    });
+    // A form's pages added to a hostile file's form, and a hostile file's added to a form; the signature rules a save decides by; and the kept copy's rewrite.
+    let form = form_pdf();
+    within("merging forms, the signature rules and a kept copy", BUDGET, || {
+        let _ = recto_core::save::plan_in_memory(&hostile, &form);
+        let _ = recto_core::save::plan_in_memory(&form, &hostile);
+        let pages: Vec<u32> = data.iter().take(8).map(|byte| u32::from(*byte % 16)).collect::<std::collections::BTreeSet<u32>>().into_iter().collect();
+        let _ = recto_core::save::signatures_and_keep_in_memory(&hostile, &pages);
+    });
+}
+
+/// A small PDF with a form whose field's widgets are on its page, a field chain, a signature widget, and fonts in its form's resources.
+fn form_pdf() -> Vec<u8> {
+    use recto_testpdf::Object as Raw;
+    recto_testpdf::build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 8 0 R] /DR << /Font << /Helv 7 0 R >> >> /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [6 0 R 8 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: b"BT /F1 12 Tf 10 10 Td (form) Tj ET".to_vec() },
+        Raw::Dict("<< /T (topmostSubform[0]) /Kids [6 0 R] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Tx /T (f1) /V (value) /Rect [0 0 50 20] /Parent 5 0 R >>".into()),
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Sig /T (Sig) /V 9 0 R /Rect [0 0 50 20] >>".into()),
+        Raw::Dict("<< /Type /Sig /ByteRange [0 1 2 3] /Contents <00> >>".into()),
+    ])
 }
 
 fn read(bytes: &[u8]) {

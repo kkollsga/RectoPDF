@@ -193,7 +193,8 @@ import QuartzCore
             switch value {
             case "sidebar": controller.sidebarButton.performClick(nil)
             case "save":
-                guard !controller.saveButton.isHidden, controller.saveButton.isEnabled else { return fail(id, "The Save icon isn't showing.") }
+                guard !controller.saveButton.isHidden else { return fail(id, "The Save icon isn't showing.") }
+                guard controller.saveButton.isEnabled else { return fail(id, "Save is off: \(controller.saveButton.toolTip ?? "")") }
                 controller.saveButton.performClick(nil)
             case "zoom":
                 guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
