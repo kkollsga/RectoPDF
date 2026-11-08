@@ -4,6 +4,7 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod generated;
 pub mod human;
 pub mod index;
 mod loader;
@@ -119,6 +120,8 @@ pub enum Condition {
     PageDrawn,
     /// The search index for every file behind this tab is finished. Asking counts as wanting it built.
     IndexingDone,
+    /// The tab's generated contents are ready. Asking counts as wanting them made.
+    ContentsGenerated,
 }
 
 /// Every command. A feature without a command here isn't finished.
@@ -335,6 +338,9 @@ pub enum Command {
         /// Deepest nesting to include. 0 is the top level.
         #[serde(default)]
         depth: Option<u8>,
+        /// The ones made from the document's headings, rather than the file's own.
+        #[serde(default)]
+        generated: bool,
     },
     /// Finds words across a document, from its index if that's finished, and otherwise by reading its pages.
     Search {
@@ -602,6 +608,8 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
+            // Making generated contents starts a helper, which is heavier work than reading the file's own, so the log can tell them apart.
+            Self::Contents { tab, generated: true, .. } => json!({ "tab": tab_of(tab), "generated": true }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
@@ -836,6 +844,10 @@ pub trait SessionAccess {
     fn indexing(&self) -> Option<&dyn index::Indexing> {
         None
     }
+    /// How generated contents get made here, if they do.
+    fn generating(&self) -> Option<&dyn generated::Generating> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -1042,7 +1054,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         })),
         Command::Where { tab } => access.with(|s| Ok(where_json(s, select(s, tab)?))),
         Command::Facts { tab } => reading::facts(access, tab),
-        Command::Contents { tab, from, limit, depth } => reading::contents(access, tab, *from, *limit, *depth),
+        Command::Contents { tab, from, limit, depth, generated } => reading::contents(access, tab, *from, *limit, *depth, *generated),
         Command::Signatures { tab } => reading::signatures(access, tab),
         Command::Search { tab, query, pages, limit, scan, regex, rank, context } => search::search(access, &search::Asked { tab, query, pages: pages.as_deref(), limit: *limit, scan: *scan, regex: *regex, rank: *rank, context: *context }),
         Command::Index { tab, agent } => index::index(access, tab, true, *agent),
@@ -1669,8 +1681,11 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
     if condition == Condition::IndexingDone {
         return index::look(access, tab);
     }
+    if condition == Condition::ContentsGenerated {
+        return generated::look(access, tab);
+    }
     access.with(|s| match condition {
-        Condition::IndexingDone => ConditionState::Waiting,
+        Condition::IndexingDone | Condition::ContentsGenerated => ConditionState::Waiting,
         Condition::TabOpen => match select(s, tab) {
             Ok(id) => ConditionState::Met(where_json(s, id)),
             Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
@@ -1704,6 +1719,7 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
         Condition::TabOpen | Condition::TabClosed => &["tabs"],
         Condition::PageDrawn => &["tabs", "draws"],
         Condition::IndexingDone => &["tabs", "indexing"],
+        Condition::ContentsGenerated => &["tabs", "contents"],
     }
 }
 
@@ -1745,12 +1761,18 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
         .rows
         .iter()
         .map(|row| {
+            // A note's words are Rust's, so they're not marked as the file's.
+            if row.kind == RowKind::Note {
+                return json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) });
+            }
             json!({
-                "kind": match row.kind { RowKind::Tab => "tab", RowKind::Contents => "contents" },
+                "kind": match row.kind { RowKind::Tab => "tab", _ => "contents" },
                 "tab": row.tab.0,
                 "page": row.page,
                 "depth": row.depth,
                 "current": row.current,
+                "expandable": row.expandable,
+                "expanded": row.expanded,
                 "untrusted": { "text": row.text },
             })
         })
@@ -1947,7 +1969,7 @@ mod tests {
             Command::BudgetViewport { tab: tab(), viewport: "10x10".into(), first: None, scale: 2.0, strategy: None },
             Command::Where { tab: tab() },
             Command::Facts { tab: tab() },
-            Command::Contents { tab: tab(), from: None, limit: None, depth: None },
+            Command::Contents { tab: tab(), from: None, limit: None, depth: None, generated: false },
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
             Command::Index { tab: tab(), agent: false },
             Command::IndexStatus { tab: tab() },
@@ -2566,6 +2588,8 @@ mod tests {
     /// Failure: the log gets what an agent typed or a search's words, which can hold document text, or a file name with hidden characters in it.
     #[test]
     fn log_details_hold_no_text_and_clean_file_names() {
+        // Failure: the log can't tell asking for generated contents, which starts a helper, from reading the file's own.
+        assert_eq!(Command::Contents { tab: "#1".into(), from: None, limit: None, depth: None, generated: true }.log_details()["generated"], true);
         let hostile = format!("/d/a{}\nb.pdf", char::from_u32(0xE0041).unwrap());
         let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");

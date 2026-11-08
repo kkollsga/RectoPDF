@@ -703,6 +703,7 @@ dependencies = [
  "recto-agent",
  "recto-control",
  "recto-core",
+ "recto-index",
  "recto-platform",
  "recto-proto",
  "recto-reader",

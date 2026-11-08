@@ -1770,7 +1770,8 @@ impl Worker {
         // The one seam that says how a worker comes to exist. With no invitation it still runs: it just can't draw into surfaces.
         let invite = LinkInvite::new().ok();
         let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref())?;
-        child.note_activity(false);
+        // Busy until the document is open, whose exchange ends that: a start isn't idleness, and `start_timeout` and the open's own watch decide how long it may take. Marked idle here, a start slower than the idle rule was killed half way.
+        child.note_activity(true);
         ours.set_nonblocking(true)?;
         let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false };
         let started = Instant::now();

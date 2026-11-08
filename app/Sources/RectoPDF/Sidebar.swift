@@ -2,10 +2,12 @@ import AppKit
 import QuartzCore
 
 /// A row: only its name at rest. Its chevron and page number come with hover, and all it draws comes from Rust's row.
-final class SidebarCell: NSView {
+class SidebarCell: NSView {
     let name = TextLine()
     let pageNumber = TextLine()
     let chevron = TextLine()
+    /// A contents row's fold, on the left of its name, with the pointer in the sidebar.
+    let fold = TextLine()
     let pill = CALayer()
     let railLine = CALayer()
     let railFill = CALayer()
@@ -25,7 +27,7 @@ final class SidebarCell: NSView {
         }
         pill.cornerRadius = 7
         railDot.cornerRadius = 3.5
-        for label in [name, pageNumber, chevron] { addSubview(label) }
+        for label in [name, pageNumber, chevron, fold] { addSubview(label) }
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -51,14 +53,19 @@ final class SidebarCell: NSView {
         let active = isTab && (row.current || row.inComparison)
         pill.isHidden = !active
         pill.backgroundColor = Theme.rowActive.cg
-        let font: NSFont = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
-        let color = active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
-        name.set(row.notice == nil ? row.text : "\(noticeMark) \(row.text)", font: font, color: color.ns)
+        let isNote = row.kind == .note
+        let font: NSFont = isNote ? Self.noteFont : active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
+        let color = isNote ? (hovered && row.action != nil ? Theme.accent : Theme.textQuiet) : active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
+        // A note's words are Rust's, and what it means comes on hover, as everything else in the sidebar does.
+        name.set(row.notice == nil || isNote ? row.text : "\(noticeMark) \(row.text)", font: font, color: color.ns)
         toolTip = row.notice
         pageNumber.set(row.page.map(String.init) ?? "", font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), color: (row.current ? Theme.accent : Theme.textQuiet).ns, alignment: .right)
         pageNumber.isHidden = isTab || !hovered || row.page == nil
         chevron.set(folded ? "›" : "⌄", font: .systemFont(ofSize: 14, weight: .medium), color: Theme.textQuiet.ns, alignment: .center)
         chevron.isHidden = !(active && hovered)
+        // Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". Calm at rest, as every detail in the sidebar is: it comes with the pointer.
+        fold.set(row.expanded ? "⌄" : "›", font: .systemFont(ofSize: 12, weight: .medium), color: Theme.textQuiet.ns, alignment: .center)
+        fold.isHidden = !(row.kind == .contents && row.expandable && hovered)
         let isContents = row.kind == .contents
         railLine.isHidden = !isContents
         railFill.isHidden = !(isContents && row.railFilled)
@@ -66,6 +73,27 @@ final class SidebarCell: NSView {
         railLine.backgroundColor = Theme.railRest.cg
         railFill.backgroundColor = Theme.accent.cg
         railDot.backgroundColor = Theme.accent.cg
+    }
+
+    /// Where a contents row's fold goes: just left of its name, clear of the rail.
+    func foldPlace(indent: CGFloat, height: CGFloat, markHeight: CGFloat) -> NSRect {
+        NSRect(x: indent - 15, y: floor((height - markHeight) / 2), width: 13, height: markHeight)
+    }
+
+    /// Whether a point in this cell is on its fold, with a little room around it, so it's easy to hit.
+    func isOnFold(_ point: NSPoint) -> Bool {
+        guard let row, row.kind == .contents, row.expandable else { return false }
+        let indent = 40 + CGFloat(min(Int(row.depth), 5)) * 14
+        return point.x >= indent - 19 && point.x < indent - 1
+    }
+
+    /// The colour its name is drawn in now, which the full name on hover takes too.
+    var nameColor: NSColor {
+        guard let row else { return Theme.textStrong.ns }
+        let isTab = row.kind == .tab
+        if row.kind == .note { return (hovered && row.action != nil ? Theme.accent : Theme.textQuiet).ns }
+        if isTab && row.current { return Theme.textStrong.ns }
+        return (row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet).ns
     }
 
     /// Its name doesn't fit where it's drawn.
@@ -78,7 +106,10 @@ final class SidebarCell: NSView {
         name.convert(name.bounds, to: view)
     }
 
-    var nameFont: NSFont { row?.kind == .tab && row?.current == true ? .systemFont(ofSize: 14, weight: .semibold) : row?.current == true ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: row?.kind == .tab ? 14 : 13.5) }
+    /// A note over the contents: smaller and quieter than any entry.
+    static let noteFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+
+    var nameFont: NSFont { row?.kind == .note ? Self.noteFont : row?.kind == .tab && row?.current == true ? .systemFont(ofSize: 14, weight: .semibold) : row?.current == true ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: row?.kind == .tab ? 14 : 13.5) }
 
     override func layout() {
         super.layout()
@@ -100,6 +131,8 @@ final class SidebarCell: NSView {
         pageNumber.frame = NSRect(x: width - 58, y: floor((height - digits.height) / 2), width: 40, height: digits.height)
         let mark = chevron.size()
         chevron.frame = NSRect(x: width - 42, y: floor((height - mark.height) / 2), width: 24, height: mark.height)
+        let foldMark = fold.size()
+        fold.frame = foldPlace(indent: indent, height: height, markHeight: foldMark.height)
     }
 }
 
@@ -175,14 +208,35 @@ final class ContentsScrollView: NSScrollView {
     }
 }
 
-/// The active tab's row: its name, and the contents under it in a scrolling area of their own.
+/// The note over a tab's contents. A click on it does what Rust's row says, and the pointer resting on it shows what it means.
+final class NoteCell: SidebarCell {
+    var clicked: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        clicked?()
+    }
+}
+
+/// The active tab's row: its name, the note over its contents if Rust has one, and the contents under them in a scrolling area of their own. The note stays put while the contents scroll, so a generated list is labelled wherever it's scrolled to.
 final class ActiveTabCell: FlippedView {
     let tab = SidebarCell(frame: .zero)
+    let note = NoteCell(frame: .zero)
     private weak var box: NSView?
+    private var noteHeight: CGFloat = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         addSubview(tab)
+        addSubview(note)
+        note.isHidden = true
+    }
+
+    /// Shows the note, or hides it with no height.
+    func showNote(_ row: SidebarRow?, height: CGFloat, hovered: Bool) {
+        noteHeight = row == nil ? 0 : height
+        note.isHidden = row == nil
+        if let row { note.show(row: row, foldedActive: false, hovered: hovered) }
+        needsLayout = true
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -203,7 +257,8 @@ final class ActiveTabCell: FlippedView {
     override func layout() {
         super.layout()
         tab.frame = NSRect(x: 0, y: 0, width: bounds.width, height: tabHeight)
-        box?.frame = NSRect(x: 0, y: tabHeight, width: bounds.width, height: max(bounds.height - tabHeight, 0))
+        note.frame = NSRect(x: 0, y: tabHeight, width: bounds.width, height: noteHeight)
+        box?.frame = NSRect(x: 0, y: tabHeight + noteHeight, width: bounds.width, height: max(bounds.height - tabHeight - noteHeight, 0))
     }
 }
 
@@ -223,10 +278,11 @@ final class RevealLabel: FlippedView {
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func show(_ text: String, font: NSFont, over place: NSRect, room: CGFloat) {
+    func show(_ text: String, font: NSFont, color: NSColor, over place: NSRect, room: CGFloat) {
         layer?.backgroundColor = Theme.pill.cg
         layer?.borderColor = Theme.hairline.cg
-        label.set(text, font: font, color: Theme.textStrong.ns, wraps: true)
+        // In the row's own colour (owner, 2026-11-07: "the expanded name should have the color of the title").
+        label.set(text, font: font, color: color, wraps: true)
         let padding: CGFloat = 4
         let width = room - place.minX - padding * 2
         let size = label.size(width: max(width, 40))
@@ -313,6 +369,8 @@ final class TabTable: NSTableView {
     let table = TabTable()
     let contentsScroll = ContentsScrollView()
     let contentsTable = NSTableView()
+    let contentsThumb = ThumbView()
+    let tabsThumb = ThumbView()
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     let moreButton = NSButton(title: "", target: nil, action: nil)
@@ -322,13 +380,13 @@ final class TabTable: NSTableView {
     var performAction: ((String) -> Void)?
     private let core: AppCore
     private let noticeMark: String
-    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false, contentsNote: nil)
     /// The tabs, pulled only when their version moves.
     private(set) var tabs: [SidebarRow] = []
     private var shownTabsVersion: UInt64 = 0
     private var shownContentsVersion: UInt64 = 0
     private var activeIndex: Int?
-    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false)
+    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false, noteHeight: 0)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
     private var tracking: NSTrackingArea?
@@ -355,11 +413,13 @@ final class TabTable: NSTableView {
             MainActor.assumeIsolated { self?.frame(dt) ?? false }
         }
         view.wantsLayer = true
+        ThumbView.look = core.scrollThumb()
         for (scrollView, list) in [(scroll, table), (contentsScroll as NSScrollView, contentsTable)] {
             scrollView.documentView = list
             scrollView.automaticallyAdjustsContentInsets = false
-            scrollView.hasVerticalScroller = true
-            scrollView.autohidesScrollers = true
+            // The thumb is a view of its own (`ThumbView`), so the system's scroller, and its track, never show.
+            scrollView.hasVerticalScroller = false
+            scrollView.hasHorizontalScroller = false
             scrollView.drawsBackground = false
             scrollView.contentView.drawsBackground = false
             list.addTableColumn(NSTableColumn(identifier: .init("row")))
@@ -384,6 +444,9 @@ final class TabTable: NSTableView {
         contentsTable.rowHeight = 28
         updateContentsScroller()
         contentsScroll.userScrolled = { [weak self] in self?.noteUserScrolled() }
+        contentsThumb.attach(to: contentsScroll)
+        contentsThumb.userScrolled = { [weak self] in self?.noteUserScrolled() }
+        tabsThumb.attach(to: scroll)
         contentsScroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(contentsMoved), name: NSView.boundsDidChangeNotification, object: contentsScroll.contentView)
         contentsScroll.pointerMoved = { [weak self] inside in self?.setContentsPointer(inside) }
@@ -441,7 +504,9 @@ final class TabTable: NSTableView {
 
     /// A move of the contents isn't the reader's, so thin scrollers that come with movement stay off it, and with the pointer over them they're the system's as usual. A Mac set to always show them gets that.
     func updateContentsScroller() {
-        contentsScroll.hasVerticalScroller = pointerInContents || contentsScroll.scrollerStyle == .legacy
+        contentsScroll.hasVerticalScroller = false
+        contentsThumb.refresh()
+        tabsThumb.refresh()
     }
 
     private var contentsY: Double { contentsScroll.contentView.bounds.minY }
@@ -491,10 +556,14 @@ final class TabTable: NSTableView {
             "table_rows": contentsTable.numberOfRows,
             "stale_rows": staleContentsRows(),
             "scroller": contentsScroll.hasVerticalScroller,
+            "thumb": contentsThumb.report,
+            "tabs_thumb": tabsThumb.report,
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,
             "footer_on_screen": footer.frame.maxY <= view.bounds.height && !footer.isHidden,
+            "note": model.tocOpen ? (model.contentsNote?.text ?? "") : "",
+            "note_height": noteHeight,
         ]
     }
 
@@ -512,6 +581,13 @@ final class TabTable: NSTableView {
     var rowCount: Int { tabs.count + Int(model.tocOpen ? model.contentsCount : 0) }
 
     private var contentsHeight: CGFloat { model.tocOpen ? layout.contentsHeight : 0 }
+    private var noteHeight: CGFloat { model.tocOpen && model.contentsNote != nil ? layout.noteHeight : 0 }
+
+    /// What a click on the note over the contents does, and what `recto qa click-row note` calls.
+    func clickNote() {
+        guard let note = model.contentsNote, model.tocOpen else { return }
+        core.tapRow(row: note)
+    }
 
     @objc private func frameChanged() {
         let size = view.bounds.size
@@ -584,6 +660,11 @@ final class TabTable: NSTableView {
         revealTimer = nil
         revealRow(nil)
         guard let row else { return }
+        // At once, when Rust says there's no wait (owner, 2026-11-07: "The hover delay before showing the full toc name makes in not intuitive").
+        if revealDelay <= 0 {
+            revealRow(row)
+            return
+        }
         let timer = Timer(timeInterval: revealDelay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.revealRow(row) }
         }
@@ -626,7 +707,7 @@ final class TabTable: NSTableView {
         // Above everything else in the window.
         reveal.removeFromSuperview()
         host.addSubview(reveal)
-        reveal.show(core.rowReveal(row: data).text, font: cell.nameFont, over: cell.namePlace(in: host), room: host.bounds.width - 12)
+        reveal.show(core.rowReveal(row: data).text, font: cell.nameFont, color: cell.nameColor, over: cell.namePlace(in: host), room: host.bounds.width - 12)
     }
 
     func revealReport() -> [String: Any] {
@@ -648,6 +729,7 @@ final class TabTable: NSTableView {
             guard index < tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { return }
             let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell
             cell?.show(row: tabs[index], foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
+            (view as? ActiveTabCell)?.showNote(model.tocOpen ? model.contentsNote : nil, height: layout.noteHeight, hovered: hoveredRow != nil)
         }
         reloadContentsCells()
     }
@@ -694,7 +776,23 @@ final class TabTable: NSTableView {
     }
 
     @objc private func contentsClicked() {
-        tapContents(contentsTable.clickedRow)
+        let row = contentsTable.clickedRow
+        if let event = NSApp.currentEvent, row >= 0, let cell = contentsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell, cell.isOnFold(cell.convert(event.locationInWindow, from: nil)) {
+            return toggleSection(row)
+        }
+        tapContents(row)
+    }
+
+    /// What a click on a contents row's fold does, and what `recto qa click-row fold:N` calls.
+    func toggleSection(_ inContents: Int) {
+        guard inContents >= 0 else { return }
+        core.toggleContentsSection(first: UInt32(inContents))
+    }
+
+    /// The same, with rows counted down the sidebar as a person sees them.
+    func clickFold(_ row: Int) {
+        guard model.tocOpen, let active = activeIndex, row > active, row - active - 1 < Int(model.contentsCount) else { return }
+        toggleSection(row - active - 1)
     }
 
     private func tapTab(_ row: Int) {
@@ -764,6 +862,7 @@ final class TabTable: NSTableView {
     func update(_ new: SidebarView) {
         updatePanel()
         let (oldTabCount, oldActive, oldOpen) = (tabs.count, activeIndex, model.tocOpen)
+        let noteChanged = new.contentsNote != model.contentsNote
         let oldActiveTab = activeTabID
         let tabsChanged = new.tabsVersion != shownTabsVersion
         if tabsChanged {
@@ -794,7 +893,7 @@ final class TabTable: NSTableView {
             if heightChanged {
                 // The area's height moved with the count, and that can clamp the scroll.
                 keepingScrollAccount { table.reloadData() }
-            } else if tabsChanged {
+            } else if tabsChanged || noteChanged {
                 reloadCells()
             }
         } else {
@@ -804,6 +903,8 @@ final class TabTable: NSTableView {
         }
         shownContentsVersion = new.contentsVersion
         revealPlace()
+        contentsThumb.refresh()
+        tabsThumb.refresh()
     }
 
     private var activeTabID: UInt32? { activeIndex.flatMap { $0 < tabs.count ? tabs[$0].tab : nil } }
@@ -863,6 +964,8 @@ final class TabTable: NSTableView {
 
     func appearanceChanged() {
         view.layer?.backgroundColor = Theme.sidebar.cg
+        contentsThumb.refresh()
+        tabsThumb.refresh()
         placeFooter()
         addButton.contentTintColor = Theme.textQuiet.ns
         moreButton.contentTintColor = (panelModel.open ? Theme.accent : Theme.textQuiet).ns
@@ -880,7 +983,7 @@ final class TabTable: NSTableView {
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if tableView === contentsTable { return layout.contentsRow }
-        return layout.tabRow + (row == activeIndex ? contentsHeight : 0)
+        return layout.tabRow + (row == activeIndex ? noteHeight + contentsHeight : 0)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -900,6 +1003,8 @@ final class TabTable: NSTableView {
                 return made
             }()
             holder.hold(contentsHeight > 0 ? contentsScroll : nil, tabHeight: layout.tabRow)
+            holder.showNote(model.tocOpen ? model.contentsNote : nil, height: layout.noteHeight, hovered: hoveredRow != nil)
+            holder.note.clicked = { [weak self] in self?.clickNote() }
             holder.tab.show(row: tab, foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
             return holder
         }
@@ -918,4 +1023,141 @@ final class TabTable: NSTableView {
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+}
+
+
+/// The sidebar's scroll thumb: slim, quiet, always shown while there's something to scroll, with no track behind it, over the list's right margin rather than beside it, whatever the system's "show scroll bars" setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"). A view of its own over the scroll view, as AppKit's overlay scroller fades by itself and isn't drawn into a QA shot. Its widths and colours are Rust's, `recto_session::SCROLL_THUMB`, the same as the page area's. It takes the pointer across a strip wider than it looks, and widens a little under the pointer or while dragged, as the system's does. Dragging it, or clicking above or below it, scrolls as the scroll view would.
+final class ThumbView: NSView {
+    @MainActor static var look: ScrollThumbLook?
+    private weak var scrollView: NSScrollView?
+    private var hovering = false
+    private var dragging: (start: CGFloat, origin: CGFloat)?
+    private var area: NSTrackingArea?
+    /// Told when the reader moves the list with it, as a wheel would.
+    var userScrolled: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    /// Puts it over a scroll view's right edge and keeps it to what that shows.
+    func attach(to scrollView: NSScrollView) {
+        self.scrollView = scrollView
+        scrollView.addSubview(self)
+        scrollView.postsFrameChangedNotifications = true
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollView.contentView.postsFrameChangedNotifications = true
+        scrollView.documentView?.postsFrameChangedNotifications = true
+        var watched: [(NSNotification.Name, NSView)] = [(NSView.boundsDidChangeNotification, scrollView.contentView), (NSView.frameDidChangeNotification, scrollView.contentView), (NSView.frameDidChangeNotification, scrollView)]
+        if let document = scrollView.documentView { watched.append((NSView.frameDidChangeNotification, document)) }
+        for (name, object) in watched {
+            NotificationCenter.default.addObserver(self, selector: #selector(moved), name: name, object: object)
+        }
+        refresh()
+    }
+
+    @objc private func moved() { refresh() }
+
+    /// The document grew or shrank, or the view moved or was resized: look again. A scroll view lays out its own parts and not others', so the strip is put along its edge here.
+    func refresh() {
+        if let scrollView {
+            let width = CGFloat(Self.look?.hitWidth ?? 12)
+            let strip = NSRect(x: scrollView.bounds.width - width, y: 0, width: width, height: scrollView.bounds.height)
+            if frame != strip { frame = strip }
+        }
+        isHidden = knob() == nil
+        needsDisplay = true
+    }
+
+    /// Where the thumb is, in this view, or nothing with nothing to scroll.
+    private func knob() -> NSRect? {
+        guard let scrollView, let document = scrollView.documentView, let look = Self.look else { return nil }
+        let visible = scrollView.contentView.bounds.height
+        // A table's frame can stay taller than its rows after the area it's in has shrunk, so its rows are what count.
+        let total = (document as? NSTableView).map { table in table.numberOfRows > 0 ? table.rect(ofRow: table.numberOfRows - 1).maxY : 0 } ?? document.frame.height
+        guard total > visible + 0.5, visible > 0, bounds.height > CGFloat(look.minLength) + 4 else { return nil }
+        let width = CGFloat(hovering || dragging != nil ? look.hoverWidth : look.width)
+        let room = bounds.height - 4
+        let length = min(max(room * visible / total, CGFloat(look.minLength)), room)
+        let along = min(max(scrollView.contentView.bounds.minY / (total - visible), 0), 1)
+        return NSRect(x: bounds.maxX - CGFloat(look.inset) - width, y: 2 + (room - length) * along, width: width, height: length)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let look = Self.look, let place = knob(), (scrollView?.bounds.height ?? 0) == bounds.height else {
+            // The scroll view was resized since the strip was put along it: put it again, and draw then.
+            if scrollView != nil { DispatchQueue.main.async { [weak self] in self?.refresh() } }
+            return
+        }
+        let dark = Theme.dark
+        let strong = hovering || dragging != nil
+        let alpha = dark ? (strong ? look.darkHoverAlpha : look.darkAlpha) : (strong ? look.lightHoverAlpha : look.lightAlpha)
+        Theme.rgb(dark ? look.darkRgb : look.lightRgb).withAlphaComponent(CGFloat(alpha)).setFill()
+        NSBezierPath(roundedRect: place, xRadius: place.width / 2, yRadius: place.width / 2).fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if area == nil {
+            let made = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+            addTrackingArea(made)
+            area = made
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        needsDisplay = true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isHidden ? nil : super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let scrollView, let place = knob() else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if place.insetBy(dx: -8, dy: 0).contains(point) {
+            dragging = (point.y, scrollView.contentView.bounds.minY)
+        } else {
+            // Above or below the thumb: a page that way, as a scroller's track does.
+            let page = scrollView.contentView.bounds.height * 0.9
+            scroll(to: scrollView.contentView.bounds.minY + (point.y < place.minY ? -page : page))
+        }
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let scrollView, let dragging, let document = scrollView.documentView, let place = knob() else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let travel = bounds.height - 4 - place.height
+        guard travel > 0 else { return }
+        let total = document.frame.height - scrollView.contentView.bounds.height
+        scroll(to: dragging.origin + (point.y - dragging.start) / travel * total)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = nil
+        needsDisplay = true
+    }
+
+    /// Moves the list, as the reader's own scroll.
+    func scroll(to y: CGFloat) {
+        guard let scrollView else { return }
+        userScrolled?()
+        let clip = scrollView.contentView
+        clip.setBoundsOrigin(clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// What QA reports of it.
+    var report: [String: Any] {
+        refresh()
+        let place = knob()
+        return ["shown": !isHidden && place != nil, "hit_width": frame.width, "thumb_width": place?.width ?? 0, "thumb_length": place?.height ?? 0, "thumb_top": place?.minY ?? 0, "right_gap": place.map { bounds.maxX - $0.maxX } ?? 0]
+    }
 }

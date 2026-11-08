@@ -637,7 +637,16 @@ pub struct TabEntry {
     /// What that journal came to when this was written. The journal itself says what's true: this is for when it isn't read.
     #[serde(default)]
     pub edits: Option<EditsSummary>,
+    /// The reader chose the generated contents over the file's own. The contents themselves are kept apart, by the file's identity, and made again if they've gone.
+    #[serde(default)]
+    pub generated_contents: bool,
+    /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
+    pub contents_folds: Vec<(u32, bool)>,
 }
+
+/// Most folds kept for one tab's contents. A reader opens and closes a handful; past this the oldest goes.
+pub const MAX_CONTENTS_FOLDS: usize = 256;
 
 /// The main record's body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1367,7 +1376,7 @@ mod tests {
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None }
+        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {

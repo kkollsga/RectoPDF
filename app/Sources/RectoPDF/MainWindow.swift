@@ -443,7 +443,9 @@ final class BookMark: NSView {
     func layout() {
         // Thin scrollers that come with scrolling and fade, as in Pages, with nothing reserved for them, unless the Mac is set to always show them. With the setting on automatic and a mouse paired, AppKit puts classic ones back whatever a view was told, so it's said again here. QA can ask for either.
         let style = delegate.qa?.scrollerStyle ?? (UserDefaults.standard.string(forKey: "AppleShowScrollBars") == "Always" ? .legacy : .overlay)
-        for view in paneAreas.map(\.scrollView) + [sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != style { view.scrollerStyle = style }
+        for area in paneAreas where area.scrollView.scrollerStyle != style { area.scrollView.scrollerStyle = style }
+        // The sidebar's lists always have the slim thumb over their margin, with no track, whatever the setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"), so they're overlay whatever AppKit puts back.
+        for view in [sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != .overlay { view.scrollerStyle = .overlay }
         sidebar.updateContentsScroller()
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)

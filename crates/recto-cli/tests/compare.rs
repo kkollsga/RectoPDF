@@ -193,7 +193,16 @@ fn comparison_view_from_command_click_to_one_again() {
     assert_eq!(panes(&closed).len(), 1);
     assert!(closed["session"]["comparison"].is_null());
     assert_eq!(closed["session"]["active"], 3);
-    assert!(closed["memory"]["threads"].as_u64().unwrap() <= threads_alone + 1, "{} threads, {threads_alone} alone", closed["memory"]["threads"]);
+    // One-shot threads, a look at a file or a sleep file being written, end by themselves: a pane's page view that stayed would be there for good.
+    let began = Instant::now();
+    let threads = loop {
+        let threads = run.report()["memory"]["threads"].as_u64().unwrap();
+        if threads <= threads_alone + 1 || began.elapsed() > Duration::from_secs(5) {
+            break threads;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(threads <= threads_alone + 1, "{threads} threads, {threads_alone} alone");
 
     // And a plain click returns to one.
     run.ok(&["compare", "--tabs", "#2,#3"]);
