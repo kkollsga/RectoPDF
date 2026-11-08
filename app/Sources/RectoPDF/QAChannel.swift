@@ -170,11 +170,12 @@ import QuartzCore
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "palette_type":
-            guard let palette = controller?.sidebar.palette, palette.model.open else { return fail(id, "The palette isn't open. `recto qa menu palette.open` opens it.") }
+            // Rust has checked it's open, and says so in its words if not.
+            guard let palette = controller?.sidebar.palette else { return }
             palette.field.stringValue = value
             palette.typed(value)
         case "palette_key":
-            guard let palette = controller?.sidebar.palette, palette.model.open else { return fail(id, "The palette isn't open.") }
+            guard let palette = controller?.sidebar.palette else { return }
             palette.press(value)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")

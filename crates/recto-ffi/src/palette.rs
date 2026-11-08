@@ -16,6 +16,8 @@ pub(crate) struct State {
     text: String,
     /// The row Return runs.
     selected: usize,
+    /// The tabs ranked for a query, at a version of the tab list, so a query's tabs are ranked once however often the palette's drawn: there can be 10,000 of them.
+    tabs_ranked: Option<(String, u64, Vec<(PaletteRow, i32)>)>,
 }
 
 /// One of the palette's rows.
@@ -28,6 +30,15 @@ pub struct PaletteRow {
     pub detail: String,
     /// Its key, as `⇧⌘G`, or empty.
     pub shortcut: String,
+    /// Where it lives and its key together, as the row shows them on its right.
+    pub aside: String,
+    /// The title comes from a file, as a tab's name does, so it's only ever drawn as text.
+    pub from_file: bool,
+}
+
+fn row(id: String, title: String, detail: &str, shortcut: String, from_file: bool) -> PaletteRow {
+    let aside = if shortcut.is_empty() { detail.to_string() } else { format!("{detail}  {shortcut}") };
+    PaletteRow { id, title, detail: detail.to_string(), shortcut, aside, from_file }
 }
 
 /// Everything the palette draws.
@@ -51,9 +62,14 @@ pub(crate) fn shortcut(entry: &MenuEntry) -> String {
     format!("{}{}⌘{}", if entry.with_control { "⌃" } else { "" }, if shift { "⇧" } else { "" }, entry.key.to_uppercase())
 }
 
-/// Every item there is now, in the order an empty query lists them: the open tabs, then the commands that can be chosen now, menu by menu, then the panel's. A command that can't be chosen now isn't listed, as there's nothing it would do.
+/// The open tabs, as rows.
+fn tab_rows(core: &AppCore) -> Vec<PaletteRow> {
+    core.sidebar_tabs().into_iter().map(|tab| row(format!("tab:{}", tab.tab), tab.text, if tab.current { "Showing" } else { "Open tab" }, String::new(), true)).collect()
+}
+
+/// The commands that can be chosen now, menu by menu, then the panel's. A command that can't be chosen now isn't listed, as there's nothing it would do.
 pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
-    let mut rows: Vec<PaletteRow> = core.sidebar_tabs().into_iter().map(|tab| PaletteRow { id: format!("tab:{}", tab.tab), title: tab.text, detail: if tab.current { "Showing".into() } else { "Open tab".into() }, shortcut: String::new() }).collect();
+    let mut rows: Vec<PaletteRow> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for menu in core.menu_bar() {
         for entry in menu.entries {
@@ -62,7 +78,8 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
             if entry.id.is_empty() || entry.hidden || matches!(entry.id.as_str(), "app.services" | "palette.open") || !seen.insert(entry.id.clone()) || !seen.insert(format!("title:{}", entry.title)) || !core.menu_item_enabled(entry.id.clone()) {
                 continue;
             }
-            rows.push(PaletteRow { title: entry.title.trim_end_matches('…').to_string(), detail: menu.title.clone(), shortcut: shortcut(&entry), id: entry.id });
+            let key = shortcut(&entry);
+            rows.push(row(entry.id, entry.title.trim_end_matches('…').to_string(), &menu.title, key, false));
         }
     }
     // The panel's tools, worded to stand alone. Rotating needs a document; a paper is always there to choose.
@@ -81,18 +98,60 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
                 _ => item.title.clone(),
             };
             if seen.insert(item.id.clone()) {
-                rows.push(PaletteRow { id: item.id, title, detail: "Panel".into(), shortcut: String::new() });
+                rows.push(row(item.id, title, "Panel", String::new(), false));
             }
         }
     }
     rows
 }
 
-/// The rows a query finds, best first.
+/// The rows a query finds, best first: the tabs and the commands ranked together, tabs first among equals, so an empty query lists the tabs then the commands. The tabs' ranking is kept for the query and the tab list's version.
 pub(crate) fn found(core: &AppCore, query: &str) -> Vec<PaletteRow> {
-    let all = items(core);
-    let order = palette::rank(query, all.iter().map(|row| row.title.as_str()));
-    order.into_iter().filter_map(|at| all.get(at).cloned()).collect()
+    let version = lock(&core.inner.published).sidebar.tabs_version;
+    let cached = lock(&core.inner.palette).tabs_ranked.as_ref().filter(|(was, at, _)| was == query && *at == version).map(|(_, _, rows)| rows.clone());
+    let tabs = cached.unwrap_or_else(|| {
+        let all = tab_rows(core);
+        let ranked: Vec<(PaletteRow, i32)> = palette::rank(query, all.iter().map(|row| row.title.as_str())).into_iter().filter_map(|(at, score)| Some((all.get(at)?.clone(), score))).collect();
+        lock(&core.inner.palette).tabs_ranked = Some((query.to_string(), version, ranked.clone()));
+        ranked
+    });
+    let commands = items(core);
+    let mut both: Vec<(PaletteRow, i32)> = tabs;
+    both.extend(palette::rank(query, commands.iter().map(|row| row.title.as_str())).into_iter().filter_map(|(at, score)| Some((commands.get(at)?.clone(), score))));
+    // Stable, so equals keep tabs first and each list's own order.
+    both.sort_by(|a, b| b.1.cmp(&a.1));
+    both.into_iter().take(palette::MAX_RESULTS).map(|(row, _)| row).collect()
+}
+
+/// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
+pub(crate) fn as_command(id: &str, reader: &crate::ReaderView) -> Option<recto_agent::Command> {
+    use recto_agent::Command;
+    let active = || "active".to_string();
+    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| Command::View { paper: paper.map(str::to_string), sidebar: sidebar.map(str::to_string), agent_icon: agent_icon.map(str::to_string), zoom: zoom.map(str::to_string), layout: layout.map(str::to_string) };
+    Some(match id {
+        "view.zoom_in" => view(None, None, None, Some("in"), None),
+        "view.zoom_out" => view(None, None, None, Some("out"), None),
+        "view.actual_size" => view(None, None, None, Some("actual"), None),
+        "view.fit" => view(None, None, None, Some("fit"), None),
+        "view.sidebar" => view(None, Some(if reader.sidebar_hidden { "on" } else { "off" }), None, None, None),
+        "view.agent_icon" => view(None, None, Some(if reader.agent_icon_hidden { "on" } else { "off" }), None, None),
+        "layout.single" => view(None, None, None, None, Some("single")),
+        "layout.two_up" => view(None, None, None, None, Some("two-up")),
+        "layout.two_up_cover" => view(None, None, None, None, Some("two-up-cover")),
+        "paper.white" => view(Some("white"), None, None, None, None),
+        "paper.warm" => view(Some("warm"), None, None, None, None),
+        "paper.dark" => view(Some("dark"), None, None, None, None),
+        "compare.separate" => Command::Compare { tabs: None, sync: Some("off".into()), off: false },
+        "compare.synced" => Command::Compare { tabs: None, sync: Some("on".into()), off: false },
+        "edit.undo" => Command::Undo { tab: active() },
+        "edit.redo" => Command::Redo { tab: active() },
+        "edit.clear_history" => Command::ClearHistory { tab: active() },
+        "file.save" => Command::Save { tab: active(), out: None, replace: false },
+        "rotate.left" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: -90 },
+        "rotate.right" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: 90 },
+        tab if tab.starts_with("tab:") => Command::Tap { tab: format!("#{}", tab.trim_start_matches("tab:")) },
+        _ => return None,
+    })
 }
 
 /// What the host draws now.
@@ -106,7 +165,13 @@ pub(crate) fn view(core: &AppCore) -> PaletteView {
 }
 
 pub(crate) fn open(inner: &Inner) {
-    *lock(&inner.palette) = State { open: true, text: String::new(), selected: 0 };
+    *lock(&inner.palette) = State { open: true, ..State::default() };
+}
+
+impl Inner {
+    pub(crate) fn palette_open(&self) -> bool {
+        lock(&self.palette).open
+    }
 }
 
 pub(crate) fn close(inner: &Inner) {
@@ -141,14 +206,6 @@ pub(crate) fn run(core: &AppCore, id: &str) -> HostAction {
     core.perform(id.to_string())
 }
 
-/// Return: runs the selected row, if there is one.
-pub(crate) fn run_selected(core: &AppCore) -> HostAction {
-    let view = view(core);
-    match view.selected.and_then(|at| view.rows.get(at as usize)) {
-        Some(row) => run(core, &row.id.clone()),
-        None => HostAction::None,
-    }
-}
 
 /// What the host was left to do, by name, for `recto palette --run`.
 pub(crate) fn host_word(action: HostAction) -> &'static str {

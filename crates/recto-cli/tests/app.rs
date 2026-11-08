@@ -1898,4 +1898,34 @@ fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
     assert_eq!(run.report()["app"]["palette"]["open"], false);
     let refused = run.state.json(&["palette", "zzzzqqq", "--run"]);
     assert_eq!(refused.1, exit::NOT_FOUND, "{}", refused.0);
+    // A tab's name is the file's words.
+    let tabs = run.ok(&["palette", "long"]);
+    let tab = tabs["items"].as_array().unwrap().iter().find(|item| item["id"] == "tab:1").unwrap();
+    assert!(tab["untrusted"]["title"].is_string() && tab.get("title").is_none(), "{tab}");
+}
+
+/// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
+#[test]
+fn the_palettes_run_keeps_to_each_commands_level() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.state.set_level(Level::Control);
+    let zoomed = run.ok(&["palette", "zoom in", "--run"]);
+    assert_eq!(zoomed["ran"]["id"], "view.zoom_in", "{zoomed}");
+    let (update, code) = run.state.json(&["palette", "check for updates", "--run"]);
+    assert_ne!(code, 0, "an update's install needs Full: {update}");
+    assert_eq!(update["error"]["code"], "permission_denied", "{update}");
+    let rotated = run.ok(&["palette", "rotate all pages right", "--run"]);
+    assert_eq!(rotated["ran"]["id"], "rotate.right", "{rotated}");
+    let edits = run.ok(&["edits"]);
+    assert_eq!(edits["edited"], true, "{edits}");
+    // Below Full, `discard` throws away only agents' steps: it going through says the step is the agent's, as `page rotate` makes it, and not the owner's.
+    let (discarded, code) = run.state.json(&["discard"]);
+    assert_eq!(code, 0, "the step is the agent's: {discarded}");
+    run.state.set_level(Level::ReadOnly);
+    assert!(run.ok(&["palette", "zoom"])["items"].as_array().is_some_and(|items| !items.is_empty()), "listing is reading");
+    let (refused, code) = run.state.json(&["palette", "zoom in", "--run"]);
+    assert_ne!(code, 0, "running is doing: {refused}");
 }

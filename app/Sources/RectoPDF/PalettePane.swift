@@ -28,8 +28,7 @@ final class PaletteRowCell: NSView {
     func applyLook() {
         guard let row = shown else { return }
         title.set(row.title, font: .systemFont(ofSize: 13, weight: selected ? .medium : .regular), color: (selected ? Theme.textStrong : Theme.textBody).ns)
-        let right = row.shortcut.isEmpty ? row.detail : "\(row.detail)  \(row.shortcut)"
-        detail.set(right, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns, alignment: .right)
+        detail.set(row.aside, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns, alignment: .right)
         layer?.backgroundColor = selected ? Theme.rowActive.cg : nil
         needsLayout = true
     }
@@ -141,7 +140,9 @@ final class PaletteRowCell: NSView {
         case "up": core.paletteStep(by: -1); refresh()
         case "down": core.paletteStep(by: 1); refresh()
         case "return":
-            let action = core.paletteRunSelected()
+            // The row on screen as selected, as a click runs the row clicked: what's run is what's seen.
+            guard let selected = model.selected.map({ Int($0) }), selected < model.rows.count else { return }
+            let action = core.paletteRun(id: model.rows[selected].id)
             refresh()
             hostAction?(action)
         case "escape": core.paletteClose(); refresh()

@@ -295,7 +295,13 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "palette_type" | "palette_key" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            "palette_type" | "palette_key" => {
+                check_drive_value(verb, value)?;
+                if !self.inner().is_some_and(|inner| inner.palette_open()) {
+                    return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
+                }
+            }
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
