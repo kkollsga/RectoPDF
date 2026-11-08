@@ -306,6 +306,10 @@ pub struct ReaderView {
     pub edited: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Edit mode's on, which the panel's Rotate goes by. Published, so drawing the panel never waits on the session.
+    pub edit_mode: bool,
+    /// Whether the panel's Rotate can turn the tab showing: there is one, more than the renderer can read it, and its edits can be read.
+    pub can_rotate: bool,
     pub place: String,
     /// The paper's name, which QA and the menu use.
     pub paper: String,
@@ -834,6 +838,8 @@ struct Inner {
     qa: Option<Arc<QaBridge>>,
     paths: Option<StatePaths>,
     open_failure: Mutex<Option<String>>,
+    /// Why something the reader chose couldn't be done, as a notice that goes by itself.
+    action_notice: Mutex<Option<String>>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1214,7 +1220,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1223,6 +1229,7 @@ impl AppCore {
             qa,
             paths: Some(paths),
             open_failure: Mutex::new(None),
+            action_notice: Mutex::new(None),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -1419,8 +1426,7 @@ impl AppCore {
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        let edit_mode = self.inner.host.session.with_session(|session| session.edit_mode());
-        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, edit_mode)
+        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate)
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -1518,6 +1524,7 @@ impl AppCore {
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
         self.inner.engine.dismiss_selection_notice();
+        lock(&self.inner.action_notice).take();
         self.inner.updates.dismiss_notice();
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -2118,13 +2125,20 @@ fn session_thread(inner: &Arc<Inner>) {
             }),
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
-            CoreCall::Rotate(turns) => host.session.with_session(|session| {
-                if let Some(id) = session.active()
-                    && session.rotate_from_panel(id, turns).is_ok()
-                {
-                    events.push(recto_agent::edits_changed(session, id));
-                }
-            }),
+            CoreCall::Rotate(turns) => {
+                let refused = host.session.with_session(|session| match session.active() {
+                    None => Some(recto_session::SessionError::NoSuchTab),
+                    Some(id) => match session.rotate_from_panel(id, turns) {
+                        Ok(()) => {
+                            events.push(recto_agent::edits_changed(session, id));
+                            None
+                        }
+                        Err(error) => Some(error),
+                    },
+                });
+                // It says why, by the page, and goes by itself.
+                *lock(&inner.action_notice) = refused.map(|error| format!("Couldn't rotate: {}", error.message()));
+            }
             CoreCall::UndoOrRedo(undo) => host.session.with_session(|session| {
                 if let Some(id) = session.active()
                     && (if undo { session.undo_edit_as(id, recto_session::Author::Owner) } else { session.redo_edit_as(id, recto_session::Author::Owner) }).unwrap_or(false)
@@ -2493,7 +2507,13 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     let mut problem = None;
     let layout = snapshot.as_ref().map_or(String::new(), |shown| shown.7.name().to_string());
-    let (edited, (can_undo, can_redo)) = snapshot.as_ref().map_or((false, (false, false)), |shown| inner.host.session.with_session(|session| (session.is_edited(shown.0), session.undo_and_redo(shown.0))));
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate) = inner.host.session.with_session(|session| {
+        let edit_mode = session.edit_mode();
+        match snapshot.as_ref() {
+            Some(shown) => (session.is_edited(shown.0), session.undo_and_redo(shown.0), edit_mode, session.can_edit_pages(shown.0)),
+            None => (false, (false, false), edit_mode, false),
+        }
+    });
     match snapshot {
         None => {
             if synced.tab.take().is_some() {
@@ -2557,8 +2577,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
-    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
+    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {

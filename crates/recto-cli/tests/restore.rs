@@ -427,6 +427,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.pages.visible",
     "app.panel.height",
     "app.panel.items.len",
+    "app.panel.items[].enabled",
     "app.panel.items[].id",
     "app.panel.items[].selected",
     "app.panel.items[].title",

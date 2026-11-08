@@ -1976,6 +1976,11 @@ impl<L: DocLoader> Session<L> {
         self.step_back_or_on(id, by, PageEdits::try_undo)
     }
 
+    /// Whether a tab's pages can be edited now: it's there, more than the renderer can read its file, and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
+    pub fn can_edit_pages(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| !tab.renderer_only && !matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
+    }
+
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
     pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
         let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
@@ -3242,6 +3247,7 @@ mod tests {
     fn the_panels_rotate_turns_every_page_as_one_step() {
         let mut s = session(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert!(s.can_edit_pages(a));
         s.rotate_from_panel(a, 1).unwrap();
         assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
         assert!(s.is_edited(a), "it's an unsaved edit, for Save to commit");

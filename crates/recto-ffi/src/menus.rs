@@ -163,6 +163,8 @@ pub struct PanelItem {
     pub id: String,
     pub title: String,
     pub selected: bool,
+    /// Greyed out when it can't do anything now.
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -179,11 +181,12 @@ pub struct PanelModel {
 }
 
 /// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it.
-pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool) -> PanelModel {
-    let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected };
+pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool) -> PanelModel {
+    let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected, enabled: true };
+    let rotate = |id: &str, title: &str| PanelItem { enabled: can_rotate, ..item(id, title, false) };
     let sections = if open {
         vec![
-            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![item("rotate.left", "Rotate left", false), item("rotate.right", "Rotate right", false)] },
+            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] },
             PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
         ]
     } else {
@@ -264,7 +267,7 @@ mod tests {
                 }
             }
         }
-        for section in panel(true, Paper::White, false).sections {
+        for section in panel(true, Paper::White, false, true).sections {
             for item in section.items {
                 assert!(action(&item.id).is_some(), "{}", item.id);
             }
@@ -294,8 +297,8 @@ mod tests {
         let checked = |view, id: &str| menu_bar(view, None, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
-        assert!(panel(false, Paper::White, false).sections.is_empty(), "only the button at rest");
-        let open = panel(true, Paper::Warm, false);
+        assert!(panel(false, Paper::White, false, true).sections.is_empty(), "only the button at rest");
+        let open = panel(true, Paper::Warm, false, true);
         let selected: Vec<String> = open.sections.iter().flat_map(|section| &section.items).filter(|item| item.selected).map(|item| item.id.clone()).collect();
         assert_eq!(selected, vec!["paper.warm".to_string()]);
     }

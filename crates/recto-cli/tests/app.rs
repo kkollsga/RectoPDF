@@ -403,10 +403,15 @@ fn side_by_side_lays_out_selects_and_keeps_the_place() {
     assert_eq!(code, exit::USAGE, "{reply}");
 }
 
-/// Failure: the panel's Rotate turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Edit > Undo doesn't take it back; or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+/// Failure: the panel's Rotate can be pressed with nothing to turn, or turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Edit > Undo doesn't take it back; or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
 #[test]
 fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     let Some(run) = Run::start() else { return };
+    // With nothing open there's nothing to turn, so Rotate is greyed out rather than doing nothing.
+    run.ok(&["qa", "panel", "toggle"]);
+    let home = run.report();
+    assert!(home["app"]["panel"]["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("rotate.")).all(|item| item["enabled"] == false), "{}", home["app"]["panel"]);
+    run.ok(&["qa", "panel", "toggle"]);
     let file = long_document(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();

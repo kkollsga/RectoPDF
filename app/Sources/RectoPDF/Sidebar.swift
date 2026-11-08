@@ -268,7 +268,8 @@ final class PanelView: FlippedView {
                 button.layer?.cornerRadius = 6
                 button.layer?.backgroundColor = item.selected ? Theme.rowActive.cg : nil
                 button.identifier = NSUserInterfaceItemIdentifier(item.id)
-                button.attributedTitle = NSAttributedString(string: item.title, attributes: [.foregroundColor: (item.selected ? Theme.accent : Theme.textBody).ns, .font: NSFont.systemFont(ofSize: 12.5, weight: item.selected ? .semibold : .regular)])
+                button.isEnabled = item.enabled
+                button.attributedTitle = NSAttributedString(string: item.title, attributes: [.foregroundColor: (item.selected ? Theme.accent : item.enabled ? Theme.textBody : Theme.textQuiet).ns, .font: NSFont.systemFont(ofSize: 12.5, weight: item.selected ? .semibold : .regular)])
                 button.frame = NSRect(x: inset + CGFloat(index) * each, y: y, width: each, height: Self.rowHeight - 2)
                 addSubview(button)
                 buttons[item.id] = button
@@ -707,7 +708,7 @@ final class PanelView: FlippedView {
 
     /// What QA reports of the panel.
     func panelReport() -> [String: Any] {
-        ["open": panelModel.open, "height": panelHeight, "items": panelModel.sections.flatMap(\.items).map { ["id": $0.id, "title": $0.title, "selected": $0.selected] as [String: Any] }]
+        ["open": panelModel.open, "height": panelHeight, "items": panelModel.sections.flatMap(\.items).map { ["id": $0.id, "title": $0.title, "selected": $0.selected, "enabled": $0.enabled] as [String: Any] }]
     }
 
     func update(_ new: SidebarView) {
