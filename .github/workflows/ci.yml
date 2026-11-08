@@ -94,6 +94,9 @@ jobs:
         run: sw_vers && echo "HOME=$HOME"
       - name: PDFium
         run: tools/pdfium.sh
+      # Printed even when it passes: how this macOS describes each right the drop decides on, and what a compromised worker could fetch back. It differs between versions.
+      - name: How the kernel describes the worker's rights here
+        run: cargo nextest run --locked -p recto-platform --test walls --no-capture -E 'test(no_right_to_launchd_can_be_fetched_back_after_the_drop)'
       - name: The walls and the sandboxed worker, signed ad hoc into the real layout
         run: |
           cargo build --locked -p recto-render-service
