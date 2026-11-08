@@ -39,7 +39,8 @@ for look in light dark; do
     settle
     shot "wrong-password-$look"
     printf 'shots' | r qa password
-    until_state "a['sheet'] == {}"
+    # The sheet goes while the password's tried, before the file opens: wait for its tab, or it opens after the next file and takes the front.
+    until_state "a['sheet'] == {} and any(t['path'].endswith('locked-$look.pdf') for t in d['session']['tabs'])"
     copy="$root/report-$look.pdf"
     cp "$plain" "$copy"
     r open "$copy"
