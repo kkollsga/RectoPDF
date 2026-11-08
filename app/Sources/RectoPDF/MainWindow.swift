@@ -131,6 +131,12 @@ class MarginLabel: NSView {
         frame = NSRect(x: bottomRight.x - width - 20, y: bottomRight.y - size.height - 12, width: width + 20, height: size.height + 12)
         layer?.backgroundColor = Theme.pill.cg
     }
+
+    /// Its frame in the window's root view and how many lines its words take, for QA.
+    func qaBox(in root: NSView) -> [String: Any] {
+        let frame = superview.map { $0.convert(self.frame, to: root) } ?? self.frame
+        return ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height, "lines": label.lineCount]
+    }
 }
 
 /// What a copy has to say, in the margin with the other labels. It's a label, with a button if there's something to choose.
@@ -299,6 +305,7 @@ final class BookMark: NSView {
         for view in [zoomButton, zoomField, zoomReset] as [NSView] { root.addSubview(view) }
         buildZoomLevel()
         pages.zoomChanged = { [weak self] in self?.updateZoomLevel() }
+        pages.marginChanged = { [weak self] in self?.relayoutMargin() }
         sidebarButton.isBordered = false
         sidebarButton.imagePosition = .imageOnly
         sidebarButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: delegate.strings.sidebarButtonTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
@@ -477,6 +484,7 @@ final class BookMark: NSView {
         home.frame = area
         // The same margin to the right as above, and less above than the 16 it had. Owner, 2026-11-07: "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
         agentIcon.frame = NSRect(x: size.width - Self.cornerMargin - 20, y: Self.cornerMargin, width: 20, height: 20)
+        marginArea = area
         layoutMargin(area: area)
         layoutHome()
         positionWindowButtons()
@@ -540,6 +548,7 @@ final class BookMark: NSView {
         while paneAreas.count < wanted {
             let area = PageArea(core: delegate.core, limits: delegate.limits, isQuiet: delegate.isQuiet, pane: UInt32(paneAreas.count))
             area.zoomChanged = { [weak self] in self?.updateZoomLevel() }
+            area.marginChanged = { [weak self] in self?.relayoutMargin() }
             area.scrollView.backgroundColor = Theme.margin.ns
             root.addSubview(area.scrollView, positioned: .above, relativeTo: paneAreas.last?.scrollView)
             let edge = NSView()
@@ -569,6 +578,15 @@ final class BookMark: NSView {
             paneNotes.append(note)
         }
         while paneNotes.count > paneAreas.count { paneNotes.popLast()?.removeFromSuperview() }
+    }
+
+    /// The pages' part of the window, as the last layout found it, for laying out the margin again by itself.
+    private var marginArea: NSRect = .zero
+
+    /// The margin has changed under the labels, by a zoom, a fit or other pages coming into view: they're laid out for the room there is now. Without this, a note kept the shape it had when it was last laid out, for whatever room there was then, until something unrelated, such as a change of appearance, laid it out again.
+    private func relayoutMargin() {
+        guard marginArea != .zero else { return }
+        layoutMargin(area: marginArea)
     }
 
     private func layoutMargin(area: NSRect) {
