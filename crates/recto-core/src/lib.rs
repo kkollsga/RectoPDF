@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 mod signatures;
 mod effects;
+pub mod nav;
 pub mod save;
 pub mod verdict;
 pub use effects::{PageEffects, page_effects};
@@ -84,6 +85,8 @@ pub struct Toc {
     entries: Box<[TocEntry]>,
     /// Reading stopped at a limit, so there may be more than these.
     pub truncated: bool,
+    /// What the file calls its pages, such as `iv`, which travels with its contents: both are how a warm tab finds its way, and neither is read for a cold one. Empty for most files.
+    pub labels: nav::PageLabels,
 }
 
 /// One line of contents, for putting a [`Toc`] together from what was kept of one.
@@ -106,7 +109,7 @@ impl Toc {
             let end = u32::try_from(titles.len()).unwrap_or(u32::MAX);
             entries.push(TocEntry { title_start: start, title_len: end - start, page: line.page, parent: line.parent, depth: line.depth });
         }
-        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated }
+        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated, labels: nav::PageLabels::default() }
     }
 
     pub fn entries(&self) -> &[TocEntry] {
@@ -182,15 +185,17 @@ pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
 }
 
 fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
-    let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
+    let page_count = u32::try_from(reader.page_count().map_err(|_| OpenError::NotPdf)?).map_err(|_| OpenError::NotPdf)?;
+    // A damaged outline shouldn't stop a readable PDF from opening, nor damaged labels.
+    let mut toc = read_toc(reader).unwrap_or_default();
+    toc.labels = nav::read_labels(reader, page_count);
     Ok(DocFacts {
-        page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
+        page_count,
         byte_len: reader.source_len(),
         encrypted: reader.is_encrypted(),
         version: reader.version().into(),
         title: read_title(reader),
-        // A damaged outline shouldn't stop a readable PDF from opening.
-        toc: read_toc(reader).unwrap_or_default(),
+        toc,
         renderer_only: false,
     })
 }
@@ -284,7 +289,7 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get() })
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(), labels: nav::PageLabels::default() })
 }
 
 /// What's left for following named destinations, shared across the whole outline.

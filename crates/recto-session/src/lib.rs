@@ -8,6 +8,7 @@ pub mod compare;
 pub mod edit;
 pub mod record;
 pub mod sleep;
+pub mod trail;
 
 pub use edit::Author;
 use edit::{EditError, PageEdits};
@@ -744,6 +745,10 @@ pub struct Session<L = DiskLoader> {
     generated: Vec<(TabId, GeneratedView)>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
     saved_over: Vec<(TabId, FileStamp, FileStamp)>,
+    /// Back and forward, for tabs someone has jumped in: see [`trail`]. Nothing for a tab nobody has.
+    trails: HashMap<TabId, trail::Trail>,
+    /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
+    jumps: Vec<(TabId, trail::Stop)>,
 }
 
 /// Saves remembered for the page view to carry its view over: one per tab saved lately is plenty, as it's asked for straight after.
@@ -855,7 +860,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new() }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new(), trails: HashMap::new(), jumps: Vec::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -1114,6 +1119,119 @@ impl<L: DocLoader> Session<L> {
             tab.place_dirty = true;
         }
         Ok(())
+    }
+
+    /// **Where the reader is in a tab,** for a jump to mark: the page, and how far down it if the page view has said lately.
+    pub fn here(&self, id: TabId) -> Option<trail::Stop> {
+        let tab = self.tab(id)?;
+        let within = tab.place.filter(|place| place.page == tab.page && place.anchor_page == tab.page).map_or(0.0, |place| place.within);
+        Some(trail::Stop::new(tab.page, within))
+    }
+
+    /// **A jump:** following a link, a contents entry, or going to a page by its number or label. Where the reader was is marked for Back, and the way forward goes. The page is held to the document, and the page view lands `within` the way down it.
+    pub fn jump(&mut self, id: TabId, page: u32, within: f64) -> Result<(), SessionError> {
+        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let to = trail::Stop::new(page.min(self.pages_in(id).saturating_sub(1)), within);
+        self.trails.entry(id).or_default().jumped(here, to);
+        self.land(id, to)
+    }
+
+    /// Back in a tab's trail. Says whether there was anywhere to go.
+    pub fn go_back(&mut self, id: TabId) -> Result<bool, SessionError> {
+        self.step_trail(id, true)
+    }
+
+    /// Forward in a tab's trail, the same way.
+    pub fn go_forward(&mut self, id: TabId) -> Result<bool, SessionError> {
+        self.step_trail(id, false)
+    }
+
+    fn step_trail(&mut self, id: TabId, back: bool) -> Result<bool, SessionError> {
+        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let Some(trail) = self.trails.get_mut(&id) else { return Ok(false) };
+        let Some(to) = (if back { trail.go_back(here) } else { trail.go_forward(here) }) else { return Ok(false) };
+        // Pages may have gone since it was marked.
+        let to = trail::Stop { page: to.page.min(self.pages_in(id).saturating_sub(1)), ..to };
+        self.land(id, to)?;
+        Ok(true)
+    }
+
+    fn land(&mut self, id: TabId, to: trail::Stop) -> Result<(), SessionError> {
+        self.go_to(id, to.page)?;
+        self.jumps.retain(|(tab, _)| *tab != id);
+        self.jumps.push((id, to));
+        Ok(())
+    }
+
+    /// Whether a tab can go back, and forward.
+    pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
+        self.trails.get(&id).map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+    }
+
+    /// A tab's trail, for QA and `recto where`.
+    pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
+        self.trails.get(&id)
+    }
+
+    /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
+    pub fn take_jump(&mut self, id: TabId) -> Option<trail::Stop> {
+        let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
+        Some(self.jumps.swap_remove(at).1)
+    }
+
+    /// **What the file calls a page,** zero-based, counting unsaved edits: `iv` for a page of front matter. Nothing for a file without labels, a page added from another file, or a tab whose file isn't read, which shows its number. A moved page keeps its own label, as its file names it.
+    pub fn page_label(&self, id: TabId, position: u32) -> Option<String> {
+        let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        if toc.labels.is_empty() {
+            return None;
+        }
+        let page = match self.edits.get(&id) {
+            None => position,
+            Some(edits) => {
+                let slot = edits.slots().get(position as usize)?;
+                if slot.source != 0 {
+                    return None;
+                }
+                slot.page
+            }
+        };
+        toc.labels.label(page)
+    }
+
+    /// A page's label only where it says more than its number: `iv`, but not `4` for the fourth page.
+    pub fn page_label_differs(&self, id: TabId, position: u32) -> Option<String> {
+        self.page_label(id, position).filter(|label| *label != (u64::from(position) + 1).to_string())
+    }
+
+    /// **The words for where a tab is,** as the corner shows them: `12 of 96`, or `iv (4 of 96)` where the file calls the page something else.
+    pub fn place_words(&self, id: TabId, page: u32) -> String {
+        let plain = format!("{} of {}", page + 1, self.pages_in(id));
+        match self.page_label_differs(id, page) {
+            Some(label) => format!("{label} ({plain})"),
+            None => plain,
+        }
+    }
+
+    /// **The page typed in the go-to field,** zero-based: a label the file uses first, as Preview and Acrobat read it, then a plain number. Nothing if it's neither.
+    pub fn page_for_typed(&self, id: TabId, typed: &str) -> Option<u32> {
+        let typed = typed.trim();
+        let pages = self.pages_in(id);
+        if let Some((_, toc)) = self.warm.iter().find(|(tab, _)| *tab == id)
+            && !toc.labels.is_empty()
+        {
+            let file_pages = self.tab(id).map_or(0, |tab| tab.page_count);
+            if let Some(file_page) = toc.labels.find(typed, file_pages) {
+                match self.edits.get(&id) {
+                    None => return Some(file_page),
+                    Some(edits) => {
+                        if let Some(position) = edits.slots().iter().position(|slot| slot.source == 0 && slot.page == file_page) {
+                            return u32::try_from(position).ok();
+                        }
+                    }
+                }
+            }
+        }
+        typed.parse::<u32>().ok().filter(|page| *page >= 1 && *page <= pages).map(|page| page - 1)
     }
 
     /// How many pages a tab has now, counting unsaved edits.
@@ -2018,7 +2136,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _, trails, jumps: _ } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -2041,6 +2159,8 @@ impl<L: DocLoader> Session<L> {
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
+                    back: trails.get(id).map(|trail| trail.back().to_vec()).unwrap_or_default(),
+                    forward: trails.get(id).map(|trail| trail.forward().to_vec()).unwrap_or_default(),
                 }
             })
             .collect();
@@ -2080,6 +2200,8 @@ impl<L: DocLoader> Session<L> {
         self.draws.clear();
         self.journals.clear();
         self.fresh_journals.clear();
+        self.trails.clear();
+        self.jumps.clear();
         self.active = None;
         self.comparison = None;
         self.next_id = record.next_id;
@@ -2117,6 +2239,9 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             let pages = self.edits.get(&id).map_or(entry.page_count, PageEdits::len);
+            if !entry.back.is_empty() || !entry.forward.is_empty() {
+                self.trails.insert(id, trail::Trail::from_record(&entry.back, &entry.forward, pages));
+            }
             self.tabs.push(TabRecord {
                 from_sleep: None,
                 encrypted: false,
@@ -2367,6 +2492,8 @@ impl<L: DocLoader> Session<L> {
         self.warm.retain(|(tab, _)| *tab != id);
         self.generated.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
+        self.trails.remove(&id);
+        self.jumps.retain(|(tab, _)| *tab != id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
         if let Some(comparison) = &mut self.comparison
@@ -2407,7 +2534,7 @@ impl<L: DocLoader> Session<L> {
                 continue;
             }
             toc_open = tab.toc_open;
-            place = format!("{} of {}", tab.page + 1, self.pages_in(tab.id));
+            place = self.place_words(tab.id, tab.page);
             if tab.toc_open
                 && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
             {
@@ -5261,5 +5388,69 @@ mod tests {
         assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
         assert!(read_ahead > loads);
         assert_eq!(back.active(), Some(ids[0]));
+    }
+}
+
+#[cfg(test)]
+mod trail_tests {
+    use super::*;
+    use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
+
+    /// Twelve pages: `i` to `iv`, then `1` to `8`.
+    struct Labelled;
+
+    impl DocLoader for Labelled {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            let mut toc = Toc::default();
+            toc.labels = PageLabels::from_ranges(vec![LabelRange { start: 0, first: 1, style: LabelStyle::RomanLower, prefix: "".into() }, LabelRange { start: 4, first: 1, style: LabelStyle::Decimal, prefix: "".into() }], false);
+            Ok(DocFacts { page_count: 12, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc, renderer_only: false })
+        }
+    }
+
+    /// Failure: Back after following a link doesn't return to where the reader was, to the depth on the page; or the trail isn't in the record, so it's gone after a quit or an update; or a closed tab's trail stays in memory.
+    #[test]
+    fn back_and_forward_come_back_after_a_restart() {
+        let mut s = Session::new(Labelled);
+        let id = s.open(Path::new("/d/book.pdf")).unwrap();
+        s.go_to(id, 2).unwrap();
+        s.note_place(id, PlaceRecord { page: 2, anchor_page: 2, within: 0.4, x: 0.0, y: 0.0, document_height: 1.0, zoom: 1.0, page_width: 0.0, page_height: 0.0 });
+        s.jump(id, 9, 0.25).unwrap();
+        assert_eq!(s.tab(id).unwrap().page, 9);
+        assert_eq!(s.take_jump(id), Some(trail::Stop::new(9, 0.25)), "the page view's told where to land");
+        assert_eq!(s.take_jump(id), None, "once");
+        assert_eq!(s.can_go_back_and_forward(id), (true, false));
+        let record = s.to_record();
+        let mut again = Session::new(Labelled);
+        again.restore(&record, HashMap::new()).unwrap();
+        assert_eq!(again.trail_of(id), s.trail_of(id), "the trail comes back as it was");
+        assert!(again.go_back(id).unwrap());
+        assert_eq!(again.take_jump(id), Some(trail::Stop::new(2, 0.4)), "back to the page and the depth it was left at");
+        assert_eq!(again.tab(id).unwrap().page, 2);
+        assert_eq!(again.can_go_back_and_forward(id), (false, true));
+        assert!(again.go_forward(id).unwrap());
+        assert_eq!(again.tab(id).unwrap().page, 9);
+        assert!(!again.go_forward(id).unwrap(), "nowhere further");
+        again.close(id).unwrap();
+        assert!(again.trails.is_empty() && again.jumps.is_empty());
+    }
+
+    /// Failure: the corner shows `4 of 12` for a page the book calls `iv`, or `5 (5 of 12)` where the label says nothing new; or typing `iv` or `3` in the go-to field goes to the wrong page.
+    #[test]
+    fn labels_show_in_the_corner_and_find_pages() {
+        let mut s = Session::new(Labelled);
+        let id = s.open(Path::new("/d/book.pdf")).unwrap();
+        assert_eq!(s.place_words(id, 3), "iv (4 of 12)");
+        assert_eq!(s.place_words(id, 4), "1 (5 of 12)");
+        assert_eq!(s.page_for_typed(id, "iv"), Some(3));
+        assert_eq!(s.page_for_typed(id, "3"), Some(6), "the page labelled 3, as Preview reads it");
+        assert_eq!(s.page_for_typed(id, "12"), Some(11), "a number no page is labelled is the page");
+        assert_eq!(s.page_for_typed(id, "13"), None);
+        assert_eq!(s.page_for_typed(id, "xyz"), None);
+        // A moved page keeps the label its file gives it.
+        s.edit_pages(id, |edits| edits.move_pages(3, 1, 0)).unwrap();
+        assert_eq!(s.page_label(id, 0).as_deref(), Some("iv"));
+        assert_eq!(s.page_for_typed(id, "iv"), Some(0));
+        s.go_to(id, 0).unwrap();
+        assert_eq!(s.sidebar().place, "iv (1 of 12)");
     }
 }
