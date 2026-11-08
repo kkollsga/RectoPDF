@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check: the one local check, cheapest step first, stopping at the first failure.
 #
-#   tools/check.sh --quick    Changed crates' tests, clippy for the workspace, a Windows compile check (while working)
+#   tools/check.sh --quick    The layout (rustfmt), changed crates' tests, clippy for the workspace, a Windows compile check (while working)
 #   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
 #   tools/check.sh --full     Clippy, a Windows compile check, the tests of crates changed since main, every other test,
@@ -218,6 +218,11 @@ run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
+  # One layout, so two branches that each add a field to a struct literal merge without a conflict (guide §2.8). Seconds, and nothing builds.
+  # `cargo fmt --all` fixes it.
+  stage fmt
+  cargo fmt --all --check
+  cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check
   stage clippy
   cargo clippy --workspace --all-targets --locked -- -D warnings
   # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.

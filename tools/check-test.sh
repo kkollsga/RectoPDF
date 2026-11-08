@@ -76,8 +76,8 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
 
@@ -194,7 +194,7 @@ fresh_ledger
 commit_code clippy-fails
 out=$(STUB_FAIL=clippy STUB_EXIT=101 full); rc=$?
 check "the failure's exit code comes through" "101" "$rc"
-check "it stops at the first failing stage" "1" "$(ran)"
+check "it stops at the first failing stage, after the layout's two" "3" "$(ran)"
 check "the ledger names the stage" "fail:clippy" "$(last_ledger_field 4)"
 check "a failure isn't remembered as a pass" "no-passes" "$([ -s "$PASSES" ] && echo has-passes || echo no-passes)"
 check "nor given to the guard" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
@@ -206,6 +206,16 @@ check "the queue refuses the same failure, with its exit" "101" "$rc"
 has "and shows why" "heavy: refused" "$out"
 check "and no step ran" "0" "$(ran)"
 check "and it costs no budget" "$before" "$(runs_in_ledger)"
+
+# Failure (review V1): code laid out by hand reaches clippy and the tests, minutes spent before the cheapest check says no.
+fresh_ledger
+commit_code fmt-fails
+out=$(STUB_FAIL="fmt --all --check" STUB_EXIT=1 full); rc=$?
+check "a layout off stops the run first" "1 1" "$rc $(ran)"
+check "and the ledger says so" "fail:fmt" "$(last_ledger_field 4)"
+STUB_FAIL="fmt --all --check" STUB_EXIT=1 tools/check.sh --quick > /dev/null 2>&1
+check "the quick check has it too" "1" "$?"
+: > "$CALLS"
 
 # Failure: a job stopped from outside held against the branch.
 fresh_ledger
