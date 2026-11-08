@@ -188,6 +188,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 4: Saving and editing
 
+- [ ] **Save stage 2, parked for after the first release** on local branch `build/save-rewrite` at `9dad399` (5 commits on `d27a0e7`, not pushed), worktree `.worktrees/save-rewrite`, status in its `docs/SAVE-STAGE2-STATUS.md`. Built: deletes by the streaming rewrite, signed files' unsigned copies, usage rights removed in place, kept pages only for undo past a delete, IRS form fields on added pages fillable, a changed added PDF not drawn. Left: a fuzz target for the rewrite plan, delete measurements, app QA and screenshots, docs. Merge main first when it resumes
+
 Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2), after the first release:
 - [ ] On Save's gate: a redaction's crash must not leave sleep files for earlier versions, as those are pictures of what's being removed
 - [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
