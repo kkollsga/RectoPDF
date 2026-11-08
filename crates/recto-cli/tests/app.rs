@@ -854,7 +854,8 @@ fn the_menu_bar_and_the_agent_icon() {
     run.settled();
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
+    // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
@@ -2015,4 +2016,197 @@ fn the_app_draws_with_walled_workers_over_the_surface_link() {
     assert!(workers >= 1, "no worker drew the page: {}", state["memory"]);
     assert_eq!(state["memory"]["workers_walled"].as_u64(), Some(workers), "a live worker isn't walled: {}", state["memory"]);
     assert!(state["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "no surface tile arrived: {}", state["reader"]["tiles"]);
+}
+
+/// A place in the middle of one of `linked_document`'s links on page 1, as `qa pointer` takes it.
+fn on_link(index: usize) -> String {
+    let rect = recto_testpdf::LINKS_ON_PAGE_ONE[index].0;
+    format!("1:{},{}", (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0)
+}
+
+/// The pointer over a link, waiting for its page's links to be read, as a person's next move would see them.
+fn hover(run: &Run, place: &str) -> Value {
+    run.ok(&["qa", "pointer", place]);
+    run.settled();
+    wait_for(run, |state| {
+        run.ok(&["qa", "pointer", place]);
+        state["app"]["pages"]["cursor"] == "link"
+    })
+}
+
+/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
+#[test]
+fn links_back_forward_and_page_labels_in_the_app() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let rest = run.report();
+    assert_eq!(rest["app"]["place_label"], "i (1 of 12)", "the book's own number, and its place: {rest}");
+    let over = hover(&run, &on_link(0));
+    assert_eq!(over["app"]["links"]["hint"], "Go to page 5 (page 9)", "{over}");
+    assert_eq!(over["app"]["links"]["hint_in_lower_left"], true);
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(0))]);
+    run.ok(&["qa", "mouse-up"]);
+    let went = wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    let go = |state: &Value, id: &str| state["app"]["menu_bar"].as_array().unwrap().iter().flat_map(|menu| menu["items"].as_array().unwrap()).find(|item| item["id"] == id).map(|item| item["enabled"].clone()).unwrap();
+    assert_eq!((go(&went, "go.back"), go(&went, "go.forward")), (json!(true), json!(false)), "{went}");
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "swipe", "-1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    run.ok(&["qa", "swipe", "1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    // A web address: asked about first, with the whole address, and opened only on Open. A quiet run opens nothing and notes it.
+    let web = hover(&run, &on_link(2));
+    assert_eq!(web["app"]["links"]["hint"], "Web link: https://example.com/report?id=7");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    let asked = run.ok(&["qa", "mouse-up"]);
+    let asked = if asked["sheet"]["kind"] == "link_prompt" { run.report() } else { wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt") };
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("https://example.com/report?id=7"), "{asked}");
+    assert_eq!(asked["app"]["links"]["address_opened"], Value::Null, "nothing opens before the answer");
+    let cancelled = run.ok(&["qa", "sheet-answer", "second"]);
+    assert_eq!(cancelled["links"]["address_opened"], Value::Null, "Cancel opens nothing: {cancelled}");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    run.ok(&["qa", "mouse-up"]);
+    wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt");
+    let opened = run.ok(&["qa", "sheet-answer", "first"]);
+    assert_eq!(opened["links"]["address_opened"], "https://example.com/report?id=7", "{opened}");
+    // A script: never run, and said so.
+    hover(&run, &on_link(3));
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(3))]);
+    run.ok(&["qa", "mouse-up"]);
+    let refused = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("script")));
+    assert_eq!((&refused["app"]["sheet"], &refused["app"]["place_label"]), (&json!({}), &json!("i (1 of 12)")), "{refused}");
+    // The go-to field, by label and by number, and something that names no page.
+    let field = run.ok(&["qa", "button", "page"]);
+    assert_eq!(field["links"]["page_field"], "i", "it starts with what the book calls this page: {field}");
+    run.ok(&["qa", "page-escape"]);
+    run.ok(&["qa", "page-type", "A-2"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
+    run.ok(&["qa", "page-type", "iii"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "iii (3 of 12)");
+    run.ok(&["qa", "page-type", "no such page"]);
+    wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("No page is called")));
+    // An agent sees the same, and goes back the same way.
+    let place = run.ok(&["where"]);
+    assert_eq!((&place["page"], &place["untrusted"]["label"], &place["can_go_back"]), (&json!(3), &json!("iii"), &json!(true)), "{place}");
+    run.ok(&["back"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
+}
+
+fn found_in(bytes: &[u8], needle: &str) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
+/// Three pages, the second marked to be deleted.
+fn three_marked() -> TempPdf {
+    TempPdf::new("three.pdf", &pages(&[Page::new(text_lines(&["Keep page one"])), Page::new(text_lines(&["DELETEDPAGEMARK"])), Page::new(text_lines(&["Keep page three"]))]))
+}
+
+/// A two-page document with a person's signature, or certified, or with usage rights alone.
+fn signed_two(kind: &str) -> TempPdf {
+    let (form, perms) = match kind {
+        "certified" => ("/AcroForm << /Fields [5 0 R] /SigFlags 3 >>", "/Perms << /DocMDP 6 0 R >>"),
+        "usage_rights" => ("", "/Perms << /UR3 6 0 R >>"),
+        _ => ("/AcroForm << /Fields [5 0 R] /SigFlags 3 >>", ""),
+    };
+    TempPdf::new(&format!("{kind}.pdf"), &build(&[
+        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R {form} {perms} >>")),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["A signed contract, page one"]) },
+        Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
+        Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["DELETEDPAGEMARK"]) },
+    ]))
+}
+
+/// Failure: a delete from the window isn't saved, is appended so the page's words stay in the file, or can't be undone past the save, or undoing past it needs a copy of the whole file. Through the window's own Save: the page is gone from the file, the history keeps a copy of that page alone, out of Spotlight's reach, and undo past the save brings it back and draws it.
+#[test]
+fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
+    let Some(run) = Run::start() else { return };
+    let file = three_marked();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["reader"]["pages"] == 2);
+    assert_eq!(edited["app"]["save_button"]["enabled"], true, "a delete on an unsigned file saves: {}", edited["app"]["save_button"]);
+    run.ok(&["qa", "button", "save"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false && state["app"]["save_button"]["visible"] == false);
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(!found_in(&bytes, "DELETEDPAGEMARK") && found_in(&bytes, "Keep page three"), "the page's words are gone from the file");
+    let journals = run.state.root.join("session").join("journals");
+    let kept: Vec<PathBuf> = std::fs::read_dir(&journals).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("kept-"))).collect();
+    assert_eq!(kept.len(), 1, "one copy kept for the history: {kept:?}");
+    assert!(kept[0].extension().is_some_and(|extension| extension == "keptpages"), "not a .pdf, so Spotlight has no importer for it");
+    let kept_bytes = std::fs::read(&kept[0]).unwrap();
+    assert!(found_in(&kept_bytes, "DELETEDPAGEMARK") && !found_in(&kept_bytes, "Keep page one"), "it holds the deleted page alone");
+    // Undo past the save: the page comes back, from the copy, and draws.
+    run.ok(&["qa", "owner-edit", "undo"]);
+    let back = wait_for(&run, |state| state["reader"]["pages"] == 3 && state["app"]["document_edited"] == true);
+    assert_eq!(back["app"]["save_button"]["visible"], true);
+    run.ok(&["goto", "2"]);
+    run.settled();
+    let drawn = run.report();
+    assert!(drawn["reader"]["note"].is_null(), "page 2 draws from the kept copy: {}", drawn["reader"]["note"]);
+    assert_eq!(run.ok(&["text", "2"])["untrusted"]["text"].as_str().map(|text| text.contains("DELETEDPAGEMARK")), Some(true));
+}
+
+/// Failure (SPEC decision 27): a delete on a signed file can be saved over it, which would break the signature, or leaves no way to keep the change. Save is off, and its icon says why; ⌘S is greyed out; Save As's sheet says the copy won't be signed; and the copy has no signature, while the original is byte for byte as it was.
+#[test]
+fn a_signed_files_delete_turns_save_off_and_save_as_is_unsigned() {
+    let Some(run) = Run::start() else { return };
+    for kind in ["signed", "certified"] {
+        let file = signed_two(kind);
+        let original = std::fs::read(&file.0).unwrap();
+        run.ok(&["open", file.0.to_str().unwrap()]);
+        run.settled();
+        // A certification forbids a turn too; a person's signature only what has to be written anew.
+        run.ok(&["qa", "owner-edit", if kind == "certified" { "rotate:1" } else { "delete:2" }]);
+        let off = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["app"]["save_button"]["enabled"] == false);
+        assert!(off["app"]["save_button"]["tooltip"].as_str().unwrap().contains("Save As makes an unsigned copy"), "{kind}: {}", off["app"]["save_button"]);
+        assert_eq!(menu_item(&off, "file.save")["enabled"], false, "{kind}: ⌘S is off too");
+        let (refused, _) = run.state.json(&["qa", "button", "save"]);
+        assert_eq!(refused["ok"], false, "{kind}: a click on an icon that's off does nothing: {refused}");
+        run.ok(&["qa", "menu", "file.save_as"]);
+        let sheet = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "save_panel");
+        assert_eq!(sheet["app"]["sheet"]["message"], "The new copy won't be signed. The original keeps its signature.", "{kind}");
+        run.ok(&["qa", "sheet-answer", "cancel"]);
+        wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
+        let copy = file.0.with_file_name(format!("{kind} unsigned copy.pdf"));
+        run.ok(&["qa", "save-as", copy.to_str().unwrap()]);
+        let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+        assert!(saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("The new copy won't be signed")), "{kind}: {}", saved["app"]["copy_notice"]);
+        let written = std::fs::read(&copy).unwrap();
+        assert!(!found_in(&written, "/ByteRange") && !found_in(&written, "/Perms"), "{kind}: the copy has no signature");
+        assert_eq!(std::fs::read(&file.0).unwrap(), original, "{kind}: the original keeps its signature");
+        run.ok(&["close"]);
+        let _ = std::fs::remove_file(copy);
+    }
+}
+
+/// Failure: a delete on a file whose only signature is usage rights, as IRS forms have, is treated as a person's signature and Save turned off, or is saved with rights a reader then calls broken. Save works, rewriting the file in place with them removed, and says so quietly.
+#[test]
+fn usage_rights_alone_save_in_place_with_a_quiet_note() {
+    let Some(run) = Run::start() else { return };
+    let file = signed_two("usage_rights");
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
+    assert_eq!(edited["app"]["save_button"]["enabled"], true, "usage rights aren't a person's signature: {}", edited["app"]["save_button"]);
+    run.ok(&["qa", "button", "save"]);
+    let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+    assert!(saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("usage rights")), "{}", saved["app"]["copy_notice"]);
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(!found_in(&bytes, "/UR3") && !found_in(&bytes, "DELETEDPAGEMARK"));
+    // A save's note is about that document: on another tab it goes, rather than read as about that one (found in the stage 2 shots).
+    let other = three_marked();
+    run.ok(&["open", other.0.to_str().unwrap()]);
+    let elsewhere = wait_for(&run, |state| state["app"]["document_name"] != saved["app"]["document_name"] || state["reader"]["pages"] == 3);
+    run.settled();
+    assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
 }

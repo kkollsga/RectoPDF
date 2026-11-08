@@ -177,15 +177,24 @@ fn added_pages_are_copied_in_without_the_rest_of_their_file() {
     assert!(contains(&bytes, "/Helvetica"), "the font the added page draws with is");
 }
 
-/// Failure: a delete is appended, so the deleted page's objects stay in the file for anyone to read back. It needs the rewrite, and until that's built the save is refused with nothing written.
+/// Failure: a delete is appended, so the deleted page's objects stay in the file for anyone to read back, in the bytes or an old revision. It's a rewrite: the deleted page's words are nowhere in the new file, plainly or in any stream, its old revisions are gone, and the kept pages are there in order with their turns.
 #[test]
-fn a_delete_isnt_appended() {
+fn a_delete_is_a_rewrite_and_the_page_is_gone() {
     let dir = Dir::new();
-    let path = dir.write("doc.pdf", &marked(&["KEEP", "DELETED"]));
-    let before = std::fs::read(&path).unwrap();
-    let order = own(&[(0, 0)]);
-    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::NeedsRewrite));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let path = dir.write("doc.pdf", &marked(&["KEEPONE", "DELETEDMARK", "KEEPTWO"]));
+    // An earlier revision that turned the page to be deleted, so its old version is in the bytes twice.
+    save::save(&request(&path, 3, &own(&[(0, 0), (1, 1), (2, 0)]), &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    let order = own(&[(0, 0), (2, 1)]);
+    let mut noted = Noted::default();
+    let outcome = save::save(&request(&path, 3, &order, &[]), Target::Same, None, &mut noted).unwrap();
+    assert_eq!((outcome.writer, outcome.pages_removed, outcome.pages), (Writer::Rewrite, 1, 2));
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "DELETEDMARK"), "the deleted page's words are gone");
+    assert_eq!(bytes.windows(9).filter(|window| window == b"startxref").count(), 1, "one section: no old revision holds it");
+    assert_eq!(read_pages(&path), [("KEEPONE".into(), 0), ("KEEPTWO".into(), 90)]);
+    assert_eq!(noted.steps, [SaveStep::Checking, SaveStep::Writing, SaveStep::Prepared, SaveStep::Committing]);
+    assert_eq!(outcome.stamp, Some(stamp(&path)));
+    assert!(outcome.document_data_kept.is_some(), "a rewrite says what it kept of the document's own");
     assert_eq!(save::writer_for(2, &order), Writer::Rewrite);
     assert_eq!(save::writer_for(2, &own(&[(0, 0), (0, 0)])), Writer::Rewrite, "a page twice and another gone is still a page gone");
     assert_eq!(save::writer_for(2, &own(&[(1, 2), (0, 0)])), Writer::Append);
@@ -308,12 +317,111 @@ fn a_certified_files_pages_arent_changed() {
     assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::BreaksCertification));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(save::signature_facts_of(&path).unwrap().certified);
+    // Save As makes a new copy with every signature removed (SPEC decision 27), and the original is untouched.
     let copy = path.with_file_name("copy.pdf");
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks), Err(SaveError::UnsignedCopyNeedsRewrite), "an unsigned copy is the rewrite's, and nothing says otherwise");
-    assert!(!copy.exists());
+    let outcome = save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed), (Writer::Rewrite, 1));
+    assert_unsigned(&copy);
+    assert_eq!(read_pages(&copy)[0].1, 90, "with the turn");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the original keeps its signature");
+    // A copy with nothing changed is unsigned too: an appended copy would add a revision its certification can show as a change (review round 2).
     let unchanged = own(&[(0, 0)]);
-    assert_eq!(save::save(&request(&path, 1, &unchanged, &[]), Target::NewFile(&copy), None, &mut save::NoHooks), Err(SaveError::UnsignedCopyNeedsRewrite), "a copy with nothing changed would still append a revision its certification can show (review round 2)");
-    assert!(!copy.exists());
+    let second = path.with_file_name("second.pdf");
+    save::save(&request(&path, 1, &unchanged, &[]), Target::NewFile(&second), None, &mut save::NoHooks).unwrap();
+    assert_unsigned(&second);
+}
+
+/// A copy has no signature of any kind: no field, value, drawn box, `/Perms` or `/SigFlags`, and nothing with a `/ByteRange` anywhere in its bytes.
+fn assert_unsigned(path: &Path) {
+    let bytes = std::fs::read(path).unwrap();
+    for mark in ["/ByteRange", "/Sig ", "/Sig>", "/DocMDP", "/UR3", "/SigFlags", "/Perms", "Signature1"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in {}", path.display());
+    }
+    let facts = save::signature_facts_of(path).unwrap();
+    assert!(!facts.has_persons_signature() && !facts.usage_rights, "{facts:?}");
+}
+
+/// Failure (SPEC decision 27): a delete on a signed PDF rewrites the signed file, so its signature breaks, or is refused with no way on. Save over it is refused with nothing written, and Save As makes an unsigned copy without the page, saying how many signatures went.
+#[test]
+fn a_delete_on_a_signed_file_is_an_unsigned_copy() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGE"]) },
+        Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["GOESMARK"]) },
+    ]);
+    let path = dir.write("signed.pdf", &bytes);
+    assert!(save::signature_facts_of(&path).unwrap().signed);
+    let order = own(&[(0, 0)]);
+    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::SignedNeedsCopy));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the signed original never changes");
+    let copy = dir.0.join("copy.pdf");
+    let outcome = save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed, outcome.pages_removed), (Writer::Rewrite, 1, 1));
+    assert_unsigned(&copy);
+    assert!(!contains(&std::fs::read(&copy).unwrap(), "GOESMARK"));
+    assert_eq!(read_pages(&copy), [("SIGNEDPAGE".into(), 0)]);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // A turn is still an addition, which keeps the signature: appended, with every byte it signs.
+    let turned = own(&[(0, 1), (1, 0)]);
+    assert_eq!(save::save(&request(&path, 2, &turned, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&bytes));
+}
+
+/// Failure: a delete on a file whose only signature is usage rights, as IRS forms have, is refused as if a person had signed it, or keeps rights a reader then calls broken. It's rewritten in place with them removed, and says so (owner, 2026-11-08).
+#[test]
+fn usage_rights_alone_allow_a_rewrite_in_place() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 7 0 R >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["FORMPAGE"]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["INSTRUCTIONSMARK"]) },
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> /Reference [<< /TransformMethod /UR3 >>] >>".into()),
+    ]);
+    let path = dir.write("irs.pdf", &bytes);
+    let order = own(&[(0, 0)]);
+    let outcome = save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.usage_rights_removed, outcome.signatures_removed), (Writer::Rewrite, true, 0));
+    assert_unsigned(&path);
+    assert!(!contains(&std::fs::read(&path).unwrap(), "INSTRUCTIONSMARK"));
+}
+
+/// Failure: moves, turns, pages added from another PDF and a delete in one save come out in the wrong order, lose the added page, or keep the deleted one. All in one rewrite.
+#[test]
+fn a_delete_with_moves_turns_and_added_pages_is_one_rewrite() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["AAA", "DELETEDMARK", "CCC"]));
+    let other = dir.write("other.pdf", &marked(&["ADDEDPAGE"]));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 2, quarter_turns: 1 }, PageRef { source: 1, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 0, quarter_turns: 0 }];
+    let outcome = save::save(&request(&path, 3, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.pages_removed), (Writer::Rewrite, 1));
+    assert_eq!(read_pages(&path), [("CCC".into(), 90), ("ADDEDPAGE".into(), 0), ("AAA".into(), 0)]);
+    assert!(!contains(&std::fs::read(&path).unwrap(), "DELETEDMARK"));
+}
+
+/// Failure (owner, 2026-11-07): undoing a delete past a Save needs a copy of the whole file, so a big PDF can't, or the copy holds pages nobody can bring back. The copy holds the pages asked for, in order, and nothing of the others.
+#[test]
+fn a_kept_copy_holds_only_the_pages_asked_for() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["STAYS1", "GONE1", "STAYS2", "GONE2"]));
+    let kept = dir.0.join("kept.pdf");
+    let stamp_kept = save::keep_pages(&path, &[1, 3], &kept, u64::MAX).unwrap();
+    assert_eq!(stamp_kept, stamp(&kept));
+    assert_eq!(read_pages(&kept), [("GONE1".into(), 0), ("GONE2".into(), 0)]);
+    let bytes = std::fs::read(&kept).unwrap();
+    assert!(!contains(&bytes, "STAYS1") && !contains(&bytes, "STAYS2"));
+    assert!(save::keep_pages(&path, &[3, 1], &dir.0.join("other.pdf"), u64::MAX).is_err(), "in order");
+    assert!(save::keep_pages(&path, &[9], &dir.0.join("other.pdf"), u64::MAX).is_err(), "pages it has");
+    assert!(save::keep_pages(&path, &[1], &kept, u64::MAX).is_err(), "never over a file that's there");
 }
 
 /// Failure: a file with usage rights alone, as IRS forms have, can't be saved, or is saved with rights a reader then calls broken. Saved, with them dropped from the new revision, and said (owner, 2026-11-08).
@@ -580,4 +688,303 @@ fn a_dangling_reference_in_an_added_page_is_null() {
     let outcome = save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(outcome.objects_missing, 1);
     assert_eq!(read_pages(&path)[1].0, "ADDED");
+}
+
+/// A form like the IRS's: one top field holding a text field whose widgets are on both pages.
+fn irs_like(marker: &str, value: &str) -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [8 0 R] /DR << /Font << /HeBo 11 0 R >> >> /DA (/HeBo 9 Tf 0 g) >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Annots [9 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&[marker]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R /Annots [10 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SECONDPAGE"]) },
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+        Raw::Dict("<< /T (topmostSubform[0]) /Kids [12 0 R] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /P 3 0 R /Parent 12 0 R /F 4 >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /P 5 0 R /Parent 12 0 R /F 4 /OTHERPAGEWIDGET true >>".into()),
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>".into()),
+        Raw::Dict(format!("<< /T (f1_01[0]) /FT /Tx /V ({value}) /Parent 8 0 R /Kids [9 0 R 10 0 R] >>")),
+    ])
+}
+
+/// Failure (save review round 1, 9 of 139 corpus saves): pages added from a PDF with a form keep their drawn fields, which can't be filled in the saved file, as qpdf says "widget annotation is not reachable from /AcroForm". The widget keeps its field and the field's parent, the top field joins the form's `/Fields`, renamed as its name's taken, the field's widgets on pages not added stay behind, and the form's fonts come along.
+#[test]
+fn an_added_pages_form_fields_can_be_filled() {
+    let dir = Dir::new();
+    let path = dir.write("f1040.pdf", &irs_like("TARGETFORM", "mine"));
+    let other = dir.write("f1040s1.pdf", &irs_like("ADDEDFORM", "theirs"));
+    let added = [AddedFile { path: &other, page_count: 2, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!() };
+    let form = match catalog.get(b"AcroForm").unwrap() {
+        Object::Dictionary(form) => form.clone(),
+        Object::Reference(id) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
+        _ => panic!(),
+    };
+    let fields = form.get(b"Fields").unwrap().as_array().unwrap();
+    assert_eq!(fields.len(), 2, "the added page's top field joins the form");
+    let names: Vec<Vec<u8>> = fields.iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect();
+    assert_eq!(names, [b"topmostSubform[0]".to_vec(), b"topmostSubform[0]_2".to_vec()], "renamed, so the two forms' values stay apart");
+    // The added widget reaches its field, which reaches the new top field.
+    let page = reader.page_map().unwrap().get(2).unwrap().id();
+    let page = reader.resolve_object(page).unwrap();
+    let widget = page.as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap()[0].as_reference().unwrap();
+    let widget = reader.resolve_object(widget).unwrap();
+    let field = reader.resolve_object(widget.as_dict().unwrap().get(b"Parent").unwrap().as_reference().unwrap()).unwrap();
+    assert_eq!(field.as_dict().unwrap().get(b"V").unwrap().as_str().unwrap(), b"theirs");
+    assert_eq!(field.as_dict().unwrap().get(b"Kids").unwrap().as_array().unwrap().len(), 1, "its widget on the page that wasn't added stays behind");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes.windows(15).filter(|window| window == b"OTHERPAGEWIDGET").count(), 1, "the document's own, and not the added file's");
+    let fonts = match form.get(b"DR").unwrap() {
+        Object::Dictionary(dr) => dr.get(b"Font").unwrap().as_dict().unwrap().clone(),
+        _ => panic!(),
+    };
+    assert!(fonts.has(b"HeBo"));
+    // And qpdf, where it's installed, finds every widget reachable.
+    if let Ok(out) = std::process::Command::new("qpdf").arg("--check").arg(&path).output() {
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(!said.contains("not reachable from /AcroForm"), "{said}");
+    }
+}
+
+/// Failure (save review round 1, on the corpus): IRS forms added to IRS forms come out with widgets qpdf calls "not reachable from /AcroForm", so their fields can't be filled. Each IRS form in `RECTO_BENCH100`, with the next one's pages added, saved as a copy: qpdf finds every widget reachable, and the copy has every top field of both. Skipped without the corpus or qpdf.
+#[test]
+fn irs_forms_added_to_irs_forms_stay_fillable() {
+    let Some(folder) = std::env::var_os("RECTO_BENCH100") else { return };
+    if std::process::Command::new("qpdf").arg("--version").output().is_err() {
+        return;
+    }
+    let mut forms: Vec<PathBuf> = std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("forms_irs_"))).collect();
+    forms.sort();
+    assert!(forms.len() >= 2, "the corpus has its IRS forms");
+    let dir = Dir::new();
+    for pair in forms.windows(2) {
+        let (target, other) = (&pair[0], &pair[1]);
+        let pages_of = |path: &Path| IndexedReader::open(FileSource::open(path).unwrap()).unwrap().page_map().unwrap().len() as u32;
+        let (mine, theirs) = (pages_of(target), pages_of(other));
+        let added = [AddedFile { path: other, page_count: theirs, stamp: Some(stamp(other)) }];
+        let mut order: Vec<PageRef> = (0..mine).map(|page| PageRef { source: 0, page, quarter_turns: 0 }).collect();
+        order.extend((0..theirs).map(|page| PageRef { source: 1, page, quarter_turns: 0 }));
+        let copy = dir.0.join(format!("{}-plus.pdf", target.file_stem().unwrap().to_string_lossy()));
+        let outcome = save::save(&request(target, mine, &order, &added), Target::NewFile(&copy), None, &mut save::NoHooks);
+        let outcome = outcome.unwrap_or_else(|error| panic!("{}: {error:?}", target.display()));
+        assert_eq!(outcome.pages, mine + theirs);
+        let out = std::process::Command::new("qpdf").arg("--check").arg(&copy).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(!said.contains("not reachable from /AcroForm"), "{} + {}: {said}", target.display(), other.display());
+        eprintln!("{} + {}: qpdf exit {:?}", target.file_name().unwrap().to_string_lossy(), other.file_name().unwrap().to_string_lossy(), out.status.code());
+    }
+}
+
+/// Failure: the fuzzer's way into the rewrite plans a different save from a real one, or what it writes doesn't pass the fork's verify. On ordinary files it deletes, adds and reads back, and refuses a delete of the only page.
+#[test]
+fn the_rewrite_in_memory_is_the_real_plan() {
+    let target = marked(&["GONE", "STAYS", "ALSO"]);
+    let added = marked(&["ADDED"]);
+    assert_eq!(save::rewrite_in_memory(&target, &added, false), Ok(2));
+    assert_eq!(save::rewrite_in_memory(&target, &added, true), Ok(3));
+    assert_eq!(save::rewrite_in_memory(&marked(&["ONLY"]), &added, false), Err(SaveError::NoPagesLeft));
+}
+
+/// Failure (review round 1 of stage 2): a page added from a signed document brings its signature widget and value along, outside the form, so this document then reads as signed by its bytes: a later delete is refused as if a person had signed it, though nothing showed Save off, and a Save As "unsigned copy" keeps a `/ByteRange`. The widget and its value stay behind, the page's own drawing comes, and saving, a delete and a Save As all go as for an unsigned document.
+#[test]
+fn an_added_pages_signature_stays_behind() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE", "ALSO"]));
+    let signed = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R 7 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGEDRAWING"]) },
+        Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (A NOTE THAT STAYS) >>".into()),
+    ]);
+    let other = dir.write("signed.pdf", &signed);
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "Signature1"), "no signature came along");
+    assert!(contains(&bytes, "SIGNEDPAGEDRAWING") && contains(&bytes, "A NOTE THAT STAYS"), "the page and its other annotations did");
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    assert!(!save::persons_signature(&reader), "the fork finds no signature in it");
+    // A delete saves over it, as for any unsigned file, and a Save As copy has no signature either.
+    let delete = own(&[(0, 0), (2, 0)]);
+    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    let copy = dir.0.join("copy.pdf");
+    save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert!(!contains(&std::fs::read(&copy).unwrap(), "/ByteRange"));
+}
+
+/// Failure (review round 1 of stage 2): a hostile form makes a save's work unbounded, or a rename that runs out settles on a taken name, merging the added field into the document's own and changing its value. Every top name taken, as far as renames go, is refused with nothing written; a form whose `/Fields` names past the limit is refused; a widget chain shared by thousands of widgets is looked at once each.
+#[test]
+fn hostile_forms_are_bounded() {
+    let dir = Dir::new();
+    // The target's form already has `F` and `F_2` to `F_1000`.
+    let taken: String = (1..=1000).map(|n| if n == 1 { "<< /T (F) >> ".to_string() } else { format!("<< /T (F_{n}) >> ") }).collect();
+    let target = build(&[
+        Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{taken}] >> >>")),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["TARGET"]) },
+    ]);
+    let path = dir.write("target.pdf", &target);
+    let before = std::fs::read(&path).unwrap();
+    // The added page: 2,000 widgets of one field named `F`.
+    let widgets: String = (0..2000).map(|at| format!("{} 0 R ", 6 + at)).collect();
+    let mut objects = vec![
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{widgets}] >>")),
+        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+        Raw::Dict(format!("<< /T (F) /FT /Tx /Kids [{widgets}] >>")),
+    ];
+    for _ in 0..2000 {
+        objects.push(Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [0 0 5 5] /Parent 5 0 R >>".into()));
+    }
+    let other = dir.write("added.pdf", &build(&objects));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let started = std::time::Instant::now();
+    assert_eq!(save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::FieldNamesTaken));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+    // With one name free, it goes in, its 2,000 widgets under one field.
+    let mine = dir.write("free.pdf", &marked(&["FREE"]));
+    let outcome = save::save(&request(&mine, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.pages, 2);
+    // A form listing more fields than a save looks at is refused, not walked.
+    let many: String = (0..100_001).map(|_| "4 0 R ").collect();
+    let huge = build(&[
+        Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{many}] >> >>")),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /T (X) >>".into()),
+    ]);
+    let huge_path = dir.write("huge.pdf", &huge);
+    // Refused before it's walked: through a save the signature look's own bound (16,384 field visits) refuses it first, as possibly locked, on the side of
+    // refusing. The name look's own refusal past 100,000 is `save::tests::a_form_past_the_field_bound_is_refused_by_the_name_look`.
+    assert_eq!(save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::LockedBySignature));
+}
+
+/// Failure (review round 1 of stage 2): a page object the tree lists twice is one page to the rewrite, so a copy kept for "pages 0 and 1" holds one page, and undo past the save puts the wrong pages back. A copy with fewer pages than asked for isn't used, and one estimated past the limit isn't written.
+#[test]
+fn a_kept_copy_that_isnt_what_was_asked_isnt_used() {
+    let dir = Dir::new();
+    let twice = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 3 0 R 5 0 R] /Count 3 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["TWICE"]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["ONCE"]) },
+    ]);
+    let path = dir.write("twice.pdf", &twice);
+    let kept = dir.0.join("kept.keptpages");
+    // Page 1 is page 0's object again: keeping page 0 alone removes page 1, which takes that object from both places.
+    assert!(save::keep_pages(&path, &[0], &kept, u64::MAX).is_err());
+    assert!(!kept.exists(), "and it isn't left there");
+    assert_eq!(save::keep_pages(&path, &[0, 1], &kept, 1), Err(SaveError::TooLarge), "past the limit, refused before writing");
+    assert!(!kept.exists());
+}
+
+/// Failure (review round 1 of stage 2): a blank signature field, the place a person is to sign, goes when usage rights are removed in place or a copy is made unsigned, though nobody signed it. It stays, with the form's `SignaturesExist`. The fork keeps them from `1336343`, in its `main` at `e5f4971`.
+#[test]
+fn a_blank_signature_field_stays_through_a_rewrite() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 7 0 R >> /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["FORM"]) },
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> /Reference [<< /TransformMethod /UR3 >>] >>".into()),
+    ]);
+    let path = dir.write("irs-blank.pdf", &bytes);
+    let outcome = save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert!(outcome.usage_rights_removed);
+    let after = std::fs::read(&path).unwrap();
+    assert!(contains(&after, "SIGNHERE") && contains(&after, "/SigFlags 1") && !contains(&after, "/UR3"), "the blank field stays");
+}
+
+/// The names of the top fields in a saved file's form, as written.
+fn form_field_names(path: &Path) -> Vec<Vec<u8>> {
+    let reader = IndexedReader::open(FileSource::open(path).unwrap()).unwrap();
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!("no catalog") };
+    let form = match catalog.get(b"AcroForm") {
+        Ok(Object::Dictionary(form)) => form.clone(),
+        Ok(Object::Reference(id)) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
+        _ => return Vec::new(),
+    };
+    form.get(b"Fields").unwrap().as_array().unwrap().iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect()
+}
+
+/// A one-page PDF whose page has the one widget `widget`, object 5, which is its form's one field, and object 6, `extra`.
+fn one_widget(widget: &str, extra: &str) -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["WIDGETPAGE"]) },
+        Raw::Dict(widget.into()),
+        Raw::Dict(extra.into()),
+    ])
+}
+
+/// Failure (review round 2 of stage 2): a blank signature field on an added page, the place a person is to sign, is dropped, though nobody signed it and the fork keeps blank ones through a rewrite. It comes along, joins the form, and leaves the document unsigned: a later delete saves over it as for any unsigned file.
+#[test]
+fn an_added_pages_blank_signature_field_comes_along() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE", "ALSO"]));
+    let other = dir.write("blank.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(form_field_names(&path), [b"SIGNHERE".to_vec()], "the place to sign joins the form");
+    assert!(!save::signature_facts_of(&path).unwrap().has_persons_signature(), "and nobody has signed it");
+    let delete = own(&[(0, 0), (2, 0)]);
+    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    assert!(contains(&std::fs::read(&path).unwrap(), "SIGNHERE"), "and it stays through the rewrite");
+}
+
+/// Failure (review round 2 of stage 2): a field whose value is a signature, a dictionary with a `/ByteRange`, isn't taken for one because its `/FT` says something else, so a page added from that document brings the value along outside the form, and the document's own form doesn't read as signed. It counts as signed, whatever its `/FT`.
+#[test]
+fn a_value_with_a_byte_range_is_a_signature_whatever_the_field_says() {
+    let dir = Dir::new();
+    let disguised = one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T (NOTASIG) /V 6 0 R /Rect [0 0 90 20] /P 3 0 R >>", "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>");
+    let other = dir.write("disguised.pdf", &disguised);
+    let reader = IndexedReader::open(FileSource::open(&other).unwrap()).unwrap();
+    assert!(save::signature_facts(&reader).signed, "its own form reads as signed");
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "NOTASIG"), "the value stays behind");
+    assert!(contains(&bytes, "WIDGETPAGE"), "the page comes");
+}
+
+/// Failure (review round 2 of stage 2): field names are compared as raw bytes, so an added field named `Name` in UTF-16 isn't seen to collide with the document's `(Name)` in PDFDocEncoding, and a reader, which compares them decoded, mixes their values. Decoded, it's taken, and the added one is renamed in its own encoding.
+#[test]
+fn field_names_are_compared_as_text() {
+    let dir = Dir::new();
+    let target = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /T (Name) /FT /Tx >>".into()),
+    ]);
+    let path = dir.write("target.pdf", &target);
+    let other = dir.write("utf16.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T <FEFF004E0061006D0065> /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let names: Vec<String> = form_field_names(&path).iter().map(|name| lopdf::decode_text_string(&Object::String(name.clone(), lopdf::StringFormat::Literal)).unwrap()).collect();
+    assert_eq!(names, ["Name", "Name_2"], "renamed, so the two values stay apart");
+    assert!(form_field_names(&path)[1].starts_with(&[0xFE, 0xFF]), "in its own encoding");
 }

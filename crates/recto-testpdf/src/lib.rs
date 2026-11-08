@@ -243,6 +243,72 @@ fn headings_in(hidden: &str, media: [f32; 4], page_extra: &str, (heading_font, h
     build(&objects)
 }
 
+/// Where [`linked_document`]'s links are on its first page, in points as it's shown, from the top left, `[x0, y0, x1, y1]`, each with what it does.
+pub const LINKS_ON_PAGE_ONE: &[([f32; 4], &str)] = &[
+    ([72.0, 112.0, 300.0, 128.0], "goto page 9, a third of the way down"),
+    ([72.0, 142.0, 300.0, 158.0], "named destination: page 7"),
+    ([72.0, 172.0, 300.0, 188.0], "https://example.com/report?id=7"),
+    ([72.0, 202.0, 300.0, 218.0], "javascript"),
+    ([72.0, 232.0, 300.0, 248.0], "launch"),
+    ([72.0, 262.0, 300.0, 278.0], "file:///Applications/Calculator.app"),
+    ([72.0, 292.0, 300.0, 308.0], "next page"),
+    ([72.0, 322.0, 300.0, 338.0], "goes nowhere"),
+];
+
+/// **A document with links and page labels,** for every test of following them: 12 pages, labelled `i` to `iv`, then `1` to `6`, then `A-1` and `A-2`, as a book's front matter, body and appendix. Page 1 has a line of blue text over each link in [`LINKS_ON_PAGE_ONE`], saying what it does. Every page says its label in large type, so where a link went shows in a screenshot.
+pub fn linked_document() -> Vec<u8> {
+    const PAGES: usize = 12;
+    let labels = ["i", "ii", "iii", "iv", "1", "2", "3", "4", "5", "6", "A-1", "A-2"];
+    let page_object = |index: usize| 4 + index * 2;
+    let first_extra = 4 + PAGES * 2;
+    let kids: Vec<String> = (0..PAGES).map(|index| format!("{} 0 R", page_object(index))).collect();
+    let mut objects = vec![
+        Object::Dict(format!(
+            "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /r >> 4 << /S /D >> 10 << /S /D /P (A-) >>] >> /Names << /Dests << /Names [(chapter-three) [{} 0 R /XYZ 0 792 0]] >> >> >>",
+            page_object(6)
+        )),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {PAGES} >>", kids.join(" "))),
+        Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+    ];
+    for (index, label) in labels.iter().enumerate() {
+        let mut content = format!("BT /F1 28 Tf 72 720 Td (Page {label}) Tj ET\n");
+        let annots = if index == 0 {
+            content += "0.1 0.3 0.8 rg BT /F1 12 Tf\n";
+            for (rect, what) in LINKS_ON_PAGE_ONE {
+                // The text sits on the box's baseline, 4 points up from its bottom, shown y down from the top.
+                content += &format!("1 0 0 1 {} {} Tm (Link: {}) Tj\n", rect[0], 792.0 - rect[3] + 4.0, escape(what));
+            }
+            content += "ET\n";
+            let annot_objects: Vec<String> = (0..LINKS_ON_PAGE_ONE.len()).map(|at| format!("{} 0 R", first_extra + at)).collect();
+            format!("/Annots [{}]", annot_objects.join(" "))
+        } else {
+            content += "BT /F1 12 Tf 14 TL 72 680 Td\n";
+            for line in 0..30 {
+                content += &format!("(Body line {line} of page {label}, ordinary text to read.) Tj T*\n");
+            }
+            content += "ET\n";
+            String::new()
+        };
+        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R /Resources << /Font << /F1 3 0 R >> >> {annots} >>", page_object(index) + 1)));
+        objects.push(Object::Stream { dict: String::new(), data: content.into_bytes() });
+    }
+    let actions = [
+        format!("/Dest [{} 0 R /XYZ 0 528 0]", page_object(8)),
+        "/A << /S /GoTo /D (chapter-three) >>".to_string(),
+        "/A << /S /URI /URI (https://example.com/report?id=7) >>".to_string(),
+        "/A << /S /JavaScript /JS (app.alert\\(1\\)) >>".to_string(),
+        "/A << /S /Launch /F (Calculator.app) >>".to_string(),
+        "/A << /S /URI /URI (file:///Applications/Calculator.app) >>".to_string(),
+        "/A << /S /Named /N /NextPage >>".to_string(),
+        "/Dest (no-such-place)".to_string(),
+    ];
+    for ((rect, _), action) in LINKS_ON_PAGE_ONE.iter().zip(actions) {
+        // Shown y down from the top, written as the file's y up from the bottom.
+        objects.push(Object::Dict(format!("<< /Type /Annot /Subtype /Link /Rect [{} {} {} {}] /Border [0 0 0] {action} >>", rect[0], 792.0 - rect[3], rect[2], 792.0 - rect[1])));
+    }
+    build(&objects)
+}
+
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A unique temp file holding the bytes, removed on drop.

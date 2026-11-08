@@ -269,6 +269,11 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     run.ok(&["goto", "40"]);
     run.settled();
+    // A way back and a way forward, which come back too.
+    run.ok(&["goto", "20"]);
+    run.settled();
+    run.ok(&["back"]);
+    run.settled();
     run.ok(&["qa", "zoom", "1.7"]);
     run.settled();
     run.ok(&["qa", "scroll", "137"]);
@@ -423,6 +428,18 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
 
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
 const KNOWN_PATHS: &[&str] = &[
+    "app.links.address_opened",
+    "app.links.hint",
+    "app.links.hint_in_lower_left",
+    "app.links.page_field",
+    "session.tabs[].back.len",
+    "session.tabs[].forward.len",
+    "session.tabs[].back[].by_agent",
+    "session.tabs[].forward[].by_agent",
+    "session.tabs[].back[].page",
+    "session.tabs[].back[].within",
+    "session.tabs[].forward[].page",
+    "session.tabs[].forward[].within",
     "app.activation",
     "app.agent_icon",
     "app.agent_icon_margins.clear_of_pages",
@@ -707,6 +724,7 @@ const KNOWN_PATHS: &[&str] = &[
     "session.tabs[].edits.owner_steps_undone",
     "session.tabs[].edits.pages",
     "session.tabs[].edits.redo",
+    "session.tabs[].edits.rewrites",
     "session.tabs[].edits.undo",
     "session.tabs[].file.device",
     "session.tabs[].file.inode",

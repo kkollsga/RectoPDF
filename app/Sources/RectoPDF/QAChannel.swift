@@ -198,7 +198,8 @@ import QuartzCore
             switch value {
             case "sidebar": controller.sidebarButton.performClick(nil)
             case "save":
-                guard !controller.saveButton.isHidden, controller.saveButton.isEnabled else { return fail(id, "The Save icon isn't showing.") }
+                guard !controller.saveButton.isHidden else { return fail(id, "The Save icon isn't showing.") }
+                guard controller.saveButton.isEnabled else { return fail(id, "Save is off: \(controller.saveButton.toolTip ?? "")") }
                 controller.saveButton.performClick(nil)
             case "zoom":
                 guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
@@ -206,6 +207,10 @@ import QuartzCore
             case "zoom_reset":
                 guard controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
                 controller.zoomReset.performClick(nil)
+            case "page":
+                // What a click on the page number calls.
+                guard !controller.placeLabel.isHidden, let clicked = controller.placeLabel.clicked else { return fail(id, "The page number isn't showing.") }
+                clicked()
             default: return fail(id, "That isn't one of the window's buttons.")
             }
         case "sheet_answer":
@@ -232,6 +237,23 @@ import QuartzCore
             // Escape in the field, by the method AppKit calls for it.
             guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
             _ = controller.control(controller.zoomField, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        case "page_type":
+            guard let controller else { return fail(id, "The window is closed.") }
+            if !controller.pageEditing {
+                guard !controller.placeLabel.isHidden, let clicked = controller.placeLabel.clicked else { return fail(id, "The page number isn't showing.") }
+                clicked()
+            }
+            controller.pageField.stringValue = value
+            // Return, by the field's own action.
+            controller.pageField.sendAction(controller.pageField.action, to: controller.pageField.target)
+            controller.drainAll()
+        case "page_escape":
+            guard let controller, controller.pageEditing else { return fail(id, "The go-to field isn't open.") }
+            _ = controller.control(controller.pageField, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        case "swipe":
+            // What the system's swipe calls, with its sideways amount.
+            guard let controller, let delta = Double(value) else { return fail(id, "That isn't a swipe's sideways amount.") }
+            controller.readingPane.swiped(deltaX: delta)
         case "zoom_type":
             guard let controller else { return fail(id, "The window is closed.") }
             if !controller.zoomEditing {
@@ -324,6 +346,7 @@ import QuartzCore
             "note_box": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.qaBox(in: controller.root),
             "copy_notice": controller.copyNotice.isHidden ? NSNull() as Any : ["text": controller.copyNotice.label.text, "button": controller.copyNotice.button.isHidden ? NSNull() as Any : controller.copyNotice.button.attributedTitle.string, "frame_ok": controller.root.bounds.contains(controller.copyNotice.frame), "box": controller.copyNotice.qaBox(in: controller.root)] as [String: Any],
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
+            "links": ["hint": controller.linkHint.isHidden ? NSNull() as Any : controller.linkHint.label.text, "hint_in_lower_left": !controller.linkHint.isHidden && controller.linkHint.frame.minX < controller.root.bounds.midX && controller.linkHint.frame.maxY > controller.root.bounds.maxY - 80 && controller.root.bounds.contains(controller.linkHint.frame), "page_field": controller.pageEditing ? controller.pageField.stringValue : NSNull() as Any, "address_opened": delegate.addressOpenedForQA as Any? ?? NSNull()] as [String: Any],
             "place_label_in_lower_right": !controller.placeLabel.isHidden && controller.placeLabel.frame.maxX > controller.root.bounds.maxX - 40 && controller.placeLabel.frame.maxY > controller.root.bounds.maxY - 40 && controller.root.bounds.contains(controller.placeLabel.frame),
             "agent_icon": !controller.agentIcon.isHidden,
             "document_edited": controller.window.isDocumentEdited,

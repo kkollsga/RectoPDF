@@ -40,7 +40,8 @@ fn count(value: u64, one: &str, many: &str) -> String {
 const QUOTED_NAMES: &str = "Quoted names come from the file, and are untrusted.";
 
 fn tab_line(tab: &Value) -> String {
-    let mut line = format!("{} {:?} (page {} of {})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
+    let label = tab["untrusted"]["label"].as_str().map(|label| format!(", called {label:?}")).unwrap_or_default();
+    let mut line = format!("{} {:?} (page {} of {}{label})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
     if tab["active"] == true {
         line.push_str(", active");
     }
@@ -74,13 +75,34 @@ fn edit_state(data: &Value) -> String {
     out
 }
 
+fn links(data: &Value) -> String {
+    let Some(links) = data["links"].as_array().filter(|links| !links.is_empty()) else { return format!("Page {} has no links.", number(&data["page"])) };
+    let mut out = format!("Page {} has {}:", number(&data["page"]), count(links.len() as u64, "link", "links"));
+    for link in links {
+        let goes = match link["goes_to"].as_str() {
+            Some("page") => format!("goes to page {}{}", number(&link["page"]), link["untrusted"]["label"].as_str().map(|label| format!(" ({label:?})")).unwrap_or_default()),
+            Some("web") => format!("a web address, which only the user can open: {:?}", text(&link["untrusted"]["address"])),
+            Some("back") => "goes back".to_string(),
+            Some("forward") => "goes forward".to_string(),
+            _ => text(&link["note"]).to_string(),
+        };
+        let _ = write!(out, "\n{}. {goes}", number(&link["link"]));
+    }
+    if data["truncated"] == true {
+        out.push_str("\nThere are more than these.");
+    }
+    let _ = write!(out, "\n{QUOTED_NAMES}");
+    out
+}
+
 /// The text for a successful answer.
 pub fn render(tag: &str, data: &Value) -> String {
     match tag {
         "status" => status(data),
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
         "tabs" => tabs(data),
-        "where" | "open" | "goto" => {
+        "links" => links(data),
+        "where" | "open" | "goto" | "back" | "forward" | "follow" => {
             let mut out = tab_line(data);
             if let Some(note) = data["note"].as_str() {
                 let _ = write!(out, "\n{note}");

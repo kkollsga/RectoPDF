@@ -146,6 +146,17 @@ check "and the guard doesn't get it" "no-stamp" "$([ -s "$CHECKED" ] && echo has
 case "$(last_ledger_field 3)" in *+dirty) r=dirty ;; *) r=clean ;; esac
 check "and the ledger says so" "dirty" "$r"
 
+# Failure: a commit of documents only, made while a run is under way, throws the pass away, so the push guard refuses code that passed (2026-11-08).
+fresh_ledger
+commit_code docs-during-base
+tested=$(git rev-parse HEAD)
+STUB_DURING='mkdir -p docs; echo note >> docs/notes.md; git add .; git commit -qm notes' full > /dev/null
+: > "$CALLS"
+check "the commit tested is remembered" "$tested" "$(tail -1 "$PASSES" 2>/dev/null | cut -f2)"
+check "and stamped for the guard, not the documents' commit" "$tested" "$(tail -1 "$CHECKED" 2>/dev/null)"
+check "and the guard takes the documents' commit on top" "yes" "$(hook_accepts)"
+check "and the ledger names the tested commit" "$tested" "$(last_ledger_field 3)"
+
 # Failure: CHECK_AGAIN ignored, so a suspect pass can't be run again.
 fresh_ledger
 commit_code again-base
