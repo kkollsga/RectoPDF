@@ -2,7 +2,7 @@
 //! with the call. The session's scheduler will own long-lived ones, behind the same calls.
 
 use crate::{AgentError, exit};
-use recto_index::chrome::{EdgeLine, chrome_spans};
+use recto_index::chrome::EdgeLine;
 use recto_index::select::{PageText, neighbour_pages};
 use recto_index::{hidden_report, read_page};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
@@ -359,9 +359,9 @@ fn chrome_of(doc: &mut DocRenderer, page: u32, characters: &recto_render_service
         return Vec::new();
     }
     let pages = doc.page_count().unwrap_or(page + 1);
-    let neighbours: Vec<Vec<EdgeLine>> = neighbour_pages(page, pages).filter_map(|other| doc.page_characters(other, true, false).ok()).map(|read| PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted).edge_lines().to_vec()).collect();
-    let borrowed: Vec<&[EdgeLine]> = neighbours.iter().map(Vec::as_slice).collect();
-    let mut spans = chrome_spans(own.edge_lines(), &borrowed);
+    let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?))).map(|(away, read)| (away, PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted).edge_lines().to_vec())).collect();
+    let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
+    let mut spans = own.chrome_spans(&borrowed);
     spans.sort_unstable();
     spans
 }

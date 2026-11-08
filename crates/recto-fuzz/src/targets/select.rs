@@ -5,7 +5,7 @@
 use super::index::page;
 use crate::guard::{Budget, within};
 use crate::input::Take;
-use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for, neighbour_pages};
+use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for};
 use recto_proto::PageFrame;
 use recto_reader::selection::{Selecting, Urgency};
 use std::sync::Arc;
@@ -76,7 +76,7 @@ fn check_page(text: &PageText, take: &mut Take) {
     assert!(whole.chars().count() <= len as usize);
     let mut copied = CopiedText::default();
     // Its own edge lines as its neighbour's, which a hostile file can make repeat however it likes.
-    let leave_out = chrome_for(0, text, &Range::pages(0, 0), &[text.edge_lines()]);
+    let leave_out = chrome_for(0, text, 2, |_| Some(text.edge_lines()));
     assert!(text.edge_lines().len() <= recto_index::chrome::MAX_EDGE_LINES);
     assert!(leave_out.iter().all(|(start, end)| start <= end && *end <= len), "{leave_out:?} of {len}");
     copied.add_page(0, text, &Range::pages(0, 0), 64, &leave_out);
@@ -163,8 +163,8 @@ fn check_pointer(texts: &One, take: &mut Take) {
                 if let (Some((start, end)), Some(text)) = (range.on_page(page), texts.page_text(page)) {
                     let _ = text.rects(start, end);
                     let mut copied = CopiedText::default();
-                    let neighbours: Vec<&[recto_index::chrome::EdgeLine]> = neighbour_pages(page, 3).filter_map(|other| texts.page_text(other).map(PageText::edge_lines)).collect();
-                    copied.add_page(page, text, &range, 256, &chrome_for(page, text, &range, &neighbours));
+                    copied.add_page(page, text, &range, 256, &chrome_for(page, text, 3, |other| texts.page_text(other).map(PageText::edge_lines)));
+                    copied.finish();
                     assert!(copied.text.len() <= 256);
                 }
             }

@@ -1,7 +1,6 @@
 //! What a copy of body text leaves out as chrome over a folder of real PDFs, for a person to look at: every line it would leave out, with its file, page and why. `cargo run --release -p recto-agent --example chrome_corpus -- <target-dir> FOLDER > dropped.tsv`, where the worker's built in `<target-dir>`. A line out is `file<TAB>page<TAB>top|bottom<TAB>number|repeat<TAB>text`, and the totals go to stderr.
 
-use recto_index::chrome::EdgeLine;
-use recto_index::select::{PageText, chrome_for, neighbour_pages, Range};
+use recto_index::select::{PageText, chrome_for};
 use recto_render_service::{DocRenderer, Policy, ServiceConfig};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -26,8 +25,7 @@ fn main() {
             pages_seen += 1;
             chars_all += u64::from(text.len());
             let started = Instant::now();
-            let neighbours: Vec<&[EdgeLine]> = neighbour_pages(page, count).filter_map(|other| texts[other as usize].as_ref().map(PageText::edge_lines)).collect();
-            let spans = chrome_for(page, text, &Range::all(count), &neighbours);
+            let spans = chrome_for(page, text, count, |other| texts[other as usize].as_ref().map(PageText::edge_lines));
             micros.push(started.elapsed().as_micros() as u64);
             if !spans.is_empty() {
                 pages_with += 1;
@@ -37,7 +35,7 @@ fn main() {
                 let words = text.text_of(start, end).replace(['\t', '\n'], " ");
                 lines_out += 1;
                 chars_out += words.chars().filter(|ch| !ch.is_whitespace()).count() as u64;
-                let number = line.is_some_and(|line| line.number);
+                let number = line.is_some_and(|line| line.number.is_some());
                 numbers += u64::from(number);
                 println!("{name}\t{}\t{}\t{}\t{:.2}\t{}", page + 1, if line.is_some_and(|line| line.top) { "top" } else { "bottom" }, if number { "number" } else { "repeat" }, line.map_or(0.0, |line| line.relative), words.trim());
             }

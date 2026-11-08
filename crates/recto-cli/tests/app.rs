@@ -1302,6 +1302,21 @@ fn the_selection_script_passes() {
     assert_eq!(reply["data"]["passed"], true, "{reply}");
 }
 
+/// Failure: the app's ⌘C over a page break copies the running head and page number into the body text, or a running head selected by itself copies nothing, as `recto copy` was proved not to: the app goes through the same rule, through what a real press, drag and release call.
+#[test]
+fn the_chrome_script_passes() {
+    let Some(run) = Run::start() else { return };
+    let report: Vec<Page> = (1..=4)
+        .map(|page| Page::new(format!("BT /F1 9 Tf 72 750 Td (Annual report 2024) Tj ET\nBT /F1 11 Tf 14 TL 72 690 Td (Body of page {page}, first line.) Tj T* (Body of page {page}, second line.) Tj ET\nBT /F1 9 Tf 540 30 Td ({page}) Tj ET\n").into_bytes()))
+        .collect();
+    let file = TempPdf::new("report.pdf", &pages(&report));
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/chrome.qa");
+    let output = run.state.command().args(["qa", "run", script.to_str().unwrap(), "--json"]).env("RECTO_QA_PDF", &file.0).output().unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["data"]["passed"], true, "{reply}");
+}
+
 /// A file anyone can read and that asks not to be copied.
 fn restricted_pdf() -> TempPdf {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};

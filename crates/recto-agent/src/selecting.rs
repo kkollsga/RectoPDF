@@ -219,8 +219,13 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
             if edges.contains_key(&other) {
                 continue;
             }
+            // An end page already read, with the check, goes by that read.
+            if let Some(end) = reading.ends.get(&other) {
+                edges.insert(other, if reading.failed_ends.contains(&other) { Vec::new() } else { end.edge_lines().to_vec() });
+                continue;
+            }
             // One the copy reaches is read as it would be then, and kept. One past the pick is read only for its edges, and a failure there is only less to compare with.
-            let reaches = other > page && other <= last_page && !reading.ends.contains_key(&other);
+            let reaches = other > page && other <= last_page;
             counted.reads += 1;
             let read = if reaches { reading.read(other)? } else { reading.read_checked(other, false).ok().flatten() };
             counted.most_workers = counted.most_workers.max(reading.docs.len());
@@ -230,8 +235,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
             }
         }
         edges.retain(|seen, _| *seen + chrome::NEIGHBOURS >= page);
-        let neighbours: Vec<&[EdgeLine]> = neighbour_pages(page, pages).filter_map(|other| edges.get(&other).map(Vec::as_slice)).collect();
-        let leave_out = chrome_for(page, &text, &range, &neighbours);
+        let leave_out = chrome_for(page, &text, pages, |other| edges.get(&other).map(Vec::as_slice));
         if rects {
             let (start, end) = range.on_page(page).unwrap_or((0, 0));
             let shapes: Vec<[f64; 4]> = text.rects(start, end).iter().map(|rect| [round(rect.x), round(rect.y), round(rect.width), round(rect.height)]).collect();
@@ -250,6 +254,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         }
         page += 1;
     }
+    copied.finish();
     let withheld = copied.restricted && !pick.anyway;
     let stopped_at = copied.stopped_at.or(ran_out);
     let mut note = Vec::new();
@@ -260,7 +265,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         note.push(format!("{} characters of text that looks hidden are left out.", copied.hidden_left_out));
     }
     if copied.chrome_left_out > 0 {
-        note.push(format!("{} characters of running heads, footers and page numbers are left out, as they repeat on the pages around. Pick only them to copy them.", copied.chrome_left_out));
+        note.push(format!("{} characters of running heads, footers and page numbers are left out of the body text. Pick only them to copy them.", copied.chrome_left_out));
     }
     if copied.text.is_empty() && !withheld && !range.is_empty() && copied.pages_failed == 0 && copied.pages_too_long == 0 {
         note.push("There's no text there to select. It may be a scan.".to_string());
@@ -354,6 +359,18 @@ mod tests {
         }
         assert_eq!(counted.reads, 7);
         assert!(counted.most_workers <= MAX_WORKERS, "{}", counted.most_workers);
+    }
+
+    /// Failure: a page a drag ends on is read a second time, without the hidden-text check, as a neighbour of the page before it, so pages before it compare with an unchecked read (review of e3fc6e0), and a pick costs a worker read more than it needs. A drag over pages 2 and 3 of 6 reads its ends, then pages 1, 4 and 5 for their edges, and nothing twice.
+    #[test]
+    fn an_end_page_isnt_read_again_as_a_neighbour() {
+        let file = TempPdf::new("six.pdf", &words("Some words on the page", 6));
+        let mut session = opened(&file);
+        let mut counted = Counted::default();
+        let access = Direct(RefCell::new(&mut session), None);
+        let pick = Pick { page: Some(2), at: Some("80,80"), to_page: Some(3), to: Some("200,80"), all: false, ..whole() };
+        run_counted(&access, &pick, false, &mut counted).unwrap();
+        assert_eq!(counted.reads, 3, "pages 1, 4 and 5, past the two ends already read");
     }
 
     /// Failure: the page a drag ends on can't be read, and the answer says "it may be a scan", which sends someone looking for the wrong thing. It says the page couldn't be read.

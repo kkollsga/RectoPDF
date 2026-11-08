@@ -4,7 +4,7 @@
 //!
 //! **What the UI thread pays.** A press, a drag or a pointer move looks through a page already here, or notes that it's wanted and returns. It never waits for text.
 //!
-//! **Running heads, footers and page numbers stay out of a copy of body text** (owner, 2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."). A page's edge lines are compared with those of [`recto_index::chrome::NEIGHBOURS`] pages either side, so a copy, and what Services is offered, waits for those pages' text too: read with no drawing, once, and only their edge lines kept, at most [`MAX_EDGE_PAGES`] pages of them, about 400 B each.
+//! **Running heads, footers and page numbers stay out of a copy of body text** (owner, 2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."). A page's edge lines are compared with those of [`recto_index::chrome::NEIGHBOURS`] pages either side, so a copy, and what Services is offered, waits for those pages' text too: read with no drawing, once, and only their edge pieces kept, at most [`MAX_EDGE_PAGES`] pages of them, 768 B a page at most.
 //!
 //! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn. No character moves. What changes is what's on them: an end that was on a hidden word goes to the nearest thing that shows. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
@@ -236,9 +236,8 @@ impl Selecting {
     }
 
     /// What a copy of `range` leaves out of this page as chrome, with what's known of its neighbours.
-    fn leave_out(&self, page: u32, text: &PageText, range: &Range, pages: u32) -> Vec<(u32, u32)> {
-        let neighbours: Vec<&[EdgeLine]> = neighbour_pages(page, pages).filter_map(|other| self.edges_of(other).or_else(|| self.held(other).map(|held| held.text.edge_lines()))).collect();
-        chrome_for(page, text, range, &neighbours)
+    fn leave_out(&self, page: u32, text: &PageText, pages: u32) -> Vec<(u32, u32)> {
+        chrome_for(page, text, pages, |other| self.edges_of(other).or_else(|| self.held(other).map(|held| held.text.edge_lines())))
     }
 
     /// Keeps a page's edge lines, letting go of the ones furthest from where a copy or the selection is, past the cap.
@@ -423,7 +422,7 @@ impl Selecting {
                 run.out.add_failed_page();
                 true
             } else {
-                let leave_out = self.leave_out(page, &held.text, &range, pages);
+                let leave_out = self.leave_out(page, &held.text, pages);
                 run.out.add_page(page, &held.text, &range, MAX_COPY_BYTES, &leave_out)
             };
             if run.out.restricted && !self.copy_allowed {
@@ -439,7 +438,8 @@ impl Selecting {
         }
     }
 
-    fn finish_copy(&mut self, out: CopiedText) {
+    fn finish_copy(&mut self, mut out: CopiedText) {
+        out.finish();
         self.notice = how_it_went(&out);
         self.copied_told = false;
         self.copied = (!out.text.is_empty()).then_some(out);
@@ -486,9 +486,10 @@ impl Selecting {
         let mut out = CopiedText::default();
         for page in range.start.page..=range.end.page.min(pages.saturating_sub(1)) {
             let text = &self.held(page)?.text;
-            let leave_out = self.leave_out(page, text, &range, pages);
+            let leave_out = self.leave_out(page, text, pages);
             out.add_page(page, text, &range, MAX_COPY_BYTES, &leave_out);
         }
+        out.finish();
         (!out.text.is_empty()).then_some(out.text)
     }
 
