@@ -8,7 +8,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 |---|---|---|---|
 | `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. `surface`: IOSurface, and the link that carries one to a worker. Later `fswatch` | Hold policy |
 | `recto-update` | **Started** | Hands-off updates: what's on offer, the schedule, the 30-minute rule, staging and verifying a release, and the `recto-updater` installer. On `recto-platform` alone, so the installer stays small. The tools it runs are the Mac's | Know about PDFs or documents |
-| `recto-core` | **Started** | Lazy document structure over the lopdf fork's `IndexedReader`: facts, page count, contents. Later the append writer | Know about tiles, threads or an OS |
+| `recto-core` | **Started** | Lazy document structure over the lopdf fork's `IndexedReader`: facts, page count, contents. `save`: the one place that changes a PDF's bytes, through the fork's `append_atomically` (and its `rewrite_atomically` next) | Know about tiles, threads or an OS |
 | `recto-proto` | **Started** | Job and tile wire types, no dependencies. The host validates everything from the renderer | |
 | `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text, and a page's contents a frame at a time. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
 | `recto-render-service` | **Started** | Library: the host's side, `DocRenderer`, limits, validation. Binary: the worker. Plain child process for now; sandbox is a separate spike | Link PDFium into the host |
@@ -57,7 +57,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 | Crate | Why |
 |---|---|
-| `lopdf` (fork) | The lazy `IndexedReader`, and later the append writer. Pinned to a git revision |
+| `lopdf` (fork) | The lazy `IndexedReader`, its append writer and streaming rewrite. Pinned to a git revision, `8c8ba88` on `work/streaming-rewrite` |
 | `serde`, `serde_json` | The agent JSON envelope, and the state record, read typed so that a hostile file's lists are capped as they're read. `float_roundtrip` is on, so a place reads back as the same number |
 | `uniffi` | Swift bindings for the app, and C# later from the same definitions. Held at 0.31. `default-features = false`, so its command-line generator, with `clap` and the like, is only built behind the `bindgen` feature for `uniffi-bindgen`, and not linked into the app |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
@@ -455,6 +455,35 @@ The 1,000-tab "after" ran at a higher load than the "before". Run again later at
 **Before and after on the app's own fixes,** same runs. `TextLine` for `NSTextField`: 1,000 tabs of NASA 5.68 to 2.48 MiB over 2 tabs, and a 400-tab run's heap growth from 2.9 MiB to 0.1. Letting a big worker go: USGS map at rest 433 to 36 MiB. Previews outliving tiles: 84 blank steps on seen pages at 40 pages a second, in a debug run, to 0.
 
 **About the off-screen numbers.** A real window has a backing store and a window-server share that this doesn't, so treat the memory figures as a floor until the MacBook spike. The platform report's sRGB window alone cost 17.6 MiB in a visible state.
+
+## Saving
+
+SPEC section 6 and decisions 16, 25 and 27. `recto_core::save` is the one place that changes a PDF's bytes, `recto_agent::saving` is the one way anything saves (`recto save`, `recto save-as`, ⌘S, the Save icon, Save As's sheet and the close prompt's Save all run the same command), and `Session::begin_save`, `save_prepared`, `saved` and `end_save` are the session's side.
+
+**Two writers, never a third.** Adding things appends with the fork's `append_atomically`, so every byte that was in the file stays, a signature's included. Removing things rewrites with `rewrite_atomically`, so what's removed is gone. `clippy.toml` refuses by name every lopdf call that writes to any `Write`: `Writer::write_object`, the eager `Document` and `IncrementalDocument` saves, `copy_revision_to`, and `RewriteChanges::remove_object`, as nothing reports a kept page still using a removed object. Test fixtures that build encrypted files with lopdf's eager writer say why they're allowed.
+
+| Edit | Writer | Why |
+|---|---|---|
+| Turn | Append: a new version of the page with its `/Rotate` | An addition |
+| Move | Append: a new page tree, each page given what it inherited | An addition; the old tree is in the earlier revision and holds nothing that isn't in the new one |
+| Pages from another PDF | Append: the pages and what they draw with, copied under new numbers, streams as their raw bytes 64 KiB at a time | An addition. Another page of that PDF, its page tree and its catalog aren't followed, so a link can't bring the rest along; an annotation's `/P`, `/Parent` and `/StructParent`, and the page's `/PieceInfo`, stay behind; its layers join the file's `/OCProperties`, the hidden ones hidden |
+| Delete | Rewrite | Appending a tree without the page would leave its objects readable in the file. Stage 2: refused for now with `needs_rewrite`, nothing written |
+
+**Every claim is checked against the files.** A journal can be forged, so before a byte is written the file's own page count must be the list's, every page asked for must be in its file, each added PDF must have the stamp and length it had when added (none recorded is refused), and the reader saves from has a limit of 1 MiB an object. Before the file is moved into place it's read back: its pages are the objects written, in order.
+
+**The steps.** `begin_save` copies the list out and holds the tab: no edit, undo, redo, discard or close until `end_save`, and it can't go dormant. The file is written beside its target and synced. In the fork's `prepare_replacement`, the file's attributes and ACL are carried over (a Save As carries only quarantine and where it was downloaded from), its pages are read back, its stamp is taken, which the rename keeps, and `save_prepared` notes it; the app writes that to the journal and reads it back from the disk (`RecordStore::journal_says_saving`) before going on. Then the fork's own check of every byte, the rename, `saved`, and the record is asked to follow at once. A failure at any step leaves the file as it was, and `end_save` forgets what `save_prepared` noted. A kill at each step leaves the original or the whole new file (`a_kill_at_every_step_leaves_the_original_or_the_new_file`, by a debug-only pause).
+
+**Refused whole:** a file changed since it was opened, before writing or in the moment before the rename; other hard links, as those names would keep the old version, and for a rewrite what was removed; a read-only file or folder; a new file's name taken; a protected file or added PDF. Each says nothing was written, and where a copy helps, the app's sheet offers Save As.
+
+**Signatures.** An approval signature is untouched by an append, byte for byte. A certification (`/Perms /DocMDP`) allows no page change at any level, so Save is refused on one, and its unsigned copy is the rewrite's (stage 2). Usage rights alone (`/Perms /UR3`) go from the new catalog with a quiet note, as any page edit ends them (owner, 2026-11-08). Nothing says a signature is valid.
+
+**One backup of the original**, on the first save over a file: an APFS clone where it can be, synced, in `<state>/backups.noindex/`, named by a hash of the file's real path, out of Time Machine and Spotlight, 30 days within 1 GiB, oldest out, looked at as a session starts. A Save As makes none.
+
+**Levels** (the coordinator's default, 2026-11-08). Control saves what's appended, since nothing is lost: every byte stays in the file, the history keeps the saved point, and the first save keeps the original. Control may Save As to a new file. Replacing another file, and a save that rewrites, need Full.
+
+**What it costs**, release build, this Mac, under the build queue's load, 3 runs each, whole process by `phys_footprint`: the 346 MiB USGS map with page 1 turned and another file's page added, 375 to 407 ms and a peak of 6.8 to 7.2 MiB for two saves in one process; a made 1,000-page file with every page moved and one turned, 39 to 52 ms and 4.0 to 4.2 MiB. There was no Save before, so there's no before. **Each save writes the whole file again** beside the original, 346 MiB for a turn on the map, as `append_atomically` can't append in place: see `docs/PLAN.md`.
+
+**The corpus**, bench100 copies, by `cargo run --release -p recto-core --example save_corpus`: every PDF saved with page 1 turned, the last page moved to the front and the next file's first page added. 139 saved, 2 refused as protected; each read back with the original bytes as a prefix and one page more. qpdf `--check` found no errors, and warnings only where the originals had them, plus 9 IRS forms whose added form pages' widgets aren't reachable from `/AcroForm` (`docs/PLAN.md`). MuPDF and poppler gave every saved file the right page count, and PDFium drew the first and last page of each.
 
 ## The state record
 
