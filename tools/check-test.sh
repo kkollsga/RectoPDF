@@ -131,6 +131,19 @@ full --why "untracked test" > /dev/null
 check "an untracked file also makes it dirty" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
 check "and it isn't remembered" "$passes_before" "$(wc -l < "$PASSES")"
 rm crates/alpha/src/untracked.rs
+# Failure (coordinator, 2026-11-08): the owner's notes, untracked at the top of the checkout, stopped every pass from being remembered, though nothing reads them.
+commit_code notes-base
+echo "a note" > owners-notes.txt
+echo "a note" > docs/draft.md
+out=$(full --why "untracked notes"); rc=$?
+check "untracked notes don't stop a pass being remembered" "0 yes" "$rc $(grep -q "$(git rev-parse HEAD)" "$PASSES" && echo yes || echo no)"
+: > "$CALLS"
+out=$(full); rc=$?
+check "so the same code again runs nothing" "0 0" "$rc $(ran)"
+echo "[build]" > Cargo.config-untracked.toml
+full --why "untracked build file" > /dev/null
+check "an untracked build file at the top still makes it dirty" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
+rm owners-notes.txt docs/draft.md Cargo.config-untracked.toml
 # Same content staged with a mode change or an edit is another fingerprint.
 chmod +x crates/alpha/src/lib.rs && git add . && git commit -qm mode
 full --why "mode test" > /dev/null
@@ -280,6 +293,20 @@ commit_code main-4
 out=$(full); rc=$?
 check "after a push, main's count starts again" "0" "$rc"
 check "and it really ran" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
+# Failure (coordinator, 2026-11-08): runs of merges taken back off main still counted, so the next merge was refused as main's third run.
+commit_code main-5
+full > /dev/null
+git reset -q --hard HEAD~2
+commit_code main-6
+: > "$CALLS"
+out=$(full); rc=$?
+check "runs of commits taken back off main don't count" "0 true" "$rc $([ "$(ran)" -gt 0 ] && echo true || echo false)"
+commit_code main-7
+full > /dev/null
+commit_code main-8
+out=$(full); rc=$?
+check "and runs of what's still there do" "3" "$rc"
+git push -q origin main
 
 # Failure: a merge identical to its branch checked again, or not accepted for pushing.
 fresh_ledger
