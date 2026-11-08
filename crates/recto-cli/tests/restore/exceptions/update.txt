@@ -1,0 +1,1 @@
+update. The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name.

@@ -186,42 +186,62 @@ fn general(path: &str) -> String {
     out
 }
 
-/// What's allowed to differ across a restart, and why. It's short on purpose: anything else that differs is a bug, or goes here with its reason.
+/// What's allowed to differ across a restart, and why: one file per area under `restore/exceptions/`, each line a path, or the start of one, then its reason. It's short on purpose: anything else that differs is a bug, or goes here with its reason. Files, sorted, so branches adding to different places merge without a conflict (review T3).
 const EXCEPTIONS: &[(&str, &str)] = &[
-    ("reader.last_wake", "How long a wake took, and that this one was from a sleep file: about this launch."),
-    ("memory.", "A new process's memory, threads and handles are its own: budgets, not state."),
-    ("hangs.", "Its own stalls, counted from its own start."),
-    ("app.palette.", "⌘K's palette is a moment's choice, as an open menu is, and closes when the keyboard goes elsewhere, so it isn't kept."),
-    ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
-    ("reader.counts.", "Jobs and steps of its own run."),
-    ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),
-    ("reader.left_picture_bytes", "Pictures warm tabs were left with, held for their sleep files: warm tabs come back cold, and a cold tab holds none."),
-    ("panes.documents_held", "The same, over every pane's page view."),
-    ("reader.tiles.kept", "Tiles held off screen, which a new process doesn't have until it's been somewhere."),
-    ("reader.tiles.previews_attached", "Previews behind sharp tiles, which depend on what the first draw was."),
-    ("reader.tiles.attached", "Fewer are on layers if there's no preview under them: drawing, not state. What's visible is settled either way."),
-    ("reader.tiles.page_layers", "Pages laid out around the view."),
-    ("app.pages.page_layers", "The same, as the app has them."),
-    ("app.pages.page_turns", "How each page layer is turned: as many as there are page layers, which differ as those do."),
-    ("app.pages.page_frames_landscape", "Page layers shown wider than tall, counted over the page layers, which differ as those do."),
-    ("app.pages.tile_layers", "The same, as the app has them."),
-    ("app.pages.spare_layers", "A pool of its own."),
-    ("app.pages.tint_layers", "One per page layer."),
-    ("reader.tile_scale", "Comes from a zoom settled on, and a pinch at another zoom leaves it where it was."),
-    ("app.contents.row_views", "Rows the table has made so far."),
-    ("app.contents.thumb.thumb_top", "Where the thumb is follows the contents' scroll, which is carried; the thumb's own number can differ by a fraction of a point as the table lays out."),
-    ("app.contents.tabs_thumb.thumb_top", "As for the contents' thumb."),
-    ("app.pages.pointer_steps", "Its own pointer moves, counted from its own start."),
-    ("app.pages.worst_pointer_step_us", "The same, timed."),
-    ("reader.selection.text_", "Page text held for a selection, which is read again when it's wanted."),
-    ("reader.selection.unit", "What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows."),
-    ("app.copy_notice", "A line about a copy, which fades. A copy is over by then, or a hand-off waits for it."),
-    ("snapshot.", "The snapshot tool starts off on every launch, as a tool does in Preview, the one exception it adds to decision 23. A box being drawn ends with the drag, and a snapshot on its way to the clipboard is waited for by a hand-off."),
-    ("app.pages.snapshot_box", "The snapshot tool's box, there only while a drag is going on."),
-    ("app.pages.system_scroller_style", "The system's own scroll bar setting, which macOS can change between launches: CI's virtual machine read legacy, then overlay. The app's own scroller_style is compared."),
-    ("printing.", "A print being prepared or handed to the system: about this run, and an update waits for it to finish."),
-    ("update.", "The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name."),
+    ("app", include_str!("restore/exceptions/app.txt")),
+    ("hangs", include_str!("restore/exceptions/hangs.txt")),
+    ("memory", include_str!("restore/exceptions/memory.txt")),
+    ("panes", include_str!("restore/exceptions/panes.txt")),
+    ("printing", include_str!("restore/exceptions/printing.txt")),
+    ("reader", include_str!("restore/exceptions/reader.txt")),
+    ("record", include_str!("restore/exceptions/record.txt")),
+    ("snapshot", include_str!("restore/exceptions/snapshot.txt")),
+    ("update", include_str!("restore/exceptions/update.txt")),
 ];
+
+/// Every path in `qa state` that's been looked at: one file per area under `restore/known/`, sorted. Each comes back, as the test of everything shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added, which is the moment to carry it over.
+const KNOWN_PATHS: &[(&str, &str)] = &[
+    ("app", include_str!("restore/known/app.txt")),
+    ("panes", include_str!("restore/known/panes.txt")),
+    ("printing", include_str!("restore/known/printing.txt")),
+    ("reader", include_str!("restore/known/reader.txt")),
+    ("session", include_str!("restore/known/session.txt")),
+    ("snapshot", include_str!("restore/known/snapshot.txt")),
+];
+
+fn known_paths() -> Vec<&'static str> {
+    KNOWN_PATHS.iter().flat_map(|(_, list)| list.lines()).collect()
+}
+
+/// Each exception as `(path, why)`.
+fn exceptions() -> Vec<(&'static str, &'static str)> {
+    EXCEPTIONS.iter().flat_map(|(_, list)| list.lines()).map(|line| line.split_once(' ').unwrap_or((line, ""))).collect()
+}
+
+/// Failure (review T3): the list of known paths was unsorted, with new ones added at its top, so every branch that added a `qa state` field conflicted there. Each area's file, of known paths and of exceptions, is sorted with no line twice, holds only its own area's paths, and every file in those folders is read. An exception says why. Needs no app.
+#[test]
+fn the_known_paths_and_exceptions_are_sorted_with_no_duplicates() {
+    for (folder, lists) in [("known", KNOWN_PATHS), ("exceptions", EXCEPTIONS)] {
+        for (area, list) in lists {
+            let file = format!("restore/{folder}/{area}.txt");
+            let lines: Vec<(&str, &str)> = list.lines().map(|line| line.split_once(' ').unwrap_or((line, ""))).collect();
+            assert!(!lines.is_empty(), "{file} is empty");
+            for pair in lines.windows(2) {
+                assert!(pair[0].0 < pair[1].0, "{file}: `{}` then `{}`. Each path once, in sorted order (`LC_ALL=C sort`)", pair[0].0, pair[1].0);
+            }
+            for (path, why) in &lines {
+                assert!(path.strip_prefix(area).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '['])), "{file}: `{path}` belongs in another area's file");
+                assert_eq!(folder == "exceptions", !why.trim().is_empty(), "{file}: `{path}`: an exception says why, and a known path is a path alone");
+            }
+        }
+        let folder_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/restore").join(folder);
+        let mut on_disk: Vec<String> = std::fs::read_dir(&folder_path).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        on_disk.sort();
+        let mut read: Vec<String> = lists.iter().map(|(area, _)| format!("{area}.txt")).collect();
+        read.sort();
+        assert_eq!(on_disk, read, "every file in restore/{folder} is read, and nothing else is there");
+    }
+}
 
 /// What can be compared as numbers. Scroll positions can differ by rounding only: the test below of pixels holds them much closer than any eye.
 fn differs(left: &Value, right: &Value) -> bool {
@@ -241,7 +261,8 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     let (mut one, mut two) = (BTreeMap::new(), BTreeMap::new());
     flatten(before, "", &mut one);
     flatten(after, "", &mut two);
-    let excepted = |path: &str| EXCEPTIONS.iter().any(|(name, _)| path.starts_with(name)) || also.iter().any(|name| path.starts_with(name));
+    let exceptions = exceptions();
+    let excepted = |path: &str| exceptions.iter().any(|(name, _)| path.starts_with(name)) || also.iter().any(|name| path.starts_with(name));
     let mut wrong = Vec::new();
     for (path, value) in &one {
         if excepted(path) {
@@ -260,7 +281,7 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     assert!(wrong.is_empty(), "these changed across the restart:\n{}", wrong.join("\n"));
     if !known.is_empty() {
         let unknown: Vec<String> = one.keys().map(|path| general(path)).filter(|path| !known.contains(&path.as_str()) && !excepted(path)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        assert!(unknown.is_empty(), "`qa state` has fields this test hasn't been told about. Carry each one over in the state record, or name it in EXCEPTIONS with why, then add it to KNOWN_PATHS:\n{}", unknown.join("\n"));
+        assert!(unknown.is_empty(), "`qa state` has fields this test hasn't been told about. Carry each one over in the state record, or name it in restore/exceptions/ with why, then add it to its area's file in restore/known/, in sorted order:\n{}", unknown.join("\n"));
     }
 }
 
@@ -370,7 +391,7 @@ fn everything_comes_back_after_a_quit() {
             let _ = std::fs::remove_file(folder.join(format!("after-{look}.png")));
             run.ok(&["qa", "shot", "--out", folder.join(format!("after-{look}.png")).to_str().unwrap()]);
         }
-        assert_same(&before, &after, KNOWN_PATHS);
+        assert_same(&before, &after, &known_paths());
         // The exact pixel, at the same zoom, on the first frame.
         for field in ["scroll_y", "scroll_x", "magnification"] {
             let (was, now) = (before["app"]["pages"][field].as_f64().unwrap(), after["app"]["pages"][field].as_f64().unwrap());
@@ -432,347 +453,6 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     run.quit();
 }
 
-/// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
-const KNOWN_PATHS: &[&str] = &[
-    "app.pages.snapshot_box",
-    "printing.busy",
-    "printing.notice",
-    "printing.pid",
-    "snapshot.busy",
-    "snapshot.drawing",
-    "snapshot.notice",
-    "snapshot.on",
-    "session.recent.len",
-    "session.recent[]",
-    "app.links.address_opened",
-    "app.links.hint",
-    "app.links.hint_in_lower_left",
-    "app.links.page_field",
-    "session.tabs[].back.len",
-    "session.tabs[].forward.len",
-    "session.tabs[].back[].by_agent",
-    "session.tabs[].forward[].by_agent",
-    "session.tabs[].back[].page",
-    "session.tabs[].back[].within",
-    "session.tabs[].forward[].page",
-    "session.tabs[].forward[].within",
-    "app.activation",
-    "app.agent_icon",
-    "app.agent_icon_margins.clear_of_pages",
-    "app.agent_icon_margins.right",
-    "app.agent_icon_margins.top",
-    "app.appearance",
-    "app.backing",
-    "app.context_menu.len",
-    "app.context_menu[].checked",
-    "app.context_menu[].enabled",
-    "app.context_menu[].id",
-    "app.context_menu[].title",
-    "app.contents.count",
-    "app.contents.current",
-    "app.contents.note",
-    "app.contents.note_height",
-    "app.contents.thumb.shown",
-    "app.contents.thumb.hit_width",
-    "app.contents.thumb.thumb_width",
-    "app.contents.thumb.thumb_length",
-    "app.contents.thumb.right_gap",
-    "app.contents.tabs_thumb.shown",
-    "app.contents.tabs_thumb.hit_width",
-    "app.contents.tabs_thumb.thumb_width",
-    "app.contents.tabs_thumb.thumb_length",
-    "app.contents.tabs_thumb.right_gap",
-    "app.contents.current_in_view",
-    "app.contents.first_visible",
-    "app.contents.following",
-    "app.contents.panel_button_on_screen",
-    "app.contents.frames_running",
-    "app.contents.height",
-    "app.contents.list_height",
-    "app.contents.moving",
-    "app.contents.reduce_motion",
-    "app.contents.scroll_y",
-    "app.contents.scroller",
-    "app.contents.stale_rows",
-    "app.contents.tab_rows_on_screen",
-    "app.contents.table_rows",
-    "app.contents.tabs_scroll",
-    "app.contents.visible_rows",
-    "app.find.block_height",
-    "app.find.current_row",
-    "app.find.field_has_focus",
-    "app.find.first_visible",
-    "app.find.list_height",
-    "app.find.open",
-    "app.find.rows",
-    "app.find.rows_on_screen.len",
-    "app.find.rows_on_screen[].current",
-    "app.find.rows_on_screen[].kind",
-    "app.find.rows_on_screen[].note",
-    "app.find.rows_on_screen[].untrusted.label",
-    "app.find.rows_on_screen[].untrusted.matched",
-    "app.find.running",
-    "app.find.shown",
-    "app.find.status",
-    "app.find.thumb.hit_width",
-    "app.find.thumb.right_gap",
-    "app.find.thumb.shown",
-    "app.find.thumb.thumb_length",
-    "app.find.thumb.thumb_top",
-    "app.find.thumb.thumb_width",
-    "app.find.untrusted.field",
-    "app.find.visible_rows",
-    "app.focus_view",
-    "app.document_edited",
-    "app.home",
-    "app.hover",
-    "app.animations.len",
-    "app.animations[]",
-    "app.is_active",
-    "app.layout",
-    "app.menu_bar.len",
-    "app.menu_bar[].items.len",
-    "app.menu_bar[].items[].checked",
-    "app.menu_bar[].items[].enabled",
-    "app.menu_bar[].items[].id",
-    "app.menu_bar[].items[].key",
-    "app.menu_bar[].items[].title",
-    "app.menu_bar[].title",
-    "app.note",
-    "app.note_box.x",
-    "app.note_box.y",
-    "app.note_box.width",
-    "app.note_box.height",
-    "app.note_box.lines",
-    "app.pages.autoscrolling",
-    "app.pages.cursor",
-    "app.pages.document_height",
-    "app.pages.document_width",
-    "app.pages.highlight_layers",
-    "app.pages.highlight_rects",
-    "app.pages.horizontal_scroller",
-    "app.pages.magnification",
-    "app.pages.scroll_x",
-    "app.pages.scroll_y",
-    "app.pages.scroller_style",
-    "app.pages.scroller_top_inset",
-    "app.pages.shot_tint_left",
-    "app.pages.system_scroller_style",
-    "app.pages.view_width",
-    "app.pages.visible",
-    "app.panes.len",
-    "app.panes[].highlight_rects",
-    "app.panes[].label",
-    "app.panes[].label_in_lower_left",
-    "app.panes[].magnification",
-    "app.panes[].note",
-    "app.panes[].pane",
-    "app.panes[].pages_inside",
-    "app.panes[].reading",
-    "app.panes[].scroll_y",
-    "app.panes[].width",
-    "app.panes[].x",
-    "app.panel.height",
-    "app.panel.items.len",
-    "app.panel.items[].enabled",
-    "app.panel.items[].id",
-    "app.panel.items[].selected",
-    "app.panel.items[].title",
-    "app.panel.open",
-    "app.paper",
-    "app.place",
-    "app.place_label",
-    "app.place_label_in_lower_right",
-    "app.reveal.row",
-    "app.reveal.shown",
-    "app.settings.open",
-    "app.settings.rows.len",
-    "app.settings.rows[].enabled",
-    "app.settings.rows[].hint",
-    "app.settings.rows[].id",
-    "app.settings.rows[].on",
-    "app.settings.rows[].title",
-    "app.settings.status",
-    "app.settings.title",
-    "app.settings.x",
-    "app.settings.y",
-    // The Save icon goes by the tab's edits, which are carried, so it comes back as it was.
-    "app.save_button.clear_of_window_buttons",
-    "app.save_button.enabled",
-    "app.save_button.frame.len",
-    "app.save_button.frame[]",
-    "app.save_button.tooltip",
-    "app.save_button.visible",
-    "app.sidebar_button.clear_of_window_buttons",
-    "app.sidebar_button.frame.len",
-    "app.sidebar_button.frame[]",
-    "app.sidebar_button.visible",
-    "app.sidebar_hidden",
-    "app.sidebar_rows",
-    "app.sidebar_visible",
-    "app.sidebar_width",
-    "app.window.full_screen",
-    "app.window.height",
-    "app.window.is_visible",
-    "app.window.on_any_screen",
-    "app.window.width",
-    "app.window.x",
-    "app.window.y",
-    "app.window_buttons_shown",
-    "app.window_open",
-    "app.zoom_level.above_the_scroller",
-    "app.zoom_level.clear_of_agent_icon",
-    "app.zoom_level.clear_of_pages",
-    "app.zoom_level.editing",
-    "app.zoom_level.field",
-    "app.zoom_level.in_the_agent_icons_row",
-    "app.zoom_level.in_the_top_right",
-    "app.zoom_level.reset_clear_of_field",
-    "app.zoom_level.right_margin",
-    "app.zoom_level.reset",
-    "app.zoom_level.text",
-    "app.zoom_level.visible",
-    "panes.panes.len",
-    "panes.panes[].fit",
-    "panes.panes[].magnification",
-    "panes.panes[].page",
-    "panes.panes[].pages",
-    "panes.panes[].scroll_y",
-    "panes.panes[].settled",
-    "panes.panes[].spread",
-    "panes.panes[].tab",
-    "panes.panes[].thread",
-    "panes.reading",
-    "reader.document_height",
-    "reader.fit",
-    "reader.low_res_pages.len",
-    "reader.magnification",
-    "reader.note",
-    "reader.page",
-    "reader.pages",
-    "reader.paper",
-    "reader.scroll_x",
-    "reader.scroll_y",
-    "reader.settled",
-    "reader.spread",
-    "reader.selection.copy_waiting_for_host",
-    "reader.selection.copying",
-    "reader.selection.dragging",
-    "reader.selection.end",
-    "reader.selection.pages_with_highlight",
-    "reader.selection.selected",
-    "reader.selection.start",
-    "reader.tab",
-    "reader.visible_pages.len",
-    "reader.visible_pages[]",
-    "reader.window_open",
-    "session.active",
-    "session.app.appearance",
-    "session.app.contents_scroll.following",
-    "session.app.contents_scroll.y",
-    "session.app.focus.app_frontmost",
-    "session.app.focus.view",
-    "session.app.focus.window_key",
-    "session.app.notice",
-    "session.app.panel_open",
-    "session.app.settings_window.x",
-    "session.app.settings_window.y",
-    "session.app.sidebar_width",
-    "session.app.window_closed",
-    "session.app.window.frame.height",
-    "session.app.window.frame.width",
-    "session.app.window.frame.x",
-    "session.app.window.frame.y",
-    "session.app.window.full_screen",
-    "session.app.window.screen",
-    "session.comparison.sync_from.len",
-    "session.comparison.sync_from[]",
-    "session.comparison.synced",
-    "session.comparison.tabs.len",
-    "session.comparison.tabs[]",
-    "session.edit_mode",
-    "session.edits_full.N.added.len",
-    "session.edits_full.N.added[].file.device",
-    "session.edits_full.N.added[].file.inode",
-    "session.edits_full.N.added[].file.mtime_ns",
-    "session.edits_full.N.added[].file.size",
-    "session.edits_full.N.added[].page_count",
-    "session.edits_full.N.added[].path",
-    "session.edits_full.N.file_pages",
-    "session.edits_full.N.history_dropped",
-    "session.edits_full.N.owner_step_dropped",
-    "session.edits_full.N.pages.len",
-    "session.edits_full.N.pages[].len",
-    "session.edits_full.N.pages[][]",
-    "session.edits_full.N.redo.len",
-    "session.edits_full.N.redo[].by",
-    "session.edits_full.N.redo[].step.remove.len",
-    "session.edits_full.N.redo[].step.remove.start",
-    "session.edits_full.N.redo[].step.rotate.len",
-    "session.edits_full.N.redo[].step.rotate.quarter_turns",
-    "session.edits_full.N.redo[].step.rotate.start",
-    "session.edits_full.N.undo.len",
-    "session.edits_full.N.undo[].by",
-    "session.edits_full.N.undo[].step.move.len",
-    "session.edits_full.N.undo[].step.move.start",
-    "session.edits_full.N.undo[].step.move.to",
-    "session.edits_full.N.undo[].step.remove.len",
-    "session.edits_full.N.undo[].step.remove.start",
-    "session.edits_full.N.undo[].step.restore.runs.len",
-    "session.edits_full.N.undo[].step.restore.runs[].len",
-    "session.edits_full.N.undo[].step.restore.runs[][]",
-    "session.edits_full.N.undo[].step.restore.start",
-    "session.edits_full.N.undo[].step.rotate.len",
-    "session.edits_full.N.undo[].step.rotate.quarter_turns",
-    "session.edits_full.N.undo[].step.rotate.start",
-    "session.find.current",
-    "session.find.current.len",
-    "session.find.current[]",
-    "session.find.current_tab",
-    "session.find.draft",
-    "session.find.open",
-    "session.find.query",
-    "session.next_id",
-    "session.tabs.len",
-    "session.tabs[].edits",
-    "session.tabs[].edits.edited",
-    "session.tabs[].edits.holds_owner_edits",
-    "session.tabs[].edits.owner_steps_undone",
-    "session.tabs[].edits.pages",
-    "session.tabs[].edits.redo",
-    "session.tabs[].edits.rewrites",
-    "session.tabs[].edits.undo",
-    "session.tabs[].file.device",
-    "session.tabs[].file.inode",
-    "session.tabs[].file.mtime_ns",
-    "session.tabs[].file.size",
-    "session.tabs[].id",
-    "session.tabs[].journal",
-    "session.tabs[].notice",
-    "session.tabs[].page",
-    "session.tabs[].page_count",
-    "session.tabs[].path",
-    "session.tabs[].place.anchor_page",
-    "session.tabs[].place.document_height",
-    "session.tabs[].place.page",
-    "session.tabs[].place.page_height",
-    "session.tabs[].place.page_width",
-    "session.tabs[].place.within",
-    "session.tabs[].place.x",
-    "session.tabs[].place.y",
-    "session.tabs[].place.zoom",
-    "session.tabs[].renderer_only",
-    "session.tabs[].selection",
-    "session.tabs[].layout",
-    "session.tabs[].toc_open",
-    "session.tabs[].generated_contents",
-    "session.tabs[].contents_folds.len",
-    "session.tabs[].view_rotation",
-    "session.view.agent_icon_hidden",
-    "session.view.sidebar_hidden",
-    "session.view.paper",
-];
-
 /// Failure: the first frame shows the wrong page or the home screen, or the window comes up empty and fills in. It's held back until the page is on its layers, and this is what was on it when it showed: the place, drawn.
 #[test]
 fn the_first_frame_is_the_right_one() {
@@ -813,7 +493,7 @@ fn a_hand_off_in_the_middle_of_things_loses_nothing() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let after = run.report();
-    assert_same(&before, &after, KNOWN_PATHS);
+    assert_same(&before, &after, &known_paths());
     assert_eq!(after["session"]["edit_mode"], true);
     assert_eq!(after["session"]["find"]["draft"], "typed but not run");
 }

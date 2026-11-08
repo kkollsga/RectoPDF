@@ -1,0 +1,1 @@
+snapshot. The snapshot tool starts off on every launch, as a tool does in Preview, the one exception it adds to decision 23. A box being drawn ends with the drag, and a snapshot on its way to the clipboard is waited for by a hand-off.

@@ -1,0 +1,1 @@
+hangs. Its own stalls, counted from its own start.

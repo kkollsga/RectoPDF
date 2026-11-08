@@ -1,0 +1,1 @@
+panes.documents_held The same, over every pane's page view.
