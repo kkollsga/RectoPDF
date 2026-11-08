@@ -407,6 +407,16 @@ fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool)
     facts.has_persons_signature() && (needs_rewrite || facts.certified || facts.field_locked)
 }
 
+/// **`qa save-from`'s signature check,** on what was found of the file's signatures: a person's signature refuses it, and so does a file that couldn't be looked
+/// at, as the save itself refuses what it can't look through (review round 2).
+fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, recto_core::OpenError>) -> Result<(), AgentError> {
+    match facts {
+        Ok(facts) if !facts.has_persons_signature() => Ok(()),
+        Ok(_) => Err(AgentError::new("signed_needs_copy", recto_core::save::SaveError::SignedNeedsCopy.message(), recto_agent::exit::FAILED)),
+        Err(error) => Err(AgentError::new(error.code(), format!("{} Its signatures couldn't be looked at, so nothing was put in place.", error.message()), recto_agent::exit::FAILED)),
+    }
+}
+
 /// What to say by the page about a copy.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SelectionNotice {
@@ -1199,9 +1209,7 @@ impl Inner {
         if known.is_none_or(|known| recto_platform::file_stamp(&path).ok() != Some(known)) {
             return Err(AgentError::new("file_changed", recto_core::save::SaveError::FileChanged.message(), recto_agent::exit::FAILED));
         }
-        if recto_core::save::signature_facts_of(&path).is_ok_and(|facts| facts.has_persons_signature()) {
-            return Err(AgentError::new("signed_needs_copy", recto_core::save::SaveError::SignedNeedsCopy.message(), recto_agent::exit::FAILED));
-        }
+        save_from_signature_check(recto_core::save::signature_facts_of(&path))?;
         let (id, path, pages, needed) = self.host.session.with_session(|session| {
             let id = session.active()?;
             let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
@@ -3131,6 +3139,17 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 
 #[cfg(test)]
 mod tests {
+    /// Failure (review round 2 of stage 2): `qa save-from` lets a file whose signatures couldn't be looked at through the signature check, so a crash test can put a file in place over a signed one the save itself would refuse. A signed file and one that won't open are both refused; an unsigned one goes.
+    #[test]
+    fn save_from_refuses_a_file_it_cant_look_at() {
+        use recto_core::save::SignatureFacts;
+        assert!(super::save_from_signature_check(Ok(SignatureFacts::default())).is_ok());
+        assert_eq!(super::save_from_signature_check(Ok(SignatureFacts { signed: true, ..SignatureFacts::default() })).unwrap_err().code, "signed_needs_copy");
+        let unreadable = recto_core::save::signature_facts_of(std::path::Path::new("/nowhere/at/all.pdf"));
+        assert!(unreadable.is_err());
+        assert_eq!(super::save_from_signature_check(unreadable).unwrap_err().code, "not_found");
+    }
+
     use super::*;
 
     /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
