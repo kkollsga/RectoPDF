@@ -310,7 +310,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [x] Red frames from an old file: a warm tab whose file was replaced kept showing the old pages, on main too; every picture and tile now carries its file's version, and a tab's file is looked at before it's shown
 - [ ] A quiet QA app outlives a test or script that stopped without saying so: three ran on, orphaned, for up to their 30-minute limit after their worktrees were gone. It should end when the client that started it is gone
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
-- [ ] 24-hour soak, flat memory
+- [ ] 24-hour soak, flat memory: `tools/soak/soak.py`, started 2026-11-08 15:36 on a release bundle at `d4116a5`, all 141 bench100 files coming round in a quiet run with tabs, sleep, Find, copy, compare and saves to temp copies, sampled each minute; ends about 15:40 the next day, when `tools/soak/verdict.py` says flat or growing
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
 - [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo). It also settles what the sandboxed renderer helper couldn't be tested for here: notarization of a nested helper, Gatekeeper and quarantine on a downloaded copy, and App Translocation
 - [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
