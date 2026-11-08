@@ -132,6 +132,13 @@ final class Bridge: AppListener, @unchecked Sendable {
         memoryPressureSource = source
     }
 
+    /// Keeps the system from putting a quiet run on the screen.
+    private let quietGuard = QuietRunGuard()
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if isQuiet { quietGuard.install() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         watchMainThread()
         watchMemoryPressure()
@@ -294,11 +301,15 @@ final class Bridge: AppListener, @unchecked Sendable {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        // A quiet run's window comes back by `qa window open` alone.
+        guard !isQuiet else { return false }
         openWindow()
         return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        // A quiet run opens what its QA channel says, and nothing the system sends it.
+        guard !isQuiet else { return }
         for url in urls where url.isFileURL { core.openFile(path: url.path) }
     }
 
@@ -431,8 +442,8 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .none: break
         case .focusPalette: windowController?.focusPalette()
         case .showOpenPanel: openDocument(nil)
-        // A panel of its own on the screen, so a quiet run notes it was asked for and shows nothing.
-        case .showAbout: if isQuiet { aboutAskedForQA = true } else { NSApp.orderFrontStandardAboutPanel(nil) }
+        // A panel of its own on the screen, which a quiet run doesn't show.
+        case .showAbout: if !isQuiet { NSApp.orderFrontStandardAboutPanel(nil) }
         case .showSettings: showSettings()
         case .quit: NSApp.terminate(nil)
         case .closeWindow: windowController?.window.performClose(nil)
@@ -443,9 +454,6 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .showGoTo: windowController?.startPageEditing()
         }
     }
-
-    /// Whether a quiet run has been asked for the About panel, which it doesn't show.
-    private(set) var aboutAskedForQA = false
 
     /// The last address a quiet run would have opened, for QA: it opens nothing on a test's say-so.
     private(set) var addressOpenedForQA: String?

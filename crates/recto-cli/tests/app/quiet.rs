@@ -105,3 +105,32 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     assert!(seen.is_empty(), "a quiet run's windows were on screen, {} times in {samples} looks: {:?}", seen.len(), &seen[..seen.len().min(8)]);
     assert!(actives.iter().all(|active| active == false), "the app was never the active one: {actives:?}");
 }
+
+/// Failure: the system's opening the bundle again, as `open` does for whoever runs it, reaches a quiet run and makes it a regular app, with a Dock icon and a place in the menu bar, or opens its window. LaunchServices hands the reopen to the running app, and AppKit's own handling of it turned a quiet run regular (measured 2026-11-08, and seen in a full check's restore test while another worktree's update tests were opening their copies). The run stays prohibited, never active and off every screen, looked at for two seconds after.
+#[test]
+fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
+    let Some(app) = app_path() else { return };
+    let bundle = app.canonicalize().unwrap().ancestors().nth(3).unwrap().to_path_buf();
+    assert_eq!(bundle.extension().and_then(|it| it.to_str()), Some("app"), "{}", bundle.display());
+    let watch = ScreenWatch::start(app.canonicalize().unwrap());
+    let run = Run::start().unwrap();
+    // On this run's own state and quiet, should it start a copy rather than reach the one running.
+    let opened = std::process::Command::new("/usr/bin/open").arg("-g").arg("--env").arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display())).arg(&bundle).args(["--args", "--qa"]).output().unwrap();
+    assert!(opened.status.success(), "{opened:?}");
+    let began = std::time::Instant::now();
+    let mut looks = 0;
+    while began.elapsed() < Duration::from_secs(2) {
+        let app = run.report()["app"].clone();
+        assert_eq!((app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()), (serde_json::json!("prohibited"), serde_json::json!(false), serde_json::json!(false)), "opened again, it stays quiet: {app}");
+        looks += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(run);
+    let (seen, samples, anything) = watch.finish();
+    if !anything {
+        eprintln!("skipped: the window server listed nothing on any screen");
+        return;
+    }
+    assert!(looks > 5 && samples > 50, "{looks} reports, {samples} looks");
+    assert!(seen.is_empty(), "a quiet run's windows were on screen: {:?}", &seen[..seen.len().min(8)]);
+}
