@@ -150,7 +150,7 @@ fn moved_pages_come_out_in_their_new_order() {
     }
 }
 
-/// Failure: pages added from another PDF bring that PDF's other pages along through a link, or don't come at all. Only the pages added, and what they draw with, are copied in.
+/// Failure: pages added from another PDF bring that PDF's other pages along through a link, or another app's private `/PieceInfo` (on the corpus's USGS map, 156 MB of Illustrator data), or don't come at all. Only the pages added, and what they draw with, are copied in.
 #[test]
 fn added_pages_are_copied_in_without_the_rest_of_their_file() {
     let dir = Dir::new();
@@ -159,7 +159,7 @@ fn added_pages_are_copied_in_without_the_rest_of_their_file() {
     let other = build(&[
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /Resources << /Font << /F1 7 0 R >> >> >>".into()),
-        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [8 0 R] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [8 0 R] /PieceInfo << /Illustrator << /Private (PIECEINFOMARK) >> >> >>".into()),
         Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
         Raw::Stream { dict: String::new(), data: text_lines(&["NOTADDED"]) },
@@ -173,6 +173,7 @@ fn added_pages_are_copied_in_without_the_rest_of_their_file() {
     assert_eq!(read_pages(&path), [("MINE".into(), 0), ("ADDED".into(), 90)]);
     let bytes = std::fs::read(&path).unwrap();
     assert!(!contains(&bytes, "NOTADDED"), "the page that wasn't added isn't in the file");
+    assert!(!contains(&bytes, "PIECEINFOMARK"), "nor another app's private data, which can be a whole second copy of the artwork");
     assert!(contains(&bytes, "/Helvetica"), "the font the added page draws with is");
 }
 
@@ -442,4 +443,34 @@ fn a_huge_object_in_an_added_file_is_refused() {
         Err(error) => assert!(matches!(error, SaveError::AddedFileUnreadable { .. }), "{error:?}"),
     }
     let _ = before;
+}
+
+/// Failure: a page added from a PDF with layers loses that PDF's layer states, so a layer its own file hides, which can be what it keeps out of sight, shows in the saved file. Found on the corpus: the USGS map's hidden layers made its page need over 1 GiB to draw once added elsewhere. The layers come along, and the hidden ones stay hidden.
+#[test]
+fn an_added_pages_hidden_layers_stay_hidden() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let other = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R] /D << /OFF [5 0 R] >> >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Properties << /H 5 0 R /S 6 0 R >> >> >>".into()),
+        Raw::Stream { dict: String::new(), data: b"/OC /H BDC (HIDDENLAYER) Tj EMC /OC /S BDC (SHOWNLAYER) Tj EMC".to_vec() },
+        Raw::Dict("<< /Type /OCG /Name (Hidden) >>".into()),
+        Raw::Dict("<< /Type /OCG /Name (Shown) >>".into()),
+    ]);
+    let other_path = dir.write("other.pdf", &other);
+    let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    let Some(Object::Dictionary(root)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!() };
+    let properties = root.get(b"OCProperties").and_then(Object::as_dict).expect("the layers came along");
+    let named = |list: &Object| -> Vec<String> {
+        list.as_array().unwrap().iter().map(|item| match reader.resolve_object(item.as_reference().unwrap()).unwrap() {
+            Object::Dictionary(group) => String::from_utf8_lossy(group.get(b"Name").unwrap().as_str().unwrap()).into_owned(),
+            _ => String::new(),
+        }).collect()
+    };
+    assert_eq!(named(properties.get(b"OCGs").unwrap()), ["Hidden", "Shown"]);
+    assert_eq!(named(properties.get(b"D").and_then(Object::as_dict).unwrap().get(b"OFF").unwrap()), ["Hidden"], "hidden there, hidden here");
 }

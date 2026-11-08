@@ -678,8 +678,20 @@ impl Plan {
             node.set("Count", Object::Integer(i64::try_from(ids.len()).map_err(|_| SaveError::TooLarge)?));
             writer.write_object(tree, &Object::Dictionary(node)).map_err(from_append)?;
         }
-        if self.drop_usage_rights {
-            drop_usage_rights(reader, writer)?;
+        // Layers the added pages draw with, and which of them their own files hide, so the saved file hides them too.
+        let mut layers: Vec<(ObjectId, bool)> = Vec::new();
+        for (at, copy) in self.copies.iter().enumerate() {
+            let (Some(_), Some((source, _))) = (copy, sources.get(at).and_then(Option::as_ref)) else { continue };
+            let (all, off) = layer_states(source);
+            let numbers = &renumbered[at];
+            for id in all {
+                if let Some(new_id) = numbers.get(&id) {
+                    layers.push((*new_id, off.contains(&id)));
+                }
+            }
+        }
+        if self.drop_usage_rights || !layers.is_empty() {
+            update_catalog(reader, writer, self.drop_usage_rights, &layers)?;
         }
         Ok(ids)
     }
@@ -704,8 +716,9 @@ fn copied_page(source: &IndexedReader, entry: &PageMapEntry) -> Result<Dictionar
             dict.set(key, value);
         }
     }
-    // Its tree, its place in the old document's structure and its article beads are all the old document's.
-    for key in [&b"Parent"[..], b"StructParents", b"B", b"Rotate"] {
+    // Its tree, its place in the old document's structure and its article beads are all the old document's. `/PieceInfo` is another app's private data,
+    // which can hold a whole second copy of what was drawn, and nothing draws from it.
+    for key in [&b"Parent"[..], b"StructParents", b"B", b"Rotate", b"PieceInfo"] {
         dict.remove(key);
     }
     Ok(dict)
@@ -823,17 +836,66 @@ impl Read for EncodedRead {
     }
 }
 
-/// A new version of the catalog without usage rights. They'd be broken by any page edit, and a reader that finds them broken says so; they aren't a person's signature (owner, 2026-11-08).
-fn drop_usage_rights(reader: &IndexedReader, writer: &mut AppendWriter<'_, TemporaryOutput<'_>>) -> Result<(), SaveError> {
+/// A file's layers, by object number, and which of them it hides by default: `/OFF`, or all but `/ON` when its base state is off. Nothing for a file with none or one that can't be read, which then hides nothing.
+fn layer_states(reader: &IndexedReader) -> (Vec<u32>, HashSet<u32>) {
+    let Some(properties) = catalog(reader).and_then(|root| root.get(b"OCProperties").ok().cloned()).and_then(|value| dict_value(reader, &value)) else { return (Vec::new(), HashSet::new()) };
+    let ids = |value: Option<&Object>| -> Vec<u32> {
+        match value.cloned().map(|value| match value {
+            Object::Reference(id) => reader.resolve_object(id).unwrap_or(Object::Null),
+            other => other,
+        }) {
+            Some(Object::Array(items)) => items.iter().filter_map(|item| item.as_reference().ok().map(|id| id.0)).take(MAX_COPIED_OBJECTS).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let all = ids(properties.get(b"OCGs").ok());
+    let defaults = properties.get(b"D").ok().cloned().and_then(|value| dict_value(reader, &value)).unwrap_or_default();
+    let base_off = matches!(defaults.get(b"BaseState"), Ok(Object::Name(name)) if name == b"OFF");
+    let off: HashSet<u32> = if base_off {
+        let on: HashSet<u32> = ids(defaults.get(b"ON").ok()).into_iter().collect();
+        all.iter().copied().filter(|id| !on.contains(id)).collect()
+    } else {
+        ids(defaults.get(b"OFF").ok()).into_iter().collect()
+    };
+    (all, off)
+}
+
+/// **A new version of the catalog,** for what a save changes there. Usage rights go: any page edit ends them, a reader that finds them broken says so, and they aren't a person's signature (owner, 2026-11-08). Layers of added pages join the file's own, with the ones their files hide hidden here too: otherwise a layer a file hides, which can be what it keeps out of sight, would show on its page in this one.
+fn update_catalog(reader: &IndexedReader, writer: &mut AppendWriter<'_, TemporaryOutput<'_>>, drop_rights: bool, layers: &[(ObjectId, bool)]) -> Result<(), SaveError> {
     let root = catalog_id(reader).ok_or(SaveError::Damaged)?;
     let mut catalog = page_dict(reader, root)?;
-    let Some(mut perms) = catalog.get(b"Perms").ok().cloned().and_then(|perms| dict_value(reader, &perms)) else { return Ok(()) };
-    perms.remove(b"UR3");
-    perms.remove(b"UR");
-    if perms.iter().next().is_none() {
-        catalog.remove(b"Perms");
-    } else {
-        catalog.set("Perms", Object::Dictionary(perms));
+    if drop_rights && let Some(mut perms) = catalog.get(b"Perms").ok().cloned().and_then(|perms| dict_value(reader, &perms)) {
+        perms.remove(b"UR3");
+        perms.remove(b"UR");
+        if perms.iter().next().is_none() {
+            catalog.remove(b"Perms");
+        } else {
+            catalog.set("Perms", Object::Dictionary(perms));
+        }
+    }
+    if !layers.is_empty() {
+        let mut properties = catalog.get(b"OCProperties").ok().cloned().and_then(|value| dict_value(reader, &value)).unwrap_or_default();
+        let resolved = |value: Option<&Object>| -> Vec<Object> {
+            match value.cloned().map(|value| match value {
+                Object::Reference(id) => reader.resolve_object(id).unwrap_or(Object::Null),
+                other => other,
+            }) {
+                Some(Object::Array(items)) => items,
+                _ => Vec::new(),
+            }
+        };
+        let mut all = resolved(properties.get(b"OCGs").ok());
+        all.extend(layers.iter().map(|(id, _)| Object::Reference(*id)));
+        properties.set("OCGs", Object::Array(all));
+        let mut defaults = properties.get(b"D").ok().cloned().and_then(|value| dict_value(reader, &value)).unwrap_or_default();
+        let base_off = matches!(defaults.get(b"BaseState"), Ok(Object::Name(name)) if name == b"OFF");
+        // With everything off unless it's listed on, it's the shown ones that need listing.
+        let (key, wanted) = if base_off { (&b"ON"[..], false) } else { (&b"OFF"[..], true) };
+        let mut listed = resolved(defaults.get(key).ok());
+        listed.extend(layers.iter().filter(|(_, off)| *off == wanted).map(|(id, _)| Object::Reference(*id)));
+        defaults.set(key, Object::Array(listed));
+        properties.set("D", Object::Dictionary(defaults));
+        catalog.set("OCProperties", Object::Dictionary(properties));
     }
     writer.write_object(root, &Object::Dictionary(catalog)).map_err(from_append)?;
     Ok(())
