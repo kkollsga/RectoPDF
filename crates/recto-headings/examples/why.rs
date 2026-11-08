@@ -31,6 +31,12 @@ fn main() {
             }
         }
         let kept = keep_visible(Headings { pages: headings.pages, found: vec![found.clone()], ..Headings::default() }, &mut One(Some(PageInk { chars: page.chars.clone(), boxes: page.boxes.clone(), frame: page.frame, checked: page.hidden_checked }))).entries.len();
+        if std::env::var_os("BOXES").is_some() && kept == 0 {
+            let first: String = found.title.chars().take(4).collect();
+            let text: String = page.chars.iter().map(|record| record.ch()).collect();
+            let at = text.find(&first);
+            println!("   bbox {:?} frame {:?} first {:?} at {:?} box {:?}", found.bbox, page.frame, first, at, at.and_then(|at| page.boxes.get(text[..at].chars().count())));
+        }
         println!("p{} l{} {:?}  page chars {} no-ink {} checked {} kept {kept}", found.page + 1, found.level, found.title, page.chars.len(), hidden, page.hidden_checked);
         if std::env::var_os("SHOW").is_some() {
             println!("   {}", text.replace('\n', " / ").chars().take(600).collect::<String>());

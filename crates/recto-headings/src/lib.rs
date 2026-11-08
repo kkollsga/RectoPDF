@@ -266,26 +266,25 @@ fn seen_at(title: &str, bbox: [f32; 4], page: &PageInk) -> Option<u16> {
     }
     let [x0, y0, x1, y1] = bbox;
     let inside = |x: f32, y: f32| x >= x0.min(x1) - BOX_SLACK && x <= x0.max(x1) + BOX_SLACK && y >= y0.min(y1) - BOX_SLACK && y <= y0.max(y1) + BOX_SLACK;
-    // The box's characters in reading order, each letter with whether it was hidden and where its top is on the page as shown.
-    let mut letters_in: Vec<(char, bool, f32, f32)> = Vec::new();
+    // The page's letters in reading order, each with whether it was hidden, whether it's in the heading's box, and where its top is on the page as shown.
+    let mut letters_in: Vec<(char, bool, bool, f32, f32)> = Vec::new();
     for (record, char_box) in page.chars.iter().zip(&page.boxes) {
         let [left, bottom, right, top] = *char_box;
         let (cx, cy) = ((left + right) / 2.0, (bottom + top) / 2.0);
         // distillPDF's box is in the page's own coordinates on an upright page, which is all it finds headings on in 0.1.7. On a turned page it's taken in either, as there's nothing to test it on.
         let (sx, sy, _) = shown(page.frame, cx, cy);
-        if !(inside(cx, cy) || (page.frame.turns & 3 != 0 && inside(sx, sy))) {
-            continue;
-        }
+        let in_box = inside(cx, cy) || (page.frame.turns & 3 != 0 && inside(sx, sy));
         let (_, top_shown, height) = shown(page.frame, left, top).max_by_y(shown(page.frame, right, bottom));
         let hidden = record.has(CharRecord::NO_INK);
-        letters(record.ch().encode_utf8(&mut [0; 4]), |c| letters_in.push((c, hidden, top_shown, height)));
+        letters(record.ch().encode_utf8(&mut [0; 4]), |c| letters_in.push((c, hidden, in_box, top_shown, height)));
     }
     let mut comparisons = 0usize;
     if letters_in.len() < key.len() {
         return None;
     }
+    // A heading that wraps has a box around its first line only, so it has to start in the box, and may go on past it.
     for start in 0..=letters_in.len() - key.len() {
-        if letters_in[start].0 != key[0] {
+        if letters_in[start].0 != key[0] || !letters_in[start].2 {
             continue;
         }
         comparisons += key.len();
@@ -294,7 +293,7 @@ fn seen_at(title: &str, bbox: [f32; 4], page: &PageInk) -> Option<u16> {
         }
         let window = &letters_in[start..start + key.len()];
         if window.iter().zip(&key).all(|((c, ..), k)| c == k) && window.iter().filter(|(_, hidden, ..)| *hidden).count() * 10 <= key.len() {
-            let (top, height) = window.iter().fold((f32::MIN, 0.0f32), |(top, height), (_, _, at, of)| (top.max(*at), height.max(*of)));
+            let (top, height) = window.iter().fold((f32::MIN, 0.0f32), |(top, height), (.., at, of)| (top.max(*at), height.max(*of)));
             let place = if height > 0.0 && top.is_finite() { ((height - top) / height).clamp(0.0, 1.0) } else { 0.0 };
             return Some((place * f32::from(PLACE_SCALE)).round() as u16);
         }
@@ -379,6 +378,15 @@ mod tests {
         assert_eq!(generated.hidden_dropped, 2);
         assert_eq!(generated.pages_not_checked, 1);
         assert!((100..140).contains(&generated.entries[0].place), "{}", generated.entries[0].place);
+    }
+
+    /// Failure: a heading that wraps onto a second line is left out, as distillPDF's box is around its first line only.
+    #[test]
+    fn a_heading_that_wraps_is_kept() {
+        let mut first = found(0, "Direct Thrust Measurements", 700.0);
+        first.title = "Direct Thrust Measurements of Electric Sail Tethers".into();
+        let generated = keep_visible(Headings { pages: 1, found: vec![first], ..Headings::default() }, &mut Pages(vec![page(&[("Direct Thrust Measurements", 700.0, false), ("of Electric Sail Tethers", 680.0, false)])]));
+        assert_eq!(generated.entries.len(), 1, "{generated:?}");
     }
 
     /// Failure: the same words seen as a speck elsewhere on the page vouch for a white heading, because the match was by spelling anywhere on the page. And a ligature PDFium spells as one character loses a real heading.
