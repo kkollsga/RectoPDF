@@ -2211,6 +2211,9 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 #[path = "restore/update.rs"]
 mod update;
 
+#[path = "restore/exits.rs"]
+mod exits;
+
 /// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. A file notice wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
 #[test]
 fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {

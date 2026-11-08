@@ -23,6 +23,12 @@ impl SaveSupport for AppSaving {
         Some(self.backups.clone())
     }
 
+    fn before_writing(&self, _tab: TabId) {
+        if let Some(inner) = self.saver.inner() {
+            self.saver.write_journals_now(&inner);
+        }
+    }
+
     fn note_on_disk(&self, tab: TabId, target: FileStamp) -> Result<(), String> {
         let inner = self.saver.inner().ok_or("the app is going away")?;
         self.saver.write_journals_now(&inner);
