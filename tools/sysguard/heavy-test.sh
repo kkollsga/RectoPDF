@@ -141,6 +141,30 @@ HEAVY_RETRY=1 bash "$HEAVY" bash -c "[ -s '$X/flag' ] || { echo x >> '$X/flag'; 
 bash "$HEAVY" bash -c "[ -s '$X/flag' ] || { echo x >> '$X/flag'; exit 5; }" >/dev/null 2>&1
 check "a pass forgets the failure" "0" "$?"
 
+# Failure (PLAN phase 7): a library installed where git doesn't look, such as PDFium in target/, and the job that failed
+# without it refused as "nothing has changed". What `.heavy-inputs` lists counts as code; a path out of the checkout doesn't.
+printf 'lib/\n' > .gitignore
+printf '# untracked inputs\nlib\n../outside\n' > .heavy-inputs
+git add .gitignore .heavy-inputs && git -c user.name=t -c user.email=t@t commit -q -m inputs
+: > "$X/ran3"
+needs_lib() { bash "$HEAVY" bash -c "echo run >> '$X/ran3'; [ -f lib/lib.dylib ]" >/dev/null 2>&1; }
+needs_lib
+needs_lib
+check "without the library, the rerun is refused" "1" "$(wc -l < "$X/ran3" | tr -d ' ')"
+mkdir -p lib ../outside && echo v1 > lib/lib.dylib
+needs_lib
+check "installing a listed input lets it run again" "0 2" "$? $(wc -l < "$X/ran3" | tr -d ' ')"
+rm lib/lib.dylib
+needs_lib
+check "taking it away again is the state that failed, so it's refused" "2" "$(wc -l < "$X/ran3" | tr -d ' ')"
+echo changed > ../outside/x
+needs_lib
+check "and a path out of the checkout doesn't count" "2" "$(wc -l < "$X/ran3" | tr -d ' ')"
+echo v2 > lib/lib.dylib
+needs_lib
+check "a changed input counts" "0 3" "$? $(wc -l < "$X/ran3" | tr -d ' ')"
+rm -rf lib ../outside
+
 # Failure: a job stopped from outside held against the code.
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1

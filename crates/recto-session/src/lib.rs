@@ -87,11 +87,11 @@ pub struct TabRecord {
     stamp: Option<FileStamp>,
     /// Exactly where the reader was, so a tab that goes cold or across a restart comes back there. It's what's asked for on showing the tab, and what the page view says on leaving one.
     place: Option<PlaceRecord>,
-    /// Quarter turns of the view. Nothing turns the view yet.
+    /// Quarter turns of the view: every page drawn turned, on top of what its edits turn. Set by QA's `view_rotation` and kept in the record.
     pub view_rotation: u8,
     /// How its pages are laid out: a page to a row, or two side by side.
     pub spread: record::Spread,
-    /// Selection work: what's selected. Nothing sets it yet.
+    /// What's selected, as the page view last said: kept in the record, so it comes back across a restart.
     selection: Option<Box<Selection>>,
     /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
     notice: Option<Box<FileNotice>>,
@@ -737,7 +737,7 @@ pub struct Session<L = DiskLoader> {
     place_lost: bool,
     /// Find, as the reader left it.
     find: FindRecord,
-    /// Edit mode. Nothing draws it yet.
+    /// Edit mode: the panel opens on its tools, and Rotate turns the page being read rather than every page.
     edit_mode: bool,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
@@ -2182,7 +2182,7 @@ impl<L: DocLoader> Session<L> {
         self.edit_mode = on;
     }
 
-    /// Turns the view of a tab, by quarter turns. Nothing draws it yet.
+    /// Turns the view of a tab, by quarter turns.
     pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
         if let Some(tab) = self.tab_mut(id) {
             tab.view_rotation = quarter_turns % 4;

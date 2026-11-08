@@ -242,6 +242,10 @@ find "$FAILS" -type f -mmin +1440 -delete 2>/dev/null
 
 # What the command is about to run on: the command and the code, including work not yet committed. Not in a git
 # checkout, there's no telling, so nothing is remembered.
+#
+# Then what git ignores and can still change a result on the same code, such as a library a script downloads into
+# target/: a checkout lists those paths in its `.heavy-inputs`, one per line from its top, `#` for a comment, and their
+# contents count. Keep them small, as they're read for every job. A path that leaves the checkout is passed over.
 fingerprint() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   {
@@ -250,7 +254,18 @@ fingerprint() {
     git rev-parse HEAD 2>/dev/null
     git diff HEAD 2>/dev/null
     git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 shasum 2>/dev/null
+    extra_inputs
   } | hash_of
+}
+extra_inputs() {
+  local top input
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -f "$top/.heavy-inputs" ] || return 0
+  grep -vE '^[[:space:]]*(#|$)' "$top/.heavy-inputs" | while IFS= read -r input; do
+    case "$input" in /*|..|../*|*/..|*/../*) continue ;; esac
+    printf 'input %s\n' "$input"
+    [ -e "$top/$input" ] && find "$top/$input" -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum 2>/dev/null
+  done
 }
 FP=$(fingerprint)
 # Which project and branch this is, for the stats, from the working directory. The main checkout's name for any of its worktrees.

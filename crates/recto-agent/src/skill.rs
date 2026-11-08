@@ -84,7 +84,16 @@ pub fn reference_md() -> String {
     out.push_str("## Selectors\n\n`--tab` takes `#3`, `active`, or part of a tab's name. Leaving it out means the active tab. They never guess: if two tabs match, it's exit 4 with `error.candidates`.\n\n");
     out.push_str("## The envelope\n\n```json\n{\"v\":1,\"ok\":true,\"cmd\":\"tabs\",\"data\":{}}\n{\"v\":1,\"ok\":false,\"cmd\":\"text\",\"error\":{\"code\":\"permission_denied\",\"message\":\"...\",\"candidates\":[],\"exit\":5,\"next\":\"...\",\"ask\":\"recto permission request read_only\"}}\n```\n\nFields are only added within a version. Anything from a document is under `untrusted`.\n\n");
     out.push_str("## Levels\n\n- **Off**, the default: `status`, which says how many PDFs are open, `help`, `permission` and `skill`. Nothing from a document, not even a name.\n- **Read-only**: read and search, and measure.\n- **Control**: open, move around, edit pages in memory, and throw away agents' own edits, never the user's.\n- **Full**: write a new picture to disk, and throw away the user's edits too.\n\nOnly the user raises a level, at their own terminal. No command, flag or variable does it.\n\n");
-    out.push_str("## Events\n\n`recto watch --events` groups: `tabs` (`tab_opened`, `tab_closed`, `tab_activated`), `pages` (`page_changed`), `edits` (`edits_changed`), `draws` (`page_drawn`, `page_failed`), `access` (`level_changed`).\n\n");
+    out.push_str("## Events\n\n`recto watch --events` groups: ");
+    let groups: Vec<String> = crate::table::EVENT_GROUPS
+        .iter()
+        .map(|group| {
+            let events: Vec<String> = crate::table::EVENTS.iter().filter(|(_, listed)| listed == group).map(|(event, _)| format!("`{event}`")).collect();
+            format!("`{group}` ({})", events.join(", "))
+        })
+        .collect();
+    out.push_str(&groups.join(", "));
+    out.push_str(".\n\n");
     out.push_str("## Exit codes\n\n");
     write_exit_codes(&mut out);
     out.push_str("\n## Commands\n");

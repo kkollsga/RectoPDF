@@ -750,16 +750,22 @@ fn contents_come_in_pieces_and_follow_edits() {
 }
 
 /// Failure: some command prints JSON at a person, or has no version under `--json`, or a usage error can't be read as JSON. Walks every row a person can run with nothing set up.
+///
+/// And (PLAN phase 7): the test took over 60 s, as two waits' examples waited out their default 30 s twice each, for an index and generated contents that nothing here makes. Every wait is asked with a 1 s limit, so a new wait row can't make it slow again.
 #[test]
 fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let state = State::at(Level::Full);
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget", "wait indexing-done"];
+    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget"];
     for spec in TABLE.iter().filter(|spec| !spec.hidden && !skip.contains(&spec.name)) {
         let words = skill::shell_words(spec.examples[0]);
-        let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();
+        let mut args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();
+        // What a wait gives is the question here, not waiting out its default for what nothing here makes.
+        if spec.tag == "wait" && !args.contains(&"--timeout") {
+            args.extend(["--timeout", "1s"]);
+        }
         let output = state.command().args(&args).arg("--json").output().unwrap();
         let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{}: not JSON: {}", spec.name, String::from_utf8_lossy(&output.stdout)));
         assert_eq!(reply["v"], recto_agent::VERSION, "{}", spec.name);
@@ -775,12 +781,6 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
             assert!(!shown.trim_start().starts_with('{'), "{} prints JSON at a person: {shown}", spec.name);
         }
     }
-    // Its example waits for an index nobody started, which took 60 of this test's 61 s: a person's and a machine's answer to the same wait, kept short.
-    let (waited, _) = state.json(&["wait", "indexing-done", "--timeout", "1s"]);
-    assert_eq!(waited["v"], recto_agent::VERSION);
-    assert!(waited["ok"].is_boolean(), "{waited}");
-    let (_, plain, _) = state.text(&["wait", "indexing-done", "--timeout", "1s"]);
-    assert!(!plain.trim_start().starts_with('{'), "it prints JSON at a person: {plain}");
     let (usage, code) = state.json(&["no-such-command"]);
     assert_eq!((usage["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE));
     assert_eq!(usage["v"], recto_agent::VERSION);

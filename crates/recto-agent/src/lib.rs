@@ -766,12 +766,12 @@ impl Command {
 }
 
 impl Command {
-    /// The selector this command acts on, if it has one.
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
         matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Print { .. })
     }
 
+    /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
             Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Images { tab, .. } | Self::Image { tab, .. } | Self::Snapshot { tab, .. } | Self::Print { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
@@ -973,8 +973,8 @@ impl Event {
         Self { name, data }
     }
 
-    /// The group `watch --events` selects it by.
-    pub fn group(&self) -> &'static str {
+    /// The group `watch --events` selects it by, if it's listed.
+    pub fn group(&self) -> Option<&'static str> {
         table::event_group(self.name)
     }
 
@@ -1038,7 +1038,6 @@ pub fn run_indexed<L: DocLoader + Clone>(session: &mut Session<L>, level: Level,
     execute(&Direct(RefCell::new(session), indexing), level, command, &mut Vec::new())
 }
 
-/// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
 /// What's chosen, in a word: `auto` goes with the window.
 pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
     view.paper.map_or("auto", recto_session::Paper::name)
@@ -1057,7 +1056,6 @@ pub fn protected_refusal() -> AgentError {
     AgentError::new("protected", PROTECTED_NOTE, exit::PROTECTED)
 }
 
-/// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 /// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 pub fn only_the_user_quits() -> AgentError {
     AgentError::new("only_the_user_quits", "This session is the app someone is using, and only they can quit it.", exit::FAILED).then("Ask them to, if it needs to stop. Everything else works with it running.")
@@ -1098,10 +1096,12 @@ pub fn update_needs_app() -> AgentError {
     AgentError::new("needs_app", "Updates and settings belong to the app, and this session has no window.", exit::FAILED).then("Open RectoPDF, and `recto` will talk to that.")
 }
 
+/// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 pub fn qa_needs_app() -> AgentError {
     AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }
 
+/// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
 pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let needed = command.access();
     if !allowed(level, needed) {

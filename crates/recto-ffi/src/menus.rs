@@ -143,17 +143,62 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
     entries
 }
 
-/// Whether an item can be chosen now. Asked when a menu opens and on its key, so it's cheap, and nothing's rebuilt as a selection comes and goes.
-pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
-    match id {
-        "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "file.print" | "find.open" | "find.next" | "find.previous" => has_document,
+/// What decides whether a menu item can be chosen. Asked when a menu opens and on its key, so it's cheap, and nothing's rebuilt as a selection comes and goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Enable {
+    Always,
+    /// With a document open in the pane being read.
+    Document,
+    /// With something selected there.
+    Selection,
+    // The app's state decides these, in `AppCore::menu_item_enabled`.
+    Update,
+    Save,
+    Print,
+    SaveAsOrClose,
+    /// Clear Menu, with files in Open Recent.
+    ClearRecent,
+    Undo,
+    Redo,
+    Back,
+    Forward,
+}
+
+/// Each menu item's rule, by its id. **No default** (review C8): an id that isn't listed can't be chosen, and a test holds every id the menus list to having one, so a new item that needs a document can't be enabled without one by being forgotten. The panel's items say their own `enabled`.
+pub(crate) fn enable_rule(id: &str) -> Option<Enable> {
+    Some(match id {
+        "app.about" | "app.settings" | "file.settings" | "app.services" | "app.quit" | "file.open" | "file.close_window" => Enable::Always,
         // A submenu's own item opens it, and does nothing itself.
-        "file.open_recent" => true,
+        "file.open_recent" => Enable::Always,
         // View > Paper's own item opens its submenu, and a paper is always there to choose.
-        "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => true,
-        layout if layout.starts_with("layout.") => has_document,
-        _ => true,
+        "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => Enable::Always,
+        "view.zoom_in" | "view.zoom_out" | "view.actual_size" | "view.fit" | "view.sidebar" | "view.agent_icon" | "palette.open" => Enable::Always,
+        "compare.separate" | "compare.synced" => Enable::Always,
+        "edit.copy" | "edit.copy_anyway" => Enable::Selection,
+        "edit.select_all" | "edit.clear_history" | "go.page" | "find.open" | "find.next" | "find.previous" | "layout.single" | "layout.two_up" | "layout.two_up_cover" => Enable::Document,
+        "app.update" => Enable::Update,
+        "file.save" => Enable::Save,
+        "file.print" => Enable::Print,
+        "file.save_as" | "file.close" => Enable::SaveAsOrClose,
+        "recent.clear" => Enable::ClearRecent,
+        "edit.undo" => Enable::Undo,
+        "edit.redo" => Enable::Redo,
+        "go.back" => Enable::Back,
+        "go.forward" => Enable::Forward,
+        // A file in Open Recent, by a key `action` takes.
+        recent if recent.starts_with("recent.") && action(recent).is_some() => Enable::Always,
+        tool if crate::snapshot_tool::is_menu_id(tool) => Enable::Always,
+        _ => return None,
+    })
+}
+
+/// The rules that need nothing but the pane being read. `None` for the ones the app's state decides.
+pub(crate) fn enabled_by_reading(rule: Enable, has_document: bool, has_selection: bool) -> Option<bool> {
+    match rule {
+        Enable::Always => Some(true),
+        Enable::Document => Some(has_document),
+        Enable::Selection => Some(has_selection),
+        Enable::Update | Enable::Save | Enable::Print | Enable::SaveAsOrClose | Enable::ClearRecent | Enable::Undo | Enable::Redo | Enable::Back | Enable::Forward => None,
     }
 }
 
@@ -371,6 +416,37 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
 mod tests {
     use super::*;
 
+    /// The rules the pane being read decides, as `AppCore::menu_item_enabled` asks them. False for an id with no rule.
+    fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
+        enable_rule(id).and_then(|rule| enabled_by_reading(rule, has_document, has_selection)).unwrap_or(false)
+    }
+
+    /// Failure (review C8): a menu item has no rule of its own, so it falls to a default and is enabled with nothing open. Every id in the menu bar, Open Recent, the Tools menu and the right-click menu has a rule, and an id nobody listed can't be chosen.
+    #[test]
+    fn every_menu_id_has_an_enable_rule() {
+        let recent = [RecentItem { key: "0123456789abcdef", name: "a.pdf" }];
+        let mut ids: Vec<String> = Vec::new();
+        for view in [ViewSettings::default(), ViewSettings { sidebar_hidden: true, agent_icon_hidden: true, ..ViewSettings::default() }] {
+            for spread in [None, Some(Spread::TwoUp)] {
+                let mut bar = menu_bar_with(view, spread, "Check for Updates…", &recent);
+                bar.push(crate::snapshot_tool::tools_menu(false));
+                ids.extend(bar.into_iter().flat_map(|menu| menu.entries).map(|item| item.id));
+                for comparing in [None, Some(false), Some(true)] {
+                    ids.extend(context_menu(spread, comparing).into_iter().map(|item| item.id));
+                }
+            }
+        }
+        ids.retain(|id| !id.is_empty());
+        assert!(ids.len() > 40, "the menus were all looked at: {ids:?}");
+        for id in &ids {
+            assert!(enable_rule(id).is_some(), "{id} has no enable rule");
+        }
+        for unknown in ["anything else", "recent.nothex", "layout.", ""] {
+            assert_eq!(enable_rule(unknown), None, "{unknown}");
+        }
+        assert!(!enabled("anything else", true, true), "an unlisted id can't be chosen");
+    }
+
     /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
     #[test]
     fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
@@ -411,7 +487,7 @@ mod tests {
         let print = file.iter().find(|item| item.id == "file.print").expect("Print… in File");
         assert_eq!((print.title.as_str(), print.key.as_str()), ("Print…", "p"));
         assert_eq!(action("file.print"), Some(Action::Host(HostAction::ShowPrintPanel)));
-        assert!(!enabled("file.print", false, false) && enabled("file.print", true, false));
+        assert_eq!(enable_rule("file.print"), Some(Enable::Print), "the app decides, from what's showing and whether a print's under way");
     }
 
     /// Failure: Copy can be chosen with nothing selected, or Select All with nothing open, or a menu item that has nothing to do with selection goes grey with it. And Copy goes by the app's own action, so it takes ⌘C from a text field that has the focus.

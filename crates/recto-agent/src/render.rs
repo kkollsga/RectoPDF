@@ -84,6 +84,49 @@ pub(crate) struct OwnTemp {
 
 static NEXT_TEMP: AtomicU32 = AtomicU32::new(0);
 
+/// The folders this process has swept of dead runs' temp files, so each is swept once, not at every picture. Held to [`MAX_SWEPT_FOLDERS`].
+static SWEPT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// Folders remembered as swept. Past this, the oldest is forgotten and may be swept again, which costs a listing and nothing else.
+const MAX_SWEPT_FOLDERS: usize = 16;
+/// Entries of a folder looked at in one sweep: a folder's listing comes from outside, and a temp file left in a huge one waits for a sweep that reaches it.
+const MAX_SWEPT_ENTRIES: usize = 4096;
+
+/// The process a render temp file's name says made it: `.recto-<pid>-<n>.partial`, as [`OwnTemp::create`] names them, and nothing else.
+fn temp_maker(name: &str) -> Option<u32> {
+    let (pid, attempt) = name.strip_prefix(".recto-")?.strip_suffix(".partial")?.split_once('-')?;
+    attempt.parse::<u32>().ok()?;
+    pid.parse().ok()
+}
+
+/// **Temp files of runs that died** (a server killed mid-render leaves its `.partial`, and nothing else would ever remove it). Each in `folder` whose maker `alive` says is gone goes, and nothing else: not this run's, not a live run's, not a link, not a file of any other name. Says how many went. Bounded by [`MAX_SWEPT_ENTRIES`].
+fn sweep_stale_temps(folder: &Path, alive: impl Fn(u32) -> bool) -> usize {
+    let Ok(entries) = std::fs::read_dir(folder) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.take(MAX_SWEPT_ENTRIES).flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(temp_maker) else { continue };
+        // `file_type` doesn't follow a link, so a link with this name stays.
+        if pid != std::process::id() && entry.file_type().is_ok_and(|kind| kind.is_file()) && !alive(pid) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// The first time this process makes a temp file in a folder, the temp files of runs that died there go.
+fn sweep_once(folder: &Path) {
+    {
+        let mut swept = SWEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if swept.iter().any(|done| done == folder) {
+            return;
+        }
+        if swept.len() >= MAX_SWEPT_FOLDERS {
+            swept.remove(0);
+        }
+        swept.push(folder.to_path_buf());
+    }
+    sweep_stale_temps(folder, recto_platform::local::process_exists);
+}
+
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
     pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
@@ -91,6 +134,8 @@ impl OwnTemp {
         if out.file_name().is_none() {
             return Err(failed());
         }
+        let folder = out.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        sweep_once(folder);
         for _ in 0..64 {
             let attempt = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             // Short and its own, not built from the output's name: a name near the file system's limit must still have a temp file.
@@ -679,6 +724,40 @@ mod tests {
         for path in [&out, &target, &link, &plain] {
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    /// Failure (CI timing worker, 2026-11-08): a server killed mid-render leaves `.recto-<pid>-N.partial` in the output folder, and nothing ever removes it. A dead run's go; a live run's, this run's, a link and a file that only looks like one stay.
+    #[test]
+    fn temp_files_of_runs_that_died_are_swept() {
+        let folder = std::env::temp_dir().join(format!("recto-temp-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let (dead, live, mine) = (4_000_001u32, 4_000_002u32, std::process::id());
+        let file = |name: String| {
+            let path = folder.join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        let gone = file(format!(".recto-{dead}-0.partial"));
+        let gone_too = file(format!(".recto-{dead}-17.partial"));
+        let kept = [
+            file(format!(".recto-{live}-0.partial")),
+            file(format!(".recto-{mine}-3.partial")),
+            file(format!(".recto-{dead}-x.partial")),
+            file(format!(".recto-{dead}-1.partial.keep")),
+            file(format!("recto-{dead}-1.partial")),
+            file("fine.png.partial".into()),
+        ];
+        let target = file("target".into());
+        let link = folder.join(format!(".recto-{dead}-2.partial"));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(sweep_stale_temps(&folder, |pid| pid == live), 2);
+        assert!(!gone.exists() && !gone_too.exists());
+        for kept in kept.iter().chain([&target]) {
+            assert!(kept.exists(), "{}", kept.display());
+        }
+        assert!(link.symlink_metadata().is_ok(), "a link is never taken for a temp file");
+        assert!(recto_platform::local::process_exists(mine), "this process is running");
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     /// Failure: a volume without hard links, such as exFAT, can't receive a picture at all; or the fallback writes over a file that appeared meanwhile.
