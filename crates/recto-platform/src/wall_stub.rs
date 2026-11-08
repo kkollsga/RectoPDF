@@ -10,6 +10,7 @@ pub enum NoWall {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MachDrop {
     pub dropped: u32,
+    pub dead_names: u32,
     pub kept: u32,
 }
 
@@ -22,7 +23,7 @@ pub fn sandbox_in_force() -> bool {
 }
 
 pub fn drop_mach_send_rights() -> MachDrop {
-    MachDrop { dropped: 0, kept: 0 }
+    MachDrop { dropped: 0, dead_names: 0, kept: 0 }
 }
 
 pub fn launchd_reachable() -> bool {

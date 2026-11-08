@@ -200,7 +200,7 @@ mod mac {
     fn walls() {
         recto_platform::isolate::harden_this_process();
         match wall::put_up() {
-            Ok(dropped) => report("walls", true, format!("{} send rights dropped, {} kernel objects kept", dropped.dropped, dropped.kept)),
+            Ok(dropped) => report("walls", true, format!("{} send rights dropped, {} left as dead names, {} kept", dropped.dropped, dropped.dead_names, dropped.kept)),
             Err(why) => report("walls", false, format!("{why:?}")),
         }
     }
@@ -351,6 +351,9 @@ mod mac {
                 let (label, path) = text.split_once('=').expect("label=path");
                 (label.to_string(), path.to_string())
             };
+            // Said and flushed before each attempt, so a process the system kills shows which attempt it was killed in.
+            println!("trying\t{}", flag.trim_start_matches('-'));
+            let _ = std::io::stdout().flush();
             match flag.as_str() {
                 "--walls" => walls(),
                 "--state" => state(),

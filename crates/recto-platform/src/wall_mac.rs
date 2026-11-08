@@ -13,6 +13,8 @@ unsafe extern "C" {
     static bootstrap_port: u32;
     fn mach_port_names(task: u32, names: *mut *mut u32, names_count: *mut u32, types: *mut *mut u32, types_count: *mut u32) -> c_int;
     fn mach_port_mod_refs(task: u32, name: u32, right: u32, delta: c_int) -> c_int;
+    fn mach_port_allocate_name(task: u32, right: u32, name: u32) -> c_int;
+    fn mach_port_insert_right(task: u32, name: u32, port: u32, disposition: u32) -> c_int;
     fn mach_port_get_refs(task: u32, name: u32, right: u32, refs: *mut u32) -> c_int;
     fn mach_port_kernel_object(task: u32, name: u32, object_type: *mut u32, address: *mut u64) -> c_int;
     fn mach_ports_register(task: u32, ports: *mut u32, count: u32) -> c_int;
@@ -28,6 +30,9 @@ unsafe extern "C" {
 
 const MACH_PORT_TYPE_SEND: u32 = 1 << 16;
 const MACH_PORT_RIGHT_SEND: u32 = 0;
+const MACH_PORT_RIGHT_RECEIVE: u32 = 1;
+const MACH_PORT_TYPE_RECEIVE: u32 = 1 << 17;
+const MACH_MSG_TYPE_MAKE_SEND: u32 = 20;
 const TASK_BOOTSTRAP_PORT: c_int = 4;
 const TASK_ACCESS_PORT: c_int = 9;
 const TASK_DEBUG_CONTROL_PORT: c_int = 10;
@@ -50,7 +55,9 @@ pub enum NoWall {
 pub struct MachDrop {
     /// Send rights let go of.
     pub dropped: u32,
-    /// Kept: the kernel's own, such as this task, its threads and the host, which reach no process, and any the kernel wouldn't describe, as dropping a right a library still uses
+    /// Of those, the names left behind as dead names, so a library that held one can still let go of it.
+    pub dead_names: u32,
+    /// Kept: the kernel's own, such as this task, its threads and the host, which reach no process, send rights to this process's own ports, and any the kernel wouldn't describe, as dropping a right a library still uses
     /// could crash it later. What decides the wall is that launchd doesn't answer afterwards, which [`put_up`] checks.
     pub kept: u32,
 }
@@ -112,7 +119,7 @@ pub fn drop_mach_send_rights() -> MachDrop {
     let (mut name_count, mut type_count) = (0u32, 0u32);
     // SAFETY: all four out-pointers are live. The arrays the kernel returns are read, then given back below.
     if unsafe { mach_port_names(task, &raw mut names, &raw mut name_count, &raw mut types, &raw mut type_count) } != 0 {
-        return MachDrop { dropped: 0, kept: 0 };
+        return MachDrop { dropped: 0, dead_names: 0, kept: 0 };
     }
     // SAFETY: the kernel returned that many of each.
     let (name_list, type_list) = unsafe { (std::slice::from_raw_parts(names, name_count as usize), std::slice::from_raw_parts(types, type_count as usize)) };
@@ -124,9 +131,14 @@ pub fn drop_mach_send_rights() -> MachDrop {
         mach_ports_register(task, std::ptr::null_mut(), 0);
         task_set_exception_ports(task, EXC_MASK_ALL, 0, EXCEPTION_DEFAULT, 0);
     }
-    let mut outcome = MachDrop { dropped: 0, kept: 0 };
+    let mut outcome = MachDrop { dropped: 0, dead_names: 0, kept: 0 };
     for (name, kind) in name_list.iter().zip(type_list) {
         if kind & MACH_PORT_TYPE_SEND == 0 {
+            continue;
+        }
+        // A send right to a port this process receives on reaches only this process. Libraries hold those for their own queues, and taking one away is a guard exception later.
+        if kind & MACH_PORT_TYPE_RECEIVE != 0 {
+            outcome.kept += 1;
             continue;
         }
         let is_launchd = *name != 0 && (*name == launchd || *name == special);
@@ -140,7 +152,14 @@ pub fn drop_mach_send_rights() -> MachDrop {
             mach_port_get_refs(task, *name, MACH_PORT_RIGHT_SEND, &raw mut refs);
             mach_port_mod_refs(task, *name, MACH_PORT_RIGHT_SEND, -(refs as c_int))
         };
-        if rc == 0 { outcome.dropped += 1 } else { outcome.kept += 1 }
+        if rc == 0 {
+            outcome.dropped += 1;
+            if leave_a_dead_name(task, *name, refs) {
+                outcome.dead_names += 1;
+            }
+        } else {
+            outcome.kept += 1;
+        }
     }
     // SAFETY: the two arrays came from `mach_port_names` with these counts, and nothing reads them after this.
     unsafe {
@@ -148,6 +167,26 @@ pub fn drop_mach_send_rights() -> MachDrop {
         vm_deallocate(task, types as usize, type_count as usize * size_of::<u32>());
     }
     outcome
+}
+
+/// Puts a dead name back where a send right was, with as many references, so the libraries that held it can still let go of it. Without this, their later
+/// `mach_port_deallocate` names nothing, and the kernel raises a Mach port guard exception (`kGUARD_EXC_INVALID_NAME`): logged on this Mac, about one a worker, 15,816 in a morning
+/// of tests, and fatal on a CI runner, which killed a process partway through its work. A dead name reaches nothing: a message to it fails, and letting go of it is fine. Made by
+/// taking the name for a port of this process's own, adding the send references, and destroying the port, which leaves them as a dead name. If the name has been taken in the
+/// meantime, it's left as it is: the right is gone either way. Says whether a dead name is there now.
+fn leave_a_dead_name(task: u32, name: u32, refs: u32) -> bool {
+    // SAFETY: only this process's own space, under a name it just freed. The receive right made here is destroyed before this returns.
+    unsafe {
+        if mach_port_allocate_name(task, MACH_PORT_RIGHT_RECEIVE, name) != 0 {
+            return false;
+        }
+        let sent = mach_port_insert_right(task, name, name, MACH_MSG_TYPE_MAKE_SEND) == 0;
+        if sent && refs > 1 {
+            mach_port_mod_refs(task, name, MACH_PORT_RIGHT_SEND, refs as c_int - 1);
+        }
+        mach_port_mod_refs(task, name, MACH_PORT_RIGHT_RECEIVE, -1);
+        sent
+    }
 }
 
 /// Whether launchd can still be reached: its slot holds a right, or a lookup through the right this process started with gets an answer. Asks for a port and sends the service nothing.
