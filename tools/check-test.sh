@@ -360,6 +360,18 @@ out=$(cd "$X/tree" && tools/check.sh --full 2>&1); rc=$?
 check "a pass counts in another worktree" "0" "$rc"
 check "with nothing run" "0" "$(ran)"
 
+# Failure (the rustfmt pass, 2026-11-08): a change to every crate left no crate for the rest, and `--workspace` with every member left out stopped the run.
+fresh_ledger
+git checkout -q main
+git checkout -qb every-crate
+echo every >> crates/alpha/src/lib.rs && echo every >> crates/beta/src/lib.rs && git add . && git commit -qm every-crate
+out=$(full); rc=$?
+cp "$CALLS" "$X/every-calls"
+check "a change to every crate runs them all as changed, and passes" "0 yes no" "$rc $(grep -q 'nextest run --locked --no-fail-fast -p alpha -p beta' "$X/every-calls" && echo yes || echo no) $(grep -q 'no-tests=pass' "$X/every-calls" && echo yes || echo no)"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | tail -5
+: > "$CALLS"
+git checkout -q main
+
 # The real output of an empty ledger.
 fresh_ledger
 check "--runs with nothing recorded says so" "No full runs recorded yet." "$(tools/check.sh --runs)"

@@ -187,6 +187,12 @@ case "$mode" in
         tests_first="$tests_first -p $c"
         tests+=(--exclude "$c")
       done
+      # Every crate changed, as a rustfmt pass does: the changed ones are all of them, and nothing's left for the rest. `--workspace` with every member
+      # left out is an error, not an empty run.
+      all=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
+      if [ -n "$changed" ] && [ "$changed" = "$all" ]; then
+        tests=()
+      fi
     fi
     ;;
   --failed)
@@ -244,8 +250,10 @@ run() {
     # shellcheck disable=SC2086
     RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast $tests_first
   fi
-  stage other-tests
-  RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass "${tests[@]}"
+  if [ ${#tests[@]} -gt 0 ]; then
+    stage other-tests
+    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass "${tests[@]}"
+  fi
   # Only --full: no Xcode needed for --quick, and no minutes spent on Swift.
   if [ "$mode" = "--full" ]; then
     stage app-build
@@ -262,7 +270,7 @@ check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
 trap 'rm -f "$check_mark"' EXIT
 export -f run stage code_state untracked_that_counts
 export check_mark mode tests_first
-export tests_joined="${tests[*]}"
+export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
 [ "$mode" = --full ] || exit "$status"
