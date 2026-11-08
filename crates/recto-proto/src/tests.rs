@@ -60,7 +60,22 @@ fn every_message_survives_a_round_trip() {
     }
     assert!(decode_hello(&[42, 0, 0, 0, 2]).is_err(), "an unknown flag is refused");
     assert!(decode_hello(&[42, 0, 0, 0]).is_err(), "the flags byte is required");
-    assert_eq!(decode_opened(payload(&encode_opened(9, 77))), Ok((9, 77)));
+    for repaired in [false, true] {
+        let opened = Opened {
+            pages: 9,
+            version: 77,
+            repaired,
+        };
+        assert_eq!(decode_opened(payload(&encode_opened(opened))), Ok(opened));
+    }
+    let mut unknown = payload(&encode_opened(Opened {
+        pages: 9,
+        version: 77,
+        repaired: false,
+    }))
+    .to_vec();
+    *unknown.last_mut().unwrap() = 2;
+    assert!(decode_opened(&unknown).is_err(), "an unknown flag is refused");
     let traits = PageTraits {
         job_id: 3,
         largest_image_pixels: 1 << 40,
@@ -492,9 +507,14 @@ fn kinds_merge_truthfully() {
 /// Failure: a worker claims billions of pages and the host believes it, so anything sized by the page count allocates without limit.
 #[test]
 fn a_page_count_past_the_cap_is_refused() {
-    assert_eq!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT, 1))), Ok((MAX_PAGE_COUNT, 1)));
-    assert!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT + 1, 1))).is_err());
-    assert!(decode_opened(payload(&encode_opened(u32::MAX, 1))).is_err());
+    let opened = |pages| Opened {
+        pages,
+        version: 1,
+        repaired: false,
+    };
+    assert_eq!(decode_opened(payload(&encode_opened(opened(MAX_PAGE_COUNT)))), Ok(opened(MAX_PAGE_COUNT)));
+    assert!(decode_opened(payload(&encode_opened(opened(MAX_PAGE_COUNT + 1)))).is_err());
+    assert!(decode_opened(payload(&encode_opened(opened(u32::MAX)))).is_err());
 }
 
 /// Failure: a decoder panics or hangs on hostile bytes. Not a fuzzer, only a cheap floor until the real targets exist.

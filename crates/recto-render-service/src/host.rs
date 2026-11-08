@@ -821,6 +821,8 @@ pub struct DocRenderer {
     control: Arc<CancelWord>,
     worker: Option<Worker>,
     page_count: Option<u32>,
+    /// What the worker said of the file's cross-reference data: PDFium rebuilt it by scanning.
+    repaired: Option<bool>,
     next_job: u32,
     slot_wait_total: Duration,
     /// Where the caps start from, moved by `forget_failures`.
@@ -897,6 +899,7 @@ impl DocRenderer {
             }),
             worker: None,
             page_count: None,
+            repaired: None,
             next_job: 0,
             slot_wait_total: Duration::ZERO,
             kills_counted_from: 0,
@@ -1007,6 +1010,12 @@ impl DocRenderer {
     /// The page count, if a worker's said. Asks nothing.
     pub fn known_page_count(&self) -> Option<u32> {
         self.page_count
+    }
+
+    /// **Whether PDFium rebuilt the file's cross-reference data by scanning it,** for the agreement gate. Starts a worker if none is running.
+    pub fn repaired(&mut self) -> Result<bool, RenderFailure> {
+        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
+        self.repaired.ok_or(RenderFailure::Unavailable)
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
@@ -1981,7 +1990,7 @@ impl DocRenderer {
             }
             _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
         };
-        let (pages, version) = pages;
+        let proto::Opened { pages, version, repaired } = pages;
         // The same file can't come back as another: the pages anyone has are of the one it was.
         if self.page_count.is_some_and(|known| known != pages) || self.version.is_some_and(|known| known != version) {
             self.file_changed = true;
@@ -1989,6 +1998,7 @@ impl DocRenderer {
         }
         self.page_count = Some(pages);
         self.version = Some(version);
+        self.repaired = Some(repaired);
         if let Some(memory) = worker.child.memory() {
             self.stats.opened_footprint_bytes = memory.footprint_bytes;
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);

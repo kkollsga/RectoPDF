@@ -63,7 +63,7 @@ fast because everything is rebuilt from disk.
 - **PDFium returns hidden text** (14 of 17 techniques, and real files contain it), so hidden text is flagged for the agent as untrusted, never dropped silently, because an OCR layer is invisible too.
 - **The lopdf fork's `IndexedReader`** owns file structure with no renderer running. Its append-only writer is the only code that
   writes files. *Rejected:* upstream lopdf, which has no indexed reader; PDFium's writer, which would be a second writer.
-- **Agreement gate:** when the two parsers disagree about a file, it stays readable but saving and signing turn off.
+- **Agreement gate:** when the two parsers disagree about a file, it stays readable but saving and signing turn off. They're compared once per version of a file, off the UI thread, before anything is saved from it: page count, each page's shown size in order (every page up to 10,000, that many spread evenly past it), and whether either rebuilt the file's cross-reference data, as do the PDFs pages were added from. A file the renderer can't read can't be checked, so it counts as disagreeing. Save and Save As are both off, the Save icon says why, and closing offers Cancel and Don't Save.
 
 **distillPDF was parked** (owner, 2026-11-06) and is back in work for the agent's text (owner, 2026-11-07: "Spin up agents to do the distillpdf work, they need to test to ensure no regressions"). RectoPDF uses it only in the `recto-headings` helper, for generated contents, built as a workspace of its own so its lopdf features never reach the app. Find and highlights stay on PDFium, because they must line up with the page on screen.
 

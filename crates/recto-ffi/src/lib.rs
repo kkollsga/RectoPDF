@@ -1687,6 +1687,9 @@ impl Inner {
             ));
         }
         save_from_signature_check(recto_core::save::signature_facts_of(&path))?;
+        if let Some(disagreement) = known.and_then(|stamp| recto_agent::agreement::check(&path, stamp)) {
+            return Err(AgentError::new("parsers_disagree", disagreement.message(), recto_agent::exit::FAILED));
+        }
         let (id, path, pages, needed) = self
             .host
             .session
@@ -2615,6 +2618,7 @@ impl AppCore {
             published.reader.edited,
             published.sidebar.undone_owner_steps,
             save_off,
+            self.inner.save_ui.disagreement_now().as_deref(),
         )
     }
 
@@ -4605,8 +4609,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     } else {
         recto_core::save::SignatureFacts::default()
     };
-    let save_off = save_needs_copy(facts, needs_rewrite);
-    let save_as_note = save_off.then(|| saving::UNSIGNED_COPY.to_string());
+    // The agreement gate: a file its two readers see differently isn't saved, by Save or Save As (SPEC section 3).
+    let core_queue = Arc::clone(&inner.core);
+    let disagreement = inner
+        .save_ui
+        .disagreement(file.as_ref().filter(|_| edited).map(|(_, path, stamp)| (path.as_path(), *stamp)), move || {
+            core_queue.push(CoreCall::Reconcile)
+        });
+    let save_off = save_needs_copy(facts, needs_rewrite) || disagreement.is_some();
+    let save_as_note = (save_off && disagreement.is_none()).then(|| saving::UNSIGNED_COPY.to_string());
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
@@ -4776,7 +4787,11 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         highlight_lighten: highlight.lighten,
         selection_notice,
         saving: saving_now,
-        save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() },
+        save_tooltip: match (disagreement, save_off) {
+            (Some(why), _) => why,
+            (None, true) => SAVE_OFF_TOOLTIP.to_string(),
+            (None, false) => inner.save_ui.tooltip(),
+        },
         save_problem: inner.save_ui.problem(),
         save_as_note,
         shown_tab,

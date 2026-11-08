@@ -136,6 +136,8 @@ pub(crate) struct SaveUi {
     /// The looks under way, one per file and version, at most [`SIGNATURE_LOOKS`]: one slow disk doesn't hold up every other tab's (review round 2).
     looking: Arc<Mutex<Vec<(TabId, FileStamp)>>>,
     pub(crate) step: Arc<AtomicU8>,
+    /// Why Save and Save As are off for the tab showing, when its two readers disagree about its file (the agreement gate), for the close prompt.
+    disagreement: Mutex<Option<String>>,
 }
 
 /// How many signature looks run at once, and how many answers are kept.
@@ -177,7 +179,25 @@ impl SaveUi {
             signature: Arc::new(Mutex::new(Vec::new())),
             looking: Arc::new(Mutex::new(Vec::new())),
             step,
+            disagreement: Mutex::new(None),
         }
+    }
+
+    /// **The agreement gate, as the window sees it** (SPEC section 3): why Save and Save As are off for this file's version, in Rust's words, or
+    /// `None` when its readers agree or it isn't known yet. Not known starts the look off this thread (`recto_agent::agreement`), and `done` is
+    /// called when it's known. The save asks again itself, so a file not known yet is still never saved from a disagreeing reading.
+    pub(crate) fn disagreement(&self, file: Option<(&std::path::Path, FileStamp)>, done: impl FnOnce() + Send + 'static) -> Option<String> {
+        let why = file
+            .and_then(|(path, stamp)| recto_agent::agreement::known_or_start(path, stamp, done))
+            .flatten()
+            .map(|disagreement| disagreement.message());
+        crate::lock(&self.disagreement).clone_from(&why);
+        why
+    }
+
+    /// What [`Self::disagreement`] last said, for the close prompt.
+    pub(crate) fn disagreement_now(&self) -> Option<String> {
+        crate::lock(&self.disagreement).clone()
     }
 
     /// **What's known of this file's signatures,** as the save itself would find them (`signature_facts_of`, the fork's look through the bytes included), cached
@@ -287,13 +307,22 @@ pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>
 /// What closing asks, about this document.
 /// **What closing asks, decided here** (review): with unsaved edits, Save, Cancel or Don't Save, as any Mac app asks. Steps the person undid can't be redone
 /// once the tab's closed, so it says so, and closing after either answer lets them go. With only undone steps, there's nothing to save: Close or Cancel.
-pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool, save_off: bool) -> ClosePrompt {
+/// `disagreement` is why neither Save nor Save As can save this file (the agreement gate): then only Cancel and Don't Save, with why.
+pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool, save_off: bool, disagreement: Option<&str>) -> ClosePrompt {
     let name = recto_core::clean_line(name);
     let button = |title: &str, choice, destructive| CloseButton {
         title: title.into(),
         choice,
         destructive,
     };
+    if let Some(why) = disagreement.filter(|_| edited) {
+        return ClosePrompt {
+            tab,
+            message: format!("Close “{name}” without saving the changes?"),
+            informative: format!("{why} Your changes will be lost if you close it."),
+            buttons: vec![button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)],
+        };
+    }
     if edited {
         let informative = if undone {
             "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed."
@@ -406,13 +435,32 @@ mod tests {
     /// Failure (review round 1 of stage 2): the Close prompt offers Save where Save is off, so the answer is a refusal. With Save off it offers Save As, and says why; otherwise Save, as before.
     #[test]
     fn the_close_prompt_offers_what_works() {
-        let off = close_prompt(1, "signed.pdf", true, false, true);
+        let off = close_prompt(1, "signed.pdf", true, false, true, None);
         assert_eq!(
             off.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(),
             [CloseChoice::SaveAs, CloseChoice::Cancel, CloseChoice::DontSave]
         );
         assert!(off.informative.contains("Save As makes a new copy"), "{}", off.informative);
-        assert_eq!(close_prompt(1, "plain.pdf", true, false, false).buttons[0].choice, CloseChoice::Save);
+        assert_eq!(close_prompt(1, "plain.pdf", true, false, false, None).buttons[0].choice, CloseChoice::Save);
+    }
+
+    /// Failure (the agreement gate): closing a file whose two readers disagree offers Save or Save As, each of which is refused, so the person is
+    /// sent round in circles. It offers Cancel and Don't Save, and says why in the gate's words; with nothing unsaved it's the usual Close.
+    #[test]
+    fn the_close_prompt_offers_no_save_for_a_file_the_readers_disagree_about() {
+        let why = recto_core::agreement::Disagreement::PageSize { page: 0 }.message();
+        let prompt = close_prompt(1, "damaged.pdf", true, false, true, Some(&why));
+        assert_eq!(
+            prompt.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(),
+            [CloseChoice::Cancel, CloseChoice::DontSave]
+        );
+        assert!(
+            prompt.informative.starts_with(&why) && prompt.informative.contains("will be lost"),
+            "{}",
+            prompt.informative
+        );
+        let unedited = close_prompt(1, "damaged.pdf", false, true, false, Some(&why));
+        assert_eq!(unedited.buttons[0].choice, CloseChoice::DontSave, "nothing to save: Close");
     }
 
     /// Failure (SPEC decision 27): a save refused for a signature offers no way on, though Save As makes an unsigned copy and the original keeps its signature. The alert for a certified document, one a signature locks, a signed one whose change needs a rewrite, and Save As onto a signed file's own name (review round 2) each offers Save As; one for a damaged file doesn't, as a copy can't help it.

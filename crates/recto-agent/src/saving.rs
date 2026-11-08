@@ -216,6 +216,11 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         return Ok(access.with(|s| nothing_to_save(s, id)));
     };
     let ending = Ending { access, id };
+    // The agreement gate (SPEC section 3): nothing is written from a reading of a file that isn't what the person sees.
+    if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
+        drop(ending);
+        return Err(refusal);
+    }
     let pages: Vec<PageRef> = snapshot
         .slots
         .iter()

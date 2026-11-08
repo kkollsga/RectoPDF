@@ -1157,7 +1157,11 @@ mod tests {
         loop {
             let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
             let reply = match frame.kind {
-                Kind::Open => proto::encode_opened(1, 1),
+                Kind::Open => proto::encode_opened(proto::Opened {
+                    pages: 1,
+                    version: 1,
+                    repaired: false,
+                }),
                 Kind::SizeRequest => {
                     let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                     PageSize {

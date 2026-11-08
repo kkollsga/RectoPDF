@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod agreement;
 mod effects;
 pub mod nav;
 pub mod save;
