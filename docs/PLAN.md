@@ -4,18 +4,20 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 
 ## Where we are
 
+**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after".** The first release is the complete reader: phases 2 and 3, then phase 7's release work. Phases 4 to 6 come after it. Save stage 1 (turns, moves and added pages, Save As, a backup) is already on main and ships, as rotating all pages outside edit mode is a phase 3 rule that Save commits. Save stage 2 (the rewrite) is parked on its branch until after the release.
+
 | Phase | What you get | Status | Size (agent-days) |
 |---|---|---|---:|
 | **0. Research and foundations** | Spec, concepts, benchmarks, first core | **Done** | |
 | **1. CLI and renderer** | An agent can open, read and draw any PDF, and test everything without a window | **Done** | 5–8 |
-| **2. First real app** | A native window you can read in, with real screenshots | **In progress** | 8–12 |
-| **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress** | 10–15 |
-| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | **Started:** the fork's writer is done | 25–40 |
-| **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | Not started | 20–35 |
-| **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | Not started | 8–12 |
-| **7. Release** | Hardened, signed, installable first release | Not started | 8–12 |
+| **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
+| **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
+| **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
+| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Stage 1 on main; the rest after the first release | 25–40 |
+| **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
+| **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
 
-**Sizes are rough estimates by the coordinating agent, not measurements,** and they're work rather than calendar time. Several agents can run at once, but only one heavy build at a time. The total is about 85–135 agent-days.
+**Sizes are rough estimates by the coordinating agent, not measurements,** and they're work rather than calendar time. Several agents can run at once, but only one heavy build at a time.
 
 **How to follow along:** this page is updated as work lands. **Real screenshots are sent to the owner as each new feature lands**, light and dark once the app exists. Each phase ends with a short report: what works, the budgets measured, and what wasn't tested.
 
@@ -126,11 +128,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] ⌘K
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
 - [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
-- [ ] On Save's gate: a redaction's crash must not leave sleep files for earlier versions, as those are pictures of what's being removed
 - [x] On Save's gate, for appended saves: `save_prepared` then `saved` on the real path, with the note read back from the journal on disk before the file's moved (`journal_says_saving`), and a never-in-PDF test on the real writer (`recto-cli/tests/save.rs`). `never_in_pdf.rs`'s delete keeps its stand-in until the rewrite saves deletes
-- [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [x] On Save's gate: every page checked against the real file when writing: its page count, each page asked for, each added PDF's stamp and length, and the written file read back page by page before it's moved (`a_journals_claims_are_checked_against_the_real_file`)
-- [ ] On Save's gate, for the rewrite: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
 - [x] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). `recto session sleep`, `qa dormant-after`, `qa live-budget`, `qa memory-pressure`, and `long_session.rs`
 - [ ] Find's field, edit mode and view rotation draw what the state record already carries
 - [x] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
@@ -188,6 +187,11 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 **Done when:** it can replace your everyday reader for reading only.
 
 ## Phase 4: Saving and editing
+
+Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2), after the first release:
+- [ ] On Save's gate: a redaction's crash must not leave sleep files for earlier versions, as those are pictures of what's being removed
+- [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
+- [ ] On Save's gate, for the rewrite: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
 
 - [x] Fork: append writer, reopen after append, revision chain (`work/append-writer` at `0e89b89` on the fork; RectoPDF still to repin)
 - [ ] Fork: streaming rewrite to a new file, copying only what's still used and without loading the whole PDF, for deleting pages, replaced text, redaction, compress and hidden-data removal. SPEC section 6 needs it, and the only rewrite in lopdf today loads everything into memory
