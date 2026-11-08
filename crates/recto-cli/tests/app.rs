@@ -1863,3 +1863,103 @@ fn a_save_leaves_the_view_as_it_was() {
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
+
+fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
+    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), &format!("Here the word {word} shows")]))).collect();
+    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
+}
+
+/// Failure: Find's field, list and steps don't do what `recto find` does, or the list grows over the tabs and contents (owner, 2026-11-07: "max height within scroll so it doesn't push everything of screen"), or Find takes room or keeps its hits once it's closed.
+#[test]
+fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let closed = run.report();
+    assert_eq!((closed["app"]["find"]["open"].as_bool(), closed["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "nothing at rest: {}", closed["app"]["find"]);
+    let opened = run.ok(&["qa", "menu", "find.open"]);
+    let opened = wait_for(&run, |state| state["app"]["find"]["open"] == true).get("app").cloned().unwrap_or(opened);
+    assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    let found = run.report();
+    let find = &found["app"]["find"];
+    assert_eq!((find["status"].as_str(), find["rows"].as_u64()), (Some("200 matches on 200 pages"), Some(400)), "{find}");
+    let room = found["app"]["window"]["height"].as_f64().unwrap();
+    assert!(find["list_height"].as_f64().unwrap() <= room * 0.4 && find["list_height"].as_f64().unwrap() > 0.0, "{find}");
+    assert_eq!(found["app"]["contents"]["footer_on_screen"], true, "the tabs and footer stay: {}", found["app"]["contents"]);
+    let stepped = run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let stepped = run.report().get("app").cloned().unwrap_or(stepped);
+    assert_eq!((stepped["find"]["current_row"].as_u64(), stepped["place"].as_str()), (Some(1), Some("1 of 200")), "{}", stepped["find"]);
+    assert!(stepped["pages"]["highlight_rects"].as_u64().unwrap() > 0, "the hit is selected on the page");
+    run.ok(&["qa", "find-click", "5"]);
+    run.settled();
+    let clicked = run.report();
+    assert_eq!((clicked["app"]["find"]["current_row"].as_u64(), clicked["app"]["place"].as_str()), (Some(5), Some("3 of 200")), "{}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "find.previous"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 3, "⇧⌘G");
+    let agent = run.ok(&["find", "--next"]);
+    assert_eq!(agent["current"]["page"], 3, "an agent's step goes on from the reader's: {agent}");
+    run.ok(&["qa", "find-key", "escape"]);
+    run.settled();
+    let gone = run.report();
+    assert_eq!((gone["app"]["find"]["open"].as_bool(), gone["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "{}", gone["app"]["find"]);
+    let idle = run.ok(&["find"]);
+    assert_eq!((idle["state"].as_str(), idle["hits_listed"].as_u64()), (Some("idle"), Some(0)), "its hits went: {idle}");
+    assert_eq!(gone["session"]["find"]["draft"], "words", "what was typed stays for next time");
+}
+
+/// Failure: in a comparison Find looks in a pane that isn't the one being read, or stays with the old one when the reader moves (PLAN, comparison follow-ups).
+#[test]
+fn find_goes_by_the_pane_being_read() {
+    let Some(run) = Run::start() else { return };
+    let (left, right) = (named_document("left", 6, "apple"), named_document("right", 6, "quince"));
+    run.ok(&["open", left.0.to_str().unwrap()]);
+    run.ok(&["open", right.0.to_str().unwrap()]);
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "quince"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "6 matches on 6 pages");
+    run.ok(&["qa", "pane-focus", "0"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
+    run.ok(&["qa", "find-type", "apple"]);
+    run.settled();
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
+}
+
+/// Failure: edit mode and a view's rotation are in the state record and nothing shows them (PLAN phase 3: they "draw what the state record already carries"), or Done doesn't leave edit mode.
+#[test]
+fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "view-rotation", "1"]);
+    run.settled();
+    let turned = run.report();
+    let turns = turned["app"]["pages"]["page_turns"].as_array().unwrap().clone();
+    assert!(!turns.is_empty() && turns.iter().all(|turn| turn == 1), "every page drawn a quarter turn: {turns:?}");
+    assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
+    run.ok(&["qa", "edit-mode", "on"]);
+    run.settled();
+    let panel = run.report()["app"]["panel"].clone();
+    assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
+    assert_eq!(panel["items"][0]["id"], "edit_mode.done", "{panel}");
+    run.ok(&["qa", "panel", "edit_mode.done"]);
+    run.settled();
+    let done = run.report();
+    assert_eq!((done["app"]["panel"]["open"].as_bool(), done["session"]["edit_mode"].as_bool()), (Some(false), Some(false)), "{}", done["app"]["panel"]);
+    run.ok(&["qa", "view-rotation", "0"]);
+    run.settled();
+    assert!(run.report()["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0));
+}

@@ -760,6 +760,8 @@ enum CoreCall {
     ToggleSection(TabId, u32),
     /// The Find field, its list, and ⌘G.
     Find(find::FindCall),
+    /// Into edit mode or out, by the owner.
+    SetEditMode(bool),
 }
 
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
@@ -806,7 +808,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon | CoreCall::Find(_)) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon | CoreCall::Find(_) | CoreCall::SetEditMode(_)) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -1123,10 +1125,12 @@ impl Inner {
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            "edit_mode" => session.with_session(|session| {
-                session.set_edit_mode(value == "on");
+            // What going in does, and what Done does.
+            "edit_mode" => {
+                self.core.push(CoreCall::SetEditMode(value == "on"));
+                self.core.flush(Duration::from_secs(5));
                 Ok(())
-            }),
+            }
             "view_rotation" => match value.parse::<u8>() {
                 Ok(turns) if turns < 4 => session.with_session(|session| {
                     if let Some(id) = session.active() {
@@ -1687,6 +1691,7 @@ impl AppCore {
                 return HostAction::FocusFind;
             }
             menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward))),
+            menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
                 self.inner.panes.zoom_all(&self.inner.engine, zoom);
@@ -2508,6 +2513,7 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
+            CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
             CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
             CoreCall::Rotate(turns) => {
                 let refused = host.session.with_session(|session| match session.active() {
@@ -2887,7 +2893,7 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let same_file = session.own_stamp(id).map(sleeper::version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(sleeper::version_of);
-    let map = match session.page_edits(id) {
+    let mut map = match session.page_edits(id) {
         None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, follows },
         Some(edits) => {
             let mut files = vec![own];
@@ -2900,6 +2906,13 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             PageMap { files, slots, own: same_file, turns, follows }
         }
     };
+    // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
+    let view_turns = tab.view_rotation % 4;
+    if view_turns != 0 {
+        let pages = session.pages_in(id) as usize;
+        let turns: Arc<[u8]> = (0..pages).map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4).collect();
+        map.turns = Some(turns);
+    }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
     let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
     let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));

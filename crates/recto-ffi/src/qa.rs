@@ -512,7 +512,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
-        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
+        "panel" => value == "toggle" || value == "edit_mode.done" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),

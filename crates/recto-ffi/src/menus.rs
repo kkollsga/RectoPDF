@@ -73,6 +73,8 @@ pub(crate) enum Action {
     /// ⌘F opens Find, ⌘G and ⇧⌘G go to the next hit or the one before.
     FindOpen,
     FindStep(bool),
+    /// Edit mode's Done: back to reading.
+    LeaveEditMode,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -206,18 +208,19 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it.
+/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
 pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected, enabled: true };
     let rotate = |id: &str, title: &str| PanelItem { enabled: can_rotate, ..item(id, title, false) };
-    let sections = if open {
-        vec![
-            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] },
-            PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
-        ]
-    } else {
-        Vec::new()
-    };
+    let open = open || edit_mode;
+    let mut sections = Vec::new();
+    if edit_mode {
+        sections.push(PanelSection { title: "Editing".into(), items: vec![item("edit_mode.done", "Done", false)] });
+    }
+    if open {
+        sections.push(PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] });
+        sections.push(PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() });
+    }
     PanelModel { open, button_tooltip: "View options".into(), sections }
 }
 
@@ -258,6 +261,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.dark" => Action::SetPaper(Paper::Dark),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "edit_mode.done" => Action::LeaveEditMode,
         "find.open" => Action::FindOpen,
         "find.next" => Action::FindStep(true),
         "find.previous" => Action::FindStep(false),
@@ -289,6 +293,20 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
+    #[test]
+    fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
+        let editing = panel(false, Paper::White, true, true);
+        assert!(editing.open, "open in edit mode, whatever the button last did");
+        assert_eq!(editing.sections[0].items[0].id, "edit_mode.done");
+        assert_eq!(action("edit_mode.done"), Some(Action::LeaveEditMode));
+        assert!(!panel(false, Paper::White, false, true).open);
+        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let key = |id: &str| edit.entries.iter().find(|item| item.id == id).map(|item| item.key.clone()).unwrap();
+        assert_eq!((key("find.open"), key("find.next"), key("find.previous")), ("f".to_string(), "g".to_string(), "G".to_string()));
+        assert!(!enabled("find.open", false, false), "nothing to find in with nothing open");
+    }
 
     /// Failure: something in the menu bar or the panel does nothing when chosen, as an item with an id nobody handles would, or a list shows what doesn't exist.
     #[test]
