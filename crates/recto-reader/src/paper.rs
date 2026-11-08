@@ -132,6 +132,9 @@ const FLAT_TOP_BINS: usize = 4;
 /// Colour is binned by the top 3 bits of each channel, so a JPEG's noise round a bar's colour stays in its bin.
 const COLOUR_BINS: usize = 512;
 const PLAIN_LEAST: f64 = 0.60;
+/// See [`is_shading`].
+const SHADE_LEAST_SHARE: f64 = 0.08;
+const SHADE_LEAST_LEVELS: usize = 4;
 const PLAIN_NEAR: u8 = 10;
 /// Judging a whole page, with its images not known, white margins count for the page: a map sheet is as white as a chart. So nearly none of it can be colour.
 const WHOLE_PAGE_MOST_COLOUR: f64 = 0.05;
@@ -156,6 +159,8 @@ pub struct ImageSample {
     pub clustered: f64,
     /// The part of it within [`PLAIN_NEAR`] of its paper's average colour, in every channel. Only looked for when it decides something, and 0 otherwise.
     pub plain: f64,
+    /// Its colour is one colour shaded through several lightnesses, as a photographed or rendered object's is, and not flat fills. See [`is_shading`].
+    pub shaded: bool,
 }
 
 /// Looks at a rectangle of BGRA pixels. One pass, and a second over the same rectangle only for an image the third kind's plain background would decide.
@@ -187,19 +192,17 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
     let share = |part: usize| if count == 0 { 0.0 } else { part as f64 / count as f64 };
     let average = |sum: u64| if paper == 0 { 255 } else { u8::try_from(sum / paper as u64).unwrap_or(255) };
     let background = [average(sums[0]), average(sums[1]), average(sums[2])];
-    let clustered = if colour == 0 {
-        1.0
-    } else {
-        let mut fullest = [0u32; FLAT_TOP_BINS];
-        for &bin in &bins {
-            if bin > fullest[FLAT_TOP_BINS - 1] {
-                fullest[FLAT_TOP_BINS - 1] = bin;
-                fullest.sort_unstable_by(|one, two| two.cmp(one));
-            }
+    // The fullest bins, as `(count, bin)`, fullest first.
+    let mut fullest = [(0u32, 0usize); FLAT_TOP_BINS];
+    for (index, &bin) in bins.iter().enumerate() {
+        if bin > fullest[FLAT_TOP_BINS - 1].0 {
+            fullest[FLAT_TOP_BINS - 1] = (bin, index);
+            fullest.sort_unstable_by_key(|(count, _)| std::cmp::Reverse(*count));
         }
-        fullest.iter().map(|bin| f64::from(*bin)).sum::<f64>() / colour as f64
-    };
-    let mut found = ImageSample { paper: share(paper), colour: share(colour), white: share(white), background, pixels: count, clustered, plain: 0.0 };
+    }
+    let clustered = if colour == 0 { 1.0 } else { fullest.iter().map(|(bin, _)| f64::from(*bin)).sum::<f64>() / colour as f64 };
+    let shaded = colour > 0 && is_shading(&fullest, colour);
+    let mut found = ImageSample { paper: share(paper), colour: share(colour), white: share(white), background, pixels: count, clustered, plain: 0.0, shaded };
     if found.white < WHITE_LEAST && found.paper >= SCAN_LEAST_PAPER && found.colour > SCAN_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR && found.clustered >= FLAT_LEAST_CLUSTERED {
         let near = |value: u8, to: u8| value.abs_diff(to) <= PLAIN_NEAR;
         let plain: usize = inside.iter().map(|row| row.as_chunks::<4>().0.iter().filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2])).count()).sum();
@@ -208,10 +211,34 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
     found
 }
 
+/// Whether an image's fullest colour bins are one colour shaded, as a ball or a product photographed on white is: of the bins that hold at least [`SHADE_LEAST_SHARE`] of its colour, the ones joined to the fullest through neighbours run through [`SHADE_LEAST_LEVELS`] lightnesses or more. A chart's flat fill has its edges' and noise's in a bin or two beside it: of the 41 images the chart rule added in bench100 and part B, 40 span at most 3, and the 41st is a gradient strip, rightly dimmed; shaded balls in red, blue and green span 4.
+fn is_shading(fullest: &[(u32, usize); FLAT_TOP_BINS], colour: usize) -> bool {
+    let cell = |bin: usize| [(bin >> 6) as i32, ((bin >> 3) & 7) as i32, (bin & 7) as i32];
+    let counted: Vec<usize> = fullest.iter().filter(|(count, _)| f64::from(*count) >= SHADE_LEAST_SHARE * colour as f64).map(|(_, bin)| *bin).collect();
+    let Some(&first) = counted.first() else { return false };
+    // The bins joined to the fullest through neighbours, and the lightnesses they span.
+    let mut joined = vec![first];
+    let mut at = 0;
+    while at < joined.len() {
+        let here = cell(joined[at]);
+        for &other in &counted {
+            let there = cell(other);
+            if !joined.contains(&other) && (0..3).all(|channel| (here[channel] - there[channel]).abs() <= 1) {
+                joined.push(other);
+            }
+        }
+        at += 1;
+    }
+    let mut levels: Vec<i32> = joined.iter().map(|bin| cell(*bin).iter().sum()).collect();
+    levels.sort_unstable();
+    levels.dedup();
+    levels.len() >= SHADE_LEAST_LEVELS
+}
+
 impl ImageSample {
     /// Whether it's an image with a white background, that turns over with the page. Uncertain is no.
     pub fn has_white_background(self) -> bool {
-        let flat = self.colour <= FLAT_MOST_COLOUR && self.clustered >= FLAT_LEAST_CLUSTERED && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
+        let flat = self.colour <= FLAT_MOST_COLOUR && self.clustered >= FLAT_LEAST_CLUSTERED && !self.shaded && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
         self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR) || flat)
     }
 
@@ -635,6 +662,27 @@ mod tests {
         assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo beside white");
         let tan_map = picture(100, 100, |x, y| if (x + y) % 9 == 0 { [40, 90, 200] } else { [200 + ((x * 7 + y * 3) % 50) as u8, 190 + ((x * 3 + y * 5) % 40) as u8, 160] });
         assert!(PageLook::decide(whole, &tan_map, 400, 100, 100).dim, "a map on shaded tan");
+    }
+
+    /// Failure: a one-colour object photographed or rendered on white, shaded from light to dark, turns negative on dark paper because its colour falls in a few neighbouring bins, as a chart's flat fills do (review of e3fc6e0). Shading runs through several lightnesses of one colour with none much fuller than the rest; a flat fill has one bin that holds most of it.
+    #[test]
+    fn a_shaded_object_on_white_stays_true() {
+        let whole = Some(&[[0u16, 0, 65_535, 65_535]][..]);
+        for colour in [[200u32, 30, 30], [30, 60, 200], [40, 160, 60]] {
+            // A ball lit from the top left, shaded to a quarter, with a little noise.
+            let ball = picture(140, 140, |x, y| {
+                let (dx, dy) = (x as f32 - 70.0, y as f32 - 70.0);
+                if dx * dx + dy * dy >= 50.0 * 50.0 {
+                    return [255, 255, 255];
+                }
+                let light = (1.0 - ((x as f32 - 55.0).powi(2) + (y as f32 - 55.0).powi(2)).sqrt() / 75.0).clamp(0.25, 1.0);
+                let noise = ((x * 7 + y * 13) % 9) as f32 - 4.0;
+                colour.map(|channel| (channel as f32 * light + noise).clamp(0.0, 255.0) as u8)
+            });
+            let found = sample_pixels(&ball, 560, 0, 0, 140, 140);
+            assert!(found.white >= WHITE_LEAST && found.colour > WHITE_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, with more colour than the first kind allows: {found:?}");
+            assert!(PageLook::decide(whole, &ball, 560, 140, 140).dim, "{colour:?}: {found:?}");
+        }
     }
 
     /// Failure: a scan's off-white paper lands on a muddy tone beside a true text page, or its noise speckles, and a tile crossing the image's edge shows a seam. Whitened first, its paper is the paper's colour exactly, with the same result as white paper turned over, and its ink stays light.
