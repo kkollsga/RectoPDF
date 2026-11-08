@@ -94,23 +94,29 @@ impl Fixture {
         self.helper().join("Contents/MacOS/recto-render-service")
     }
 
-    /// The attempts that must all fail in a sandboxed renderer.
-    fn attempts(&self) -> Vec<String> {
+    /// The attempts that must all fail in a sandboxed renderer, each with the names it reports.
+    fn attempt_list(&self) -> Vec<(Vec<String>, Vec<&'static str>)> {
         let port = self.listener.local_addr().unwrap().port();
         let home = std::env::var("HOME").unwrap();
-        let mut args = Vec::new();
-        for (flag, value) in [
-            ("--read", format!("scratch={}", self.scratch.join("canary.txt").display())),
-            ("--list", format!("home={home}")),
-            ("--write", format!("scratch={}", self.scratch.join("written.txt").display())),
-            ("--net", port.to_string()),
-            ("--spawn", "/usr/bin/true".to_string()),
-            ("--mach", "com.apple.coreservices.launchservicesd,com.apple.windowserver.active,com.apple.pasteboard.1".to_string()),
-        ] {
-            args.extend([flag.to_string(), value]);
-        }
-        args.extend(["--fork".to_string(), "--signal-parent".to_string()]);
-        args
+        let one = |flag: &str, value: String| vec![flag.to_string(), value];
+        vec![
+            (one("--read", format!("scratch={}", self.scratch.join("canary.txt").display())), vec!["read:scratch"]),
+            (one("--list", format!("home={home}")), vec!["list:home"]),
+            (one("--write", format!("scratch={}", self.scratch.join("written.txt").display())), vec!["write:scratch"]),
+            (one("--net", port.to_string()), vec!["net:connect_loopback", "net:bind_loopback", "net:connect_dns_socket"]),
+            (one("--spawn", "/usr/bin/true".to_string()), vec!["spawn"]),
+            (
+                one("--mach", "com.apple.coreservices.launchservicesd,com.apple.windowserver.active,com.apple.pasteboard.1".to_string()),
+                vec!["mach:com.apple.coreservices.launchservicesd", "mach:com.apple.windowserver.active", "mach:com.apple.pasteboard.1"],
+            ),
+            (vec!["--fork".to_string()], vec!["fork"]),
+            (vec!["--signal-parent".to_string()], vec!["signal:parent"]),
+        ]
+    }
+
+    /// All of them as one probe's arguments.
+    fn attempts(&self) -> Vec<String> {
+        self.attempt_list().into_iter().flat_map(|(args, _)| args).collect()
     }
 
     /// Waits long enough for a launched app to have written its marker, and says what's in it.
@@ -138,10 +144,65 @@ impl Drop for Fixture {
 
 /// Runs the probe. Returns each attempt's name and whether it got through.
 fn probe(executable: &Path, args: &[String]) -> BTreeMap<String, bool> {
-    let output = Command::new(executable).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().unwrap();
-    assert!(output.status.success(), "the probe itself failed: {:?}, said {}", output.status, String::from_utf8_lossy(&output.stdout));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
+    parse(&probe_text(executable, args))
+}
+
+/// Runs the probe and returns what it said, line for line, for a test that has to show all of it when it fails. A probe that hangs, waiting on a lookup nobody answers, is killed
+/// at 30 s and fails with what it had said by then.
+fn probe_text(executable: &Path, args: &[String]) -> String {
+    let (status, said) = probe_run(executable, args);
+    assert!(status.is_some_and(|status| status.success()), "the probe itself failed or hung ({status:?}), having said:\n{said}");
+    said
+}
+
+/// Runs the probe and returns how it ended, `None` if it hung and was killed at 30 s, and what it had said by then.
+fn probe_run(executable: &Path, args: &[String]) -> (Option<std::process::ExitStatus>, String) {
+    let mut child = Command::new(executable).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut said = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut().unwrap(), &mut said).unwrap();
+    (status, said)
+}
+
+/// One attempt in a probe of its own, with the walls up first, so a process the system kills for trying one thing doesn't hide the rest. Killed by a signal after its walls went up
+/// and while trying this attempt, as its last `trying` line shows, means the attempt was stopped: each of its names counts as denied, and the note says so. Killed anywhere else,
+/// such as during the walls, fails with the whole output.
+fn attempt_alone(executable: &Path, args: &[String], names: &[&str], notes: &mut Vec<String>) -> BTreeMap<String, bool> {
+    let mut full = vec!["--walls".to_string()];
+    full.extend(args.iter().cloned());
+    let (status, said) = probe_run(executable, &full);
+    let mut results = parse(&said);
+    let attempt = args[0].trim_start_matches('-');
+    if status.is_some_and(|status| status.success()) {
+        return results;
+    }
+    let last_tried = said.lines().rev().find_map(|line| line.strip_prefix("trying\t"));
+    let signal = status.and_then(|status| std::os::unix::process::ExitStatusExt::signal(&status));
+    assert!(
+        signal.is_some() && results.get("walls") == Some(&true) && last_tried == Some(attempt),
+        "the probe ended ({status:?}) outside the attempt `{attempt}`, last trying {last_tried:?}, having said:\n{said}"
+    );
+    notes.push(format!("`{attempt}` was killed by signal {} while being tried, after the walls were up: counted as stopped. It said:\n{said}", signal.unwrap_or_default()));
+    for name in names {
+        results.entry((*name).to_string()).or_insert(false);
+    }
+    results
+}
+
+fn parse(said: &str) -> BTreeMap<String, bool> {
+    said.lines()
+        .filter(|line| !line.starts_with("trying\t"))
         .filter_map(|line| {
             let mut parts = line.split('\t');
             Some((parts.next()?.to_string(), parts.next()? == "allowed"))
@@ -182,17 +243,26 @@ fn with_no_sandbox_every_attempt_gets_through() {
 }
 
 /// Failure: a compromised renderer, in the helper as the app lays it out and signs it, with the worker's walls up, reads a file it wasn't given, writes outside its container, reaches
-/// the network, starts a process, signals the app, asks a system service for anything, or has LaunchServices start an app for it.
+/// the network, starts a process, signals the app, asks a system service for anything, or has LaunchServices start an app for it. Each attempt runs in a probe of its own: on a CI
+/// runner with macOS 26 the system once killed the probe partway through its attempts, which hid the rest. A kill during an attempt counts as that attempt stopped, and is printed.
 #[test]
 fn the_helpers_walls_hold() {
     let fixture = Fixture::new("walls");
     let executable = fixture.sandboxed_probe();
-    let mut args = with_walls(fixture.attempts());
-    args.extend(["--ls-open".to_string(), fixture.escape_app().display().to_string()]);
-    let results = probe(&executable, &args);
-    assert_eq!(results.get("walls"), Some(&true), "the worker's walls didn't go up in the helper: {results:?}");
+    let mut results = BTreeMap::new();
+    let mut notes = Vec::new();
+    for (args, names) in fixture.attempt_list() {
+        let one = attempt_alone(&executable, &args, &names, &mut notes);
+        assert_eq!(one.get("walls"), Some(&true), "the worker's walls didn't go up in the helper, before `{}`: {one:?}", args[0]);
+        results.extend(one.into_iter().filter(|(name, _)| name != "walls"));
+    }
+    let launch = attempt_alone(&executable, &["--ls-open".to_string(), fixture.escape_app().display().to_string()], &["launchservices:open"], &mut notes);
+    results.extend(launch.into_iter().filter(|(name, _)| name != "walls"));
+    for note in &notes {
+        println!("{note}");
+    }
     for wall in WALLS {
-        assert_eq!(results.get(wall), Some(&false), "{wall} wasn't stopped, or wasn't tried: {results:?}");
+        assert_eq!(results.get(wall), Some(&false), "{wall} wasn't stopped, or wasn't tried: {results:?}\n{}", notes.join("\n"));
     }
     assert_eq!(results.get("launchservices:open"), Some(&false), "LaunchServices took the request: {results:?}");
     assert_eq!(fixture.marker_after_launch(), None, "something was launched outside the sandbox");
@@ -224,21 +294,29 @@ fn the_container_is_writable_only_without_the_file_size_limit() {
     assert_eq!(probe(&executable, &with_walls(args)).get("write:container"), Some(&false), "a compromised renderer can write to its container");
 }
 
-/// Failure: a compromised renderer fetches a right to launchd, or to some new process, from one of the places the kernel hands them out, and with it undoes the Mach drop. One right
-/// can't be taken away: `TASK_ACCESS_PORT`, slot 9, which goes to the task access server and refuses to be cleared. It reaches no launchd, which this checks, and any other that appears
-/// fails here. Leans on the kernel's description of ports, so it should run on every macOS supported.
+/// Failure: a compromised renderer fetches a right to launchd, or to some new process, from one of the places the kernel hands them out, and with it undoes the Mach drop. The property
+/// is checked by doing it: a real bootstrap lookup through every special and registered right that isn't positively a kernel object, so it doesn't rest on how the kernel describes a
+/// port, which differs between versions (on macOS 15 CI, launchd's right didn't read as "unknown" to `mach_port_kernel_object`, so the first version of this never looked through it).
+/// Before the walls, launchd's own slot should answer, which shows the lookup works here; if it doesn't, there's nothing to regain on this Mac, and the test says so and still checks
+/// the walls. Every message carries the probe's whole output, rights and descriptions included, as CI's macOS 15 is the only one there is.
 #[test]
 fn no_right_to_launchd_can_be_fetched_back_after_the_drop() {
     let fixture = Fixture::new("regain");
     let executable = fixture.sandboxed_probe();
-    let before = probe(&executable, &["--harden".to_string(), "--regain".to_string()]);
-    assert_eq!(before.get("regain_launchd:task_special_4"), Some(&true), "launchd's right isn't where this test looks, so the test proves nothing: {before:?}");
-    let after = probe(&executable, &with_walls(vec!["--regain".to_string()]));
-    assert_eq!(after.get("walls"), Some(&true), "{after:?}");
-    let reaching: Vec<_> = after.iter().filter(|(name, allowed)| name.starts_with("regain_launchd:") && **allowed).collect();
-    assert!(reaching.is_empty(), "these reach launchd: {reaching:?}");
+    let before_text = probe_text(&executable, &["--harden".to_string(), "--rights".to_string(), "--regain".to_string()]);
+    let before = parse(&before_text);
+    if before.get("regain_launchd:task_special_4") == Some(&true) {
+        println!("Before the walls, launchd answers through its own slot, so the lookup below is a real test.");
+    } else {
+        println!("Before the walls, launchd doesn't answer through its own slot on this Mac, so there's nothing to regain; the walls are still checked.\n{before_text}");
+    }
+    let after_text = probe_text(&executable, &with_walls(vec!["--rights".to_string(), "--regain".to_string()]));
+    let after = parse(&after_text);
+    assert_eq!(after.get("walls"), Some(&true), "the walls didn't go up.\nAfter:\n{after_text}\nBefore:\n{before_text}");
+    let reaching: Vec<_> = after.iter().filter(|(name, allowed)| name.starts_with("regain_launchd:") && **allowed).map(|(name, _)| name.as_str()).collect();
+    assert!(reaching.is_empty(), "these reach launchd after the walls: {reaching:?}.\nAfter:\n{after_text}\nBefore:\n{before_text}");
     let back: Vec<_> = after.iter().filter(|(name, allowed)| name.starts_with("regain:") && **allowed).map(|(name, _)| name.as_str()).collect();
-    assert!(back.is_empty() || back == ["regain:task_special_9"], "a right came back that isn't the known one: {back:?}");
+    println!("After the walls, nothing reaches launchd. Rights that came back and aren't positively kernel objects, none of which answered a lookup: {back:?}\n{after_text}");
 }
 
 /// Failure: a helper signed without the sandbox, the mistake a build script could make, still has its walls reported as up. And the check the release runs doesn't catch it.
@@ -285,4 +363,19 @@ fn the_signing_identity_is_one_valid_certificate_matched_by_its_exact_name() {
     assert!(!ok && said.contains("isn't in the keychain"), "{said}");
     let (ok, _) = key_with_keychain("Developer ID Application: Kristian", &one, &one);
     assert!(!ok, "part of a name matched");
+}
+
+/// Failure: the Mach drop deletes the names of the rights it lets go of, so a library that held one, `libxpc` say, later releases a name that's gone, and the kernel raises a
+/// Mach port guard exception (`kGUARD_EXC_INVALID_NAME`). Logged as non-fatal on this Mac, about three a worker before this was fixed and one after on a blank page, and fatal where
+/// a system treats those guards so. Every right dropped must leave a dead name in its place, which reaches nothing and can still be let go of.
+#[test]
+fn every_dropped_right_leaves_a_dead_name_behind() {
+    let fixture = Fixture::new("dead");
+    let executable = fixture.sandboxed_probe();
+    let said = probe_text(&executable, &with_walls(Vec::new()));
+    let line = said.lines().find(|line| line.starts_with("walls\tallowed\t")).unwrap_or_else(|| panic!("the walls didn't go up:\n{said}"));
+    let numbers: Vec<u32> = line.split(|c: char| !c.is_ascii_digit()).filter_map(|word| word.parse().ok()).collect();
+    let (dropped, dead) = (numbers[0], numbers[1]);
+    assert!(dropped > 0, "{line}");
+    assert_eq!(dead, dropped, "a dropped right left no dead name behind: {line}");
 }
