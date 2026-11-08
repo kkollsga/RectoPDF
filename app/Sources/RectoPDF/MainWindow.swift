@@ -605,7 +605,7 @@ final class BookMark: NSView {
     /// Return in the field. Rust says whether it was a level, and if it wasn't, nothing changes.
     @objc private func zoomTyped() {
         guard zoomEditing else { return }
-        _ = delegate.core.zoomTyped(text: zoomField.stringValue)
+        _ = delegate.core.zoomTyped(text: zoomField.stringValue, decimalSeparator: Locale.current.decimalSeparator ?? ".")
         endZoomEditing()
     }
 

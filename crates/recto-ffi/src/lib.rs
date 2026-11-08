@@ -1544,9 +1544,10 @@ impl AppCore {
         menus::zoom_label(magnification, fit)
     }
 
-    /// What the reader typed in the zoom level's field. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
-    pub fn zoom_typed(&self, text: String) -> bool {
-        let Some(zoom) = recto_reader::tiles::typed_zoom(&text) else { return false };
+    /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
+    pub fn zoom_typed(&self, text: String, decimal_separator: String) -> bool {
+        let decimal = decimal_separator.chars().next().unwrap_or('.');
+        let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else { return false };
         self.inner.engine.zoom(zoom).is_some()
     }
 

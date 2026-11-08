@@ -83,6 +83,10 @@ pub struct PageLayout {
     turns: Option<Arc<[u8]>>,
     /// Whether most pages are turned an odd number of times: `usual` is the size of those, as shown, and the others are overrides.
     base_odd: bool,
+    /// How many pages are turned the other way from most. Their overrides are on top of the cap on pages of another size, as they're bounded by the edit list, which is a tab's own and capped where it's made.
+    turned_other_way: usize,
+    /// [`MAX_OVERRIDES`], smaller in a test so reaching it doesn't take a long time.
+    cap: usize,
 }
 
 impl PageLayout {
@@ -91,7 +95,7 @@ impl PageLayout {
     }
 
     pub fn with_spread(count: u32, spread: Spread) -> Self {
-        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false }
+        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false, turned_other_way: 0, cap: MAX_OVERRIDES }
     }
 
     pub fn count(&self) -> u32 {
@@ -183,10 +187,12 @@ impl PageLayout {
         let known = known.unwrap_or_else(|| self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect());
         let usual_raw = if self.base_odd { swap(self.usual) } else { self.usual };
         let mut sizes: std::collections::BTreeMap<u32, PageBox> = known.into_iter().collect();
+        self.turned_other_way = 0;
         if let Some(turns) = self.turns.as_deref() {
             for (page, turn) in turns.iter().enumerate().take(self.count as usize) {
                 if (turn % 2 == 1) != self.base_odd {
                     sizes.entry(page as u32).or_insert(usual_raw);
+                    self.turned_other_way += 1;
                 }
             }
         }
@@ -194,7 +200,7 @@ impl PageLayout {
             .into_iter()
             .map(|(page, raw)| (page, if self.odd(page) { swap(raw) } else { raw }))
             .filter(|(_, shown)| *shown != self.usual)
-            .take(MAX_OVERRIDES)
+            .take(self.cap + self.turned_other_way)
             .map(|(page, size)| Override { page, size, row_extra: 0.0, before: 0.0 })
             .collect();
         self.reckon();
@@ -241,10 +247,13 @@ impl PageLayout {
                 self.overrides[at].size = size;
             }
         } else {
-            if self.overrides.len() >= MAX_OVERRIDES {
-                self.overrides.clear();
+            if self.overrides.len() >= self.cap + self.turned_other_way {
+                // Forgotten, and asked for again as they're seen. Turned pages keep their shape, as that's from the edit, not from asking.
                 self.known.clear();
                 self.known.insert(page);
+                self.retune(Some(vec![(page, if self.odd(page) { swap(size) } else { size })]));
+                self.refit();
+                return true;
             }
             let at = self.overrides.partition_point(|o| o.page < page);
             self.overrides.insert(at, Override { page, size, row_extra: 0.0, before: 0.0 });
@@ -376,13 +385,27 @@ impl PageLayout {
     pub fn rect(&self, page: u32) -> PageRect {
         let size = self.size(page);
         let width = f64::from(size.width) * self.fit;
-        let middle = self.document_width() / 2.0;
+        let middle = self.row_middle(page);
         let x = match self.spread {
             Spread::Single => middle - width / 2.0,
             _ if self.on_the_right(page) => middle + PAGE_GAP / 2.0,
             _ => middle - PAGE_GAP / 2.0 - width,
         };
         PageRect { x: x.max(0.0), y: self.top(page), width, height: f64::from(size.height) * self.fit }
+    }
+
+    /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right.
+    fn row_middle(&self, page: u32) -> f64 {
+        let half = self.frame_width / 2.0;
+        let width = |page: u32| f64::from(self.size(page).width) * self.fit;
+        match self.spread {
+            Spread::Single => half.max(MIN_SIDE_MARGIN + width(page) / 2.0),
+            _ => {
+                let (first, second) = self.row_pages(self.row_of(page));
+                let left = [Some(first), second].into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(0.0, width);
+                half.max(MIN_SIDE_MARGIN + left + PAGE_GAP / 2.0)
+            }
+        }
     }
 
     /// The widest a page is known to be, and the window's room.
@@ -731,6 +754,43 @@ mod tests {
         let right = layout.rect(1);
         assert_eq!(layout.anchor_for(right.y + 10.0, 1).0, 1);
         assert_eq!(layout.anchor_for(right.y + 10.0, 0).0, 0);
+    }
+
+    /// Failure (review of f05c998, finding 7): past the caps on pages of another size, the overrides that give turned pages their swapped size were cleared or cut off with the rest, so pages turned the other way from most went back to their old shape.
+    #[test]
+    fn turned_pages_keep_their_shape_past_the_caps() {
+        let count = 4_000u32;
+        let mut layout = PageLayout::new(count);
+        layout.cap = 1_000;
+        layout.set_frame(1400.0);
+        layout.set_page_size(0, letter());
+        let turns: Vec<u8> = (0..count).map(|page| u8::from(page % 2 == 1)).collect();
+        layout.set_turns(Some(Arc::from(turns)));
+        let turned = PageBox { width: 792.0, height: 612.0 };
+        assert_eq!(layout.size(count - 1), turned, "past the cap at the start");
+        // Enough real sizes to reach the cap on pages of another size, which clears those.
+        for page in (0..count).step_by(2).take(1_010) {
+            layout.set_page_size(page, PageBox { width: 600.0, height: 800.0 });
+        }
+        assert_eq!(layout.size(count - 1), turned, "and after the cap clears the rest");
+        assert_eq!(layout.size(1), turned);
+    }
+
+    /// Failure (review of f05c998, finding 4): one very wide page, a fold-out, makes the document wide, and every other page or pair is centred on that and sits off to the side, out of the window, with the view at its left. Each row is centred in the window, and only the wide one runs past it.
+    #[test]
+    fn a_fold_out_doesnt_push_the_other_pages_aside() {
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            let mut layout = PageLayout::with_spread(8, spread);
+            layout.set_frame(1400.0);
+            layout.set_page_size(0, letter());
+            layout.set_page_size(5, PageBox { width: 3000.0, height: 792.0 });
+            for page in (0..8).filter(|page| !layout.same_row(*page, 5)) {
+                let rect = layout.rect(page);
+                assert!(rect.x >= MIN_SIDE_MARGIN - 1e-6 && rect.x + rect.width <= 1400.0 - MIN_SIDE_MARGIN + 1e-6, "{spread:?} page {page} {rect:?}");
+            }
+            let wide = layout.rect(5);
+            assert!(wide.x >= MIN_SIDE_MARGIN - 1e-6 && wide.x + wide.width <= layout.document_width() + 1e-6, "{spread:?} the fold-out stays in the document: {wide:?}");
+        }
     }
 
     /// Failure: the first page starts at the window's top edge or the last ends at its bottom, with no margin, or going to page 1 hides the margin above it. Owner, 2026-11-08: "add some margin above the first page, and below the last page".

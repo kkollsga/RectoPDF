@@ -65,15 +65,21 @@ pub fn zoom_percent(magnification: f64, fit: f64) -> f64 {
     if percent.is_finite() { percent } else { 100.0 }
 }
 
-/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. It's held to the limits when it's applied, like any zoom.
-pub fn typed_zoom(text: &str) -> Option<Zoom> {
+/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. `decimal` is the reader's own decimal sign, as their Mac has it: the other of `.` and `,`, and spaces and `'`, group thousands, so `1,000` is a thousand with `.` and `87,5` is 87.5 with `,`. It's held to the limits when it's applied, like any zoom.
+pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     let text = text.trim();
     let number = text.strip_suffix('%').unwrap_or(text).trim();
     // A number, and nothing a hostile paste could make long: past this it isn't a zoom level anyone typed.
-    if number.is_empty() || number.len() > 12 {
+    if number.is_empty() || number.chars().count() > 16 {
         return None;
     }
-    number.replace(',', ".").parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0).map(Zoom::Percent)
+    let decimal = if decimal == ',' { ',' } else { '.' };
+    let grouping = if decimal == ',' { '.' } else { ',' };
+    let plain: String = number.chars().filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'') && *c != grouping).map(|c| if c == decimal { '.' } else { c }).collect();
+    if plain.is_empty() || plain.len() > 12 || !plain.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    plain.parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0).map(Zoom::Percent)
 }
 
 /// How much one step of zoom is.
@@ -292,8 +298,8 @@ const MIN_SHARE_OF_VIEW: f64 = 0.05;
 /// How long a wake's followed, for how long it took.
 const WAKE_FOLLOWED_FOR: Duration = Duration::from_secs(5);
 
-/// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of.
-const MAX_SLEEP_SHOTS: usize = 6;
+/// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
+const MAX_SLEEP_SHOTS: usize = 12;
 
 /// How a tab's wake went, for QA and the budgets: from being asked to the first frame showing something on every page, and to sharp.
 #[derive(Clone, Copy, Debug, Default)]
@@ -2646,6 +2652,22 @@ mod tests {
         at
     }
 
+    /// Failure (review of f05c998, finding 5): side by side, a sleep file's pictures cover half as many rows of a view as a page to a row does, so waking a tab, or an update's first frame, shows bare pages where it didn't before. Every page of the view at a zoom that shows six rows of pairs gets one.
+    #[test]
+    fn a_sleep_file_covers_the_view_side_by_side_too() {
+        let mut reader = reader_on(40);
+        reader.note_version(Path::new("/d/a.pdf"), 1);
+        reader.set_spread(Spread::TwoUp);
+        let mut far = view(0.0);
+        far.height = 2400.0;
+        reader.set_viewport(far);
+        settle(&mut reader);
+        let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).collect();
+        assert!(shown.len() > 6 && shown.len() <= 12, "the view shows {} pages", shown.len());
+        let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+        assert_eq!(pictures, shown, "a picture for each page shown");
+    }
+
     /// Failure (review of f05c998, finding 1): Rotate, Undo or Redo of a turn sends the reader to the top of their page and back to the left edge, as the tab showing was taken up again as if it had just been come to.
     #[test]
     fn a_turn_keeps_the_place_in_the_page_and_across() {
@@ -3347,6 +3369,26 @@ mod tests {
         assert_eq!(zoom_after_scroll(1.0, 1e9), MAX_ZOOM);
         assert_eq!(zoom_after_scroll(1.0, -1e9), MIN_ZOOM);
         assert_eq!(zoom_after_scroll(2.0, f64::NAN), 2.0);
+    }
+
+    /// Failure: the zoom level says one thing and does another: 100% isn't the page's real size, a typed level goes past the limits, something that isn't a number zooms, or (review of f05c998, finding 6) `1,000` typed with a Mac set to `.` is 1%. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset".
+    #[test]
+    fn a_zoom_level_is_a_share_of_the_real_size() {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        let fit = reader.doc().unwrap().layout.fit();
+        let actual = reader.zoom(Zoom::Percent(100.0)).unwrap();
+        assert!((actual - reader.zoom(Zoom::Actual).unwrap()).abs() < 1e-9);
+        assert!((zoom_percent(actual, fit) - 100.0).abs() < 1e-9);
+        assert!((zoom_percent(1.0, fit) - fit * 100.0).abs() < 1e-9, "the fitted width says what it is");
+        assert_eq!(reader.zoom(Zoom::Percent(1e6)), Some(MAX_ZOOM));
+        assert_eq!(reader.zoom(Zoom::Percent(0.001)), Some(MIN_ZOOM));
+        for (typed, decimal, wanted) in [("150", '.', 150.0), ("150%", '.', 150.0), (" 87.5 % ", '.', 87.5), ("1,000", '.', 1000.0), ("1 000", '.', 1000.0), ("80,5", ',', 80.5), ("1.000", ',', 1000.0), ("1.250,5 %", ',', 1250.5)] {
+            assert_eq!(typed_zoom(typed, decimal), Some(Zoom::Percent(wanted)), "{typed} with {decimal}");
+        }
+        for nonsense in ["", "%", "abc", "-50", "0", "NaN", "inf", "1e400", "9999999999999", "1%%"] {
+            assert_eq!(typed_zoom(nonsense, '.'), None, "{nonsense}");
+        }
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.

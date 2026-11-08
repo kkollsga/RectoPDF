@@ -247,7 +247,7 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
         "out" => Some(Zoom::Out),
         "fit" => Some(Zoom::Fit),
         "actual" => Some(Zoom::Actual),
-        level if level.trim_end().ends_with('%') => recto_reader::tiles::typed_zoom(level),
+        level if level.trim_end().ends_with('%') => recto_reader::tiles::typed_zoom(level, '.'),
         number => number.parse::<f64>().ok().filter(|value| value.is_finite()).map(Zoom::To),
     }
 }
@@ -313,6 +313,21 @@ mod tests {
         assert_eq!(action("view.sidebar"), Some(Action::ToggleSidebar));
         assert_eq!(action("view.focus"), None);
         assert!(menu_bar(ViewSettings::default(), None, "").iter().flat_map(|menu| &menu.entries).all(|item| !item.title.contains("Focus")));
+    }
+
+    /// Failure: the panel's Rotate isn't there, or says it turns every page in edit mode where it turns one, or can be pressed where it can't turn anything, or Undo and Redo aren't on the Edit menu with their keys and standard selectors.
+    #[test]
+    fn the_panel_rotates_and_the_edit_menu_undoes() {
+        let rotate = |edit_mode| panel(true, Paper::White, edit_mode, true).sections.into_iter().find(|section| section.items.iter().any(|item| item.id == "rotate.right")).unwrap();
+        assert_eq!(rotate(false).title, "Rotate all pages");
+        assert_eq!(rotate(true).title, "Rotate this page");
+        assert_eq!((action("rotate.left"), action("rotate.right")), (Some(Action::Rotate(-1)), Some(Action::Rotate(1))));
+        let greyed = panel(true, Paper::White, false, false).sections.into_iter().flat_map(|section| section.items).filter(|item| item.id.starts_with("rotate.")).all(|item| !item.enabled);
+        assert!(greyed, "Rotate is greyed out where it can't turn anything");
+        let edit = menu_bar(ViewSettings::default(), None, "").into_iter().find(|menu| menu.title == "Edit").unwrap().entries;
+        let keyed = |id: &str| edit.iter().find(|item| item.id == id).map(|item| (item.key.clone(), item.system_action.clone())).unwrap();
+        assert_eq!(keyed("edit.undo"), ("z".to_string(), "undo:".to_string()));
+        assert_eq!(keyed("edit.redo"), ("Z".to_string(), "redo:".to_string()));
     }
 
     /// Failure: the right-click menu doesn't offer the three layouts, or doesn't tick the one showing, or offers focus view, which is gone; or a layout can be chosen with nothing open. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
