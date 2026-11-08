@@ -2033,35 +2033,27 @@ impl AppCore {
         self.inner.listener.model_changed();
     }
 
-    /// Whether a menu item can be chosen now. Asked when a menu opens and on its key.
+    /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
     pub fn menu_item_enabled(&self, id: String) -> bool {
-        if id == "app.update" {
-            return self.inner.updates.menu_item().enabled;
+        use menus::Enable;
+        let Some(rule) = menus::enable_rule(&id) else { return false };
+        let reader = |pick: fn(&ReaderView) -> bool| pick(&lock(&self.inner.published).reader);
+        match rule {
+            Enable::Always => true,
+            Enable::Document | Enable::Selection => {
+                let reading = self.inner.panes.reading_engine(&self.inner.engine);
+                menus::enabled_by_reading(rule, reading.has_document(), reading.has_selection()).unwrap_or(false)
+            }
+            Enable::Update => self.inner.updates.menu_item().enabled,
+            Enable::Save => self.can_save(),
+            Enable::Print => reader(|reader| !reader.home && reader.shown_tab != 0) && !self.inner.printing.busy(),
+            Enable::SaveAsOrClose => reader(|reader| !reader.home && !reader.saving),
+            Enable::ClearRecent => !lock(&self.inner.published).recent.is_empty(),
+            Enable::Undo => reader(|reader| reader.can_undo),
+            Enable::Redo => reader(|reader| reader.can_redo),
+            Enable::Back => reader(|reader| reader.can_go_back),
+            Enable::Forward => reader(|reader| reader.can_go_forward),
         }
-        if id == "file.save" {
-            return self.can_save();
-        }
-        if id == "file.print" {
-            let reader = lock(&self.inner.published).reader.clone();
-            return !reader.home && reader.shown_tab != 0 && !self.inner.printing.busy();
-        }
-        if id == "file.save_as" || id == "file.close" {
-            let reader = lock(&self.inner.published).reader.clone();
-            return !reader.home && !reader.saving;
-        }
-        if id == "recent.clear" {
-            return !lock(&self.inner.published).recent.is_empty();
-        }
-        if id == "edit.undo" || id == "edit.redo" {
-            let reader = lock(&self.inner.published).reader.clone();
-            return if id == "edit.undo" { reader.can_undo } else { reader.can_redo };
-        }
-        if id == "go.back" || id == "go.forward" {
-            let reader = lock(&self.inner.published).reader.clone();
-            return if id == "go.back" { reader.can_go_back } else { reader.can_go_forward };
-        }
-        let reading = self.inner.panes.reading_engine(&self.inner.engine);
-        menus::enabled(&id, reading.has_document(), reading.has_selection())
     }
 
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
