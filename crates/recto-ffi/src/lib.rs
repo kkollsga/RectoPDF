@@ -2729,6 +2729,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 mod tests {
     use super::*;
 
+    /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
+    #[test]
+    fn a_hand_off_waits_for_a_save() {
+        assert!(hand_off_check_parts(0, 0, 0, 0).is_empty());
+        let busy = hand_off_check_parts(0, 0, 0, 1);
+        assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["saving"]);
+        assert_eq!(hand_off_check_parts(1, 1, 1, 1).len(), 4);
+    }
+
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
     fn opening_and_closing_rows_says_what_changed() {

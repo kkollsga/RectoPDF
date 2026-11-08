@@ -1474,7 +1474,23 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    fn journal_work_for(name: &str, ops: Vec<JournalOp>, through: u64) -> JournalWork {
+/// Failure: a save moves its file into place though its note never reached the disk, so a crash just after finds a journal that doesn't say a save happened, and replays the edits over the saved file. The note is read back from the file itself, and only this target's counts.
+    #[test]
+    fn a_saves_note_is_read_back_from_the_disk() {
+        let (_root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let name = record::journal_file_name(None, Path::new("/d/1.pdf"), None);
+        let target = FileStamp { size: 77, mtime_ns: 88, device: 1, inode: 99 };
+        assert!(!store.journal_says_saving(&name, target), "no journal, no note");
+        assert!(store.write_journals(&journal_work_for(&name, vec![rotation()], 1), false).1.is_none());
+        assert!(!store.journal_says_saving(&name, target), "edits, but no save");
+        assert!(store.write_journals(&journal_work_for(&name, vec![JournalOp::Saving(target.into())], 2), false).1.is_none());
+        assert!(store.journal_says_saving(&name, target));
+        assert!(!store.journal_says_saving(&name, FileStamp { size: 78, ..target }), "another file isn't this save's");
+        assert!(!store.journal_says_saving("../../etc/passwd", target), "only a journal's own name is read");
+    }
+
+        fn journal_work_for(name: &str, ops: Vec<JournalOp>, through: u64) -> JournalWork {
         let header = JournalHeader::new(1, Path::new("/d/1.pdf"), None, 5, 0);
         JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.to_string(), header, through, ops, closing: false, base: None, replaces: None }] }
     }
