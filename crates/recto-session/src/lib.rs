@@ -1126,12 +1126,12 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id).is_some_and(PageEdits::is_edited) || self.asleep.get(&id).is_some_and(|summary| summary.edited)
     }
 
-    /// **Whether saving this tab's edits writes the file anew:** a page of the file isn't there once, as a delete leaves it. The writer's own rule, `recto_core::save::writer_for`. A list that's asleep is taken not to, and the save itself says if it does.
+    /// **Whether saving this tab's edits writes the file anew:** a page of the file isn't there once, as a delete leaves it. The writer's own rule, `recto_core::save::writer_for`, kept as the list changes, and for a list that's asleep, in its summary.
     pub fn needs_rewrite(&self, id: TabId) -> bool {
-        self.edits.get(&id).filter(|list| list.is_edited()).is_some_and(|list| {
-            let pages: Vec<recto_core::save::PageRef> = list.slots().iter().map(|slot| recto_core::save::PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
-            recto_core::save::writer_for(list.file_pages(), &pages) == recto_core::save::Writer::Rewrite
-        })
+        match self.edits.get(&id) {
+            Some(list) => list.rewrites(),
+            None => self.asleep.get(&id).is_some_and(|summary| summary.edited && summary.rewrites),
+        }
     }
 
     /// Whether the owner's edits on this tab have been undone and can still be redone. Closing would lose them.

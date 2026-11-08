@@ -492,6 +492,9 @@ pub struct EditsSummary {
     pub owner_steps_undone: bool,
     pub undo: u32,
     pub redo: u32,
+    /// Saving these edits writes the file anew: a page of it isn't there once. So a sleeping tab's Save can say so without reading its list.
+    #[serde(default)]
+    pub rewrites: bool,
 }
 
 /// A journal's name, from what identifies its PDF, so a PDF opened again picks up its history, wherever it's been moved to. `taken` is for when something's already at that name that this build won't touch, as a newer app's journal is.

@@ -414,14 +414,14 @@ fn a_kept_copy_holds_only_the_pages_asked_for() {
     let dir = Dir::new();
     let path = dir.write("doc.pdf", &marked(&["STAYS1", "GONE1", "STAYS2", "GONE2"]));
     let kept = dir.0.join("kept.pdf");
-    let stamp_kept = save::keep_pages(&path, &[1, 3], &kept).unwrap();
+    let stamp_kept = save::keep_pages(&path, &[1, 3], &kept, u64::MAX).unwrap();
     assert_eq!(stamp_kept, stamp(&kept));
     assert_eq!(read_pages(&kept), [("GONE1".into(), 0), ("GONE2".into(), 0)]);
     let bytes = std::fs::read(&kept).unwrap();
     assert!(!contains(&bytes, "STAYS1") && !contains(&bytes, "STAYS2"));
-    assert!(save::keep_pages(&path, &[3, 1], &dir.0.join("other.pdf")).is_err(), "in order");
-    assert!(save::keep_pages(&path, &[9], &dir.0.join("other.pdf")).is_err(), "pages it has");
-    assert!(save::keep_pages(&path, &[1], &kept).is_err(), "never over a file that's there");
+    assert!(save::keep_pages(&path, &[3, 1], &dir.0.join("other.pdf"), u64::MAX).is_err(), "in order");
+    assert!(save::keep_pages(&path, &[9], &dir.0.join("other.pdf"), u64::MAX).is_err(), "pages it has");
+    assert!(save::keep_pages(&path, &[1], &kept, u64::MAX).is_err(), "never over a file that's there");
 }
 
 /// Failure: a file with usage rights alone, as IRS forms have, can't be saved, or is saved with rights a reader then calls broken. Saved, with them dropped from the new revision, and said (owner, 2026-11-08).

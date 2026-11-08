@@ -1712,14 +1712,21 @@ impl AppCore {
     /// What closing the document showing asks.
     pub fn close_prompt(&self) -> saving::ClosePrompt {
         let published = lock(&self.inner.published);
-        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps)
+        // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
+        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
+        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps, save_off)
     }
 
-    /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes.
-    pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) {
-        if tab != 0 {
-            self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+    /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
+    pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) -> HostAction {
+        if tab == 0 {
+            return HostAction::None;
         }
+        if choice == saving::CloseChoice::SaveAs {
+            return HostAction::ShowSavePanel;
+        }
+        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+        HostAction::None
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.
@@ -2421,7 +2428,7 @@ fn session_thread(inner: &Arc<Inner>) {
                     }
                 }
                 saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
-                saving::CloseChoice::Cancel => {}
+                saving::CloseChoice::Cancel | saving::CloseChoice::SaveAs => {}
             },
             CoreCall::CloseAfterSave(id) => {
                 // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
@@ -3030,7 +3037,9 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         lock(&inner.action_notice).take();
     }
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
-    let facts = if edited { file.as_ref().map(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp)).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
+    // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.
+    let core_queue = Arc::clone(&inner.core);
+    let facts = if edited { file.as_ref().and_then(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile))).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
     let save_off = save_needs_copy(facts, needs_rewrite);
     let save_as_note = save_off.then(|| saving::UNSIGNED_COPY.to_string());
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());

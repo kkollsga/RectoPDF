@@ -49,9 +49,9 @@ const MAX_OPENINGS: usize = 4;
 /// How long a job waits for its file to open before the page says so. It stays being tried.
 const OPEN_PATIENCE: Duration = Duration::from_secs(3);
 const OPEN_LOOK: Duration = Duration::from_millis(20);
-/// What a page says while its file doesn't answer.
 /// A page from a PDF added to this one, which has changed since: its page numbers are about the version it was, so what's there now isn't drawn as it.
 const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or moved since it was added, so it isn't drawn.";
+/// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
 /// Panics of the thread that draws that it comes back from, close together. Past this it would only panic again.
@@ -730,7 +730,7 @@ fn run(shared: &Shared) {
         lock(&shared.reader).note_started(&job, None);
         let mut file_changed = false;
         // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-        let expected = lock(&shared.reader).expected_stamp(&job.file);
+        let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
         let added_changed = expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
         let outcome = if added_changed {
             match job.kind {

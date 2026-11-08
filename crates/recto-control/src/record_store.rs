@@ -831,7 +831,7 @@ impl RecordStore {
         let folder = dir.join(JOURNALS);
         let name = (0..64).map(|taken| record::kept_file_name(target, taken)).find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())?;
         let kept = folder.join(&name);
-        recto_core::save::keep_pages(path, pages, &kept).ok()?;
+        recto_core::save::keep_pages(path, pages, &kept, recto_session::edit::MAX_HISTORY_BYTES as u64).ok()?;
         // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
         let made = (|| -> std::io::Result<FileStamp> {
             local::make_private_file(&kept)?;

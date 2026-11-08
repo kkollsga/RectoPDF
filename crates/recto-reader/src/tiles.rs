@@ -748,12 +748,13 @@ impl Reader {
         self.hold_drawing = on;
     }
 
-    /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
-    /// What an added file was when its pages were added, by any document held, if one says. Its own file goes by its version instead.
-    pub fn expected_stamp(&self, file: &std::path::Path) -> Option<FileStamp> {
-        self.docs.values().find_map(|doc| doc.map.files.iter().position(|known| known == file).filter(|at| *at > 0).and_then(|at| doc.map.expected.get(at).copied().flatten()))
+    /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
+    pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp> {
+        let doc = self.docs.get(&tab)?;
+        doc.map.files.iter().position(|known| known == file).filter(|at| *at > 0).and_then(|at| doc.map.expected.get(at).copied().flatten())
     }
 
+    /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
     pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
         self.docs.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))
     }
@@ -2916,6 +2917,18 @@ mod tests {
             reader.finish(job, outcome);
             drop(reader.drain(MAX_ATTACH_PER_TURN));
         }
+    }
+
+    /// Failure (review round 1 of stage 2): an added file's stamp is looked up by path across every tab, so B.pdf added into tab A and open as tab B's own: saving B makes tab B's own pages fail as "a PDF that has changed since it was added". Only the tab the file was added to checks it, and never for its own file.
+    #[test]
+    fn an_added_files_stamp_is_the_tabs_it_was_added_to() {
+        let stamp = Some(FileStamp { size: 1, mtime_ns: 1, device: 0, inode: 3 });
+        let mut reader = Reader::new();
+        reader.activate(1, 2, 0, PageMap { files: vec![PathBuf::from("/d/a.pdf"), PathBuf::from("/d/b.pdf")], slots: Some(vec![(0, 0), (1, 0)]), expected: vec![None, stamp], ..map() }, &[], None, Spread::Single);
+        reader.activate(2, 1, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        assert_eq!(reader.expected_stamp(1, Path::new("/d/b.pdf")), stamp, "tab 1 added it");
+        assert_eq!(reader.expected_stamp(2, Path::new("/d/b.pdf")), None, "it's tab 2's own file");
+        assert_eq!(reader.expected_stamp(1, Path::new("/d/a.pdf")), None, "and tab 1's own isn't checked so");
     }
 
     /// Failure (the owner's bench file, 2026-11-08): a save after turning page 1 changes the view. The saved file's page 1 is landscape, the reopened layout fits that page instead of the portrait ones, and the zoom shown drops from 128% to 97% with every page shrinking; the place within the page and the selection go too. A save writes what was shown, so the fit, zoom, place across and down, layout and selection stay exactly, whichever page the reader's on and whether a renderer saw the file replaced first.

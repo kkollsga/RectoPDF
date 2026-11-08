@@ -146,6 +146,10 @@ pub enum SaveError {
     SignedNeedsCopy,
     /// Every page of the file would go. The rewrite refuses that, even with pages added from other PDFs.
     NoPagesLeft,
+    /// This save writes the file anew, which this caller may not do: an agent below Full.
+    RewriteNotAllowed,
+    /// An added page's form field has a name the document's fields already have, every way it could be renamed, so their values would mix.
+    FieldNamesTaken,
     /// The file or its folder can't be written.
     ReadOnly,
     /// The file has other names, which a save would separate from it.
@@ -179,6 +183,8 @@ impl SaveError {
             Self::LockedBySignature => "locked_by_signature",
             Self::SignedNeedsCopy => "signed_needs_copy",
             Self::NoPagesLeft => "no_pages_left",
+            Self::FieldNamesTaken => "field_names_taken",
+            Self::RewriteNotAllowed => "rewrite_not_allowed",
             Self::ReadOnly => "read_only",
             Self::HardLinks => "hard_links",
             Self::TargetExists => "target_exists",
@@ -203,6 +209,8 @@ impl SaveError {
             Self::BreaksCertification => "This document is certified, and changing its pages would break that, so it isn't saved over. Nothing was written, and the original keeps its signature.".into(),
             Self::LockedBySignature => "A signature on this document locks it against changes, and changing its pages would break that, so it isn't saved. Nothing was written, and the original keeps its signature.".into(),
             Self::SignedNeedsCopy => "This document is signed, and saving this change means writing the file anew, which would take its signature off, so it isn't saved over. Nothing was written, and the original keeps its signature. Save As makes a new copy without the signature.".into(),
+            Self::RewriteNotAllowed => "This save writes the file anew, which takes what was removed out of it for good, and that needs Full access. Nothing was written.".into(),
+            Self::FieldNamesTaken => "A form field on the added pages has a name this document's fields already have, however it could be renamed, so their values would mix. Nothing was written.".into(),
             Self::NoPagesLeft => "Every one of the file's own pages would be gone, which a save can't do yet, even with other pages added. Keep one of its pages, or Save As. Nothing was written.".into(),
             Self::ReadOnly => "This file or its folder is locked or read-only, so it can't be saved over. Nothing was written. Save As can put it somewhere else.".into(),
             Self::HardLinks => "This file has other names (hard links), which saving over it would leave with the old version. Nothing was written. Save As makes a separate copy.".into(),
@@ -333,10 +341,20 @@ fn signed_fields(reader: &IndexedReader, root: &Dictionary) -> (bool, bool) {
     (any_signed, false)
 }
 
-/// [`signature_facts`] of a file on disk, for deciding what's on offer before anyone saves. A file that won't open says nothing.
+/// [`signature_facts`] of a file on disk, for deciding what's on offer before anyone saves, with the fork's own look through the file's bytes for a signature,
+/// which is what the rewrite refuses by: so Save is off exactly when a save over the file would be refused. Reads the whole file, so never on the UI thread or the
+/// session's. A file that won't open says nothing.
 pub fn signature_facts_of(path: &Path) -> Result<SignatureFacts, OpenError> {
     let reader = crate::open_reader(path)?;
-    Ok(signature_facts(&reader))
+    let mut facts = signature_facts(&reader);
+    facts.signed |= persons_signature(&reader);
+    Ok(facts)
+}
+
+/// **Whether the fork finds a person's signature in the file:** by form field, by `/Perms`, and by every `/ByteRange` in its bytes, old revisions included, as the
+/// rewrite looks before it refuses. Usage rights aren't one. A file it can't look through counts as signed, on the side of refusing.
+pub fn persons_signature(reader: &IndexedReader) -> bool {
+    reader.signatures().map_or(true, |found| found.iter().any(|signature| signature.kind != IndexedSignatureKind::UsageRights))
 }
 
 fn catalog(reader: &IndexedReader) -> Option<Dictionary> {
@@ -408,6 +426,8 @@ pub struct SaveOutcome {
     pub document_data_kept: Option<DocumentData>,
     /// Shared resource dictionaries a removed page used that couldn't be searched, so what only it drew may still be in the file.
     pub resources_left_whole: u64,
+    /// The document's own form couldn't be read, so added pages' fields weren't joined to it: they draw, and can't be filled.
+    pub form_fields_left_out: bool,
     /// The file was replaced, but its folder couldn't be synced, so a power cut in the next moments could bring the old one back.
     pub durability_warning: bool,
     /// The file as it is now.
@@ -420,6 +440,10 @@ pub struct SaveOutcome {
 pub trait SaveHooks {
     /// How it's going.
     fn step(&mut self, _step: SaveStep) {}
+    /// Whether this caller may save by writing the file anew, which takes what was removed out of it for good. Asked once the writer's decided, before anything's written: an agent below Full may not.
+    fn may_rewrite(&self) -> bool {
+        true
+    }
     /// **The file is written, beside its target, and will be `stamp` once it's in place:** the rename keeps its number and time. Anything to note first, such as the session's `save_prepared`, goes here, and an error stops the save with nothing changed.
     fn prepared(&mut self, _written: &Path, _stamp: FileStamp) -> std::io::Result<()> {
         Ok(())
@@ -471,13 +495,17 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         return Err(SaveError::BreaksCertification);
     }
     let mut writer = writer_for(real_pages, request.pages);
-    if !copy && writer == Writer::Rewrite && facts.has_persons_signature() {
+    // The same look at the file's bytes the rewrite takes, so what Save offers and what the rewrite refuses agree.
+    if !copy && writer == Writer::Rewrite && (facts.has_persons_signature() || persons_signature(&reader)) {
         return Err(SaveError::SignedNeedsCopy);
     }
     // A copy of a certified or locked document is a new, unsigned file (SPEC decision 27): its pages can't change under that signature, and even an unchanged copy
     // would append a revision the certification can show as a change (review round 2).
     if copy && (facts.certified || facts.field_locked) {
         writer = Writer::Rewrite;
+    }
+    if writer == Writer::Rewrite && !hooks.may_rewrite() {
+        return Err(SaveError::RewriteNotAllowed);
     }
     let plan = Plan::make(&reader, &map, request, &sources, facts, writer, MAX_COPY_WORK)?;
     match writer {
@@ -556,6 +584,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
                 signatures_removed: 0,
                 document_data_kept: None,
                 resources_left_whole: 0,
+                form_fields_left_out: plan.fields_left_out,
                 durability_warning: appended.durability_warning.is_some(),
                 stamp: None,
                 backup,
@@ -601,6 +630,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
                 signatures_removed: u32::try_from(persons).unwrap_or(u32::MAX),
                 document_data_kept: Some(DocumentData::from(&summary.document_data_kept)),
                 resources_left_whole: (summary.removal.resources_left_whole.len() as u64).saturating_add(summary.removal.resource_dictionaries_unlisted),
+                form_fields_left_out: plan.fields_left_out,
                 durability_warning: rewritten.durability_warning.is_some(),
                 stamp: None,
                 backup,
@@ -682,7 +712,7 @@ impl DocumentData {
 /// rewrite to a new file, so the copy holds what those pages use and nothing of the rest, without a signature, as it's a working copy for the history and
 /// never the document. Synced, checked and moved into place by the fork, so a power cut leaves either nothing or the whole copy. Its pages are `pages` in
 /// that order, which has to be ascending. Gives its stamp.
-pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path) -> Result<FileStamp, SaveError> {
+pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path, max_bytes: u64) -> Result<FileStamp, SaveError> {
     if pages.is_empty() || pages.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(SaveError::EditsDontMatch { file_pages: 0 });
     }
@@ -691,6 +721,11 @@ pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path) -> Result<FileSta
     let count = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
     if pages.last().is_some_and(|last| *last >= count) {
         return Err(SaveError::EditsDontMatch { file_pages: count });
+    }
+    // Estimated before anything's written, from the file's size and its share of pages, so a copy past the limit doesn't wear the drive to be thrown away.
+    let estimate = reader.source_len().saturating_mul(pages.len() as u64) / u64::from(count.max(1));
+    if estimate > max_bytes {
+        return Err(SaveError::TooLarge);
     }
     let keep: HashSet<u32> = pages.iter().copied().collect();
     let options = RewriteOptions::new().policy(RewritePolicy::new().remove_signatures().remove_usage_rights());
@@ -701,8 +736,10 @@ pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path) -> Result<FileSta
         Ok(())
     })
     .map_err(from_rewrite)?;
-    if written.durability_warning.is_some() {
-        // Not trusted to be there after a power cut, so not relied on: the history rolls those steps off instead.
+    // A page object the tree lists twice is one page to the rewrite, so the copy can hold fewer pages than asked for: its numbers would then be wrong, so it isn't used.
+    let held = written.reader.page_map().map(|map| map.len()).unwrap_or(0);
+    if written.durability_warning.is_some() || held != pages.len() {
+        // Not trusted to be there after a power cut, or not what was asked for: not relied on, and the history rolls those steps off instead.
         let _ = std::fs::remove_file(dest);
         return Err(SaveError::Failed);
     }
@@ -873,6 +910,8 @@ struct Plan {
     missing: u64,
     /// The most an update may append: twice what's saved and added, and 64 MiB more.
     append_cap: u64,
+    /// Added pages' fields couldn't join the document's form, which can't be read: they draw, and can't be filled.
+    fields_left_out: bool,
 }
 
 /// What's copied from one added PDF.
@@ -902,6 +941,8 @@ struct FormFields {
     renamed: HashMap<u32, Vec<u8>>,
     /// The source form's default resources' fonts, which fields' `/DA` names.
     fonts: Option<Dictionary>,
+    /// Signature widgets on added pages, which don't come along.
+    signature_widgets: HashSet<u32>,
 }
 
 impl FormFields {
@@ -931,16 +972,35 @@ struct FormAdditions {
 const MAX_FIELD_DEPTH: usize = 64;
 const MAX_FIELD_NODES: usize = 100_000;
 
-/// The fields the widgets on these pages belong to. A widget that's a field of its own with no parent is a top field itself. Bounded, and what can't be read is passed over, leaving that widget as it was: drawn, and not fillable.
+/// The fields the widgets on these pages belong to. A widget that's a field of its own with no parent is a top field itself. **A signature widget goes:** a
+/// signature from another document would only be a broken one here, and outside the form, where nothing that decides about signatures looks, it would still make
+/// the file read as signed by its bytes. The page's own drawn content stays. Bounded by the bytes looked at, every node resolved once, and what can't be read is
+/// passed over, leaving that widget as it was: drawn, and not fillable.
 fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], work: &mut u64) -> Result<FormFields, SaveError> {
     let mut fields = FormFields::default();
     let mut tops: HashSet<u32> = HashSet::new();
-    let mut nodes = 0usize;
-    let resolve = |value: &Object| -> Option<Object> {
-        match value {
-            Object::Reference(id) => source.resolve_object(*id).ok(),
-            other => Some(other.clone()),
+    let mut seen_kids: HashSet<(u32, u32)> = HashSet::new();
+    // Each node looked at once: its parent, whether it says it's a signature field, and whether it says it's a field at all.
+    let mut nodes: HashMap<u32, Option<(Option<ObjectId>, bool, bool)>> = HashMap::new();
+    let mut node = |id: ObjectId, work: &mut u64| -> Result<Option<(Option<ObjectId>, bool, bool)>, SaveError> {
+        if let Some(known) = nodes.get(&id.0) {
+            return Ok(*known);
         }
+        if nodes.len() >= MAX_FIELD_NODES {
+            return Err(SaveError::TooLarge);
+        }
+        let info = match source.resolve_object(id) {
+            Ok(object @ Object::Dictionary(_)) => {
+                charge(work, held_size(&object, 0) / 32)?;
+                let Object::Dictionary(dict) = object else { unreachable!() };
+                let parent = dict.get(b"Parent").ok().and_then(|parent| parent.as_reference().ok());
+                let sig = matches!(dict.get(b"FT"), Ok(Object::Name(kind)) if kind == b"Sig");
+                Some((parent, sig, dict.has(b"T") || dict.has(b"FT")))
+            }
+            _ => None,
+        };
+        nodes.insert(id.0, info);
+        Ok(info)
     };
     let mut seen_pages = HashSet::new();
     for page in wanted {
@@ -949,7 +1009,12 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
             continue;
         }
         let Ok(Object::Dictionary(page_dict)) = source.resolve_object(entry.id()) else { continue };
-        let Some(Object::Array(annots)) = page_dict.get(b"Annots").ok().and_then(resolve) else { continue };
+        let annots = match page_dict.get(b"Annots") {
+            Ok(Object::Reference(id)) => source.resolve_object(*id).ok(),
+            Ok(other) => Some(other.clone()),
+            Err(_) => None,
+        };
+        let Some(Object::Array(annots)) = annots else { continue };
         for annot in annots {
             charge(work, 1)?;
             let Object::Reference(widget) = annot else { continue };
@@ -957,35 +1022,47 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
             if !matches!(dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Widget") {
                 continue;
             }
-            // Up the chain: each node and its parent, and whether any says it's a signature field.
-            let mut chain: Vec<(ObjectId, Dictionary)> = vec![(widget, dict)];
-            while let Some(Object::Reference(parent)) = chain.last().and_then(|(_, node)| node.get(b"Parent").ok().cloned()) {
-                charge(work, 1)?;
-                if chain.len() > MAX_FIELD_DEPTH || chain.iter().any(|(id, _)| *id == parent) {
+            // Up the chain, each node once.
+            let mut chain: Vec<ObjectId> = vec![widget];
+            let mut signature = false;
+            let mut a_field = false;
+            let mut readable_to_top = true;
+            let mut at = widget;
+            loop {
+                let Some((parent, sig, field)) = node(at, work)? else {
+                    readable_to_top = false;
                     break;
+                };
+                signature |= sig;
+                a_field |= field;
+                match parent {
+                    Some(parent) if chain.len() <= MAX_FIELD_DEPTH && !chain.contains(&parent) => {
+                        chain.push(parent);
+                        at = parent;
+                    }
+                    Some(_) => {
+                        readable_to_top = false;
+                        break;
+                    }
+                    None => break,
                 }
-                let Ok(Object::Dictionary(node)) = source.resolve_object(parent) else { break };
-                chain.push((parent, node));
             }
-            let signature = chain.iter().any(|(_, node)| matches!(node.get(b"FT"), Ok(Object::Name(kind)) if kind == b"Sig"));
-            let (top, top_dict) = chain.last().map(|(id, node)| (*id, node)).expect("a chain has its widget");
-            let a_field = top_dict.has(b"T") || top_dict.has(b"FT") || chain.len() > 1;
-            if signature || !a_field || top_dict.has(b"Parent") {
-                // A signature, a widget of no field, or a chain that couldn't be read to its top: left as it was.
+            if signature {
+                fields.signature_widgets.insert(widget.0);
+                continue;
+            }
+            if !(a_field || chain.len() > 1) || !readable_to_top {
+                // A widget of no field, or a chain that couldn't be read to its top: left as it was.
                 continue;
             }
             for pair in chain.windows(2) {
-                let (child, parent) = (pair[0].0, pair[1].0);
-                let kids = fields.kids.entry(parent.0).or_default();
-                if !kids.contains(&Object::Reference(child)) {
-                    nodes += 1;
-                    if nodes > MAX_FIELD_NODES {
-                        return Err(SaveError::TooLarge);
-                    }
-                    kids.push(Object::Reference(child));
+                let (child, parent) = (pair[0], pair[1]);
+                if seen_kids.insert((parent.0, child.0)) {
+                    fields.kids.entry(parent.0).or_default().push(Object::Reference(child));
                 }
                 fields.keep_parent.insert(child.0);
             }
+            let top = *chain.last().expect("a chain has its widget");
             if tops.insert(top.0) {
                 fields.tops.push(top);
             }
@@ -998,16 +1075,52 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
     Ok(fields)
 }
 
-/// The names of a form's top fields, as written.
-fn top_field_names(reader: &IndexedReader) -> HashSet<Vec<u8>> {
-    let Some(form) = catalog(reader).and_then(|root| root.get(b"AcroForm").ok().cloned()).and_then(|form| dict_value(reader, &form)) else { return HashSet::new() };
+/// Most renames tried for one field's name.
+const MAX_RENAMES: u32 = 1_000;
+
+/// `name`, or `name_2`, `name_3`… if that's taken, in the name's own encoding: a UTF-16 name stays UTF-16. `None` past [`MAX_RENAMES`], as settling on a taken
+/// name would merge the added field into the document's own and change its value.
+fn free_name(name: &[u8], taken: &HashSet<Vec<u8>>) -> Option<Vec<u8>> {
+    if !taken.contains(name) {
+        return Some(name.to_vec());
+    }
+    let utf16 = name.starts_with(&[0xFE, 0xFF]);
+    (2..=MAX_RENAMES).map(|n| {
+        let suffix = format!("_{n}");
+        let tail: Vec<u8> = if utf16 { suffix.encode_utf16().flat_map(u16::to_be_bytes).collect() } else { suffix.into_bytes() };
+        [name, tail.as_slice()].concat()
+    }).find(|candidate| !taken.contains(candidate))
+}
+
+/// The names of a form's top fields, as written, each field looked at once, within the bound on fields. `None` if the form or its list can't be read, so nothing's
+/// said to be free that isn't.
+fn top_field_names(reader: &IndexedReader, work: &mut u64) -> Result<Option<HashSet<Vec<u8>>>, SaveError> {
+    let Some(form_value) = catalog(reader).and_then(|root| root.get(b"AcroForm").ok().cloned()) else { return Ok(Some(HashSet::new())) };
+    let Some(form) = dict_value(reader, &form_value) else { return Ok(None) };
     let fields = match form.get(b"Fields") {
         Ok(Object::Reference(id)) => reader.resolve_object(*id).ok(),
         Ok(other) => Some(other.clone()),
-        Err(_) => None,
+        Err(_) => return Ok(Some(HashSet::new())),
     };
-    let Some(Object::Array(fields)) = fields else { return HashSet::new() };
-    fields.iter().take(MAX_FIELD_NODES).filter_map(|field| dict_value(reader, field)).filter_map(|field| field.get(b"T").ok().and_then(|name| name.as_str().ok()).map(<[u8]>::to_vec)).collect()
+    let Some(Object::Array(fields)) = fields else { return Ok(None) };
+    if fields.len() > MAX_FIELD_NODES {
+        return Err(SaveError::TooLarge);
+    }
+    let mut seen = HashSet::new();
+    let mut names = HashSet::new();
+    for field in &fields {
+        if let Object::Reference(id) = field
+            && !seen.insert(id.0)
+        {
+            continue;
+        }
+        let Some(dict) = dict_value(reader, field) else { continue };
+        charge(work, held_size(&Object::Dictionary(dict.clone()), 0) / 32)?;
+        if let Some(name) = dict.get(b"T").ok().and_then(|name| name.as_str().ok()) {
+            names.insert(name.to_vec());
+        }
+    }
+    Ok(Some(names))
 }
 
 impl Plan {
@@ -1048,27 +1161,35 @@ impl Plan {
             copies[at] = Some(copy);
         }
         // A top field named as one the document has, or one added before it, is renamed `name_2`, `name_3`…, so their values stay apart.
-        let mut taken = top_field_names(reader);
-        for (at, copy) in copies.iter_mut().enumerate() {
-            let (Some(copy), Some((source, _))) = (copy.as_mut(), sources.get(at).and_then(Option::as_ref)) else { continue };
-            for top in copy.fields.tops.clone() {
-                let Some(name) = dict_value(source, &Object::Reference(top)).and_then(|field| field.get(b"T").ok().and_then(|name| name.as_str().ok()).map(<[u8]>::to_vec)) else { continue };
-                let mut chosen = name.clone();
-                let mut n = 2u32;
-                while taken.contains(&chosen) && n < 100_000 {
-                    chosen = [name.as_slice(), format!("_{n}").as_bytes()].concat();
-                    n += 1;
+        // Looked at only when there's a field to add. A form of the document's own that can't be read isn't replaced: the added widgets stay unfillable, and that's said.
+        let mut fields_left_out = false;
+        if copies.iter().flatten().any(|copy| !copy.fields.tops.is_empty()) {
+            match top_field_names(reader, &mut work)? {
+                None => {
+                    fields_left_out = true;
+                    for copy in copies.iter_mut().flatten() {
+                        copy.fields.tops.clear();
+                    }
                 }
-                if chosen != name {
-                    copy.fields.renamed.insert(top.0, chosen.clone());
+                Some(mut taken) => {
+                    for (at, copy) in copies.iter_mut().enumerate() {
+                        let (Some(copy), Some((source, _))) = (copy.as_mut(), sources.get(at).and_then(Option::as_ref)) else { continue };
+                        for top in copy.fields.tops.clone() {
+                            let Some(name) = dict_value(source, &Object::Reference(top)).and_then(|field| field.get(b"T").ok().and_then(|name| name.as_str().ok()).map(<[u8]>::to_vec)) else { continue };
+                            let chosen = free_name(&name, &taken).ok_or(SaveError::FieldNamesTaken)?;
+                            if chosen != name {
+                                copy.fields.renamed.insert(top.0, chosen.clone());
+                            }
+                            taken.insert(chosen);
+                        }
+                    }
                 }
-                taken.insert(chosen);
             }
         }
         let sizes: u64 = reader.source_len() + sources.iter().flatten().map(|(source, _)| source.source_len()).sum::<u64>();
         // A rewrite's policy takes usage rights off, with whatever shows of them; an append takes them out of the new revision's catalog.
         let drop_usage_rights = writer == Writer::Append && facts.usage_rights && !facts.certified;
-        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights, missing, append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024) })
+        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights, missing, append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024), fields_left_out })
     }
 
     /// Writes the plan into an update or a rewrite's changes. Gives back the document's page objects in order, for reading the result back.
@@ -1140,6 +1261,10 @@ impl Plan {
                     Some(Object::Dictionary(dict)) => dict,
                     _ => return Err(SaveError::Damaged),
                 };
+                // What didn't come along, a signature widget among them, is out of its list.
+                if let Ok(Object::Array(items)) = dict.get_mut(b"Annots") {
+                    items.retain(|item| !matches!(item, Object::Null));
+                }
                 let inherited = entry.inherited();
                 for (key, owner) in [(&b"Resources"[..], inherited.resources()), (b"MediaBox", inherited.media_box()), (b"CropBox", inherited.crop_box())] {
                     if let Some(owner) = owner.filter(|owner| *owner != entry.id())
@@ -1275,6 +1400,12 @@ fn copied_page(source: &IndexedReader, entry: &PageMapEntry) -> Result<Dictionar
     for key in [&b"Parent"[..], b"StructParents", b"B", b"Rotate", b"PieceInfo"] {
         dict.remove(key);
     }
+    // Its annotations as a list of its own, so one that doesn't come along can be taken out of it rather than left as a null.
+    if let Ok(Object::Reference(list)) = dict.get(b"Annots").cloned()
+        && let Ok(Object::Array(items)) = source.resolve_object(list)
+    {
+        dict.set("Annots", Object::Array(items));
+    }
     Ok(dict)
 }
 
@@ -1295,6 +1426,11 @@ fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], missin
     let mut copy = Copy { fields: form_fields(source, map, wanted, work)?, ..Copy::default() };
     let mut queued: HashSet<u32> = HashSet::new();
     let mut stack: Vec<ObjectId> = Vec::new();
+    // A signature widget doesn't come along, nor does what only it names, its value with its byte range among them.
+    for widget in &copy.fields.signature_widgets {
+        copy.map.insert(*widget, None);
+        queued.insert(*widget);
+    }
     // The fonts the fields' default appearances name come along, for the form's own resources.
     if let Some(fonts) = &copy.fields.fonts {
         references_in(&Object::Dictionary(fonts.clone()), &mut stack, &mut queued, work)?;
@@ -1601,13 +1737,15 @@ fn update_catalog<'c>(reader: &IndexedReader, writer: &mut impl Sink<'c>, drop_r
         // The form is a dictionary of its own or written in the catalog: a new version of whichever it is.
         let own = catalog.get(b"AcroForm").ok().and_then(|form| form.as_reference().ok());
         let mut acro = catalog.get(b"AcroForm").ok().cloned().and_then(|form| dict_value(reader, &form)).unwrap_or_default();
+        // A list that's there and can't be read isn't replaced: the plan has left these fields out already, and this holds to it whatever's happened since.
         let mut fields = match acro.get(b"Fields") {
             Ok(Object::Reference(id)) => match reader.resolve_object(*id) {
                 Ok(Object::Array(items)) => items,
-                _ => Vec::new(),
+                _ => return Err(SaveError::Damaged),
             },
             Ok(Object::Array(items)) => items.clone(),
-            _ => Vec::new(),
+            Ok(_) => return Err(SaveError::Damaged),
+            Err(_) => Vec::new(),
         };
         fields.extend(form.fields.iter().map(|id| Object::Reference(*id)));
         acro.set("Fields", Object::Array(fields));

@@ -448,7 +448,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             self?.sheetShowing = nil
             let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
             let choice = prompt.buttons.indices.contains(index) ? prompt.buttons[index].choice : .cancel
-            core.closeAnswered(tab: prompt.tab, choice: choice)
+            if core.closeAnswered(tab: prompt.tab, choice: choice) == .showSavePanel { self?.showSavePanel() }
         }
     }
 

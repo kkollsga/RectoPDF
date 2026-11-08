@@ -105,6 +105,8 @@ pub struct CloseButton {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum CloseChoice {
     Save,
+    /// Save is off for this document, as for a signed one: Save As's sheet, for an unsigned copy.
+    SaveAs,
     DontSave,
     Cancel,
 }
@@ -128,28 +130,45 @@ pub(crate) const UNSIGNED_COPY: &str = recto_agent::saving::UNSIGNED_COPY;
 pub(crate) struct SaveUi {
     pub(crate) running: AtomicU32,
     problem: Mutex<Option<SaveProblem>>,
-    /// The tab showing's file, as of this version, and what's known of its signatures. Looked at once a version, on the session thread.
-    signature: Mutex<Option<(TabId, FileStamp, recto_core::save::SignatureFacts)>>,
+    /// The tab showing's file, as of this version, and what's known of its signatures. Looked at once a version, on a thread of its own, as it reads the whole file.
+    signature: Arc<Mutex<Option<(TabId, FileStamp, recto_core::save::SignatureFacts)>>>,
+    /// That look is under way, for this tab and version.
+    looking: Arc<Mutex<Option<(TabId, FileStamp)>>>,
     pub(crate) step: Arc<AtomicU8>,
 }
 
 impl SaveUi {
     pub(crate) fn new(step: Arc<AtomicU8>) -> Self {
-        Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Mutex::new(None), step }
+        Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Arc::new(Mutex::new(None)), looking: Arc::new(Mutex::new(None)), step }
     }
 
-    /// What's known of this file's signatures: read from its catalog and form once a version, never on the UI thread. A file that won't open says nothing.
-    pub(crate) fn signature_facts(&self, id: TabId, path: &std::path::Path, stamp: FileStamp) -> recto_core::save::SignatureFacts {
-        let mut known = crate::lock(&self.signature);
-        if let Some((tab, at, facts)) = known.as_ref()
+    /// **What's known of this file's signatures,** as the save itself would find them (`signature_facts_of`, the fork's look through the bytes included), cached
+    /// per version. Not known yet starts the look on a thread of its own, as it reads the whole file, and `done` is called when it has an answer; until then it's
+    /// `None`. One look at a time, the latest asked for.
+    pub(crate) fn signature_facts(&self, id: TabId, path: &std::path::Path, stamp: FileStamp, done: impl FnOnce() + Send + 'static) -> Option<recto_core::save::SignatureFacts> {
+        if let Some((tab, at, facts)) = crate::lock(&self.signature).as_ref()
             && *tab == id
             && *at == stamp
         {
-            return *facts;
+            return Some(*facts);
         }
-        let facts = recto_core::save::signature_facts_of(path).unwrap_or_default();
-        *known = Some((id, stamp, facts));
-        facts
+        let mut looking = crate::lock(&self.looking);
+        if looking.is_some() {
+            return None;
+        }
+        *looking = Some((id, stamp));
+        drop(looking);
+        let (known, looking, path) = (Arc::clone(&self.signature), Arc::clone(&self.looking), path.to_path_buf());
+        let spawned = std::thread::Builder::new().name("recto-signatures".into()).stack_size(512 * 1024).spawn(move || {
+            let facts = recto_core::save::signature_facts_of(&path).unwrap_or_default();
+            *crate::lock(&known) = Some((id, stamp, facts));
+            *crate::lock(&looking) = None;
+            done();
+        });
+        if spawned.is_err() {
+            *crate::lock(&self.looking) = None;
+        }
+        None
     }
 
     /// What the Save icon says: Save, or the step a long save is at.
@@ -189,12 +208,14 @@ pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>
 /// What closing asks, about this document.
 /// **What closing asks, decided here** (review): with unsaved edits, Save, Cancel or Don't Save, as any Mac app asks. Steps the person undid can't be redone
 /// once the tab's closed, so it says so, and closing after either answer lets them go. With only undone steps, there's nothing to save: Close or Cancel.
-pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool) -> ClosePrompt {
+pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool, save_off: bool) -> ClosePrompt {
     let name = recto_core::clean_line(name);
     let button = |title: &str, choice, destructive| CloseButton { title: title.into(), choice, destructive };
     if edited {
         let informative = if undone { "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed." } else { "Your changes will be lost if you don't save them." };
-        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![button("Save", CloseChoice::Save, false), button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
+        let save = if save_off { button("Save As…", CloseChoice::SaveAs, false) } else { button("Save", CloseChoice::Save, false) };
+        let informative = if save_off { "This document is signed, so these changes can't be saved over it. Save As makes a new copy without the signature." } else { informative };
+        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![save, button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
     } else {
         ClosePrompt { tab, message: format!("Close “{name}”?"), informative: "It has no unsaved changes, but steps you undid can't be redone once it's closed.".into(), buttons: vec![button("Close", CloseChoice::DontSave, true), button("Cancel", CloseChoice::Cancel, false)] }
     }

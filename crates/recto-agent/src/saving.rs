@@ -119,6 +119,8 @@ pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
+    // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
+    let mut onto_itself = false;
     if let SaveTo::As { out, replace } = &to {
         crate::require_absolute(out)?;
         check_save_path(out)?;
@@ -141,6 +143,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         }
         if own {
             to = SaveTo::Same;
+            onto_itself = true;
         }
     }
     let to = &to;
@@ -168,11 +171,21 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     };
     let support = access.saving();
     let backups = support.and_then(SaveSupport::backups);
-    let mut hooks = Hooks { access, id, support, original: &snapshot.path, needed: if snapshot.needs_own_pages { access.with(|s| s.own_pages_needed(id)) } else { Vec::new() }, kept: None };
+    // A Save As leaves the old file where it is, so the history needs no copy of its pages.
+    let needed = if snapshot.needs_own_pages && matches!(to, SaveTo::Same) { access.with(|s| s.own_pages_needed(id)) } else { Vec::new() };
+    let mut hooks = Hooks { access, id, support, original: &snapshot.path, needed, kept: None, level };
     let saved = recto_core::save::save(&request, target, backups.as_deref(), &mut hooks);
     let kept = hooks.kept.take();
     let outcome = match saved {
         Ok(outcome) => outcome,
+        Err(SaveError::RewriteNotAllowed) => {
+            drop(ending);
+            return Err(needs_full("A save that writes the file anew"));
+        }
+        Err(SaveError::SignedNeedsCopy) if onto_itself => {
+            drop(ending);
+            return Err(AgentError::new("signed_original", "This document is signed, so it isn't saved over, even by Save As onto its own name. Choose another name for the new copy, which won't be signed. Nothing was written, and the original keeps its signature.", exit::FAILED).then("Choose a new name: `recto save-as --out <new.pdf>`."));
+        }
         Err(error) => {
             drop(ending);
             return Err(from_save(&error));
@@ -210,9 +223,15 @@ struct Hooks<'a, A: SessionAccess> {
     needed: Vec<u32>,
     /// That copy, once it's made.
     kept: Option<recto_session::edit::AddedSource>,
+    level: Level,
 }
 
 impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
+    fn may_rewrite(&self) -> bool {
+        // Writing a file anew takes what was removed out of it for good: Full only (SPEC section 5). Below Control nothing saves at all.
+        self.level >= Level::Full
+    }
+
     fn step(&mut self, step: SaveStep) {
         if let Some(support) = self.support {
             support.step(self.id, step);
@@ -287,6 +306,9 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     });
     if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
         notes.push(if one { "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." } else { "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." });
+    }
+    if outcome.form_fields_left_out {
+        notes.push("This document's own form couldn't be read, so the form fields on the added pages weren't joined to it: they show, and can't be filled in.");
     }
     if outcome.attributes_missed {
         notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");
