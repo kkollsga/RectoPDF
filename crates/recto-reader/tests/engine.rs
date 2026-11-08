@@ -193,6 +193,42 @@ fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
     assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
 }
 
+/// Failure: a bar chart on white stays a light box on dark paper, as figure 8 of the EU competitiveness report did for the owner (2026-11-07: "images with a white background should be dark, as a chart with a white background was left light"): its bars are a quarter of it, more colour than a chart was allowed. A real worker and a real image: its white lands on the paper's own tone, as text pages' paper does, and isn't dimmed white.
+#[test]
+fn a_chart_on_white_turns_over_on_dark_paper() {
+    // 40 by 40, white, with three flat bars and an axis, as figure 8 is drawn.
+    let mut chart = Vec::with_capacity(40 * 40 * 3);
+    for y in 0..40u32 {
+        for x in 0..40u32 {
+            let rgb: [u8; 3] = match x {
+                4..10 if (14..38).contains(&y) => [21, 32, 240],
+                14..20 if (24..38).contains(&y) => [74, 138, 198],
+                24..30 if (12..38).contains(&y) => [21, 32, 240],
+                _ if y == 38 => [80, 80, 80],
+                _ => [255, 255, 255],
+            };
+            chart.extend_from_slice(&rgb);
+        }
+    }
+    let image = first_extra_object(1);
+    let page = Page::new(b"q 612 0 0 792 0 0 cm /Im0 Do Q".to_vec());
+    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 40 /Height 40 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: chart }];
+    let file = TempPdf::new("chart.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
+    let (engine, _events) = started(&file, 1);
+    pump(&engine, Duration::from_secs(20));
+    engine.set_paper(PaperKind::Dark);
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let rgb = PaperKind::Dark.rgb();
+    let paper = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    let surfaces = corners(&ops);
+    assert!(!surfaces.is_empty(), "something was drawn: {ops:?}");
+    // A tile's corner falls on the chart's white or on a bar, turned over.
+    let dimmed = dim_rgb(0xFF_FF_FF);
+    let dimmed = [(dimmed >> 16) as u8, (dimmed >> 8) as u8, dimmed as u8];
+    assert!(surfaces.contains(&paper) && !surfaces.contains(&dimmed), "the chart's white is the paper's tone: {surfaces:?} against {paper:?}, and dimmed white is {dimmed:?}");
+}
+
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
 fn a_file_that_doesnt_answer_holds_up_no_other_tab() {

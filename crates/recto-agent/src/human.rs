@@ -353,6 +353,10 @@ fn page_text(data: &Value) -> String {
     } else if hidden["checked"] == false {
         out.push_str("\nIt couldn't be checked for hidden text.");
     }
+    let chrome = data["chrome_spans"].as_array().map_or(0, Vec::len);
+    if chrome > 0 {
+        let _ = write!(out, "\n{} marked as running heads, footers or page numbers (`chrome_spans` in --json). They're in the text below, and a copy of body text leaves them out.", count(chrome as u64, "line is", "lines are"));
+    }
     if data["truncated"] == true {
         out.push_str("\nThis page's text was too long and was cut.");
     }

@@ -176,6 +176,7 @@ fn check(last: &Value, words: &[String]) -> Option<String> {
         "expect-at-least" => number(found).zip(number(&wanted_value)).is_some_and(|(found, wanted)| found >= wanted),
         "expect-at-most" => number(found).zip(number(&wanted_value)).is_some_and(|(found, wanted)| found <= wanted),
         "expect-contains" => found.as_str().is_some_and(|text| text.contains(wanted.as_str())),
+        "expect-lacks" => found.as_str().is_some_and(|text| !text.contains(wanted.as_str())),
         other => return Some(format!("`{other}` isn't something a script can expect.")),
     };
     (!holds).then(|| format!("{path} is {found}, and {kind} said {wanted}."))
@@ -721,5 +722,7 @@ mod tests {
         assert!(check(&answer, &line("expect-at-most reader.tile_scale 2")).is_some());
         assert!(check(&answer, &line("expect-contains note lower-resolution")).is_none());
         assert!(check(&answer, &line("expect-nothing note x")).is_some());
+        assert!(check(&answer, &line("expect-lacks note lower-resolution")).is_some(), "it's there");
+        assert!(check(&answer, &line("expect-lacks note elephant")).is_none());
     }
 }

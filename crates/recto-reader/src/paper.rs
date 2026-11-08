@@ -58,20 +58,44 @@ const fn paper_channels() -> [i32; 3] {
     [((DARK_PAPER >> 16) & 0xFF) as i32, ((DARK_PAPER >> 8) & 0xFF) as i32, (DARK_PAPER & 0xFF) as i32]
 }
 
+/// **How turned-over text keeps its weight** (owner, 2026-11-07: "The font in the future competitiveness is not super readible. I think its a bit to skinny"). On white paper the renderer's text is what Preview draws: PDFium draws glyphs through Core Graphics on a Mac, and at the same scale their ink is the same to four places. Turned over in sRGB's encoding, though, a letter's anti-aliased edge gives off much less light above dark paper than it took from white, so light text came out thinner than black, and thinner than macOS draws its own light text: in three system fonts at the reader's scale, 0.70 to 0.78 of the light per letter against 0.84 to 0.88 for Core Text's own light-on-dark. Paper-ness goes through this power first, so an edge gives off more: at 1.8 the turned-over text gives off 0.98 to 1.00 of what Core Text's own does. White and black stay where they were, so paper and ink are unchanged.
+const TURNED_LIGHTNESS_POWER: f64 = 1.8;
+/// **The curve is for text and lines** (owner, 2026-11-08: coloured areas in flipped images keep the gentler curve, so charts keep richer colours). A pixel whose channels are this close is grey, as black text's edges, a scan's text and rules are, and takes all of the curve. This far apart is colour, as a chart's bars and fills are, and turns straight, as before the curve. Between, the curve fades, so a coloured letter's edge has no step. Figure 8's bars are 96 to 219 apart.
+const CURVE_GREY_SPREAD: i32 = 16;
+const CURVE_COLOUR_SPREAD: i32 = 64;
+
+/// How much of the curve a pixel takes, in 256ths, for each spread of its channels. A table, as a division a pixel doubled a colour tile's cost.
+const CURVE_WEIGHT: [i32; 256] = {
+    let mut table = [0i32; 256];
+    let mut spread = 0;
+    while spread < 256 {
+        let weight = (CURVE_COLOUR_SPREAD - spread as i32) * 256 / (CURVE_COLOUR_SPREAD - CURVE_GREY_SPREAD);
+        table[spread] = if weight < 0 { 0 } else if weight > 256 { 256 } else { weight };
+        spread += 1;
+    }
+    table
+};
+
+/// Paper-ness after [`TURNED_LIGHTNESS_POWER`], for each value of it. Made once.
+static TURNED_LIGHTNESS: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| std::array::from_fn(|value| (255.0 * (value as f64 / 255.0).powf(TURNED_LIGHTNESS_POWER)).round().clamp(0.0, 255.0) as u8));
+
 /// Turns one colour over, as a blank tile's single colour needs.
 pub fn dark_rgb(rgb: u32) -> u32 {
     let mut pixel = [(rgb & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, ((rgb >> 16) & 0xFF) as u8, 0xFF];
-    turn_pixel(&mut pixel);
+    turn_pixel(&mut pixel, &TURNED_LIGHTNESS);
     (u32::from(pixel[2]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[0])
 }
 
 #[inline]
-fn turn_pixel(pixel: &mut [u8; 4]) {
+fn turn_pixel(pixel: &mut [u8; 4], lightness: &[u8; 256]) {
     let [paper_r, paper_g, paper_b] = paper_channels();
     let (b, g, r) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
-    // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink.
+    // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink. At most 255, as the weights add up to 256.
     let luma = (77 * r + 150 * g + 29 * b) >> 8;
-    let over = |paper: i32, ink: i32, value: i32| (((paper * luma + ink * (255 - luma)) / 255) + value - luma).clamp(0, 255) as u8;
+    // Text and lines are near grey and take the curve; colour, as a chart's fills, turns straight, with the curve fading out between.
+    let spread = r.max(g).max(b) - r.min(g).min(b);
+    let paperness = if spread >= CURVE_COLOUR_SPREAD { luma } else { luma + (((i32::from(lightness[(luma as usize) & 0xFF]) - luma) * CURVE_WEIGHT[(spread as usize) & 0xFF]) >> 8) };
+    let over = |paper: i32, ink: i32, value: i32| (((paper * paperness + ink * (255 - paperness)) / 255) + value - luma).clamp(0, 255) as u8;
     pixel[0] = over(paper_b, DARK_INK[2], b);
     pixel[1] = over(paper_g, DARK_INK[1], g);
     pixel[2] = over(paper_r, DARK_INK[0], r);
@@ -101,6 +125,17 @@ const WHITE_MOST_COLOUR: f64 = 0.20;
 /// The second kind, a scan on paper that's gone yellow or grey: no plain white at all, so nearly all of it must be paper, with next to no colour. A red stamp and a blue signature are about 0.02. Maps on tan are 0.04 and up, or under this much paper.
 const SCAN_LEAST_PAPER: f64 = 0.75;
 const SCAN_MOST_COLOUR: f64 = 0.03;
+/// **The third kind, a chart or diagram whose colour is flat** (owner, 2026-11-07: "images with a white background should be dark, as a chart with a white background was left light"). Its bars, slices and fills are a few colours each, so most of its colour falls in a handful of [`COLOUR_BINS`]: [`FLAT_LEAST_CLUSTERED`] of it in the [`FLAT_TOP_BINS`] fullest. A photo, a rendering or a heatmap shades from one colour to the next and spreads over many. Over `bench100`'s 4,149 images that stayed and part B of the EU competitiveness report, every one past this with a white or plain background was a chart, a table, a diagram, a logo or a page of a document, and the photos, renderings and heatmaps with as much white were under 0.80. With this, the background can be white, as in the first kind, or one plain light colour, [`PLAIN_LEAST`] of it within [`PLAIN_NEAR`] of its average, as a chart on beige is. A map on tan isn't: its land is shaded.
+const FLAT_MOST_COLOUR: f64 = 0.45;
+const FLAT_LEAST_CLUSTERED: f64 = 0.80;
+const FLAT_TOP_BINS: usize = 4;
+/// Colour is binned by the top 3 bits of each channel, so a JPEG's noise round a bar's colour stays in its bin.
+const COLOUR_BINS: usize = 512;
+const PLAIN_LEAST: f64 = 0.60;
+/// See [`is_shading`].
+const SHADE_LEAST_SHARE: f64 = 0.08;
+const SHADE_LEAST_LEVELS: usize = 4;
+const PLAIN_NEAR: u8 = 10;
 /// Judging a whole page, with its images not known, white margins count for the page: a map sheet is as white as a chart. So nearly none of it can be colour.
 const WHOLE_PAGE_MOST_COLOUR: f64 = 0.05;
 /// An image this small in a picture of the page has too few pixels to say. It's left alone.
@@ -120,42 +155,91 @@ pub struct ImageSample {
     /// The colour its paper is, as `[red, green, blue]`.
     pub background: [u8; 3],
     pub pixels: usize,
+    /// The part of its colour in its [`FLAT_TOP_BINS`] fullest bins: near 1 for a chart's flat fills, low for a photo. 1 with no colour.
+    pub clustered: f64,
+    /// The part of it within [`PLAIN_NEAR`] of its paper's average colour, in every channel. Only looked for when it decides something, and 0 otherwise.
+    pub plain: f64,
+    /// Its colour is one colour shaded through several lightnesses, as a photographed or rendered object's is, and not flat fills. See [`is_shading`].
+    pub shaded: bool,
 }
 
-/// Looks at a rectangle of BGRA pixels.
+/// Looks at a rectangle of BGRA pixels. One pass, and a second over the same rectangle only for an image the third kind's plain background would decide.
 pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, right: usize, bottom: usize) -> ImageSample {
     let (mut paper, mut colour, mut white, mut count) = (0usize, 0usize, 0usize, 0usize);
     let mut sums = [0u64; 3];
-    if stride > 0 {
-        for row in pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)) {
-            let Some(row) = row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len())) else { continue };
-            for pixel in row.as_chunks::<4>().0 {
-                let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
-                let (low, high) = (r.min(g).min(b), r.max(g).max(b));
-                count += 1;
-                if low >= WHITE_LIGHTEST_CHANNEL && high - low <= WHITE_MOST_SPREAD {
-                    white += 1;
-                }
-                if low >= PAPER_LIGHTEST_CHANNEL && high - low <= PAPER_MOST_SPREAD {
-                    paper += 1;
-                    sums[0] += u64::from(r);
-                    sums[1] += u64::from(g);
-                    sums[2] += u64::from(b);
-                } else if high - low >= COLOUR_LEAST_SPREAD {
-                    colour += 1;
-                }
+    let mut bins = [0u32; COLOUR_BINS];
+    // At most a picture's height of slices, so a second pass needn't work out the rows again.
+    let inside: Vec<&[u8]> = if stride == 0 { Vec::new() } else { pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)).filter_map(|row| row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len()))).collect() };
+    for row in &inside {
+        for pixel in row.as_chunks::<4>().0 {
+            let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
+            let (low, high) = (r.min(g).min(b), r.max(g).max(b));
+            count += 1;
+            if low >= WHITE_LIGHTEST_CHANNEL && high - low <= WHITE_MOST_SPREAD {
+                white += 1;
+            }
+            if low >= PAPER_LIGHTEST_CHANNEL && high - low <= PAPER_MOST_SPREAD {
+                paper += 1;
+                sums[0] += u64::from(r);
+                sums[1] += u64::from(g);
+                sums[2] += u64::from(b);
+            } else if high - low >= COLOUR_LEAST_SPREAD {
+                colour += 1;
+                bins[(usize::from(r >> 5) << 6) | (usize::from(g >> 5) << 3) | usize::from(b >> 5)] += 1;
             }
         }
     }
     let share = |part: usize| if count == 0 { 0.0 } else { part as f64 / count as f64 };
     let average = |sum: u64| if paper == 0 { 255 } else { u8::try_from(sum / paper as u64).unwrap_or(255) };
-    ImageSample { paper: share(paper), colour: share(colour), white: share(white), background: [average(sums[0]), average(sums[1]), average(sums[2])], pixels: count }
+    let background = [average(sums[0]), average(sums[1]), average(sums[2])];
+    // The fullest bins, as `(count, bin)`, fullest first.
+    let mut fullest = [(0u32, 0usize); FLAT_TOP_BINS];
+    for (index, &bin) in bins.iter().enumerate() {
+        if bin > fullest[FLAT_TOP_BINS - 1].0 {
+            fullest[FLAT_TOP_BINS - 1] = (bin, index);
+            fullest.sort_unstable_by_key(|(count, _)| std::cmp::Reverse(*count));
+        }
+    }
+    let clustered = if colour == 0 { 1.0 } else { fullest.iter().map(|(bin, _)| f64::from(*bin)).sum::<f64>() / colour as f64 };
+    let shaded = colour > 0 && is_shading(&fullest, colour);
+    let mut found = ImageSample { paper: share(paper), colour: share(colour), white: share(white), background, pixels: count, clustered, plain: 0.0, shaded };
+    if found.white < WHITE_LEAST && found.paper >= SCAN_LEAST_PAPER && found.colour > SCAN_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR && found.clustered >= FLAT_LEAST_CLUSTERED {
+        let near = |value: u8, to: u8| value.abs_diff(to) <= PLAIN_NEAR;
+        let plain: usize = inside.iter().map(|row| row.as_chunks::<4>().0.iter().filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2])).count()).sum();
+        found.plain = share(plain);
+    }
+    found
+}
+
+/// Whether an image's fullest colour bins are one colour shaded, as a ball or a product photographed on white is: of the bins that hold at least [`SHADE_LEAST_SHARE`] of its colour, the ones joined to the fullest through neighbours run through [`SHADE_LEAST_LEVELS`] lightnesses or more. A chart's flat fill has its edges' and noise's in a bin or two beside it: of the 41 images the chart rule added in bench100 and part B, 40 span at most 3, and the 41st is a gradient strip, rightly dimmed; shaded balls in red, blue and green span 4.
+fn is_shading(fullest: &[(u32, usize); FLAT_TOP_BINS], colour: usize) -> bool {
+    let cell = |bin: usize| [(bin >> 6) as i32, ((bin >> 3) & 7) as i32, (bin & 7) as i32];
+    let counted: Vec<usize> = fullest.iter().filter(|(count, _)| f64::from(*count) >= SHADE_LEAST_SHARE * colour as f64).map(|(_, bin)| *bin).collect();
+    let Some(&first) = counted.first() else { return false };
+    // The bins joined to the fullest through neighbours, and the lightnesses they span.
+    let mut joined = vec![first];
+    let mut at = 0;
+    while at < joined.len() {
+        let here = cell(joined[at]);
+        for &other in &counted {
+            let there = cell(other);
+            if !joined.contains(&other) && (0..3).all(|channel| (here[channel] - there[channel]).abs() <= 1) {
+                joined.push(other);
+            }
+        }
+        at += 1;
+    }
+    let mut levels: Vec<i32> = joined.iter().map(|bin| cell(*bin).iter().sum()).collect();
+    levels.sort_unstable();
+    levels.dedup();
+    levels.len() >= SHADE_LEAST_LEVELS
 }
 
 impl ImageSample {
     /// Whether it's an image with a white background, that turns over with the page. Uncertain is no.
     pub fn has_white_background(self) -> bool {
-        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR))
+        let flat = self.colour <= FLAT_MOST_COLOUR && self.clustered >= FLAT_LEAST_CLUSTERED && !self.shaded && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
+        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR) || flat)
     }
 
     /// The same, for a whole page with nothing known of its images. Stricter, and uncertain is still no.
@@ -324,11 +408,12 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
     if stride < row_bytes || stride == 0 {
         return;
     }
+    let lightness = &*TURNED_LIGHTNESS;
     if grey && keeps.is_empty() && whiten.is_empty() {
         let mut table = [[0u8; 3]; 256];
         for (value, entry) in table.iter_mut().enumerate() {
             let mut pixel = [value as u8, value as u8, value as u8, 0xFF];
-            turn_pixel(&mut pixel);
+            turn_pixel(&mut pixel, lightness);
             *entry = [pixel[0], pixel[1], pixel[2]];
         }
         for row in pixels.chunks_mut(stride).take(height as usize) {
@@ -343,6 +428,12 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
         }
         return;
     }
+    // The last colour turned and what it came to: a page's tile is mostly runs of one colour, its paper, so most pixels are a look and a copy.
+    let mut last: ([u8; 3], [u8; 3]) = ([0xFF; 3], {
+        let mut white = [0xFF, 0xFF, 0xFF, 0xFF];
+        turn_pixel(&mut white, lightness);
+        [white[0], white[1], white[2]]
+    });
     for (y, row) in pixels.chunks_mut(stride).take(height as usize).enumerate() {
         let Some(row) = row.get_mut(..row_bytes) else { continue };
         let here: Vec<Keep> = keeps.iter().filter(|keep| (keep.top as usize..keep.bottom as usize).contains(&y)).copied().collect();
@@ -355,7 +446,13 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
             if let Some((_, gains)) = to_whiten.iter().find(|(place, _)| (place.left as usize..place.right as usize).contains(&x)) {
                 whiten_pixel(pixel, *gains);
             }
-            turn_pixel(pixel);
+            let colour = [pixel[0], pixel[1], pixel[2]];
+            if colour == last.0 {
+                pixel[..3].copy_from_slice(&last.1);
+            } else {
+                turn_pixel(pixel, lightness);
+                last = (colour, [pixel[0], pixel[1], pixel[2]]);
+            }
         }
     }
 }
@@ -424,6 +521,46 @@ mod tests {
             let edge = (step << 16) | (step << 8) | (step + (0xEE * (255 - step)) / 255).min(255);
             let now = luma(dark_rgb(edge));
             assert!(now + 2 >= last, "at {edge:06x}: {now}, after {last}");
+            last = now;
+        }
+    }
+
+    /// Failure: text on dark paper is thinner than the same text on white, as the owner found the EU competitiveness report's light sans (2026-11-07: "I think its a bit to skinny"). Turning lightness over in sRGB's encoding leaves a letter's anti-aliased edge giving off far less light above dark paper, in linear light, than it took from white paper, and the letter looks thinner, where macOS draws its own light text heavier. Over every grey an edge can be, what's turned over must give off at least 0.7 of the light the edge took from white: a straight turn gives 0.50.
+    #[test]
+    fn text_keeps_its_weight_on_dark_paper() {
+        let linear = |value: u32| {
+            let channel = f64::from(value) / 255.0;
+            if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+        };
+        let light = |rgb: u32| 0.2126 * linear((rgb >> 16) & 0xFF) + 0.7152 * linear((rgb >> 8) & 0xFF) + 0.0722 * linear(rgb & 0xFF);
+        let (paper, ink) = (light(DARK_PAPER), light(dark_rgb(0)));
+        let (mut taken, mut given) = (0.0, 0.0);
+        for grey in 0..=255u32 {
+            taken += 1.0 - linear(grey);
+            given += (light(dark_rgb(grey * 0x01_01_01)) - paper) / (ink - paper);
+        }
+        assert!(given / taken >= 0.7, "turned-over edges give off {:.2} of what they took from white", given / taken);
+    }
+
+    /// Failure: a chart's colours fade on dark paper, as figure 8's deep blue bars went pale lavender once lightness was curved for text (owner, 2026-11-08: the curve is for text and lines; coloured areas keep the gentler one). A colour turns over as it did before the curve, a grey takes the curve, and between them the curve fades in, so an anti-aliased edge has no step.
+    #[test]
+    fn colours_keep_the_straight_turn_and_greys_take_the_curve() {
+        let straight = |rgb: u32| {
+            let (r, g, b) = (((rgb >> 16) & 0xFF) as i32, ((rgb >> 8) & 0xFF) as i32, (rgb & 0xFF) as i32);
+            let luma = (77 * r + 150 * g + 29 * b) >> 8;
+            let [pr, pg, pb] = paper_channels();
+            let over = |paper: i32, ink: i32, value: i32| (((paper * luma + ink * (255 - luma)) / 255) + value - luma).clamp(0, 255) as u32;
+            (over(pr, DARK_INK[0], r) << 16) | (over(pg, DARK_INK[1], g) << 8) | over(pb, DARK_INK[2], b)
+        };
+        for colour in [0x15_20_F0, 0x4A_8A_C6, 0xC0_30_30, 0x20_80_30] {
+            assert_eq!(dark_rgb(colour), straight(colour), "{colour:06x} keeps its colour");
+        }
+        assert!(luma(dark_rgb(0x80_80_80)) > luma(straight(0x80_80_80)) + 20, "a grey takes the curve");
+        let mut last = dark_rgb(0x80_80_80);
+        for step in 1..=64u32 {
+            let edge = (0x80 << 16) | (0x80 << 8) | (0x80 + step * 2).min(255);
+            let now = dark_rgb(edge);
+            assert!(luma(now).abs_diff(luma(last)) <= 6, "a step at {edge:06x}: {:06x} after {:06x}", now, last);
             last = now;
         }
     }
@@ -497,6 +634,55 @@ mod tests {
         assert_eq!(PageLook::decide(Some(&[]), &page, 400, 100, 100), PageLook::text());
         let tiny = PageLook::decide(Some(&[[0, 0, 300, 300]]), &page, 400, 100, 100);
         assert_eq!(tiny.keep.len(), 1, "too small to say, so it's left alone: {tiny:?}");
+    }
+
+    /// Failure: a bar chart on white stays a light box on dark paper because its bars are a quarter of it, as the owner saw in the EU competitiveness report's figure 8 (2026-11-07: "images with a white background should be dark"), or one on beige does. Failure the other way: a photo beside as much white, or a map on shaded tan, goes negative. Flat fills turn over, shading stays.
+    #[test]
+    fn a_chart_turns_over_and_a_photo_with_as_much_white_does_not() {
+        let whole = Some(&[[0u16, 0, 65_535, 65_535]][..]);
+        let bars = |paper: [u8; 3], tall: u32| {
+            picture(100, 100, move |x, y| match x {
+                10..25 if y >= 95 - tall => [21, 32, 240],
+                35..50 if y >= 95 - tall / 2 => [74, 138, 198],
+                60..75 if y >= 95 - tall => [21, 32, 240],
+                _ if y == 96 => [80, 80, 80],
+                _ => paper,
+            })
+        };
+        let chart = bars([255, 255, 255], 60);
+        let found = sample_pixels(&chart, 400, 0, 0, 100, 100);
+        assert!(found.colour > WHITE_MOST_COLOUR, "more colour than the first kind allows, as figure 8 has: {found:?}");
+        let look = PageLook::decide(whole, &chart, 400, 100, 100);
+        assert!(!look.dim && look.whiten.len() == 1, "a chart on white: {look:?}");
+        let look = PageLook::decide(whole, &bars([234, 232, 227], 45), 400, 100, 100);
+        assert!(!look.dim && look.whiten.len() == 1, "a chart on beige: {look:?}");
+        let photo = picture(100, 100, |x, y| if x < 50 { [255, 255, 255] } else { [((x - 50) * 4) as u8 + 40, (y * 2) as u8 + 20, 90] });
+        let found = sample_pixels(&photo, 400, 0, 0, 100, 100);
+        assert!(found.white >= WHITE_LEAST && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, and no more colour: {found:?}");
+        assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo beside white");
+        let tan_map = picture(100, 100, |x, y| if (x + y) % 9 == 0 { [40, 90, 200] } else { [200 + ((x * 7 + y * 3) % 50) as u8, 190 + ((x * 3 + y * 5) % 40) as u8, 160] });
+        assert!(PageLook::decide(whole, &tan_map, 400, 100, 100).dim, "a map on shaded tan");
+    }
+
+    /// Failure: a one-colour object photographed or rendered on white, shaded from light to dark, turns negative on dark paper because its colour falls in a few neighbouring bins, as a chart's flat fills do (review of e3fc6e0). Shading runs through several lightnesses of one colour with none much fuller than the rest; a flat fill has one bin that holds most of it.
+    #[test]
+    fn a_shaded_object_on_white_stays_true() {
+        let whole = Some(&[[0u16, 0, 65_535, 65_535]][..]);
+        for colour in [[200u32, 30, 30], [30, 60, 200], [40, 160, 60]] {
+            // A ball lit from the top left, shaded to a quarter, with a little noise.
+            let ball = picture(140, 140, |x, y| {
+                let (dx, dy) = (x as f32 - 70.0, y as f32 - 70.0);
+                if dx * dx + dy * dy >= 50.0 * 50.0 {
+                    return [255, 255, 255];
+                }
+                let light = (1.0 - ((x as f32 - 55.0).powi(2) + (y as f32 - 55.0).powi(2)).sqrt() / 75.0).clamp(0.25, 1.0);
+                let noise = ((x * 7 + y * 13) % 9) as f32 - 4.0;
+                colour.map(|channel| (channel as f32 * light + noise).clamp(0.0, 255.0) as u8)
+            });
+            let found = sample_pixels(&ball, 560, 0, 0, 140, 140);
+            assert!(found.white >= WHITE_LEAST && found.colour > WHITE_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, with more colour than the first kind allows: {found:?}");
+            assert!(PageLook::decide(whole, &ball, 560, 140, 140).dim, "{colour:?}: {found:?}");
+        }
     }
 
     /// Failure: a scan's off-white paper lands on a muddy tone beside a true text page, or its noise speckles, and a tile crossing the image's edge shows a seam. Whitened first, its paper is the paper's colour exactly, with the same result as white paper turned over, and its ink stays light.
@@ -592,6 +778,23 @@ mod tests {
             println!("{name}: p50 {} us, p95 {} us", samples[100], samples[190]);
         };
         time("turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[]));
+        // A colour tile as a page has them: white, grey text, and a fifth of it a chart's flat colour. Turned from a fresh copy each time, as a tile is turned once.
+        let page_like: Vec<u8> = (0..512 * 512)
+            .flat_map(|at: usize| {
+                let (x, y) = (at % 512, at / 512);
+                if x > 300 && y > 300 { [240u8, 32, 21, 255] } else if (x / 3 + y / 7) % 5 == 0 { let v = ((x * 37 + y * 11) % 256) as u8; [v, v, v, 255] } else { [255, 255, 255, 255] }
+            })
+            .collect();
+        let mut samples: Vec<u128> = (0..200)
+            .map(|_| {
+                let mut pixels = page_like.clone();
+                let started = std::time::Instant::now();
+                turn_over(&mut pixels, 512, 512, 2048, false, &[], &[]);
+                started.elapsed().as_micros()
+            })
+            .collect();
+        samples.sort_unstable();
+        println!("turn over a page-like colour tile: p50 {} us, p95 {} us", samples[100], samples[190]);
         time("whiten and turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[(Keep { left: 0, top: 0, right: 512, bottom: 512 }, [270, 280, 300])]));
         let page = tile(31);
         time("judge a page picture", &|_| {

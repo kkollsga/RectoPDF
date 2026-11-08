@@ -43,6 +43,7 @@
 //! gave. And pairs of hidden letters drawn apart must not assemble into a word in a sentence, unflagged, so it's judged in reading order too. On a line a move has touched, every character with no
 //! ink counts, however short its run: what's on that line is no longer what the file drew there, and letters alternating with visible ones could spell anything.
 
+pub mod chrome;
 pub mod corpus;
 pub mod order;
 pub mod rank;
