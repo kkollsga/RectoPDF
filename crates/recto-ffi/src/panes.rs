@@ -147,12 +147,13 @@ impl Panes {
     /// **A pane's view moved,** on the UI thread: a short lock on that pane, and for the reader's own scroll in a comparison, a short lock on each other pane to send it along. Says whether the pane being read changed, for the session to be told.
     pub(crate) fn viewport(&self, primary: &Engine, pane: usize, by_reader: bool, viewport: Viewport) -> (Vec<recto_reader::Op>, Option<TabId>) {
         let Some(engine) = self.engine(primary, pane) else { return (Vec::new(), None) };
-        let (ops, scrolled) = engine.set_viewport_scrolled(viewport);
+        let outcome = engine.set_viewport_scrolled(viewport);
+        let (ops, scrolled) = (outcome.ops, outcome.scrolled);
         if self.count() < 2 {
             return (ops, None);
         }
         // Zoom: one for all, once a gesture has settled and this pane's taken it.
-        if !viewport.live && engine.magnification().is_some_and(|now| now == viewport.magnification) {
+        if !viewport.live && outcome.magnification.is_some_and(|now| now == viewport.magnification) {
             let mut plan = lock(&self.plan);
             if plan.magnification.is_some_and(|shared| (shared - viewport.magnification).abs() > 1e-9) {
                 plan.magnification = Some(viewport.magnification);
@@ -169,7 +170,9 @@ impl Panes {
             return (ops, None);
         }
         let focused = (self.reading.swap(pane, Ordering::SeqCst) != pane).then(|| self.tab_of(pane)).flatten();
-        self.follow(primary, pane, &engine);
+        if let Some(anchor) = outcome.anchor {
+            self.follow(primary, pane, anchor);
+        }
         (ops, focused)
     }
 
@@ -182,8 +185,7 @@ impl Panes {
     }
 
     /// Synced scroll: each other pane to the page the rule says, at the same depth in its page, or at its own end when it's run out.
-    fn follow(&self, primary: &Engine, pane: usize, engine: &Engine) {
-        let Some((page, within)) = engine.reading_anchor() else { return };
+    fn follow(&self, primary: &Engine, pane: usize, (page, within): (u32, f64)) {
         let shown = lock(&self.shown).clone();
         let Some(leader) = shown.get(pane).copied() else { return };
         let plan = lock(&self.plan);
@@ -203,7 +205,7 @@ impl Panes {
         drop(plan);
         for (tab, target, depth) in wanted {
             if let Some(other) = shown.iter().position(|shown| *shown == tab).and_then(|at| self.engine(primary, at)) {
-                other.follow(target, depth);
+                other.follow_soon(target, depth);
             }
         }
     }

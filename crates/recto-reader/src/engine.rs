@@ -75,6 +75,8 @@ struct Shared {
     config: EngineConfig,
     /// This page view's done with, as a comparison's pane is when it closes: its thread ends, and its workers and everything it drew go with it.
     stopping: AtomicBool,
+    /// Where synced scroll wants this view, when the UI thread found the page view busy: the latest only, taken by this view's own thread the next time it holds its lock. See [`Engine::follow_soon`].
+    pending_follow: Mutex<Option<(u32, f64)>>,
 }
 
 /// The page view's running half.
@@ -90,7 +92,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending_follow: Mutex::new(None) });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -162,6 +164,28 @@ impl Engine {
     /// Where the reader is in the tab showing, as a page and how far down it.
     pub fn reading_anchor(&self) -> Option<(u32, f64)> {
         lock(&self.shared.reader).reading_anchor()
+    }
+
+    /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
+    pub fn follow_soon(&self, page: u32, within: f64) -> bool {
+        match self.shared.reader.try_lock() {
+            Ok(mut reader) => {
+                reader.follow(page, within);
+                self.after(reader);
+                true
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                let mut reader = poisoned.into_inner();
+                reader.follow(page, within);
+                self.after(reader);
+                true
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                *lock(&self.shared.pending_follow) = Some((page, within));
+                self.wake();
+                false
+            }
+        }
     }
 
     /// Sends the view to a place in a page, for synced scroll. Says which page, held to the document.
@@ -296,16 +320,17 @@ impl Engine {
 
     /// From the UI thread, on every scroll. A short lock and a few map lookups. What comes back is for the host to apply now.
     pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op> {
-        self.set_viewport_scrolled(viewport).0
+        self.set_viewport_scrolled(viewport).ops
     }
 
-    /// The same, and whether it was the reader scrolling, which synced scroll follows.
-    pub fn set_viewport_scrolled(&self, viewport: Viewport) -> (Vec<Op>, bool) {
+    /// The same, and what synced scroll and zoom need of it, from the one lock: whether it was the reader scrolling, the magnification the view's taken, and where the reader is.
+    pub fn set_viewport_scrolled(&self, viewport: Viewport) -> ViewportOutcome {
         // What this returns is what was waiting, so nothing's waiting to be told about.
         self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.set_viewport(viewport);
         let scrolled = reader.take_user_scrolled();
+        let (magnification, anchor) = (reader.magnification(), reader.reading_anchor());
         let moved = reader.has_moved_page();
         let more = reader.has_ops();
         let note = reader.note().map(str::to_string);
@@ -318,7 +343,7 @@ impl Engine {
             signal_ops(&self.shared);
         }
         self.wake();
-        (ops, scrolled)
+        ViewportOutcome { ops, scrolled, magnification, anchor }
     }
 
     /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
@@ -504,6 +529,22 @@ impl Engine {
     }
 }
 
+/// What a viewport did, for a comparison's other panes.
+pub struct ViewportOutcome {
+    pub ops: Vec<Op>,
+    /// It was the reader's own scroll.
+    pub scrolled: bool,
+    pub magnification: Option<f64>,
+    pub anchor: Option<(u32, f64)>,
+}
+
+/// Takes synced scroll's place, if the UI thread left one, with the lock held. Says whether there was one.
+fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
+    let Some((page, within)) = lock(&shared.pending_follow).take() else { return false };
+    reader.follow(page, within);
+    true
+}
+
 fn note_change(shared: &Shared, note: Option<String>) {
     let mut last = lock(&shared.last_note);
     if *last != note {
@@ -597,6 +638,9 @@ fn run(shared: &Shared) {
                 renderers.remove(&file);
                 openings.remove(&file);
             }
+            if take_pending_follow(shared, &mut reader) && reader.has_ops() {
+                signal_ops(shared);
+            }
             reader.next_plan()
         };
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
@@ -679,6 +723,7 @@ fn run(shared: &Shared) {
         // What a text job read isn't about what's selected now, if that's gone with the file.
         let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) { Outcome::Cancelled } else { outcome };
         reader.finish(job, outcome);
+        take_pending_follow(shared, &mut reader);
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
@@ -898,6 +943,37 @@ fn whole_file(failure: RenderFailure) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Quiet;
+    impl EngineEvents for Quiet {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Failure: synced scroll makes the UI thread wait for another pane's page view while that pane's own thread holds it, which is how a scroll step reached 4 to 9 ms. With the page view busy, the place is left for its own thread, the latest only, and it gets there as soon as that thread lets go.
+    #[test]
+    fn synced_scroll_never_waits_for_a_busy_pane() {
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(1, 100, 0, PageMap { files: vec![PathBuf::from("/nowhere/a.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
+        engine.set_viewport(crate::tiles::Viewport { x: 0.0, y: 0.0, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: 0 });
+        assert!(engine.follow_soon(10, 0.5), "free: it goes now");
+        assert_eq!(engine.reading_anchor(), Some((10, 0.5)));
+        let held = engine.shared.reader.lock().unwrap();
+        let started = Instant::now();
+        assert!(!engine.follow_soon(20, 0.25), "busy: left for later");
+        assert!(!engine.follow_soon(30, 0.75), "and the latest is what's kept");
+        assert!(started.elapsed() < Duration::from_millis(50), "it didn't wait: {:?}", started.elapsed());
+        drop(held);
+        let began = Instant::now();
+        while engine.reading_anchor() != Some((30, 0.75)) {
+            assert!(began.elapsed() < Duration::from_secs(5), "its own thread takes it: {:?}", engine.reading_anchor());
+            engine.wake();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        engine.shut_down();
+    }
 
     /// Failure: a blank tile of a lower-resolution page keeps its surface, but only its colour number is dimmed, so a tile at full white sits beside dimmed ones. Its pixels are what's shown, so they're what's changed.
     #[test]
