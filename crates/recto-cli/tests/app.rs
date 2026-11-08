@@ -1810,15 +1810,56 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     let (tabs, _) = run.state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 1, "closed over its undone steps, as it said: {tabs}");
 
-    // The prompt's Save writes the tab it asked about, then closes it.
+    // The prompt's Save writes the tab it asked about, then closes it, and a watcher hears it was saved before it hears it closed.
     run.ok(&["open", second.0.to_str().unwrap()]);
     let before = std::fs::read(&second.0).unwrap();
     run.ok(&["page", "rotate", "1", "--by", "90"]);
     wait_for(&run, |state| state["app"]["document_edited"] == true);
+    let watching = run.state.command().args(["watch", "--events", "tabs,edits", "--timeout", "60s", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    // It reports only what happens after it starts, so it's let start first.
+    std::thread::sleep(std::time::Duration::from_millis(300));
     run.ok(&["qa", "menu", "file.close"]);
     wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
     run.ok(&["qa", "sheet-answer", "first"]);
     wait_for(&run, |state| state["app"]["home"] == true);
     assert!(std::fs::read(&second.0).unwrap().len() > before.len(), "saved before it closed");
+    run.ok(&["watch", "stop"]);
+    let heard = String::from_utf8(watching.wait_with_output().unwrap().stdout).unwrap();
+    let events: Vec<String> = heard.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).filter_map(|line| line["data"]["event"].as_str().map(str::to_string)).collect();
+    let at = |name: &str| events.iter().position(|event| event == name).unwrap_or_else(|| panic!("no {name} in {events:?}"));
+    assert!(at("saved") < at("tab_closed"), "saved, then closed: {events:?}");
     let _ = std::fs::remove_file(copy);
+}
+
+/// Failure (the owner's bench file, 2026-11-08): a save changes the view. After turning page 1 and saving, the zoom shown went from 128% to 97% and every page shrank, as the saved file's page 1 is landscape and the reopened layout fitted that. The owner's standard is "perfect" state recovery: the zoom, the place down and across, the layout and the selection are exactly as they were, as `qa state` reports them, with the save written.
+#[test]
+fn a_save_leaves_the_view_as_it_was() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    let original = std::fs::read(&file.0).unwrap();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--zoom", "128%"]);
+    run.settled();
+    run.ok(&["qa", "scroll", "120"]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", &format!("{}:2", place_on(&run, 1, 0, 0.3))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let view = |state: &Value| {
+        let reader = &state["reader"];
+        json!({ "zoom_level": state["app"]["zoom_level"]["text"], "fit": reader["fit"], "magnification": reader["magnification"], "page": reader["page"], "scroll_y": reader["scroll_y"], "scroll_x": reader["scroll_x"], "document_height": reader["document_height"], "layout": state["app"]["layout"], "selected": reader["selection"]["selected"], "start": reader["selection"]["start"], "end": reader["selection"]["end"] })
+    };
+    let before = view(&run.report());
+    assert_eq!((&before["zoom_level"], &before["selected"]), (&json!("128%"), &json!(true)), "{before}");
+    assert!(before["scroll_y"].as_f64().unwrap() > 0.0, "down the page: {before}");
+    run.ok(&["save"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let after = view(&run.report());
+    assert_eq!(after, before, "the view after the save");
+    let saved = std::fs::read(&file.0).unwrap();
+    assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }

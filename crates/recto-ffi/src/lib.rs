@@ -2810,8 +2810,10 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let tab = session.tab(id)?;
     let own = session.path_of(id)?;
     let same_file = session.own_stamp(id).map(sleeper::version_of);
+    // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
+    let follows = session.saved_from(id).map(sleeper::version_of);
     let map = match session.page_edits(id) {
-        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None },
+        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, follows },
         Some(edits) => {
             let mut files = vec![own];
             files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
@@ -2820,7 +2822,7 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
             let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
             let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
-            PageMap { files, slots, own: same_file, turns }
+            PageMap { files, slots, own: same_file, turns, follows }
         }
     };
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.

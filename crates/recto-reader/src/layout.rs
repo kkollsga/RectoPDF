@@ -188,6 +188,13 @@ impl PageLayout {
         true
     }
 
+    /// **The same layout, over a file that now has these pages as they're shown here,** as a save writes them: each page turned as the edit had it, so its size as the file has it is its size as shown. Nothing moves, the fit included, as the size the fit follows is the same. What was taken as a turned page's size counts as known, so a later turn keeps its shape; a real size that differs still wins when it comes.
+    pub fn as_saved(&self) -> Self {
+        let mut known = self.known.clone();
+        known.extend(self.overrides.iter().map(|o| o.page));
+        Self { count: self.count, usual: self.usual, usual_known: self.usual_known, overrides: self.overrides.clone(), known, fit: self.fit, frame_width: self.frame_width, spread: self.spread, turns: None, base_odd: false, turned_other_way: 0, cap: self.cap, margins: self.margins }
+    }
+
     /// Builds the overrides again: each known page of another size, and each page turned the other way from most, from their sizes as the file has them.
     fn retune(&mut self, known: Option<Vec<(u32, PageBox)>>) {
         let known = known.unwrap_or_else(|| self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect());
