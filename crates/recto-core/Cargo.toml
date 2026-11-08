@@ -12,7 +12,8 @@ workspace = true
 [dependencies]
 flate2.workspace = true
 lopdf.workspace = true
+recto-platform.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-recto-platform.workspace = true
 recto-testpdf.workspace = true

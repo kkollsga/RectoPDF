@@ -1,0 +1,15 @@
+# Saving goes through the lopdf fork's `append_atomically` and `rewrite_atomically` only (AGENTS.md rule 5, SPEC section 6). These take any
+# `Write`, so a file truncated by `File::create` before they run is lost: nothing in RectoPDF may call them. Tests that need a PDF
+# write bytes of their own, through `recto-testpdf`.
+disallowed-methods = [
+    { path = "lopdf::Writer::write_object", reason = "Saving goes through recto_core::save, on the fork's atomic writers only." },
+    { path = "lopdf::Document::save", reason = "An eager save rewrites the whole file in memory: recto_core::save only." },
+    { path = "lopdf::Document::save_to", reason = "An eager save rewrites the whole file in memory: recto_core::save only." },
+    { path = "lopdf::Document::save_with_options", reason = "An eager save rewrites the whole file in memory: recto_core::save only." },
+    { path = "lopdf::Document::save_modern", reason = "An eager save rewrites the whole file in memory: recto_core::save only." },
+    { path = "lopdf::IncrementalDocument::save", reason = "Appending goes through append_atomically: recto_core::save only." },
+    { path = "lopdf::IncrementalDocument::save_to", reason = "Appending goes through append_atomically: recto_core::save only." },
+    { path = "lopdf::IndexedReader::copy_revision_to", reason = "Never over an original: a revision copy takes any Write." },
+    # Nothing reports when a kept page still uses a removed object, so a save removes pages, never objects (the streaming rewrite's review).
+    { path = "lopdf::RewriteChanges::remove_object", reason = "Remove pages with remove_page: nothing reports a kept page using a removed object." },
+]
