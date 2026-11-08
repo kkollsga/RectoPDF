@@ -450,6 +450,13 @@ const KNOWN_PATHS: &[&str] = &[
     "app.settings.title",
     "app.settings.x",
     "app.settings.y",
+    // The Save icon goes by the tab's edits, which are carried, so it comes back as it was.
+    "app.save_button.clear_of_window_buttons",
+    "app.save_button.enabled",
+    "app.save_button.frame.len",
+    "app.save_button.frame[]",
+    "app.save_button.tooltip",
+    "app.save_button.visible",
     "app.sidebar_button.clear_of_window_buttons",
     "app.sidebar_button.frame.len",
     "app.sidebar_button.frame[]",
