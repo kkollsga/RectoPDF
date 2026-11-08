@@ -68,7 +68,7 @@ fn started(file: &TempPdf, count: u32) -> (Engine, Arc<Events>) {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events.clone());
     engine.set_viewport(view(0.0));
-    engine.activate(1, count, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(1, count, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new() }, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     (engine, events)
 }
@@ -271,12 +271,12 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None, expected: Vec::new() }, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     // Its open is under way and stuck. A healthy tab comes up.
     std::thread::sleep(Duration::from_millis(100));
     let file = document(1);
-    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None }, &[1], None, recto_reader::layout::Spread::Single);
+    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new() }, &[1], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     let began = Instant::now();
     pump(&engine, Duration::from_secs(10));
@@ -284,7 +284,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
     // And back on it, it says so rather than waiting for ever.
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None }, &[2], None, recto_reader::layout::Spread::Single);
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None, expected: Vec::new() }, &[2], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     let deadline = Instant::now() + Duration::from_secs(8);
     while engine.note().is_none() && Instant::now() < deadline {
@@ -349,7 +349,7 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     let policy = recto_render_service::Policy { retire_bytes: 1, ..recto_render_service::Policy::default() };
     let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, events);
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new() }, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));
@@ -585,4 +585,37 @@ fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
     }
     assert!(engine.take_copied().is_none(), "none of it is about this file");
     assert!(engine.selection_notice().is_some_and(|notice| notice.text.contains("changed")), "{:?}", engine.selection_notice());
+}
+
+/// Failure (the saved point's review): a page added from another PDF is drawn by path, so once that PDF is rewritten, by another app or a save of its own, the page shows whatever is at its page number now. Drawing checks the file is still what it was when its pages were added, and says why it isn't drawn when it's not, while the tab's own pages draw.
+#[test]
+fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
+    let own = document(1);
+    let added = TempPdf::new("added.pdf", &pages(&[Page::new(text_lines(&["Added page as it was"]))]));
+    let was = recto_platform::file_stamp(&added.0).unwrap();
+    // Rewritten since, longer, in place.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&added.0, pages(&[Page::new(text_lines(&["Something else entirely, at the same page number"]))])).unwrap();
+    let events = Arc::new(Events::default());
+    let engine = Engine::new(EngineConfig::default(), events);
+    engine.set_viewport(view(0.0));
+    let map = PageMap { files: vec![own.0.clone(), added.0.clone()], slots: Some(vec![(1, 0), (0, 0)]), own: None, turns: None, expected: vec![None, Some(was)] };
+    engine.activate(1, 2, 0, map, &[], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(0.0));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while engine.note().is_none() && Instant::now() < deadline {
+        pump(&engine, Duration::from_millis(200));
+    }
+    assert!(engine.note().is_some_and(|note| note.contains("changed or moved since it was added")), "{:?}", engine.note());
+    // With the file as it was, it draws.
+    let fresh = TempPdf::new("added2.pdf", &pages(&[Page::new(text_lines(&["Added page as it was"]))]));
+    let stamp = recto_platform::file_stamp(&fresh.0).unwrap();
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.set_viewport(view(0.0));
+    engine.activate(1, 2, 0, PageMap { files: vec![own.0.clone(), fresh.0.clone()], slots: Some(vec![(1, 0), (0, 0)]), own: None, turns: None, expected: vec![None, Some(stamp)] }, &[], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(0.0));
+    pump(&engine, Duration::from_secs(10));
+    assert!(engine.wait_settled(Duration::from_secs(5)));
+    assert_eq!(engine.note(), None);
+    assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }

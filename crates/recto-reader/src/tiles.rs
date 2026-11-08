@@ -144,6 +144,8 @@ pub struct PageMap {
     pub own: Option<FileStamp>,
     /// Quarter turns clockwise an edit has added to each position, or none. They change how a page sits on the screen and nothing that's drawn of it.
     pub turns: Option<Arc<[u8]>>,
+    /// For each file of `files`, what it was when its pages were added, for the ones that aren't the tab's own: a page isn't drawn from an added PDF that's since changed, as its page numbers are about the version it was. Shorter than `files`, or `None`, says nothing.
+    pub expected: Vec<Option<FileStamp>>,
 }
 
 impl PageMap {
@@ -742,6 +744,11 @@ impl Reader {
     }
 
     /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
+    /// What an added file was when its pages were added, by any document held, if one says. Its own file goes by its version instead.
+    pub fn expected_stamp(&self, file: &std::path::Path) -> Option<FileStamp> {
+        self.docs.values().find_map(|doc| doc.map.files.iter().position(|known| known == file).filter(|at| *at > 0).and_then(|at| doc.map.expected.get(at).copied().flatten()))
+    }
+
     pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
         self.docs.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))
     }
@@ -2396,7 +2403,7 @@ mod tests {
     use crate::layout::PageBox;
 
     fn map() -> PageMap {
-        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None }
+        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }
     }
 
     impl Reader {
@@ -2638,11 +2645,11 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         assert!(!reader.entries.is_empty());
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None }, &[], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[], None, Spread::Single);
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None }, &[2], None, Spread::Single);
+        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[2], None, Spread::Single);
         assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
     }
 
@@ -2971,7 +2978,7 @@ mod tests {
     fn a_change_to_the_page_order_clears_what_was_drawn() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, expected: Vec::new() };
         reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
         assert!(reader.entries.is_empty());
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
@@ -3010,7 +3017,7 @@ mod tests {
     /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
     #[test]
     fn what_a_job_found_before_an_edit_is_thrown_away() {
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, expected: Vec::new() };
         // A job of each kind, caught running.
         let mut reader = reader_on(3);
         let size = reader.next_job().expect("a size");
@@ -3074,7 +3081,7 @@ mod tests {
             }
             seen
         }
-        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None };
+        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, expected: Vec::new() };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
             let mut held = Vec::new();
             let mut reader = reader_on(3);
@@ -3192,7 +3199,7 @@ mod tests {
         reader.set_viewport(view(inside));
         let page = reader.take_moved_page().expect("the reader moved");
         settle(&mut reader);
-        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None };
+        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() };
         reader.activate(2, 10, 0, other.clone(), &[1], None, Spread::Single);
         reader.take_ops();
         reader.activate(1, 100, page, map(), &[2], None, Spread::Single);
@@ -3212,7 +3219,7 @@ mod tests {
     fn a_warm_tab_that_goes_holds_nothing_at_once() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None }, &[1], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[1], None, Spread::Single);
         assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
         assert_eq!(reader.wanted_files().len(), 2);
         reader.set_warm(&[]);
