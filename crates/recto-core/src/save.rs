@@ -850,6 +850,132 @@ struct Copy {
     map: HashMap<u32, Option<()>>,
     /// The ones kept, in the order they were found.
     order: Vec<ObjectId>,
+    /// The form fields its pages' widgets belong to, which come along so they can be filled.
+    fields: FormFields,
+}
+
+/// **The form fields of added pages** (save review round 1: IRS forms added to IRS forms drew their fields, which then couldn't be filled, as qpdf says "widget
+/// annotation is not reachable from /AcroForm"). Each widget on an added page keeps its field and the field's parents, up to a top field, which joins the
+/// target's `/AcroForm /Fields`. A field's `/Kids` keep only what's on added pages, so a field's other pages don't come along. A top field whose name another
+/// already has is renamed, so their values stay apart. Signature fields aren't brought: a signature from another document would only be a broken one here.
+#[derive(Default)]
+struct FormFields {
+    /// For each field node brought, its kids that come too.
+    kids: HashMap<u32, Vec<Object>>,
+    /// Widgets and fields whose `/Parent` stays.
+    keep_parent: HashSet<u32>,
+    /// Top fields, in the order found.
+    tops: Vec<ObjectId>,
+    /// New names for top fields whose names were taken.
+    renamed: HashMap<u32, Vec<u8>>,
+    /// The source form's default resources' fonts, which fields' `/DA` names.
+    fonts: Option<Dictionary>,
+}
+
+impl FormFields {
+    /// What a source object becomes, as far as fields go: a field node's kids filtered and its name changed if it was taken.
+    fn adjusted(&self, id: u32, object: Object) -> Object {
+        let Object::Dictionary(mut dict) = object else { return object };
+        if let Some(kids) = self.kids.get(&id) {
+            dict.set("Kids", Object::Array(kids.clone()));
+        }
+        if let Some(name) = self.renamed.get(&id) {
+            dict.set("T", Object::String(name.clone(), lopdf::StringFormat::Literal));
+        }
+        Object::Dictionary(dict)
+    }
+}
+
+/// What a save adds to the target's form.
+#[derive(Default)]
+struct FormAdditions {
+    /// Top fields of added pages, at their new numbers.
+    fields: Vec<ObjectId>,
+    /// Fonts for the form's default resources, at their new numbers.
+    fonts: Dictionary,
+}
+
+/// Fields walked up from one widget, and nodes in all. Real forms have a few levels and hundreds of fields.
+const MAX_FIELD_DEPTH: usize = 64;
+const MAX_FIELD_NODES: usize = 100_000;
+
+/// The fields the widgets on these pages belong to. A widget that's a field of its own with no parent is a top field itself. Bounded, and what can't be read is passed over, leaving that widget as it was: drawn, and not fillable.
+fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], work: &mut u64) -> Result<FormFields, SaveError> {
+    let mut fields = FormFields::default();
+    let mut tops: HashSet<u32> = HashSet::new();
+    let mut nodes = 0usize;
+    let resolve = |value: &Object| -> Option<Object> {
+        match value {
+            Object::Reference(id) => source.resolve_object(*id).ok(),
+            other => Some(other.clone()),
+        }
+    };
+    let mut seen_pages = HashSet::new();
+    for page in wanted {
+        let Some(entry) = map.get(*page as usize) else { continue };
+        if !seen_pages.insert(entry.id().0) {
+            continue;
+        }
+        let Ok(Object::Dictionary(page_dict)) = source.resolve_object(entry.id()) else { continue };
+        let Some(Object::Array(annots)) = page_dict.get(b"Annots").ok().and_then(resolve) else { continue };
+        for annot in annots {
+            charge(work, 1)?;
+            let Object::Reference(widget) = annot else { continue };
+            let Ok(Object::Dictionary(dict)) = source.resolve_object(widget) else { continue };
+            if !matches!(dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Widget") {
+                continue;
+            }
+            // Up the chain: each node and its parent, and whether any says it's a signature field.
+            let mut chain: Vec<(ObjectId, Dictionary)> = vec![(widget, dict)];
+            while let Some(Object::Reference(parent)) = chain.last().and_then(|(_, node)| node.get(b"Parent").ok().cloned()) {
+                charge(work, 1)?;
+                if chain.len() > MAX_FIELD_DEPTH || chain.iter().any(|(id, _)| *id == parent) {
+                    break;
+                }
+                let Ok(Object::Dictionary(node)) = source.resolve_object(parent) else { break };
+                chain.push((parent, node));
+            }
+            let signature = chain.iter().any(|(_, node)| matches!(node.get(b"FT"), Ok(Object::Name(kind)) if kind == b"Sig"));
+            let (top, top_dict) = chain.last().map(|(id, node)| (*id, node)).expect("a chain has its widget");
+            let a_field = top_dict.has(b"T") || top_dict.has(b"FT") || chain.len() > 1;
+            if signature || !a_field || top_dict.has(b"Parent") {
+                // A signature, a widget of no field, or a chain that couldn't be read to its top: left as it was.
+                continue;
+            }
+            for pair in chain.windows(2) {
+                let (child, parent) = (pair[0].0, pair[1].0);
+                let kids = fields.kids.entry(parent.0).or_default();
+                if !kids.contains(&Object::Reference(child)) {
+                    nodes += 1;
+                    if nodes > MAX_FIELD_NODES {
+                        return Err(SaveError::TooLarge);
+                    }
+                    kids.push(Object::Reference(child));
+                }
+                fields.keep_parent.insert(child.0);
+            }
+            if tops.insert(top.0) {
+                fields.tops.push(top);
+            }
+        }
+    }
+    if !fields.tops.is_empty() {
+        let form = catalog(source).and_then(|root| root.get(b"AcroForm").ok().cloned()).and_then(|form| dict_value(source, &form));
+        fields.fonts = form.and_then(|form| form.get(b"DR").ok().cloned()).and_then(|dr| dict_value(source, &dr)).and_then(|dr| dr.get(b"Font").ok().cloned()).and_then(|fonts| dict_value(source, &fonts));
+    }
+    Ok(fields)
+}
+
+/// The names of a form's top fields, as written.
+fn top_field_names(reader: &IndexedReader) -> HashSet<Vec<u8>> {
+    let Some(form) = catalog(reader).and_then(|root| root.get(b"AcroForm").ok().cloned()).and_then(|form| dict_value(reader, &form)) else { return HashSet::new() };
+    let fields = match form.get(b"Fields") {
+        Ok(Object::Reference(id)) => reader.resolve_object(*id).ok(),
+        Ok(other) => Some(other.clone()),
+        Err(_) => None,
+    };
+    let Some(Object::Array(fields)) = fields else { return HashSet::new() };
+    fields.iter().take(MAX_FIELD_NODES).filter_map(|field| dict_value(reader, field)).filter_map(|field| field.get(b"T").ok().and_then(|name| name.as_str().ok()).map(<[u8]>::to_vec)).collect()
 }
 
 impl Plan {
@@ -888,6 +1014,24 @@ impl Plan {
             })?;
             total += copy.order.len();
             copies[at] = Some(copy);
+        }
+        // A top field named as one the document has, or one added before it, is renamed `name_2`, `name_3`…, so their values stay apart.
+        let mut taken = top_field_names(reader);
+        for (at, copy) in copies.iter_mut().enumerate() {
+            let (Some(copy), Some((source, _))) = (copy.as_mut(), sources.get(at).and_then(Option::as_ref)) else { continue };
+            for top in copy.fields.tops.clone() {
+                let Some(name) = dict_value(source, &Object::Reference(top)).and_then(|field| field.get(b"T").ok().and_then(|name| name.as_str().ok()).map(<[u8]>::to_vec)) else { continue };
+                let mut chosen = name.clone();
+                let mut n = 2u32;
+                while taken.contains(&chosen) && n < 100_000 {
+                    chosen = [name.as_slice(), format!("_{n}").as_bytes()].concat();
+                    n += 1;
+                }
+                if chosen != name {
+                    copy.fields.renamed.insert(top.0, chosen.clone());
+                }
+                taken.insert(chosen);
+            }
         }
         let sizes: u64 = reader.source_len() + sources.iter().flatten().map(|(source, _)| source.source_len()).sum::<u64>();
         // A rewrite's policy takes usage rights off, with whatever shows of them; an append takes them out of the new revision's catalog.
@@ -1011,7 +1155,7 @@ impl Plan {
                     writer.put_stream(new_id, dict, length, source, *id)?;
                 } else {
                     let object = source.resolve_object(*id).map_err(|_| SaveError::Damaged)?;
-                    let object = remap(&object, copy, numbers).unwrap_or(Object::Null);
+                    let object = remap_copied(id.0, object, copy, numbers).unwrap_or(Object::Null);
                     writer.put(new_id, object)?;
                 }
             }
@@ -1035,8 +1179,22 @@ impl Plan {
                 }
             }
         }
-        if self.drop_usage_rights || !layers.is_empty() {
-            update_catalog(reader, writer, self.drop_usage_rights, &layers)?;
+        // The added pages' top fields join the form, with the fonts their appearances name.
+        let mut form = FormAdditions::default();
+        for (at, copy) in self.copies.iter().enumerate() {
+            let Some(copy) = copy else { continue };
+            let numbers = &renumbered[at];
+            form.fields.extend(copy.fields.tops.iter().filter_map(|top| numbers.get(&top.0).copied()));
+            if let Some(Object::Dictionary(fonts)) = copy.fields.fonts.as_ref().and_then(|fonts| remap(&Object::Dictionary(fonts.clone()), copy, numbers)) {
+                for (name, font) in fonts.iter() {
+                    if !form.fonts.has(name) {
+                        form.fonts.set(name.clone(), font.clone());
+                    }
+                }
+            }
+        }
+        if self.drop_usage_rights || !layers.is_empty() || !form.fields.is_empty() {
+            update_catalog(reader, writer, self.drop_usage_rights, &layers, &form)?;
         }
         // A copy of the document as it is, for a Save As with nothing unsaved: an update has to hold something, and the catalog as it was changes nothing.
         within(&*writer)?;
@@ -1102,9 +1260,13 @@ fn left_behind(annotation: bool, key: &[u8]) -> bool {
 fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], missing: &mut u64, room: usize, work: &mut u64) -> Result<Copy, SaveError> {
     let wanted_ids: HashSet<u32> = wanted.iter().filter_map(|page| map.get(*page as usize)).map(|entry| entry.id().0).collect();
     let all_pages: HashSet<u32> = map.iter().map(|entry| entry.id().0).collect();
-    let mut copy = Copy::default();
+    let mut copy = Copy { fields: form_fields(source, map, wanted, work)?, ..Copy::default() };
     let mut queued: HashSet<u32> = HashSet::new();
     let mut stack: Vec<ObjectId> = Vec::new();
+    // The fonts the fields' default appearances name come along, for the form's own resources.
+    if let Some(fonts) = &copy.fields.fonts {
+        references_in(&Object::Dictionary(fonts.clone()), &mut stack, &mut queued, work)?;
+    }
     for page in wanted {
         let entry = map.get(*page as usize).ok_or(SaveError::Damaged)?;
         if copy.order.len() >= room {
@@ -1149,7 +1311,12 @@ fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], missin
         }
         copy.map.insert(id.0, Some(()));
         copy.order.push(id);
-        references_in(&object, &mut stack, &mut queued, work)?;
+        let object = copy.fields.adjusted(id.0, object);
+        if copy.fields.keep_parent.contains(&id.0) {
+            references_kept_parent(&object, &mut stack, &mut queued, work)?;
+        } else {
+            references_in(&object, &mut stack, &mut queued, work)?;
+        }
     }
     Ok(copy)
 }
@@ -1183,6 +1350,18 @@ fn references_in(object: &Object, out: &mut Vec<ObjectId>, queued: &mut HashSet<
     Ok(())
 }
 
+/// As [`references_in`], for a widget or field whose field comes along: its `/Parent` is followed.
+fn references_kept_parent(object: &Object, out: &mut Vec<ObjectId>, queued: &mut HashSet<u32>, work: &mut u64) -> Result<(), SaveError> {
+    let Object::Dictionary(dict) = object else { return references_in(object, out, queued, work) };
+    let annotation = is_annotation(dict);
+    for (key, value) in dict.iter() {
+        if key.as_slice() == b"Parent" || !left_behind(annotation, key) {
+            references_in(value, out, queued, work)?;
+        }
+    }
+    Ok(())
+}
+
 fn references_in_dict(dict: &Dictionary, out: &mut Vec<ObjectId>, queued: &mut HashSet<u32>, work: &mut u64) -> Result<(), SaveError> {
     let annotation = is_annotation(dict);
     for (key, value) in dict.iter() {
@@ -1206,11 +1385,24 @@ fn remap(object: &Object, copy: &Copy, numbers: &HashMap<u32, ObjectId>) -> Opti
     }
 }
 
+/// An object copied as itself, `id` in its source: as [`remap`], with its field's changes, and its `/Parent` kept if its field comes along.
+fn remap_copied(id: u32, object: Object, copy: &Copy, numbers: &HashMap<u32, ObjectId>) -> Option<Object> {
+    let object = copy.fields.adjusted(id, object);
+    match (&object, copy.fields.keep_parent.contains(&id)) {
+        (Object::Dictionary(dict), true) => Some(Object::Dictionary(remap_dict_keeping(dict, copy, numbers, true))),
+        _ => remap(&object, copy, numbers),
+    }
+}
+
 fn remap_dict(dict: &Dictionary, copy: &Copy, numbers: &HashMap<u32, ObjectId>) -> Dictionary {
+    remap_dict_keeping(dict, copy, numbers, false)
+}
+
+fn remap_dict_keeping(dict: &Dictionary, copy: &Copy, numbers: &HashMap<u32, ObjectId>, keep_parent: bool) -> Dictionary {
     let annotation = is_annotation(dict);
     let mut out = Dictionary::new();
     for (key, value) in dict.iter() {
-        if !left_behind(annotation, key)
+        if (!left_behind(annotation, key) || (keep_parent && key.as_slice() == b"Parent"))
             && let Some(value) = remap(value, copy, numbers)
         {
             out.set(key.clone(), value);
@@ -1370,9 +1562,39 @@ fn layer_states(reader: &IndexedReader) -> (Vec<u32>, HashSet<u32>) {
 }
 
 /// **A new version of the catalog,** for what a save changes there. Usage rights go: any page edit ends them, a reader that finds them broken says so, and they aren't a person's signature (owner, 2026-11-08). Layers of added pages join the file's own, with the ones their files hide hidden here too: otherwise a layer a file hides, which can be what it keeps out of sight, would show on its page in this one.
-fn update_catalog<'c>(reader: &IndexedReader, writer: &mut impl Sink<'c>, drop_rights: bool, layers: &[(ObjectId, bool)]) -> Result<(), SaveError> {
+fn update_catalog<'c>(reader: &IndexedReader, writer: &mut impl Sink<'c>, drop_rights: bool, layers: &[(ObjectId, bool)], form: &FormAdditions) -> Result<(), SaveError> {
     let root = catalog_id(reader).ok_or(SaveError::Damaged)?;
     let mut catalog = page_dict(reader, root)?;
+    if !form.fields.is_empty() {
+        // The form is a dictionary of its own or written in the catalog: a new version of whichever it is.
+        let own = catalog.get(b"AcroForm").ok().and_then(|form| form.as_reference().ok());
+        let mut acro = catalog.get(b"AcroForm").ok().cloned().and_then(|form| dict_value(reader, &form)).unwrap_or_default();
+        let mut fields = match acro.get(b"Fields") {
+            Ok(Object::Reference(id)) => match reader.resolve_object(*id) {
+                Ok(Object::Array(items)) => items,
+                _ => Vec::new(),
+            },
+            Ok(Object::Array(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        fields.extend(form.fields.iter().map(|id| Object::Reference(*id)));
+        acro.set("Fields", Object::Array(fields));
+        if form.fonts.iter().next().is_some() {
+            let mut resources = acro.get(b"DR").ok().cloned().and_then(|dr| dict_value(reader, &dr)).unwrap_or_default();
+            let mut fonts = resources.get(b"Font").ok().cloned().and_then(|fonts| dict_value(reader, &fonts)).unwrap_or_default();
+            for (name, font) in form.fonts.iter() {
+                if !fonts.has(name) {
+                    fonts.set(name.clone(), font.clone());
+                }
+            }
+            resources.set("Font", Object::Dictionary(fonts));
+            acro.set("DR", Object::Dictionary(resources));
+        }
+        match own {
+            Some(id) => writer.put(id, Object::Dictionary(acro))?,
+            None => catalog.set("AcroForm", Object::Dictionary(acro)),
+        }
+    }
     if drop_rights && let Some(mut perms) = catalog.get(b"Perms").ok().cloned().and_then(|perms| dict_value(reader, &perms)) {
         perms.remove(b"UR3");
         perms.remove(b"UR");

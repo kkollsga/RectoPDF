@@ -689,3 +689,92 @@ fn a_dangling_reference_in_an_added_page_is_null() {
     assert_eq!(outcome.objects_missing, 1);
     assert_eq!(read_pages(&path)[1].0, "ADDED");
 }
+
+/// A form like the IRS's: one top field holding a text field whose widgets are on both pages.
+fn irs_like(marker: &str, value: &str) -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [8 0 R] /DR << /Font << /HeBo 11 0 R >> >> /DA (/HeBo 9 Tf 0 g) >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Annots [9 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&[marker]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R /Annots [10 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SECONDPAGE"]) },
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+        Raw::Dict("<< /T (topmostSubform[0]) /Kids [12 0 R] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /P 3 0 R /Parent 12 0 R /F 4 >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /P 5 0 R /Parent 12 0 R /F 4 /OTHERPAGEWIDGET true >>".into()),
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>".into()),
+        Raw::Dict(format!("<< /T (f1_01[0]) /FT /Tx /V ({value}) /Parent 8 0 R /Kids [9 0 R 10 0 R] >>")),
+    ])
+}
+
+/// Failure (save review round 1, 9 of 139 corpus saves): pages added from a PDF with a form keep their drawn fields, which can't be filled in the saved file, as qpdf says "widget annotation is not reachable from /AcroForm". The widget keeps its field and the field's parent, the top field joins the form's `/Fields`, renamed as its name's taken, the field's widgets on pages not added stay behind, and the form's fonts come along.
+#[test]
+fn an_added_pages_form_fields_can_be_filled() {
+    let dir = Dir::new();
+    let path = dir.write("f1040.pdf", &irs_like("TARGETFORM", "mine"));
+    let other = dir.write("f1040s1.pdf", &irs_like("ADDEDFORM", "theirs"));
+    let added = [AddedFile { path: &other, page_count: 2, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!() };
+    let form = match catalog.get(b"AcroForm").unwrap() {
+        Object::Dictionary(form) => form.clone(),
+        Object::Reference(id) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
+        _ => panic!(),
+    };
+    let fields = form.get(b"Fields").unwrap().as_array().unwrap();
+    assert_eq!(fields.len(), 2, "the added page's top field joins the form");
+    let names: Vec<Vec<u8>> = fields.iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect();
+    assert_eq!(names, [b"topmostSubform[0]".to_vec(), b"topmostSubform[0]_2".to_vec()], "renamed, so the two forms' values stay apart");
+    // The added widget reaches its field, which reaches the new top field.
+    let page = reader.page_map().unwrap().get(2).unwrap().id();
+    let page = reader.resolve_object(page).unwrap();
+    let widget = page.as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap()[0].as_reference().unwrap();
+    let widget = reader.resolve_object(widget).unwrap();
+    let field = reader.resolve_object(widget.as_dict().unwrap().get(b"Parent").unwrap().as_reference().unwrap()).unwrap();
+    assert_eq!(field.as_dict().unwrap().get(b"V").unwrap().as_str().unwrap(), b"theirs");
+    assert_eq!(field.as_dict().unwrap().get(b"Kids").unwrap().as_array().unwrap().len(), 1, "its widget on the page that wasn't added stays behind");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes.windows(15).filter(|window| window == b"OTHERPAGEWIDGET").count(), 1, "the document's own, and not the added file's");
+    let fonts = match form.get(b"DR").unwrap() {
+        Object::Dictionary(dr) => dr.get(b"Font").unwrap().as_dict().unwrap().clone(),
+        _ => panic!(),
+    };
+    assert!(fonts.has(b"HeBo"));
+    // And qpdf, where it's installed, finds every widget reachable.
+    if let Ok(out) = std::process::Command::new("qpdf").arg("--check").arg(&path).output() {
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(!said.contains("not reachable from /AcroForm"), "{said}");
+    }
+}
+
+/// Failure (save review round 1, on the corpus): IRS forms added to IRS forms come out with widgets qpdf calls "not reachable from /AcroForm", so their fields can't be filled. Each IRS form in `RECTO_BENCH100`, with the next one's pages added, saved as a copy: qpdf finds every widget reachable, and the copy has every top field of both. Skipped without the corpus or qpdf.
+#[test]
+fn irs_forms_added_to_irs_forms_stay_fillable() {
+    let Some(folder) = std::env::var_os("RECTO_BENCH100") else { return };
+    if std::process::Command::new("qpdf").arg("--version").output().is_err() {
+        return;
+    }
+    let mut forms: Vec<PathBuf> = std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("forms_irs_"))).collect();
+    forms.sort();
+    assert!(forms.len() >= 2, "the corpus has its IRS forms");
+    let dir = Dir::new();
+    for pair in forms.windows(2) {
+        let (target, other) = (&pair[0], &pair[1]);
+        let pages_of = |path: &Path| IndexedReader::open(FileSource::open(path).unwrap()).unwrap().page_map().unwrap().len() as u32;
+        let (mine, theirs) = (pages_of(target), pages_of(other));
+        let added = [AddedFile { path: other, page_count: theirs, stamp: Some(stamp(other)) }];
+        let mut order: Vec<PageRef> = (0..mine).map(|page| PageRef { source: 0, page, quarter_turns: 0 }).collect();
+        order.extend((0..theirs).map(|page| PageRef { source: 1, page, quarter_turns: 0 }));
+        let copy = dir.0.join(format!("{}-plus.pdf", target.file_stem().unwrap().to_string_lossy()));
+        let outcome = save::save(&request(target, mine, &order, &added), Target::NewFile(&copy), None, &mut save::NoHooks);
+        let outcome = outcome.unwrap_or_else(|error| panic!("{}: {error:?}", target.display()));
+        assert_eq!(outcome.pages, mine + theirs);
+        let out = std::process::Command::new("qpdf").arg("--check").arg(&copy).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(!said.contains("not reachable from /AcroForm"), "{} + {}: {said}", target.display(), other.display());
+        eprintln!("{} + {}: qpdf exit {:?}", target.file_name().unwrap().to_string_lossy(), other.file_name().unwrap().to_string_lossy(), out.status.code());
+    }
+}
