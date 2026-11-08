@@ -300,7 +300,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "page_type" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             // A test's password, for a test's own file: the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so this can't type into a sheet for one of the person's own (review O6).
             "password" => {
                 check_drive_value(verb, value)?;
@@ -319,7 +319,7 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "mouse_up" | "notice_button" | "zoom_escape" => {}
+            "mouse_up" | "notice_button" | "zoom_escape" | "page_escape" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -535,7 +535,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
-        "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save"]),
+        "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),
         "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
@@ -543,6 +543,8 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "zoom_type" => value.chars().count() <= 32,
         // A test's password, typed as a person would: the app takes it once and keeps it only for the open tab.
         "password" => !value.is_empty() && value.len() <= recto_core::MAX_PASSWORD_BYTES,
+        "page_type" => value.len() <= crate::linking::MAX_TYPED_PAGE,
+        "swipe" => value.parse::<f64>().is_ok_and(|delta| delta.is_finite() && delta.abs() <= 100.0),
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
         "contents_scroll" | "compare_click" => row(),

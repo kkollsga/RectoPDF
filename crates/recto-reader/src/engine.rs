@@ -418,6 +418,47 @@ impl Engine {
         self.after(reader);
     }
 
+    /// A jump to a place in a page, as a link or Back goes: the page's top, margin above the first page included, or that far down it.
+    pub fn jump_within(&self, page: u32, within: f64) {
+        let mut reader = lock(&self.shared.reader);
+        if within.is_finite() && within > 0.0 {
+            lock(&self.shared.pending).follow = None;
+            reader.follow(page, within);
+        } else {
+            reader.jump_to(page);
+        }
+        self.after(reader);
+    }
+
+    /// The link under the pointer, if its page's links are here. A page not read yet is read next. A short lock, on the UI thread.
+    pub fn pointer_link(&self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
+        let mut reader = lock(&self.shared.reader);
+        let hit = reader.pointer_link(x, y);
+        drop(reader);
+        self.wake();
+        hit
+    }
+
+    /// The link the last click landed on, taken once.
+    pub fn take_clicked_link(&self) -> Option<crate::links::LinkHit> {
+        lock(&self.shared.reader).take_clicked_link()
+    }
+
+    /// Where a link's page is now: see [`Reader::position_in_same_file`].
+    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
+        lock(&self.shared.reader).position_in_same_file(from, file_page)
+    }
+
+    /// Which page of the tab's own file a page of the view is, if it's one.
+    pub fn own_file_page(&self, position: u32) -> Option<u32> {
+        lock(&self.shared.reader).own_file_page(position)
+    }
+
+    /// Pages whose links are held, for QA.
+    pub fn link_pages_held(&self) -> usize {
+        lock(&self.shared.reader).link_pages_held()
+    }
+
     pub fn set_paper(&self, paper: PaperKind) {
         let mut reader = lock(&self.shared.reader);
         reader.set_paper(paper);
@@ -804,6 +845,20 @@ fn run(shared: &Shared) {
         };
         resting_since = None;
         lock(&shared.reader).note_started(&job, None);
+        if matches!(job.kind, JobKind::Links) {
+            // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
+            // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+            let links = renderers.get(&job.file).filter(|open| !open.replaced && !open.doc.file_seen_changed()).and_then(|open| open.doc.read_structure(|file, password| recto_core::nav::page_links_in(file, password, &[job.source_page]).ok().and_then(|read| read.into_iter().next()).map(|(_, links)| Arc::new(links))));
+            let mut reader = lock(&shared.reader);
+            let outcome = match links {
+                Some(found) => Outcome::Links(found),
+                None => Outcome::Cancelled,
+            };
+            reader.finish(job, outcome);
+            drop(reader);
+            shared.settled.notify_all();
+            continue;
+        }
         let mut file_changed = false;
         let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
             Ok(open) => {
@@ -1024,6 +1079,8 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     let doc = &mut open.doc;
     match &job.kind {
         JobKind::Text { .. } => Outcome::TextFailed,
+        // Read before a renderer's asked for: see the thread's loop.
+        JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => document_failed(failure),

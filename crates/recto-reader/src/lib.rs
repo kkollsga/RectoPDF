@@ -8,6 +8,7 @@
 
 pub mod engine;
 pub mod layout;
+pub mod links;
 pub mod paper;
 pub mod selection;
 pub mod tiles;

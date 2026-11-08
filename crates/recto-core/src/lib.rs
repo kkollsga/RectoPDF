@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 mod signatures;
 mod effects;
+pub mod nav;
 pub mod save;
 pub mod verdict;
 pub use effects::{PageEffects, page_effects};
@@ -84,6 +85,8 @@ pub struct Toc {
     entries: Box<[TocEntry]>,
     /// Reading stopped at a limit, so there may be more than these.
     pub truncated: bool,
+    /// What the file calls its pages, such as `iv`, which travels with its contents: both are how a warm tab finds its way, and neither is read for a cold one. Empty for most files.
+    pub labels: nav::PageLabels,
 }
 
 /// One line of contents, for putting a [`Toc`] together from what was kept of one.
@@ -106,7 +109,7 @@ impl Toc {
             let end = u32::try_from(titles.len()).unwrap_or(u32::MAX);
             entries.push(TocEntry { title_start: start, title_len: end - start, page: line.page, parent: line.parent, depth: line.depth });
         }
-        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated }
+        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated, labels: nav::PageLabels::default() }
     }
 
     pub fn entries(&self) -> &[TocEntry] {
@@ -157,8 +160,26 @@ fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
     checked_reader(IndexedReader::open(source))
 }
 
+/// [`open_reader`] with a small cache of objects and object streams, for one read that resolves many objects packed in the same streams, as a page of links does: without it each is a fresh inflate of its stream. It lives as long as the reader, which is one read.
+pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => OpenError::NotFound,
+        ErrorKind::PermissionDenied => OpenError::NotAllowed,
+        _ => OpenError::NotPdf,
+    })?;
+    if !meta.is_file() {
+        return Err(OpenError::NotPdf);
+    }
+    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    checked_reader(IndexedReader::open_cached(source, lopdf::IndexedReaderOptions::default(), lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES)))
+}
+
+/// What [`open_reader_cached`] may keep: enough for a page's annotations and their streams, and gone with the read.
+pub(crate) const READ_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const READ_CACHE_ENTRIES: usize = 256;
+
 /// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
-fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
+pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
     // A file that needs a password the reader wasn't given, or was given wrongly, says so: it's a PDF, and only the person can open it.
     let reader = opened.map_err(|error| match error {
         lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => OpenError::PasswordNeeded,
@@ -204,15 +225,17 @@ pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
 }
 
 fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
-    let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
+    let page_count = u32::try_from(reader.page_count().map_err(|_| OpenError::NotPdf)?).map_err(|_| OpenError::NotPdf)?;
+    // A damaged outline shouldn't stop a readable PDF from opening, nor damaged labels.
+    let mut toc = read_toc(reader).unwrap_or_default();
+    toc.labels = nav::read_labels(reader, page_count);
     Ok(DocFacts {
-        page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
+        page_count,
         byte_len: reader.source_len(),
         encrypted: reader.is_encrypted(),
         version: reader.version().into(),
         title: read_title(reader),
-        // A damaged outline shouldn't stop a readable PDF from opening.
-        toc: read_toc(reader).unwrap_or_default(),
+        toc,
         renderer_only: false,
     })
 }
@@ -306,7 +329,7 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get() })
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(), labels: nav::PageLabels::default() })
 }
 
 /// What's left for following named destinations, shared across the whole outline.
