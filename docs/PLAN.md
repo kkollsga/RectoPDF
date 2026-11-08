@@ -314,7 +314,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
 - [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo). It also settles what the sandboxed renderer helper couldn't be tested for here: notarization of a nested helper, Gatekeeper and quarantine on a downloaded copy, and App Translocation
 - [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
-- [ ] Licences and notices for PDFium, Tesseract and the rest
+- [x] Licences and notices for PDFium and the rest: `THIRD-PARTY-NOTICES.txt`, written by `tools/notices.py` from both lockfiles and PDFium's own `licenses/`, in the bundle as `Contents/Resources/Licenses.txt`, held to the lockfiles and the PDFium pin by `recto-cli`'s `notices` test, and checked in the zip by `release-zip.sh`. 125 crates and PDFium with 17 components ship; nothing needs the GPL. Tesseract isn't in this release: distillPDF's `tesseract` feature is off, and its notice comes with OCR
 - [ ] Privacy statement and first-run wording
 - [ ] Final budget report against every line of `SPEC.md` §2
 - [ ] At a quiet time, by the coordinator: 1,000 tabs' worst UI stall, 81 ms against 53 before and only under load; the one 3.31 MiB rise over 1,000 tabs that `heap` didn't catch; the `HEAVY_SOLO` stall comparison of surfaces made outside the reader's lock
