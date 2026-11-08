@@ -24,6 +24,12 @@ fn hostile_pdf_structure_does_no_harm() {
     smoke("pdf_tree", seed(), rounds(1500), 8 * 1024);
 }
 
+/// Failure: Save's planner, copier or remapper panics, hangs or bombs on a hostile file added or saved, or writes something that doesn't read back with the pages it said.
+#[test]
+fn hostile_files_through_saves_copier_do_no_harm() {
+    smoke("save_copy", seed(), rounds(400), 8 * 1024);
+}
+
 /// Failure: a decoder panics or allocates what a claimed length says, or a validator lets through a reply that doesn't match its job.
 #[test]
 fn what_a_worker_sends_is_refused_or_checked() {

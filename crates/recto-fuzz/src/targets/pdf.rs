@@ -25,6 +25,17 @@ pub fn check_tree(data: &[u8]) {
     read(&build_tree(data));
 }
 
+/// Save's planner, copier and remapper on a hostile file, as the file pages are added from and as the file saved: they refuse or write a file that reads back with
+/// the pages they said, within the time and memory a check has. The copy's own bounds are what keep a file that names millions of references inside them.
+pub fn check_save(data: &[u8]) {
+    let hostile = build_tree(data);
+    let plain = build_tree(&[]);
+    within("planning and copying a save", BUDGET, || {
+        let _ = recto_core::save::plan_in_memory(&plain, &hostile);
+        let _ = recto_core::save::plan_in_memory(&hostile, &plain);
+    });
+}
+
 fn read(bytes: &[u8]) {
     let shared: Arc<[u8]> = bytes.into();
     within("reading a PDF's structure", BUDGET, || {

@@ -419,7 +419,7 @@ fn old_backups_go() {
     assert!(other.exists());
 }
 
-/// Failure: a hostile added page names an object over the save's 1 MiB limit, and the save reads it whole. The reader it saves from refuses it, and nothing is written.
+/// Failure: a hostile added page names an object over the save's 1 MiB limit, and the save reads it whole, or quietly leaves it out and changes the page. The reader it saves from refuses it, and the save is refused with nothing written.
 #[test]
 fn a_huge_object_in_an_added_file_is_refused() {
     let dir = Dir::new();
@@ -437,12 +437,94 @@ fn a_huge_object_in_an_added_file_is_refused() {
     let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
     let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
     let result = save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks);
-    // Read as nothing, as viewers read what they can't: the page is saved without it, and that's counted.
-    match result {
-        Ok(outcome) => assert_eq!(outcome.objects_missing, 1),
-        Err(error) => assert!(matches!(error, SaveError::AddedFileUnreadable { .. }), "{error:?}"),
+    assert!(matches!(result, Err(SaveError::AddedFileUnreadable { .. })), "{result:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+/// Failure (review): an inherited `/Resources` written in place on the root of the tree is copied into every page when one is moved, so 200,000 pages under a 1 MiB dictionary append 200 GB. It goes in once, as an object every page names.
+#[test]
+fn an_inherited_value_written_in_place_goes_in_once() {
+    let dir = Dir::new();
+    let pages = 200;
+    let padding = format!("/Pad ({})", "x".repeat(50_000));
+    let mut objects = vec![
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 100 100] /Resources << /Font << /F1 3 0 R >> {padding} >> >>", (0..pages).map(|at| format!("{} 0 R", 4 + at * 2)).collect::<Vec<_>>().join(" "))),
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+    ];
+    for at in 0..pages {
+        objects.push(Raw::Dict(format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R >>", 5 + at * 2)));
+        objects.push(Raw::Stream { dict: String::new(), data: text_lines(&["P"]) });
     }
-    let _ = before;
+    let path = dir.write("doc.pdf", &build(&objects));
+    let before = std::fs::metadata(&path).unwrap().len();
+    let mut order = own(&(0..pages as u32).map(|page| (page, 0)).collect::<Vec<_>>());
+    order.swap(0, 1);
+    save::save(&request(&path, pages as u32, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    let appended = std::fs::metadata(&path).unwrap().len() - before;
+    assert!(appended < 2 * 50_000 + pages as u64 * 300, "{appended} bytes appended for one move: the inherited dictionary went in more than once");
+}
+
+/// Failure: a signed field with a `/Lock` that allows no changes has its document's pages changed, as a certification would forbid. Refused, untouched.
+#[test]
+fn a_signature_fields_lock_is_kept() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: b"BT ET".to_vec() },
+        Raw::Dict("<< /FT /Sig /T (Locked) /V 6 0 R /Lock << /Type /SigFieldLock /Action /All /P 1 >> >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>".into()),
+    ]);
+    let path = dir.write("locked.pdf", &bytes);
+    let order = own(&[(0, 1)]);
+    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::LockedBySignature));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+/// Failure: a Save As of a document with nothing unsaved writes the copy outside the one writer, with a fixed temporary name (review). It goes through the same atomic append, with the original's bytes first and its pages as they were.
+#[test]
+fn a_save_as_with_nothing_unsaved_goes_through_the_writer() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["ONE", "TWO"]));
+    let original = std::fs::read(&path).unwrap();
+    let copy = dir.0.join("copy.pdf");
+    let order = own(&[(0, 0), (1, 0)]);
+    save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert!(std::fs::read(&copy).unwrap().starts_with(&original));
+    assert_eq!(read_pages(&copy), [("ONE".into(), 0), ("TWO".into(), 0)]);
+    assert_eq!(std::fs::read(&path).unwrap(), original, "the original is as it was");
+}
+
+/// Failure: a tab with no stamp skips the check that its file is still the one its edits are about, and saves over whatever is there now. It's refused.
+#[test]
+fn no_stamp_is_no_save() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["A"]));
+    let order = own(&[(0, 1)]);
+    let unstamped = SaveRequest { path: &path, stamp: None, file_pages: 1, pages: &order, added: &[] };
+    assert_eq!(save::save(&unstamped, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged));
+}
+
+/// Failure (review): copying a hostile added page holds a reference for every one it names, so objects that each name all the others reach hundreds of millions, or clones every level of a deep dictionary. The copy is bounded, and refused past it, with little held.
+#[test]
+fn a_hostile_added_page_is_refused_within_its_bounds() {
+    let count = 100;
+    let refs: String = (0..count).map(|at| format!("{} 0 R ", 4 + at)).collect::<String>().repeat(20);
+    let mut objects = vec![
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << /X 4 0 R >> >>".into()),
+    ];
+    for _ in 0..count {
+        objects.push(Raw::Dict(format!("[{refs}]")));
+    }
+    let hostile = build(&objects);
+    let target = marked(&["MINE"]);
+    assert_eq!(save::plan_in_memory_within(&target, &hostile, 100_000), Err(SaveError::TooLarge), "100 objects naming 2,000 references each is past a bound of 100,000");
+    assert_eq!(save::plan_in_memory_within(&target, &hostile, 1_000_000), Ok(2), "and within a larger one it copies");
+    assert_eq!(save::plan_in_memory(&target, &marked(&["ADDED", "TOO"])), Ok(3), "and an ordinary one copies");
 }
 
 /// Failure: a page added from a PDF with layers loses that PDF's layer states, so a layer its own file hides, which can be what it keeps out of sight, shows in the saved file. Found on the corpus: the USGS map's hidden layers made its page need over 1 GiB to draw once added elsewhere. The layers come along, and the hidden ones stay hidden.

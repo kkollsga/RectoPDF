@@ -502,6 +502,8 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "lopdf",
+ "recto-platform",
+ "sha2",
 ]
 
 [[package]]
@@ -586,6 +588,7 @@ name = "recto-session"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "recto-core",
  "recto-platform",
  "serde",

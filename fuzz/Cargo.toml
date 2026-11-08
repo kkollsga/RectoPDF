@@ -25,6 +25,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "save_copy"
+path = "fuzz_targets/save_copy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "pdf_tree"
 path = "fuzz_targets/pdf_tree.rs"
 test = false
