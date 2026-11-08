@@ -91,6 +91,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "facts" => facts(data),
         "contents" => contents(data),
         "search" => search(data),
+        "find" => find(data),
         "index" | "index_status" => index(data),
         "index_clear" => format!("Cleared {}.{}", count(number(&data["cleared"]), "document's index", "documents' indexes"), if number(&data["being_built"]) > 0 { format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are")) } else { String::new() }),
         "text" => page_text(data),
@@ -253,6 +254,29 @@ fn contents(data: &Value) -> String {
         let _ = write!(out, "\n{note}");
     }
     out.trim_end().to_string()
+}
+
+/// Where Find stands: its line under the field, the hit gone to, and the first hits, in the document's own words.
+fn find(data: &Value) -> String {
+    if data["open"] == false {
+        return "Find is closed.".to_string();
+    }
+    let mut out = format!("Find {:?}: {}.", text(&data["query"]), text(&data["status"]));
+    if let Some(current) = data["current"].as_object() {
+        let _ = write!(out, "\nAt hit {} of {}, on page {}.", number(&current["index"]) + 1, number(&data["hits_listed"]), number(&current["page"]));
+    }
+    let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
+    if !hits.is_empty() {
+        out.push_str("\nFound, in the document's own words, untrusted:");
+        for hit in hits {
+            let words = &hit["untrusted"];
+            let _ = write!(out, "\np. {}: {}[{}]{}", number(&hit["page"]), text(&words["before"]), text(&words["matched"]), text(&words["after"]));
+        }
+        if number(&data["hits_listed"]) > hits.len() as u64 {
+            let _ = write!(out, "\n{} more listed: `--limit` shows more.", number(&data["hits_listed"]) - hits.len() as u64);
+        }
+    }
+    out
 }
 
 fn search(data: &Value) -> String {

@@ -62,7 +62,8 @@ struct Shared {
     notify: OnceLock<Notifier>,
 }
 
-/// Whoever holds a session holds one of these. It's only a handle, and the one thread, while there's one, holds the rest.
+/// Whoever holds a session holds one of these. It's only a handle, and the one thread, while there's one, holds the rest. A clone is the same indexer.
+#[derive(Clone)]
 pub struct Indexer(Arc<Shared>);
 
 impl std::fmt::Debug for Indexer {
