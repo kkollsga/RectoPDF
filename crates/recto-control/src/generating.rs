@@ -503,23 +503,26 @@ mod tests {
         assert_eq!(generator.state(key(1)), GenState::Idle, "nothing starts after shutting down");
     }
 
-    /// Failure: closing a tab, or the reader saying stop, leaves its helper running to the end of its time.
+    /// Failure: closing a tab, or the reader saying stop, leaves its helper running to the end of its time, or leaves a job that hadn't started on the queue.
     #[test]
     fn a_closed_tabs_job_stops() {
         let stand = Arc::new(Stand::default());
         let generator = Generator::with_runner(Path::new("/nowhere"), Box::new(Runs(Arc::clone(&stand))));
+        // `a` is running before `b` is asked for. Asking for both at once raced: the newest goes first only if the thread hasn't already taken the other, and the stand holds whatever it took until it's cancelled.
         generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
-        generator.want(Path::new("/nowhere/b.pdf"), key(2), 10);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while generator.state(key(2)) != GenState::Running {
-            assert!(Instant::now() < deadline);
+        while generator.state(key(1)) != GenState::Running {
+            assert!(Instant::now() < deadline, "the first job never started");
             std::thread::yield_now();
         }
-        generator.cancel_path(Path::new("/nowhere/a.pdf"));
-        assert_eq!(generator.state(key(1)), GenState::Idle, "taken off the queue");
+        generator.want(Path::new("/nowhere/b.pdf"), key(2), 10);
+        assert_eq!(generator.state(key(2)), GenState::Queued);
         generator.cancel_path(Path::new("/nowhere/b.pdf"));
+        assert_eq!(generator.state(key(2)), GenState::Idle, "taken off the queue");
+        generator.cancel_path(Path::new("/nowhere/a.pdf"));
         settle(&generator);
-        assert!(generator.held(key(2)).is_none());
+        assert!(generator.held(key(1)).is_none(), "a cancelled job's result isn't kept");
+        assert_eq!(stand.running.load(Ordering::SeqCst), 0, "the running job ended");
     }
 
     /// Failure: a hostile or broken helper's answer is believed: contents for another file, an unknown refusal code shown as words, a report that isn't one, or one cut short.
