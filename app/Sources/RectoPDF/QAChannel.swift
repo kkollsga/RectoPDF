@@ -468,6 +468,18 @@ import QuartzCore
         let nothing = NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.nothing.\(ProcessInfo.processInfo.processIdentifier)"))
         found["services_write_nothing_with_nothing_selected"] = !delegate.writeSelection(to: nothing, types: [.string]) && nothing.string(forType: .string) == nil
         nothing.releaseGlobally()
+        // A control-click on a tab's row, as AppKit hands it to the table: taken for comparing, by the row under it, and not left to become a right-click. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view". What it does is `qa compare-click`'s.
+        if sidebar.table.numberOfRows > 1 {
+            let rowRect = sidebar.table.rect(ofRow: 1)
+            let place = sidebar.table.convert(NSPoint(x: rowRect.midX, y: rowRect.midY), to: nil)
+            let before = sidebar.table.controlClickedRows.count
+            if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: place, modifierFlags: .control, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                sidebar.table.perform(#selector(NSResponder.mouseDown(with:)), with: event)
+                found["tab_row_control_click_compares"] = sidebar.table.controlClickedRows.count == before + 1 && sidebar.table.controlClickedRows.last == 1
+                // And back as it was.
+                sidebar.table.perform(#selector(NSResponder.mouseDown(with:)), with: event)
+            }
+        }
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
         found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification
         NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)

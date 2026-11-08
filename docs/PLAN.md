@@ -172,7 +172,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [ ] From the side-by-side review: a round trip through a small view, as a narrow window, can move the reader to the left page of a pair (finding 4)
   - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
   - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
-  - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
+  - [x] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced (owner, 2026-11-08): ⌘- and ⌃-click, `recto compare`, restored and handed off
+  - [ ] Comparison follow-ups: synced scroll lines panes up by the top of the view, so pages of different heights read a page apart where the eye is; a zoom in synced scroll moves each pane about its own middle and the panes can drift a little until the next scroll; other panes follow a pinch only once it ends; a tab off screen that's only ever been in a pane has no fresh sleep file when it leaves, as its contents were never read; Find, when it's built, goes by the pane being read
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
