@@ -2820,8 +2820,10 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let tab = session.tab(id)?;
     let own = session.path_of(id)?;
     let same_file = session.own_stamp(id).map(sleeper::version_of);
+    // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
+    let follows = session.saved_from(id).map(sleeper::version_of);
     let map = match session.page_edits(id) {
-        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, expected: Vec::new() },
+        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, expected: Vec::new(), follows },
         Some(edits) => {
             let mut files = vec![own];
             files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
@@ -2833,7 +2835,7 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             // What each added PDF was when its pages were added: a page from one that's changed since isn't drawn.
             let mut expected = vec![None];
             expected.extend(edits.added_sources().iter().map(|added| added.stamp));
-            PageMap { files, slots, own: same_file, turns, expected }
+            PageMap { files, slots, own: same_file, turns, expected, follows }
         }
     };
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.

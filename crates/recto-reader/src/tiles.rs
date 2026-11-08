@@ -146,6 +146,8 @@ pub struct PageMap {
     pub turns: Option<Arc<[u8]>>,
     /// For each file of `files`, what it was when its pages were added, for the ones that aren't the tab's own: a page isn't drawn from an added PDF that's since changed, as its page numbers are about the version it was. Shorter than `files`, or `None`, says nothing.
     pub expected: Vec<Option<FileStamp>>,
+    /// The version of the tab's own file a save moved it on from, if this is the version that save wrote: each of these pages is the page that was shown at its position, as it was shown, turned or added. What was laid out, where the reader was and what was selected go on as they were; only what's drawn is of the new file.
+    pub follows: Option<FileStamp>,
 }
 
 impl PageMap {
@@ -522,6 +524,8 @@ pub struct Reader {
     scrolled_to: u64,
     last_view_page: Option<u32>,
     moved_page: Option<u32>,
+    /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
+    selection_before_change: Option<(u32, recto_index::select::Range)>,
     more_to_attach: bool,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
@@ -584,6 +588,7 @@ impl Reader {
             scrolled_to: 0,
             last_view_page: None,
             moved_page: None,
+            selection_before_change: None,
             more_to_attach: false,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
@@ -990,6 +995,12 @@ impl Reader {
         self.keep_only(warm, tab);
         // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
         let staying = self.hot == Some(tab);
+        // What was selected when a renderer saw the file replaced, for a save that turns out to have written what was shown.
+        let selected_before_change = self.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
+        if staying && let Some(doc) = self.docs.get_mut(&tab) {
+            // Across the page, as the view has it now: what's taken up again goes back there.
+            doc.scroll_x = self.viewport.x;
+        }
         if self.hot != Some(tab) {
             let last_page = self.last_view_page;
             let (left_x, left_y) = (self.viewport.x, self.viewport.y);
@@ -1022,8 +1033,10 @@ impl Reader {
             let exact_y = saved.filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite()).map(|saved| (saved.y, saved.document_height));
             DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor, size_on_trust: false, versions: HashMap::new() }
         });
+        // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
+        let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
-        let same_pages = doc.map.same_pages(&map) && doc.layout.count() == pages;
+        let same_pages = (doc.map.same_pages(&map) || carried) && doc.layout.count() == pages;
         let back_at = if staying && same_pages { Some(doc.anchor) } else { doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor) };
         if back_at.is_none() {
             doc.scroll_x = 0.0;
@@ -1036,12 +1049,19 @@ impl Reader {
             doc.map.turns = map.turns.clone();
             doc.exact_y = None;
         }
+        let mut carried_selection = None;
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
             // Another version of its file: a worker that's running has the old one open, and goes on drawing that.
             if doc.map.own != map.own {
                 self.reopen_files.extend(map.files.first().cloned());
             }
-            doc.layout = PageLayout::with_spread(pages, spread);
+            if carried {
+                // **A save leaves the view as it was** (owner: "perfect" state recovery): the pages keep their sizes as shown, so the fit, the zoom shown, the place and the layout don't move. Only what's drawn is of the new file, and is drawn again.
+                doc.layout = doc.layout.as_saved();
+                carried_selection = self.selecting.range().or(selected_before_change);
+            } else {
+                doc.layout = PageLayout::with_spread(pages, spread);
+            }
             doc.layout.set_turns(map.turns.clone());
             doc.map = map;
             doc.issues.clear();
@@ -1057,8 +1077,11 @@ impl Reader {
             }
             self.drop_tab_entries(tab);
             self.clear_screen();
-            // Its pages are other pages now, so what was selected on them isn't there.
+            // Its pages are other pages now, so what was selected on them isn't there. After a save they're the same pages, so it is, and its text is read again from the new file.
             self.selecting.reset();
+            if let Some(range) = carried_selection {
+                self.selecting.set_range(range);
+            }
         }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
@@ -2126,6 +2149,8 @@ impl Reader {
     /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
     pub fn file_changed(&mut self, tab: u32) {
         if self.hot == Some(tab) {
+            // Kept aside until the session says what the new version is: a save of what was shown keeps it (see [`Self::activate`]), anything else lets it go.
+            self.selection_before_change = self.selecting.range().map(|range| (tab, range));
             self.selecting.file_changed();
             self.highlight_ops();
         }
@@ -2403,7 +2428,7 @@ mod tests {
     use crate::layout::PageBox;
 
     fn map() -> PageMap {
-        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }
+        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }
     }
 
     impl Reader {
@@ -2645,11 +2670,11 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         assert!(!reader.entries.is_empty());
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, Spread::Single);
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[2], None, Spread::Single);
+        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[2], None, Spread::Single);
         assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
     }
 
@@ -2876,6 +2901,81 @@ mod tests {
         assert_eq!(reader.docs[&1].scroll_x, 30.0, "and as far across");
     }
 
+    /// Answers what the reader asks as a file whose page 0 is `first` and the rest letter would, until it asks nothing more.
+    fn settle_sized(reader: &mut Reader, first: PageBox) {
+        for _ in 0..10_000 {
+            reader.take_ops();
+            reader.applied();
+            let Some(job) = reader.next_job() else { break };
+            let outcome = match &job.kind {
+                JobKind::Size => Outcome::Size(if job.position == 0 { first } else { letter() }),
+                JobKind::Text { .. } => Outcome::TextFailed,
+                JobKind::Traits => Outcome::Heavy(false),
+                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+            };
+            reader.finish(job, outcome);
+            drop(reader.drain(MAX_ATTACH_PER_TURN));
+        }
+    }
+
+    /// Failure (the owner's bench file, 2026-11-08): a save after turning page 1 changes the view. The saved file's page 1 is landscape, the reopened layout fits that page instead of the portrait ones, and the zoom shown drops from 128% to 97% with every page shrinking; the place within the page and the selection go too. A save writes what was shown, so the fit, zoom, place across and down, layout and selection stay exactly, whichever page the reader's on and whether a renderer saw the file replaced first.
+    #[test]
+    fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
+        let stamp = |size: u64| Some(FileStamp { size, mtime_ns: 1, device: 0, inode: 7 });
+        let landscape = PageBox { width: 792.0, height: 612.0 };
+        // On the turned page itself, as on the bench file, the first page the new layout learns is the landscape one.
+        for (spread, renderer_saw_it_first, on) in [(Spread::Single, false, 0), (Spread::Single, false, 3), (Spread::Single, true, 3), (Spread::TwoUpCover, false, 3)] {
+            let mut reader = Reader::new();
+            reader.set_viewport(view(0.0));
+            let own = PageMap { own: stamp(1), ..map() };
+            reader.activate(1, 10, 0, own.clone(), &[], None, spread);
+            reader.scrolled_to = 0;
+            let mut turns = vec![0u8; 10];
+            turns[0] = 1;
+            let turned = PageMap { turns: Some(Arc::from(turns)), ..own.clone() };
+            reader.activate(1, 10, 0, turned, &[], None, spread);
+            follow_host(&mut reader, view(0.0));
+            settle_sized(&mut reader, letter());
+            reader.zoom(Zoom::To(1.28));
+            let page = reader.doc().unwrap().layout.rect(on);
+            let mut at = view(page.y + page.height * 0.4);
+            at.x = 25.0;
+            at.magnification = 1.28;
+            reader.set_viewport(at);
+            reader.take_moved_page();
+            let selected = Range { start: recto_index::select::Place { page: 2, at: 5 }, end: recto_index::select::Place { page: 4, at: 9 } };
+            reader.restore_selection(selected);
+            let (fit, height, width, zoom) = { let doc = reader.doc().unwrap(); (doc.layout.fit(), doc.layout.document_height(), doc.layout.document_width(), doc.magnification) };
+            let rects: Vec<crate::layout::PageRect> = (0..10).map(|page| reader.doc().unwrap().layout.rect(page)).collect();
+            let before = reader.places()[0].1;
+            if renderer_saw_it_first {
+                reader.file_changed(1);
+            }
+            // Saved: the file is another version, with page 0 turned in it, and no edits left.
+            let saved = PageMap { files: own.files.clone(), slots: None, own: stamp(2), turns: None, expected: Vec::new(), follows: stamp(1) };
+            reader.activate(1, 10, on, saved, &[], None, spread);
+            follow_host(&mut reader, at);
+            settle_sized(&mut reader, landscape);
+            let doc = reader.doc().unwrap();
+            let label = format!("{spread:?}, renderer first: {renderer_saw_it_first}, on page {on}");
+            assert_eq!(doc.layout.fit(), fit, "{label}: the fit, and so the zoom shown");
+            assert_eq!(doc.magnification, zoom, "{label}: the magnification");
+            assert_eq!((doc.layout.document_height(), doc.layout.document_width()), (height, width), "{label}: the document's size");
+            assert_eq!((0..10).map(|page| doc.layout.rect(page)).collect::<Vec<_>>(), rects, "{label}: every page where it was");
+            let after = reader.places()[0].1;
+            assert_eq!(after.page, before.page, "{label}: {before:?} then {after:?}");
+            assert!((after.anchor.1 - before.anchor.1).abs() < 1e-9 && (after.y - before.y).abs() < 1e-6, "{label}: as far down: {before:?} then {after:?}");
+            assert_eq!(after.x, before.x, "{label}: as far across");
+            assert_eq!(reader.selection_range(), Some(selected), "{label}: what was selected");
+        }
+        // Any other new version is other pages: nothing's carried.
+        let mut reader = reader_on(10);
+        settle_sized(&mut reader, letter());
+        reader.restore_selection(Range::pages(1, 2));
+        reader.activate(1, 10, 0, PageMap { own: stamp(9), follows: stamp(8), ..map() }, &[], None, Spread::Single);
+        assert_eq!(reader.selection_range(), None, "a save from another version than the one shown carries nothing");
+    }
+
     /// Failure (review of f05c998, B2): side by side, after any scroll, a change of layout moves the reader off the page they were on: the place was kept on the first page of its row, so the right-hand page's reader lands on the left one, or two pages back going to the cover layout. Fed the host's next view, as the app is.
     #[test]
     fn a_change_of_layout_after_a_scroll_keeps_the_page() {
@@ -2978,7 +3078,7 @@ mod tests {
     fn a_change_to_the_page_order_clears_what_was_drawn() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, expected: Vec::new() };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, expected: Vec::new(), follows: None };
         reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
         assert!(reader.entries.is_empty());
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
@@ -3017,7 +3117,7 @@ mod tests {
     /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
     #[test]
     fn what_a_job_found_before_an_edit_is_thrown_away() {
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, expected: Vec::new() };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, expected: Vec::new(), follows: None };
         // A job of each kind, caught running.
         let mut reader = reader_on(3);
         let size = reader.next_job().expect("a size");
@@ -3081,7 +3181,7 @@ mod tests {
             }
             seen
         }
-        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, expected: Vec::new() };
+        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
             let mut held = Vec::new();
             let mut reader = reader_on(3);
@@ -3199,7 +3299,7 @@ mod tests {
         reader.set_viewport(view(inside));
         let page = reader.take_moved_page().expect("the reader moved");
         settle(&mut reader);
-        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() };
+        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
         reader.activate(2, 10, 0, other.clone(), &[1], None, Spread::Single);
         reader.take_ops();
         reader.activate(1, 100, page, map(), &[2], None, Spread::Single);
@@ -3219,7 +3319,7 @@ mod tests {
     fn a_warm_tab_that_goes_holds_nothing_at_once() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new() }, &[1], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[1], None, Spread::Single);
         assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
         assert_eq!(reader.wanted_files().len(), 2);
         reader.set_warm(&[]);

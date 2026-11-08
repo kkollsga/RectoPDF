@@ -742,7 +742,12 @@ pub struct Session<L = DiskLoader> {
     comparison: Option<compare::Comparison>,
     /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
     generated: Vec<(TabId, GeneratedView)>,
+    /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
+    saved_over: Vec<(TabId, FileStamp, FileStamp)>,
 }
+
+/// Saves remembered for the page view to carry its view over: one per tab saved lately is plenty, as it's asked for straight after.
+pub const MAX_SAVED_OVER: usize = 8;
 
 /// Generated contents held for the sidebar. A tab whose contents went out can always look again: they're kept on disk.
 pub const MAX_GENERATED_VIEWS: usize = 8;
@@ -850,7 +855,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new() }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -1702,6 +1707,14 @@ impl<L: DocLoader> Session<L> {
         if let Some(path) = saved_as {
             self.relocate(id, path);
         }
+        // What's in the new version is what was shown, page for page, so the page view goes on from where it was.
+        self.saved_over.retain(|(tab, _, _)| *tab != id);
+        if let Some(before) = self.tab(id).and_then(|tab| tab.stamp) {
+            if self.saved_over.len() >= MAX_SAVED_OVER {
+                self.saved_over.remove(0);
+            }
+            self.saved_over.push((id, before, now));
+        }
         if let Some(tab) = self.tab_mut(id) {
             tab.stamp = Some(now);
             tab.page_count = pages;
@@ -2018,7 +2031,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _ } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -2233,6 +2246,12 @@ impl<L: DocLoader> Session<L> {
     /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
     pub fn own_stamp(&self, id: TabId) -> Option<FileStamp> {
         self.tab(id).and_then(|tab| tab.stamp)
+    }
+
+    /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
+    pub fn saved_from(&self, id: TabId) -> Option<FileStamp> {
+        let now = self.own_stamp(id)?;
+        self.saved_over.iter().rev().find(|(tab, _, after)| *tab == id && *after == now).map(|(_, before, _)| *before)
     }
 
     /// Notes that a page finished drawing, or couldn't be.
@@ -2930,6 +2949,30 @@ mod tests {
         assert!(!s.is_edited(id) && s.has_undone_owner_steps(id), "back at the saved point, with a step undone");
         assert_eq!(s.close_after_save(id), Ok(true), "closes over the undone step, as the prompt said");
         assert!(s.tab(id).is_none());
+    }
+
+    /// Failure (the owner's bench file, 2026-11-08): after a save the page view can't tell the new version of the file from any other, so it lays the pages out afresh and the zoom shown and the place change. The session says which version a save moved the tab on from while the tab's still on what that save wrote, and stops saying it once the file is anything else: a carry-over onto someone else's file would show it at the wrong size.
+    #[test]
+    fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
+        let stamp = |n: u64| FileStamp { size: n, mtime_ns: n as i64, device: 1, inode: 1 };
+        let mut s = session(3);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.apply_file_status(id, FileStatus::Same(stamp(1)));
+        assert_eq!(s.saved_from(id), None, "nothing's been saved");
+        s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
+        s.saved(id, stamp(2), 3, None, None);
+        assert_eq!(s.saved_from(id), Some(stamp(1)));
+        s.saved(id, stamp(3), 3, None, None);
+        assert_eq!(s.saved_from(id), Some(stamp(2)), "the last save's");
+        s.apply_file_status(id, FileStatus::Changed(stamp(4)));
+        assert_eq!(s.saved_from(id), None, "the file changed outside since");
+        // However many tabs are saved, what's kept stays small.
+        for n in 0..(MAX_SAVED_OVER as u64 * 3) {
+            let other = s.open(Path::new(&format!("/d/o{n}.pdf"))).unwrap();
+            s.apply_file_status(other, FileStatus::Same(stamp(100 + n)));
+            s.saved(other, stamp(1000 + n), 3, None, None);
+        }
+        assert!(s.saved_over.len() <= MAX_SAVED_OVER);
     }
 
     /// Failure (review): an edit made while a save writes comes back reading as saved, with its turn not in the file. Every way of changing a tab's edits waits while it's saved; a save that fails lets go and forgets what it noted, and the edits stand.
