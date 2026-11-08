@@ -16,6 +16,8 @@
 # The queue (tools/sysguard/heavy.sh) refuses to run a check again on code that hasn't changed since it failed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
+unset RECTO_SIGN_IDENTITY
 usage() { sed -n '2,10p' "$0"; exit 2; }
 mode=""
 why=""

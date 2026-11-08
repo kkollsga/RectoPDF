@@ -2096,3 +2096,18 @@ fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
     wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("can't be found")));
     std::fs::rename(&moved, &file.0).ok();
 }
+
+/// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
+/// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
+#[test]
+fn the_app_draws_with_walled_workers_over_the_surface_link() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let state = run.report();
+    let workers = state["memory"]["workers"].as_u64().unwrap();
+    assert!(workers >= 1, "no worker drew the page: {}", state["memory"]);
+    assert_eq!(state["memory"]["workers_walled"].as_u64(), Some(workers), "a live worker isn't walled: {}", state["memory"]);
+    assert!(state["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "no surface tile arrived: {}", state["reader"]["tiles"]);
+}

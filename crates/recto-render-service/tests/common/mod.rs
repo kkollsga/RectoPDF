@@ -5,9 +5,11 @@ use recto_render_service::{DocRenderer, HeavySlot, Policy, ServiceConfig, Surfac
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The real worker. Failing here means `tools/pdfium.sh` hasn't run: a plain failure, because a skipped renderer test looks like a pass.
+/// The real worker. Failing here means `tools/pdfium.sh` hasn't run: a plain failure, because a skipped renderer test looks like a pass. `RECTO_TEST_WORKER` names another build of
+/// it, such as the one in a built app's sandboxed helper, to run this whole suite against: `RECTO_TEST_WORKER=app/build/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service`.
 pub fn real_config() -> ServiceConfig {
-    let mut config = ServiceConfig::for_worker(env!("CARGO_BIN_EXE_recto-render-service").into())
+    let worker = std::env::var_os("RECTO_TEST_WORKER").unwrap_or_else(|| env!("CARGO_BIN_EXE_recto-render-service").into());
+    let mut config = ServiceConfig::for_worker(worker.into())
         .unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()));
     // Each test's heavy worker is its own, so tests running side by side in one process can't change each other's results.
     config.heavy_slot = HeavySlot::new();
