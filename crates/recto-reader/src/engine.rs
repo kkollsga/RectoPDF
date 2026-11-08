@@ -359,6 +359,11 @@ impl Engine {
         self.wake();
     }
 
+    /// For QA: the system taking back what's marked discardable, without a word. Says how many surfaces went.
+    pub fn empty_discardable(&self) -> usize {
+        lock(&self.shared.reader).empty_discardable()
+    }
+
     /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
     pub fn worker_bytes(&self, tab: u32) -> u64 {
         let files = lock(&self.shared.reader).files_of(tab);
