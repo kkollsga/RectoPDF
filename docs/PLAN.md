@@ -287,6 +287,9 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Step 1: drifted docs fixed, `Theme.sidebarWidth` deleted; every person-originated `CoreCall` decided for the update hand-off freeze (`CloseTab`, `ToggleSection`, `ContentsAction`, `CloseAnswered`), with an exhaustive test; `menus::enabled` and `event_group` exhaustive, with tests that every menu id and every emitted event is listed
 - [ ] Step 2: restore's `KNOWN_PATHS` sorted and split into per-area files, with a test that each is sorted with no duplicates; the app test harness (`Run`, `app_path`, `settled`, `wait_for`, document makers) moved into `tests/common/app.rs`
 - [ ] Step 3: `rustfmt` adopted (`max_width` about 160, `wrap_comments = false`) in one mechanical commit with no branches open, `.git-blame-ignore-revs`, and `cargo fmt --check` in `check.sh --quick`
+- [ ] Bug (CI timing worker, 2026-11-08): a server killed mid-render leaves `.recto-<pid>-N.partial` in the output folder, and nothing ever sweeps it. Sweep stale partials of dead processes, with a test
+- [ ] The queue's memory of a failure looks only at tracked code, so installing PDFium (outside git) and rerunning was refused and needed `HEAVY_RETRY=1`. Include `target/pdfium`'s digest in what decides "same code" (shared queue: `tools/sysguard/heavy-test.sh` first)
+- [ ] Slowest test: `recto-cli::session every_row_answers_in_plain_words_and_in_versioned_json` runs past 60 s locally and on CI. Find why and make it fast
 
 
 - [x] Release blocker, first half: the renderer is built into its sandboxed helper, signed (ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on) and fails closed, each failure named
