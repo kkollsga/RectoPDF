@@ -137,7 +137,7 @@ import QuartzCore
         case "hover":
             controller?.sidebar.setHover(value == "none" ? nil : Int(value))
         case "click_row":
-            controller?.sidebar.clickRow(Int(value) ?? 0)
+            if value == "note" { controller?.sidebar.clickNote() } else if value.hasPrefix("fold:") { controller?.sidebar.clickFold(Int(value.dropFirst(5)) ?? -1) } else { controller?.sidebar.clickRow(Int(value) ?? 0) }
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "contents_pointer":
@@ -324,7 +324,8 @@ import QuartzCore
 
         // The contents: the pointer coming in, as their own area says it does.
         sidebar.contentsScroll.perform(entered, with: crossing(.mouseEntered))
-        found["contents_hover_shows_their_scroller"] = sidebar.contentsScroll.hasVerticalScroller
+        // The thumb is the sidebar's own, there whether or not the pointer is, so the system's scroller and its track never come.
+        found["contents_hover_brings_no_system_scroller"] = !sidebar.contentsScroll.hasVerticalScroller
         // A shortened contents entry, by where the pointer is, and left to rest as a real pointer would be, on the real timer.
         if let place = sidebar.cutOffContentsPlaceInWindow() {
             sidebar.perform(moved, with: pointer(at: place.point))
@@ -334,7 +335,7 @@ import QuartzCore
             found["contents_hover_reveals_the_full_name"] = (report["shown"] as? Bool) == true && (report["row"] as? Int) == place.row
         }
         sidebar.contentsScroll.perform(exited, with: crossing(.mouseExited))
-        found["contents_hover_ends"] = !sidebar.contentsScroll.hasVerticalScroller
+        found["contents_hover_ends"] = sidebar.contentsScroll.verticalScroller?.isHidden != false || !sidebar.contentsScroll.hasVerticalScroller
         sidebar.perform(exited, with: crossing(.mouseExited))
         found["hover_ends"] = sidebar.hoveredRow == nil && sidebar.lastPointerRow == nil
         found["reveal_goes_with_the_pointer"] = (sidebar.revealReport()["shown"] as? Bool) != true

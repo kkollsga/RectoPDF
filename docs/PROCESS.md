@@ -83,3 +83,23 @@ A failed run also went on to 453 s, because the gate keeps going after a failure
 
 **Check next time.** `tools/check.sh --runs`: real full runs per branch, how many asked for a reason, and whether those reasons were real. Did the budget move agents to `--failed`? That's unknown until it's been used.
 
+## 2026-11-08, after eight merges (restore, saved point, deep sleep and its follow-ups, updater, reader layout, drawing fixes, contents)
+
+**Numbers.** Queue since the deadlock fix: median wait 0 s, p90 4 s; average 1.09 jobs running. Full runs by branch (`tools/check.sh --runs`): contents 6 (3 failed), updater 6 (2), reader layout 5 (2), drawing fixes 4 (1), deep sleep 4 (1), main 3 (0). The budget asked for a reason on the third: every branch above two ran with `--why`, mostly a merge of main or a review fix. Every review found real blockers, and every branch had two or three rounds.
+
+**Waste and misses.**
+- **The coordinator didn't watch CI after pushes.** CI failed on `e3e14d3` and `8125488` (two tests that failed once each, passing locally), and it showed only at this review. Every push now gets a watcher that reports CI's result.
+- **Workers kept using `git stash`** until the rule was explicit, once touching the owner's own WIP in the lopdf fork. Now in AGENTS.md and the testing guide.
+- **A worker reported tests that didn't exist**, as an edit script missed its anchor. Reviews now check that tests exist and fail without their fix.
+- **Branches that ran long conflicted with each other**: the updater, contents and render branches each needed a merge of main with conflicts in session restore and the app bridge. Smaller branches merged sooner would have conflicted less.
+- **Heuristics took three rounds:** header detection for copies swung between dropping content and keeping headers before settling. A corpus comparison against the previous survey was what made each round measurable.
+
+**What worked.** Reviews ran the reviewer's own repros again in the last round instead of trusting the worker. The coordinator rechecked claims itself before merging (the bold-text cases and the header comparison), which caught a stale build being used for evidence.
+
+**Changing.**
+- Watch CI after every push to main, and fix a red main before merging more.
+- Keep branches to one feature; split stage 2 into its own branch when stage 1 is reviewable.
+- Corpus surveys for any heuristic, compared with the previous survey before a merge.
+
+**Check next time.** Was main red on CI at any point, and for how long? Conflicts per merge of main.
+

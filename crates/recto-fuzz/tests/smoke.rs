@@ -88,6 +88,12 @@ fn hostile_state_records_do_no_harm() {
     smoke("record", seed(), rounds(400), 8 * 1024);
 }
 
+/// Failure: a forged kept file or a hostile helper's answer panics, bombs, or gets believed with a page past the end, a title on two lines or with invisible characters, or a depth or count past its cap.
+#[test]
+fn generated_contents_are_read_as_hostile() {
+    smoke("generated", seed(), rounds(1500), 16 * 1024);
+}
+
 /// Failure: a hostile `latest.json` or zip panics, or writes past what it said. The seeded run of what `tools/fuzz.sh` runs at length.
 #[test]
 fn update_holds() {

@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod control;
 pub mod edits;
+pub mod generated;
 pub mod index;
 pub mod pdf;
 pub mod proto;

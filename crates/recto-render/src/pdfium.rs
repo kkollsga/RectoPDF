@@ -117,6 +117,7 @@ const FPDF_ERR_SECURITY: c_ulong = 5;
 /// `fpdf_doc.h`'s permission bit for copying or extracting text. The table in the PDF standard, 7.6.4.2, bit 5.
 const PERMISSION_COPY: c_ulong = 1 << 4;
 /// `fpdf_edit.h`: object types.
+const FPDF_PAGEOBJ_TEXT: c_int = 1;
 const FPDF_PAGEOBJ_IMAGE: c_int = 3;
 const FPDF_PAGEOBJ_FORM: c_int = 5;
 /// How far the look for large images goes. A hostile page can hold millions of objects and forms inside forms, and it's only a hint.
@@ -750,6 +751,8 @@ impl RenderBackend for PdfiumBackend {
         let want_boxes = options.boxes || options.hidden_check;
         let mut chars = Vec::with_capacity(count as usize);
         let mut boxes: Vec<CharBox> = Vec::with_capacity(if want_boxes { count as usize } else { 0 });
+        // PDFium's own index for each character, for the check to ask the glyph's colour: a character past 16 bits is two of PDFium's.
+        let mut sources: Vec<c_int> = Vec::with_capacity(if options.hidden_check { count as usize } else { 0 });
         let mut index = 0;
         while index < count {
             // SAFETY: `text` is live and `index` is below its character count.
@@ -775,6 +778,9 @@ impl RenderBackend for PdfiumBackend {
                 flags |= CharRecord::GENERATED;
             }
             chars.push(CharRecord::new(code, flags));
+            if options.hidden_check {
+                sources.push(index);
+            }
             if want_boxes {
                 let (mut left, mut right, mut bottom, mut top) = (0.0, 0.0, 0.0, 0.0);
                 // SAFETY: as above, and the out-pointers are live for the call. On failure they stay zero: an empty box, which has no ink.
@@ -786,7 +792,7 @@ impl RenderBackend for PdfiumBackend {
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
         // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.
-        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, cancel).is_ok());
+        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, (text, &sources), cancel).is_ok());
         if !options.boxes {
             boxes = Vec::new();
         }
@@ -820,7 +826,7 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], cancel: &dyn Cancel) -> Result<(), RenderError> {
+    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], (text, sources): (FPDF_TEXTPAGE, &[c_int]), cancel: &dyn Cancel) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
         let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
@@ -841,7 +847,9 @@ impl PdfiumBackend {
             unsafe { (api.FPDF_PageToDevice)(page_handle, 0, 0, width, height, 0, f64::from(x), f64::from(y), &raw mut device_x, &raw mut device_y) };
             (device_x, device_y)
         };
-        for (record, char_box) in chars.iter_mut().zip(boxes) {
+        // Characters the colour test proposes as hidden, by their text object, which drawing again without decides.
+        let mut proposed: Vec<Proposed> = Vec::new();
+        for (at, ((record, char_box), index)) in chars.iter_mut().zip(boxes).zip(sources).enumerate() {
             let ch = record.ch();
             if ch.is_whitespace() || ch.is_control() || record.has(CharRecord::GENERATED) || record.has(CharRecord::HYPHEN) {
                 continue;
@@ -849,12 +857,183 @@ impl PdfiumBackend {
             let [left, bottom, right, top] = *char_box;
             let (x0, y0) = to_device(left, top);
             let (x1, y1) = to_device(right, bottom);
-            if !crate::box_has_ink(&pixels, width, height, stride as usize, (x0, y0, x1.saturating_add(1), y1.saturating_add(1))) {
+            let device = (x0, y0, x1.saturating_add(1), y1.saturating_add(1));
+            if !crate::box_has_ink(&pixels, width, height, stride as usize, device) {
                 *record = CharRecord::new(ch as u32, CharRecord::NO_INK);
+            } else if let Some(object) = drawn_in_its_grounds_colour(api, text, *index, &pixels, (width, height, stride as usize), device) {
+                match proposed.iter_mut().find(|(known, _)| *known == object) {
+                    Some((_, list)) => list.push((at, device)),
+                    None => proposed.push((object, vec![(at, device)])),
+                }
             }
         }
+        // Text drawn twice in one place, as a fake bold, a shadow or a duplicated layer, can be taken away one copy at a time with nothing changing, as the other still draws it. Its words are on the page to be seen, so a copy isn't hidden.
+        let mut copies: std::collections::HashMap<(u32, i32, i32), u32> = std::collections::HashMap::new();
+        if !proposed.is_empty() && chars.len() <= MAX_COPY_CHECK_CHARS {
+            for (record, char_box) in chars.iter().zip(boxes) {
+                *copies.entry(copy_cell(record.ch(), char_box)).or_default() += 1;
+            }
+        }
+        // Its own cell and the eight around it, so a copy a little off, as a halo stroked under its fill, counts.
+        let drawn_twice = |at: usize| {
+            chars.get(at).zip(boxes.get(at)).is_some_and(|(record, char_box)| {
+                let (code, x, y) = copy_cell(record.ch(), char_box);
+                let around: u32 = (-1..=1).flat_map(|dx| (-1..=1).map(move |dy| (dx, dy))).map(|(dx, dy)| copies.get(&(code, x + dx, y + dy)).copied().unwrap_or(0)).sum();
+                around > 1
+            })
+        };
+        let too_many = chars.len() > MAX_COPY_CHECK_CHARS;
+        let proposed: Vec<_> = proposed.into_iter().filter(|_| !too_many).filter_map(|(object, list)| {
+            let list: Vec<_> = list.into_iter().filter(|(at, _)| !drawn_twice(*at)).collect();
+            (!list.is_empty()).then_some((object, list))
+        }).collect();
+        // The same text drawn twice as two objects, a light fill over a stroked outline as a map's labels are, comes through PDFium's text as one character, so the look above can't see it. Another text object in the same place says the words are drawn there to be seen.
+        let twins = if proposed.is_empty() { Vec::new() } else { self.text_object_bounds() };
+        let proposed: Vec<_> = proposed.into_iter().filter(|(object, _)| !has_a_twin(api, *object, &twins)).collect();
+        self.confirm_hidden(chars, &proposed, &pixels, (width, height, stride), cancel);
         Ok(())
     }
+
+    /// Every text object on the open page and its bounds, forms included, up to [`MAX_OBJECTS_LOOKED_AT`].
+    fn text_object_bounds(&self) -> Vec<(FPDF_PAGEOBJECT, [f32; 4])> {
+        let Some(handle) = self.open_page_handle() else { return Vec::new() };
+        let api = self.api;
+        let mut found = Vec::new();
+        let mut looked_at = 0usize;
+        // SAFETY: the page is live for this whole function, and every object comes from it or a form on it. Indexes are below the counts just read, and the out-pointers are live for each call.
+        unsafe {
+            let mut waiting: Vec<(FPDF_PAGEOBJECT, u32)> = Vec::new();
+            for index in 0..(api.FPDFPage_CountObjects)(handle).max(0).min(MAX_OBJECTS_LOOKED_AT as c_int) {
+                waiting.push(((api.FPDFPage_GetObject)(handle, index), 0));
+            }
+            while let Some((object, depth)) = waiting.pop() {
+                looked_at += 1;
+                if object.is_null() || looked_at > MAX_OBJECTS_LOOKED_AT {
+                    continue;
+                }
+                match (api.FPDFPageObj_GetType)(object) {
+                    FPDF_PAGEOBJ_TEXT => {
+                        let (mut left, mut bottom, mut right, mut top) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                        if (api.FPDFPageObj_GetBounds)(object, &raw mut left, &raw mut bottom, &raw mut right, &raw mut top) != 0 {
+                            found.push((object, [left, bottom, right, top]));
+                        }
+                    }
+                    FPDF_PAGEOBJ_FORM if depth < MAX_FORM_DEPTH => {
+                        let room = MAX_OBJECTS_LOOKED_AT.saturating_sub(waiting.len());
+                        for index in 0..((api.FPDFFormObj_CountObjects)(object).max(0) as usize).min(room) {
+                            waiting.push(((api.FPDFFormObj_GetObject)(object, index as c_ulong), depth + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        found
+    }
+
+    /// Draws the page once more with every proposed character's text object turned off, and marks those whose drawing adds nothing anyone could see. One drawing for the page, however many are proposed, of at most [`MAX_CONFIRM_OBJECTS`] objects: past that, nothing is marked, as before this check was widened. A drawing that fails or is stopped marks nothing.
+    fn confirm_hidden(&mut self, chars: &mut [CharRecord], proposed: &[Proposed], pixels: &[u8], (width, height, stride): (c_int, c_int, c_int), cancel: &dyn Cancel) {
+        // A second drawing of a page past this size would double what the check holds, which a map at its limit can't take: such a page keeps what the box test found, as before this check was widened.
+        if proposed.is_empty() || proposed.len() > MAX_CONFIRM_OBJECTS || pixels.len() > MAX_CONFIRM_BYTES {
+            return;
+        }
+        let api = self.api;
+        // Only the part of the page the proposed characters are in is drawn again, which is all a page's headings take on most pages.
+        let pad = crate::INK_PADDING_PX + 1;
+        let devices = proposed.iter().flat_map(|(_, list)| list.iter().map(|(_, device)| *device));
+        let Some((x0, y0, x1, y1)) = devices.fold(None, |region: Option<(c_int, c_int, c_int, c_int)>, (a, b, c, d)| {
+            let (left, right, top, bottom) = (a.min(c), a.max(c), b.min(d), b.max(d));
+            Some(region.map_or((left, top, right, bottom), |(rx0, ry0, rx1, ry1)| (rx0.min(left), ry0.min(top), rx1.max(right), ry1.max(bottom))))
+        }) else { return };
+        let (x0, y0, x1, y1) = ((x0 - pad).max(0), (y0 - pad).max(0), (x1 + pad).min(width), (y1 + pad).min(height));
+        let (region_width, region_height) = (x1 - x0, y1 - y0);
+        if region_width <= 0 || region_height <= 0 {
+            return;
+        }
+        let region_stride = region_width * 4;
+        let mut with = vec![0u8; region_stride as usize * region_height as usize];
+        for row in 0..region_height {
+            let from = ((y0 + row) * stride + x0 * 4) as usize;
+            let to = (row * region_stride) as usize;
+            if let Some(source) = pixels.get(from..from + region_stride as usize) {
+                with[to..to + region_stride as usize].copy_from_slice(source);
+            }
+        }
+        let mut without = vec![0u8; with.len()];
+        for (object, _) in proposed {
+            // SAFETY: each is one of the open page's objects, from its text page, and all are turned back on below whatever the drawing does.
+            unsafe { (api.FPDFPageObj_SetIsActive)(*object, 0) };
+        }
+        let drawn = self.draw(&mut without, region_width, region_height, region_stride, (-x0, -y0), (width, height), cancel);
+        for (object, _) in proposed {
+            // SAFETY: as above.
+            unsafe { (api.FPDFPageObj_SetIsActive)(*object, 1) };
+        }
+        if !matches!(drawn, Ok(true)) {
+            return;
+        }
+        for (at, (a, b, c, d)) in proposed.iter().flat_map(|(_, list)| list) {
+            let local = (a - x0, b - y0, c - x0, d - y0);
+            if crate::adds_nothing_seen(&with, &without, region_stride as usize, (region_width, region_height), local)
+                && let Some(record) = chars.get_mut(*at)
+            {
+                *record = CharRecord::new(record.ch() as u32, CharRecord::NO_INK);
+            }
+        }
+    }
+}
+
+/// A text object the colour test proposes as hidden, and its characters, each by its place in the page's list and its box on the drawing.
+type Proposed = (FPDF_PAGEOBJECT, Vec<(usize, (c_int, c_int, c_int, c_int))>);
+
+/// Text objects a page's check turns off for its one more drawing, to confirm what the colour test proposes. A page proposing more is taken as too busy to tell, and nothing more is marked on it.
+const MAX_CONFIRM_OBJECTS: usize = 512;
+/// Whether another text object covers nearly the same area as this one: the same words drawn twice.
+fn has_a_twin(api: &'static Api, object: FPDF_PAGEOBJECT, objects: &[(FPDF_PAGEOBJECT, [f32; 4])]) -> bool {
+    let Some((_, mine)) = objects.iter().find(|(known, _)| *known == object) else {
+        let _ = api;
+        return false;
+    };
+    let area = |[left, bottom, right, top]: [f32; 4]| (right - left).max(0.0) * (top - bottom).max(0.0);
+    objects.iter().any(|(other, theirs)| {
+        if *other == object {
+            return false;
+        }
+        let shared = [mine[0].max(theirs[0]), mine[1].max(theirs[1]), mine[2].min(theirs[2]), mine[3].min(theirs[3])];
+        let union = area(*mine) + area(*theirs) - area(shared);
+        union > 0.0 && area(shared) / union >= 0.7
+    })
+}
+
+/// Where a character's centre is, to a 2-point cell, with what it is: for finding text drawn twice in one place.
+fn copy_cell(ch: char, [left, bottom, right, top]: &CharBox) -> (u32, i32, i32) {
+    let cell = |value: f32| if value.is_finite() { (value / 2.0).round().clamp(-1e9, 1e9) as i32 } else { 0 };
+    (ch as u32, cell((left + right) / 2.0), cell((bottom + top) / 2.0))
+}
+
+/// The largest page drawing confirmed by drawing it again: a letter page at the check's 2x is under 8 MiB.
+const MAX_CONFIRM_BYTES: usize = 24 * 1024 * 1024;
+/// Most characters on a page for the look for text drawn twice. Past it nothing the colour test proposes is marked, as before it was widened.
+const MAX_COPY_CHECK_CHARS: usize = 200_000;
+
+/// The character's text object, if it's drawn in the colour of what's under it, so that its box's ink may be someone else's: white text over a paragraph. Only a proposal: bold text covers most of its box and its colour is the box's main one too, so [`PdfiumBackend::confirm_hidden`] decides. Only for text that's filled or stroked: render mode 3 draws nothing, which the box test has already said if there's nothing under it, and an OCR layer over a scan is just that, and stays.
+fn drawn_in_its_grounds_colour(api: &'static Api, text: FPDF_TEXTPAGE, index: c_int, pixels: &[u8], (width, height, stride): (c_int, c_int, usize), device: (c_int, c_int, c_int, c_int)) -> Option<FPDF_PAGEOBJECT> {
+    // SAFETY: the text page is live for the caller's walk and `index` is one of its characters. The object it returns belongs to the page, which outlives this call.
+    let object = unsafe { (api.FPDFText_GetTextObject)(text, index) };
+    if object.is_null() {
+        return None;
+    }
+    // SAFETY: as above.
+    let mode = unsafe { (api.FPDFTextObj_GetTextRenderMode)(object) };
+    let (mut r, mut g, mut b, mut a) = (0, 0, 0, 0);
+    // SAFETY: as above, and the out-pointers are live for the call.
+    let known = match mode {
+        0 | 2 | 4 | 6 => unsafe { (api.FPDFPageObj_GetFillColor)(object, &raw mut r, &raw mut g, &raw mut b, &raw mut a) },
+        1 | 5 => unsafe { (api.FPDFPageObj_GetStrokeColor)(object, &raw mut r, &raw mut g, &raw mut b, &raw mut a) },
+        _ => 0,
+    };
+    let byte = |value: c_uint| u8::try_from(value).unwrap_or(u8::MAX);
+    (known != 0 && crate::glyph_is_ground_coloured(pixels, width, height, stride, device, (byte(r), byte(g), byte(b)))).then_some(object)
 }
 
 /// Draws one page onto a caller's memory, in one go: the host's watch holds it from outside, and nothing here pauses. `form` draws form fields too, when `annots` is set.

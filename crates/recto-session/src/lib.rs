@@ -11,6 +11,7 @@ pub mod sleep;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 use record::{EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord, TabEntry, ViewRecord};
+use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -89,6 +90,12 @@ pub struct TabRecord {
     notice: Option<Box<FileNotice>>,
     /// Its place has changed since it was last written, so one small line says so.
     place_dirty: bool,
+    /// What's thought of its own contents, worked out once when they're read, so the sidebar needn't at every page.
+    contents_verdict: ContentsVerdict,
+    /// The reader chose generated contents over the file's own. Kept in the record.
+    pub generated_contents: bool,
+    /// Sections the reader opened or closed by hand, as `(entry, open)`, against what following the place opens. Nothing for a tab nobody's folded, so a cold tab pays a pointer.
+    folds: Option<Box<[(u32, bool)]>>,
 }
 
 /// Where a page of a tab comes from now.
@@ -128,14 +135,24 @@ pub struct SidebarRow<'a> {
     pub depth: u8,
     /// The active PDF, or the section being read.
     pub current: bool,
-    /// Something's wrong with this tab's file, in words of Rust's own.
+    /// Something's wrong with this tab's file, in words of Rust's own. On a note, what it means.
     pub notice: Option<&'static str>,
+    /// What tapping a note does.
+    pub action: Option<ContentsAction>,
+    /// A contents row's entry in its list.
+    pub entry: u32,
+    /// It has sections under it, so it has a chevron to fold them.
+    pub expandable: bool,
+    /// Those sections show.
+    pub expanded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Tab,
     Contents,
+    /// A line of Rust's over a tab's contents: generated contents on offer, being made, or shown.
+    Note,
 }
 
 /// Everything the host draws in the sidebar.
@@ -163,25 +180,60 @@ pub fn tab_notice_words(tab: &TabRecord, has_edits: bool) -> Option<&'static str
 pub const TAB_ROW_HEIGHT: f64 = 32.0;
 /// A contents row in the sidebar, in points.
 pub const CONTENTS_ROW_HEIGHT: f64 = 28.0;
+/// The note over the contents, in points: a line of small text.
+pub const NOTE_ROW_HEIGHT: f64 = 24.0;
 /// The most of the sidebar's room the contents take: about 60%, by the owner's yes of 2026-11-07. The rest is for the other tabs, and it's what keeps them from being pushed off by one long outline.
 pub const CONTENTS_MAX_SHARE: f64 = 0.6;
+
+/// **The scroll thumb**, for the sidebar's lists and the page area alike, so they match. Owner, 2026-11-07: "The sidebar thumb should always be visible, and lets hide the rail", then "the thumb should be thinner", and for both scrollers "the scroll thumb always visible, the rail always hidden", whatever the system's setting. It shows only when there's something to scroll, and draws over the content's right margin, taking no width from it.
+///
+/// **Why 4 points:** the Mac's own overlay thumb is about 7 points at rest and 11 under the pointer. The owner asked for thinner, and 4 is the thinnest that still reads as a thumb on a 1x screen (2 device pixels either side of its centre line), with rounded ends. Under the pointer it widens to 6, as the system's does, and it's grabbed anywhere in a strip [`ScrollThumb::hit_width`] wide, so a slim look doesn't make it hard to drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollThumb {
+    /// Its width at rest, and under the pointer or while dragged, in points.
+    pub width: f64,
+    pub hover_width: f64,
+    /// The strip along the edge that takes the pointer, in points: wider than the thumb looks.
+    pub hit_width: f64,
+    /// From the thumb's right side to the edge, in points.
+    pub inset: f64,
+    /// The shortest it gets, in points.
+    pub min_length: f64,
+    /// Its colour as `0xRRGGBB` and an opacity, on light and dark, at rest and under the pointer. Black or white over whatever's behind, as the system's thumb is, so it sits on the sidebar's colour and the page area's alike.
+    pub light: (u32, f64),
+    pub light_hover: (u32, f64),
+    pub dark: (u32, f64),
+    pub dark_hover: (u32, f64),
+}
+
+/// The one scroll thumb.
+pub const SCROLL_THUMB: ScrollThumb = ScrollThumb { width: 4.0, hover_width: 6.0, hit_width: 12.0, inset: 3.0, min_length: 24.0, light: (0x000000, 0.22), light_hover: (0x000000, 0.42), dark: (0xFFFFFF, 0.24), dark_hover: (0xFFFFFF, 0.45) };
 
 /// How much of the sidebar's list goes where, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SidebarHeights {
     /// The height of the contents' own scrolling area. Less than their rows' total means they scroll.
     pub contents: f64,
+    /// The note's height over them, or nothing.
+    pub note: f64,
     /// Whether the list of tabs doesn't fit, and scrolls by itself.
     pub tabs_scroll: bool,
 }
 
 /// **The sidebar's height rule.** Owner, 2026-11-07: "The max height of toc does not seem to be working", then yes to a true maximum: the contents take what they need, up to [`CONTENTS_MAX_SHARE`] of the room, and scroll inside that. The other tabs have what's left, and a long list of them scrolls by itself in it. It takes the room it's told of, so anything else docked in the sidebar comes off first.
 pub fn sidebar_heights(room: f64, tabs: u32, contents_rows: u32) -> SidebarHeights {
+    sidebar_heights_with_note(room, tabs, contents_rows, false)
+}
+
+/// The same, with a note over the contents, such as "Generated contents". It stays put above them while they scroll, so a generated list is labelled wherever it's scrolled to, and it comes out of the same share.
+pub fn sidebar_heights_with_note(room: f64, tabs: u32, contents_rows: u32, note: bool) -> SidebarHeights {
     let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
+    let tab_row = if tabs > 0 { TAB_ROW_HEIGHT } else { 0.0 };
+    let note = if note && room - tab_row >= NOTE_ROW_HEIGHT { NOTE_ROW_HEIGHT } else { 0.0 };
     let natural = f64::from(contents_rows) * CONTENTS_ROW_HEIGHT;
     // With a window too short for the rest, the active tab's own row comes first.
-    let contents = natural.min(room * CONTENTS_MAX_SHARE).min(room - if tabs > 0 { TAB_ROW_HEIGHT } else { 0.0 }).max(0.0);
-    SidebarHeights { contents, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + contents > room }
+    let contents = natural.min(room * CONTENTS_MAX_SHARE - note).min(room - tab_row - note).max(0.0);
+    SidebarHeights { contents, note, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + note + contents > room }
 }
 
 /// How long after the reader stops using the contents, with the pointer out of them, before they may follow again.
@@ -685,6 +737,75 @@ pub struct Session<L = DiskLoader> {
     agent_at_full: bool,
     /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
     saving: Vec<TabId>,
+    /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
+    generated: Vec<(TabId, GeneratedView)>,
+}
+
+/// Generated contents held for the sidebar. A tab whose contents went out can always look again: they're kept on disk.
+pub const MAX_GENERATED_VIEWS: usize = 8;
+
+/// Where a tab's generated contents stand, as the sidebar shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeneratedView {
+    /// Asked for, and being made.
+    Making,
+    /// They couldn't be, for this reason, in Rust's words.
+    Failed(&'static str),
+    Ready(Arc<Toc>),
+    /// Made, and there were no headings to list: a scan with no text, or a document set all in one size.
+    NoneFound,
+    /// Looked for, for a tab that had chosen them, and they weren't kept. They're offered again.
+    NotKept,
+}
+
+/// What a tap on the contents' note does. The note is Rust's: its words and what it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentsAction {
+    Generate,
+    ShowGenerated,
+    ShowOwn,
+    /// Stop making them.
+    Stop,
+}
+
+impl ContentsAction {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Generate => "contents.generate",
+            Self::ShowGenerated => "contents.show_generated",
+            Self::ShowOwn => "contents.show_own",
+            Self::Stop => "contents.stop",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop].into_iter().find(|action| action.id() == id)
+    }
+}
+
+/// The note over a tab's contents: a short line at rest, and what it means on hover. `None` for contents that are fine and shown as they are. Owner, 2026-11-06: "the left sidebar menu is a bit too complicated (visually noisy)", so it's one quiet line, and the rest waits for the pointer.
+pub fn contents_note(verdict: ContentsVerdict, view: Option<&GeneratedView>, choose_generated: bool, own_entries: usize) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
+    const MADE: &str = "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
+    match view {
+        Some(GeneratedView::Ready(_)) if choose_generated => Some((
+            "Generated contents",
+            if own_entries > 0 { "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own." } else { MADE },
+            (own_entries > 0).then_some(ContentsAction::ShowOwn),
+        )),
+        Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
+        Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some(ContentsAction::Stop))),
+        Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
+        Some(GeneratedView::NoneFound) => Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None)),
+        _ if verdict.offers() || choose_generated => Some((
+            "Generate contents",
+            match verdict {
+                ContentsVerdict::Missing => "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.",
+                _ => "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.",
+            },
+            Some(ContentsAction::Generate),
+        )),
+        _ => None,
+    }
 }
 
 /// What a save writes from: the document as edited, and the file it's about, copied out so the writing needn't hold the session.
@@ -726,7 +847,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, saving: Vec::new() }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), saving: Vec::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -874,12 +995,16 @@ impl<L: DocLoader> Session<L> {
             selection: None,
             notice: None,
             place_dirty: true,
+            contents_verdict: ContentsVerdict::Fine,
+            generated_contents: false,
+            folds: None,
         });
         if let Some(tab) = self.tab_mut(id) {
             tab.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
+        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
@@ -1180,6 +1305,8 @@ impl<L: DocLoader> Session<L> {
 
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
     pub fn go_dormant(&mut self, id: TabId) -> bool {
+        // A dormant tab holds no list: its generated contents are on disk, and found again when it's shown.
+        self.generated.retain(|(tab, _)| *tab != id);
         if !self.can_go_dormant(id) {
             return false;
         }
@@ -1360,6 +1487,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
+        self.generated.retain(|(tab, _)| *tab != id);
         if let Some(tab) = self.tab_mut(id) {
             tab.from_sleep = None;
         }
@@ -1502,6 +1630,11 @@ impl<L: DocLoader> Session<L> {
 
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`. Says how many steps rolled off.
     pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
+        // Another version of the file now: the old one's generated contents and folds aren't about it.
+        self.generated.retain(|(tab, _)| *tab != id);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.folds = None;
+        }
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
         }
@@ -1771,6 +1904,14 @@ impl<L: DocLoader> Session<L> {
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) {
+        // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
+        if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
+            self.generated.retain(|(tab, _)| *tab != id);
+            // Folds are by entry number, which another version's contents don't share.
+            if let Some(tab) = self.tab_mut(id) {
+                tab.folds = None;
+            }
+        }
         let has_edits = self.has_list(id);
         match status {
             FileStatus::NotLooked => {}
@@ -1827,12 +1968,12 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, saving: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, saving: _ } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _ } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1848,6 +1989,8 @@ impl<L: DocLoader> Session<L> {
                     notice: notice.as_deref().cloned(),
                     journal: journals.get(id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
+                    generated_contents: *generated_contents,
+                    contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
                 }
             })
             .collect();
@@ -1942,6 +2085,9 @@ impl<L: DocLoader> Session<L> {
                 selection: entry.selection.map(Box::new),
                 notice: notice.map(Box::new),
                 place_dirty: false,
+                contents_verdict: ContentsVerdict::Fine,
+                generated_contents: entry.generated_contents,
+                folds: (!entry.contents_folds.is_empty()).then(|| entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect()),
             });
         }
         self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
@@ -2147,6 +2293,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.remove(index);
         self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
+        self.generated.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
         if self.active == Some(id) {
             self.active = None;
@@ -2166,7 +2313,7 @@ impl<L: DocLoader> Session<L> {
         let mut toc_open = false;
         for tab in &self.tabs {
             let is_active = self.active == Some(tab.id);
-            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)) });
+            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)), action: None, entry: NONE, expandable: false, expanded: false });
             if !is_active {
                 continue;
             }
@@ -2175,7 +2322,17 @@ impl<L: DocLoader> Session<L> {
             if tab.toc_open
                 && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
             {
-                rail_filled = contents_rows(toc, tab, self.edits.get(&tab.id), &mut rows);
+                let view = self.generated_view(tab.id);
+                let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
+                if let Some((text, hover, action)) = note {
+                    rows.push(SidebarRow { kind: RowKind::Note, tab: tab.id, text, page: None, depth: 0, current: false, notice: Some(hover), action, entry: NONE, expandable: false, expanded: false });
+                }
+                let shown = match view {
+                    Some(GeneratedView::Ready(generated)) if tab.generated_contents => generated,
+                    _ => toc,
+                };
+                // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
+                rail_filled = contents_rows(shown, tab, self.edits.get(&tab.id), &mut rows);
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
@@ -2183,7 +2340,92 @@ impl<L: DocLoader> Session<L> {
         SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
     }
 
+    /// Where this tab's generated contents stand, if anyone's asked.
+    pub fn generated_view(&self, id: TabId) -> Option<&GeneratedView> {
+        self.generated.iter().find(|(tab, _)| *tab == id).map(|(_, view)| view)
+    }
+
+    /// Notes where a tab's generated contents stand. The oldest note gives way past [`MAX_GENERATED_VIEWS`], but never the active tab's.
+    pub fn set_generated_view(&mut self, id: TabId, view: GeneratedView) {
+        if self.tab(id).is_none() {
+            return;
+        }
+        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.push((id, view));
+        while self.generated.len() > MAX_GENERATED_VIEWS {
+            let Some(oldest) = self.generated.iter().position(|(tab, _)| Some(*tab) != self.active) else { break };
+            self.generated.remove(oldest);
+        }
+    }
+
+    /// Forgets where a tab's generated contents stand, so it offers them again.
+    pub fn forget_generated(&mut self, id: TabId) {
+        self.generated.retain(|(tab, _)| *tab != id);
+    }
+
+    /// The same, from a look at the file as it was at `version`: dropped if the tab's file has changed since, as a look that comes back late is about the old one.
+    pub fn set_generated_view_for(&mut self, id: TabId, view: GeneratedView, version: Option<FileStamp>) {
+        if version.is_none() || self.own_stamp(id) == version {
+            self.set_generated_view(id, view);
+        }
+    }
+
+    /// Tabs whose generated contents are being made.
+    pub fn generated_making(&self) -> Vec<TabId> {
+        self.generated.iter().filter(|(_, view)| *view == GeneratedView::Making).map(|(tab, _)| *tab).collect()
+    }
+
+    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
+    pub fn choose_generated(&mut self, id: TabId, generated: bool) {
+        if let Some(tab) = self.tab_mut(id)
+            && tab.generated_contents != generated
+        {
+            tab.generated_contents = generated;
+            tab.folds = None;
+        }
+    }
+
+    /// Opens a contents section that's closed, or closes one that's open, as its chevron does. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". What following the place opens is the default, and only what differs from it is kept, at most [`record::MAX_CONTENTS_FOLDS`], in the record.
+    pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) {
+        let Some(toc) = self.shown_contents(id) else { return };
+        let Some(tab) = self.tab(id) else { return };
+        let chain = following_chain(&toc, tab, self.edits.get(&id));
+        let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
+        if !has_children {
+            return;
+        }
+        let Some(tab) = self.tab_mut(id) else { return };
+        let open_now = section_open(tab.folds.as_deref(), &chain, entry);
+        let mut folds: Vec<(u32, bool)> = tab.folds.take().map(Vec::from).unwrap_or_default();
+        folds.retain(|(at, _)| *at != entry);
+        // Back to what following does is no fold at all.
+        if chain.contains(&entry) == open_now {
+            folds.push((entry, !open_now));
+        }
+        let over = folds.len().saturating_sub(record::MAX_CONTENTS_FOLDS);
+        folds.drain(..over);
+        tab.folds = (!folds.is_empty()).then(|| folds.into_boxed_slice());
+        tab.place_dirty = true;
+    }
+
+    /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
+    fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
+        let (_, own) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        Some(match (self.tab(id).is_some_and(|tab| tab.generated_contents), self.generated_view(id)) {
+            (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
+            _ => Arc::clone(own),
+        })
+    }
+
+    /// What's thought of a tab's own contents, once they've been read.
+    pub fn contents_verdict(&self, id: TabId) -> Option<ContentsVerdict> {
+        let known = self.warm.iter().any(|(tab, _)| *tab == id);
+        self.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
+    }
+
     fn activate(&mut self, id: TabId) {
+        // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
+        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.active.filter(|left| *left != id) {
@@ -2277,6 +2519,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn remember_warm(&mut self, id: TabId, toc: Arc<Toc>) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
+        }
         self.warm.push_front((id, toc));
         while self.warm.len() > MAX_WARM {
             // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
@@ -2315,22 +2560,21 @@ impl<L: DocLoader> Session<L> {
 /// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
 /// without a number, and pages added from another PDF belong to no section.
 fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
-    let original_page = match edits {
-        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
-        None => Some(tab.page),
-    };
-    let here = original_page.and_then(|page| toc.section_at(page));
-    let mut open = HashSet::new();
-    let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
-    while cursor != NONE && open.insert(cursor) {
-        cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
-    }
+    let here = section_here(toc, tab, edits);
+    let chain = following_chain(toc, tab, edits);
+    let folds = tab.folds.as_deref();
+    // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
+    let mut children_show = vec![false; toc.entries().len()];
     let first_row = rows.len();
     let mut filled = 0;
     for (index, entry) in toc.entries().iter().enumerate() {
-        if entry.parent != NONE && !open.contains(&entry.parent) {
+        if entry.parent != NONE && !children_show.get(entry.parent as usize).copied().unwrap_or(false) {
             continue;
         }
+        let at = u32::try_from(index).unwrap_or(NONE);
+        let expandable = toc.entries().get(index + 1).is_some_and(|next| next.parent == at);
+        let expanded = expandable && section_open(folds, &chain, at);
+        children_show[index] = expanded;
         let current = here == Some(index);
         rows.push(SidebarRow {
             kind: RowKind::Contents,
@@ -2343,12 +2587,40 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, r
             depth: entry.depth,
             current,
             notice: None,
+            action: None,
+            entry: at,
+            expandable,
+            expanded,
         });
         if current {
             filled = rows.len() - first_row;
         }
     }
     filled
+}
+
+/// The entry for the section being read, in the file's own page numbers.
+fn section_here(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> Option<usize> {
+    let original_page = match edits {
+        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
+        None => Some(tab.page),
+    };
+    original_page.and_then(|page| toc.section_at(page))
+}
+
+/// The section being read and every section it's in, which following the place keeps open.
+fn following_chain(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> HashSet<u32> {
+    let mut open = HashSet::new();
+    let mut cursor = section_here(toc, tab, edits).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    while cursor != NONE && open.insert(cursor) {
+        cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
+    }
+    open
+}
+
+/// Whether a section's children show: as the reader folded it, or else as following the place has it.
+fn section_open(folds: Option<&[(u32, bool)]>, chain: &HashSet<u32>, entry: u32) -> bool {
+    folds.and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry)).map_or_else(|| chain.contains(&entry), |(_, open)| *open)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2397,6 +2669,7 @@ impl SessionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use recto_core::TocLine;
     use std::cell::Cell;
 
     struct FakeLoader {
@@ -2544,6 +2817,12 @@ mod tests {
         assert!(sidebar_heights(100.0, 1, 1000).contents <= 100.0 - TAB_ROW_HEIGHT, "a short window keeps the tab's own row");
         assert_eq!(sidebar_heights(f64::NAN, 2, 1000).contents, 0.0);
         assert_eq!(sidebar_heights(10.0, 1, 1000).contents, 0.0);
+        // A note over them comes out of the same share, so the tabs keep what they had.
+        let noted = sidebar_heights_with_note(700.0, 1, 1000, true);
+        assert_eq!(noted.note, NOTE_ROW_HEIGHT);
+        assert!((noted.contents + noted.note - most).abs() < 1e-9, "{noted:?}");
+        assert_eq!(sidebar_heights_with_note(700.0, 1, 0, true).contents, 0.0, "a note alone, for a file with no contents");
+        assert_eq!(sidebar_heights_with_note(40.0, 1, 10, true).note, 0.0, "no room for it");
     }
 
     /// Failure: in a short contents area, a place that's just been brought to its anchor is outside the dead zone, so it moves again at every section, or for ever. Wherever the list is short, landing on the anchor is at rest.
@@ -3132,6 +3411,115 @@ mod tests {
         assert!(s.draw_note(a, last).is_some());
         s.close(a).unwrap();
         assert!(s.draw_note(a, last).is_none());
+    }
+
+    /// Failure: a file with no contents of its own gets no offer, or the offer, the list while it's made and the generated list are told apart only by guessing. And a generated list must never take the place of the file's own once the reader goes back to them, nor follow a closed tab.
+    #[test]
+    fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
+        let mut s = session(40);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert_eq!(s.contents_verdict(id), Some(ContentsVerdict::Missing));
+        fn note(s: &Session<FakeLoader>) -> Option<(String, Option<ContentsAction>)> {
+            s.sidebar().rows.iter().find(|row| row.kind == RowKind::Note).map(|row| (row.text.to_string(), row.action))
+        }
+        assert_eq!(note(&s), Some(("Generate contents".into(), Some(ContentsAction::Generate))));
+        s.choose_generated(id, true);
+        s.set_generated_view(id, GeneratedView::Making);
+        assert_eq!(note(&s).map(|(_, action)| action), Some(Some(ContentsAction::Stop)), "the reader can stop them");
+        let lines = [TocLine { title: "1 Introduction", page: 0, parent: NONE, depth: 0 }, TocLine { title: "2 Method", page: 5, parent: NONE, depth: 0 }];
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        let model = s.sidebar();
+        assert_eq!(model.rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| row.text).collect::<Vec<_>>(), ["1 Introduction", "2 Method"]);
+        assert_eq!(note(&s), Some(("Generated contents".into(), None)), "labelled, and with no contents of its own there's nothing to go back to");
+        assert_eq!(model.rail_filled, 1, "the rail counts entries, not the note");
+        assert!(s.to_record().tabs[0].generated_contents, "the choice is kept");
+        s.choose_generated(id, false);
+        assert_eq!(note(&s), Some(("Show generated contents".into(), Some(ContentsAction::ShowGenerated))));
+        assert!(s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents), "the file's own, which are none");
+        // A file changed underneath: the old version's list goes, as an agent's `contents --generated` would find none for the new one.
+        s.choose_generated(id, true);
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 8, mtime_ns: 8, device: 1, inode: 2 }));
+        let before = s.own_stamp(id);
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
+        assert!(s.generated_view(id).is_none(), "an old version's list stayed");
+        // A look that started before the change comes back after it: about the old version, so it's dropped.
+        assert!(before.is_some() && s.own_stamp(id) != before);
+        s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), before);
+        assert!(s.generated_view(id).is_none(), "a late answer about the old version was shown");
+        s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), s.own_stamp(id));
+        assert!(s.generated_view(id).is_some(), "an answer about this version is shown");
+
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.go_dormant(id);
+        assert!(s.generated_view(id).is_none(), "a dormant tab held its list");
+        // Another tab shown: this one's list leaves memory.
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        let other = s.open(Path::new("/d/b.pdf")).unwrap();
+        s.tap(other).unwrap();
+        assert!(s.generated_view(id).is_none(), "a tab off screen held its list");
+        s.close(id).unwrap();
+        assert!(s.generated_view(id).is_none());
+    }
+
+    /// Failure: a section's chevron doesn't fold it, or opens one following didn't, or the fold is lost across a restart, or a fold on a list survives switching to the other list, where its entry number means something else. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers".
+    #[test]
+    fn contents_sections_fold_and_their_folds_come_back() {
+        struct Outlined;
+        impl DocLoader for Outlined {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                let lines = [TocLine { title: "One", page: 0, parent: NONE, depth: 0 }, TocLine { title: "One a", page: 1, parent: 0, depth: 1 }, TocLine { title: "Two", page: 5, parent: NONE, depth: 0 }, TocLine { title: "Two a", page: 6, parent: 2, depth: 1 }];
+                Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::from_lines(&lines, false), renderer_only: false })
+            }
+        }
+        fn shown(s: &Session<Outlined>) -> Vec<(String, bool, bool)> {
+            s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| (row.text.to_string(), row.expandable, row.expanded)).collect()
+        }
+        let mut s = Session::new(Outlined);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        // On page 1, in "One": it's open by following, and "Two" isn't.
+        assert_eq!(shown(&s), [("One".into(), true, true), ("One a".into(), false, false), ("Two".into(), true, false)]);
+        s.toggle_contents_section(id, 0);
+        s.toggle_contents_section(id, 2);
+        assert_eq!(shown(&s), [("One".into(), true, false), ("Two".into(), true, true), ("Two a".into(), false, false)]);
+        s.toggle_contents_section(id, 1);
+        assert_eq!(shown(&s).len(), 3, "an entry with nothing under it doesn't fold");
+        let record = s.to_record();
+        assert_eq!(record.tabs[0].contents_folds, [(0, false), (2, true)]);
+        let mut again = Session::new(Outlined);
+        again.restore(&record, HashMap::new()).unwrap();
+        again.wake_active();
+        assert_eq!(shown(&again), shown(&s), "the folds come back");
+        // Another version of the file: its entries aren't these, so the folds go.
+        again.apply_file_status(again.active().unwrap(), FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
+        assert!(again.to_record().tabs[0].contents_folds.is_empty(), "folds by entry number stayed for another version");
+        // Back to what following does is no fold at all.
+        s.toggle_contents_section(id, 0);
+        s.toggle_contents_section(id, 2);
+        assert!(s.to_record().tabs[0].contents_folds.is_empty());
+        s.toggle_contents_section(id, 2);
+        s.choose_generated(id, true);
+        assert!(s.to_record().tabs[0].contents_folds.is_empty(), "the other list's entries aren't these");
+    }
+
+    /// Failure: a thousand tabs that each had generated contents asked for hold every list in memory.
+    #[test]
+    fn generated_lists_held_are_capped() {
+        let mut s = session(40);
+        let ids: Vec<TabId> = (0..20).map(|n| s.open(Path::new(&format!("/d/{n}.pdf"))).unwrap()).collect();
+        for id in &ids {
+            s.set_generated_view(*id, GeneratedView::Making);
+        }
+        assert!(s.generated.len() <= MAX_GENERATED_VIEWS);
+        assert!(s.generated_view(*ids.last().unwrap()).is_some());
+    }
+
+    /// Failure: contents that are fine get an offer, so the sidebar nags about a good file.
+    #[test]
+    fn fine_contents_get_no_note() {
+        assert_eq!(contents_note(ContentsVerdict::Fine, None, false, 12), None);
+        assert!(contents_note(ContentsVerdict::LooksBad(recto_core::verdict::BadReason::TooFew), None, false, 1).is_some());
     }
 
     /// Failure: a field added carelessly raises the cost of every visible row.

@@ -45,6 +45,7 @@
 
 pub mod chrome;
 pub mod corpus;
+pub mod generated;
 pub mod order;
 pub mod rank;
 pub mod select;

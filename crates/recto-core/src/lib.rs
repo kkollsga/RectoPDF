@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 mod signatures;
 mod effects;
 pub mod save;
+pub mod verdict;
 pub use effects::{PageEffects, page_effects};
 
 pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within};

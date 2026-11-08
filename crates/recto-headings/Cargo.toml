@@ -1,0 +1,43 @@
+[package]
+name = "recto-headings"
+version = "0.1.0"
+license = "MIT"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# A workspace of its own, kept out of the main one. Cargo unifies a dependency's features across everything built together, and distillPDF asks for lopdf's defaults: `rayon`, which parses object streams on a pool of threads, and `chrono-clock`. In the main workspace that would put a thread pool into the app's own process. Here it's only in this helper, which exits when it's done.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# A helper process: what distillPDF uses ends when it exits. SPEC §2: background work is a helper process at background priority, and exits when done.
+[[bin]]
+name = "recto-headings"
+path = "src/main.rs"
+
+[dependencies]
+# The owner's library, at its published 0.1.7 commit, with no Python and no OCR. It's on the same lopdf commit as RectoPDF (`0e89b89`), so there's one lopdf here too.
+distillpdf = { git = "https://github.com/kkollsga/distillPDF", rev = "fbf5b22f641982a41374507466aafdb615fbf512", default-features = false }
+recto-core = { path = "../recto-core" }
+recto-index = { path = "../recto-index" }
+recto-platform = { path = "../recto-platform" }
+recto-proto = { path = "../recto-proto" }
+recto-render-service = { path = "../recto-render-service" }
+serde_json = { version = "1", default-features = false, features = ["std", "float_roundtrip"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+debug = "line-tables-only"
+
+[dev-dependencies]
+recto-testpdf = { path = "../recto-testpdf" }

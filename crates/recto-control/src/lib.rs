@@ -4,6 +4,7 @@
 //! same against either. See `docs/ENGINEERING.md` for why it's one blocking `poll` and no async runtime.
 
 pub mod client;
+pub mod generating;
 pub mod host;
 pub mod indexing;
 pub mod levels;

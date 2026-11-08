@@ -494,7 +494,8 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         "handles": state["memory"]["open_handles"],
         "budget_mib": 60,
     });
-    std::thread::sleep(Duration::from_secs(1));
+    // Settled isn't yet at rest: in the two seconds after, on `main` and with generated contents alike, an app opening a document wakes about 60 times in the first and 22 in the second (one-second bins, 2026-11-08), so a window from 1 s read that tail as 1.1 a second on its own, and its numbers went from 0.45 to 1.65 by when it started. From 5 s it's the app at rest.
+    std::thread::sleep(Duration::from_secs(5));
     let before = recto_platform::local::process_counters(run.pid);
     let idle_for = Duration::from_secs(20);
     std::thread::sleep(idle_for);
