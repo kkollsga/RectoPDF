@@ -110,3 +110,12 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Product rules from the owner: copying and printing protected PDFs (2026-11-08)
 - Exports of a copy-restricted PDF ask "anyway" like Copy. Asked whether SVG export, PNG render and print-to-PDF should get the same step: "Yes, same step". Agents need `--anyway`, and it's logged.
 - Print ignores a PDF's no-print flag. Asked what Print should do with a file that says it may not be printed: "Ignore the flag". No notice and no refusal.
+
+## Product rules from the owner, using the full reader build (2026-11-08, "RectoPDF - User observations")
+- "Scroll bar track is quite wide. Can you make it thinner with a small margin on the right side so its centered on the thumb?"
+- "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu."
+- "Im not seeing check for updates button in the macos top bar menu."
+- "When sidebar is hidden, I want the traffic light buttons and sidebar toggle to autohide. To show them again you hover above them."
+- "Zoom level should auto hid 3s after last zoom change, and similar behaviour for page number."
+- "The margin above first page, and below last page should be 50% of page height"
+- "When you are testing the app it flashes open in lower left corner. Is it possible to test the app in the background? Ie headless?" A quiet run must never show a window on the screen, not even for a moment (rule: quiet runs never take the screen).
