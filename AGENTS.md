@@ -106,3 +106,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "add some margin above the first page, and below the last page"
 - "the scroll thumb always visible, the rail always hidden": for the page area too, whatever the system's scroll bar setting.
 - "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
+
+## Product rules from the owner: copying and printing protected PDFs (2026-11-08)
+- Exports of a copy-restricted PDF ask "anyway" like Copy. Asked whether SVG export, PNG render and print-to-PDF should get the same step: "Yes, same step". Agents need `--anyway`, and it's logged.
+- Print ignores a PDF's no-print flag. Asked what Print should do with a file that says it may not be printed: "Ignore the flag". No notice and no refusal.
