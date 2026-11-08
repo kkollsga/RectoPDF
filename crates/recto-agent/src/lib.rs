@@ -1465,7 +1465,8 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
 /// `recto goto`: a jump, so Back comes here again, as following a link does.
 fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32) -> Result<(), AgentError> {
     let position = page.checked_sub(1).filter(|position| *position < session.pages_in(id)).ok_or_else(no_such_page)?;
-    session.jump(id, position, 0.0)?;
+    // An agent's mark, which gives way to the person's in the trail.
+    session.jump_as(id, position, 0.0, recto_session::Author::Agent)?;
     Ok(())
 }
 

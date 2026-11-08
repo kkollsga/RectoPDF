@@ -15,6 +15,8 @@ pub struct PointerLook {
 /// The sheet that asks before a web or email address opens. Owner's brief, 2026-11-08: "External URIs open only after a clear, Rust-worded confirmation that shows the real target."
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct LinkPrompt {
+    /// Which asking this is, so an answer is to the sheet that was shown and no later one.
+    pub id: u64,
     pub title: String,
     pub message: String,
     pub open_title: String,
@@ -68,22 +70,24 @@ fn refused_hint(why: Refused) -> &'static str {
 }
 
 /// An address's real host, past any `user@` a link can put in front to look like another: `https://bank.com@other.net/` goes to `other.net`.
-pub(crate) fn host_of(address: &str) -> Option<&str> {
+pub(crate) fn host_of(address: &str) -> Option<String> {
     let rest = address.split_once("://")?.1;
-    let authority = rest.split(['/', '?', '#']).next()?;
+    // The authority ends at the first of these, as a browser reads it; a backslash never gets this far, as such an address is refused.
+    let authority = rest.split(['/', '?', '#', '\\']).next()?;
     let host = authority.rsplit('@').next()?;
-    (!host.is_empty()).then_some(host)
+    // Lower-case, as hosts are, so a mix of cases can't make one look like another.
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 /// The sheet for a web or email address, in Rust's words, with the real target shown in full.
-pub(crate) fn prompt_for(address: &str) -> LinkPrompt {
+pub(crate) fn prompt_for(id: u64, address: &str) -> LinkPrompt {
     let cancel_title = "Cancel".to_string();
     if address.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:")) {
         let to = &address[7..];
-        return LinkPrompt { title: "Write an email from this link?".into(), message: format!("The PDF links to an email to:\n\n{to}\n\nIt opens your mail app, outside RectoPDF."), open_title: "Open Mail".into(), cancel_title, address: address.to_string() };
+        return LinkPrompt { id, title: "Write an email from this link?".into(), message: format!("The PDF links to an email to:\n\n{to}\n\nIt opens your mail app, outside RectoPDF."), open_title: "Open Mail".into(), cancel_title, address: address.to_string() };
     }
-    let host = host_of(address).unwrap_or(address);
-    LinkPrompt { title: "Open this link in your browser?".into(), message: format!("The PDF links to a page on {host}:\n\n{address}\n\nIt opens in your browser, outside RectoPDF. Open it only if you trust where it goes."), open_title: "Open Link".into(), cancel_title, address: address.to_string() }
+    let host = host_of(address).unwrap_or_else(|| address.to_string());
+    LinkPrompt { id, title: "Open this link in your browser?".into(), message: format!("The PDF links to a page on {host}:\n\n{address}\n\nIt opens in your browser, outside RectoPDF. Open it only if you trust where it goes."), open_title: "Open Link".into(), cancel_title, address: address.to_string() }
 }
 
 /// Which way a swipe goes, as the system has it: a swipe with a positive `delta_x` goes back, as in Safari.
@@ -124,12 +128,17 @@ mod tests {
     /// Failure: the sheet doesn't show the real host, so `https://bank.com@other.net/` reads as the bank's; or it doesn't show the whole address.
     #[test]
     fn the_prompt_shows_the_real_target() {
-        let prompt = prompt_for("https://bank.com@other.net/login");
+        let prompt = prompt_for(1, "https://bank.com@other.net/login");
         assert!(prompt.message.contains("a page on other.net"), "{}", prompt.message);
         assert!(prompt.message.contains("https://bank.com@other.net/login"));
         assert_eq!(prompt.address, "https://bank.com@other.net/login");
-        assert_eq!(host_of("http://example.com:8080/x"), Some("example.com:8080"));
-        let mail = prompt_for("mailto:someone@example.com");
+        assert_eq!(host_of("http://example.com:8080/x").as_deref(), Some("example.com:8080"), "a port stays, as it's part of where it goes");
+        assert_eq!(host_of("https://bank.com#@evil.example/").as_deref(), Some("bank.com"), "past a # is the fragment, not the host");
+        assert_eq!(host_of("https://bank.com?@evil.example/").as_deref(), Some("bank.com"), "past a ? is the query");
+        assert_eq!(host_of("https://evil.example\\@bank.com/").as_deref(), Some("evil.example"), "a backslash ends the host, as a browser reads it");
+        assert_eq!(host_of("https://BaNk.CoM/").as_deref(), Some("bank.com"), "lower-case");
+        assert_eq!(recto_core::nav::judge_address(b"https://evil.example\\@bank.com/"), recto_core::nav::LinkTarget::Refused(recto_core::nav::Refused::BadAddress), "and such an address isn't offered at all");
+        let mail = prompt_for(2, "mailto:someone@example.com");
         assert!(mail.message.contains("someone@example.com") && mail.open_title == "Open Mail");
     }
 

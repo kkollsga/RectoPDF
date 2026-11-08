@@ -747,6 +747,17 @@ pub struct DocRenderer {
 }
 
 impl DocRenderer {
+    /// **Reads the file's structure through the very file this renderer has open,** with the password it opened with, if any, so what's read is of the version being drawn: a file replaced by a rename isn't what this reads, as its pages aren't what's showing. In this process, and the password never leaves it. Nothing if the file can't be shared just now.
+    pub fn read_structure<R>(&self, read: impl FnOnce(File, Option<&[u8]>) -> R) -> Option<R> {
+        let file = self.file.try_clone().ok()?;
+        Some(read(file, self.password.as_deref()))
+    }
+
+    /// Whether the file's been seen to be another than the one opened, and that hasn't been taken up yet. It's left to be taken.
+    pub fn file_seen_changed(&self) -> bool {
+        self.file_changed
+    }
+
     /// Opens the file for reading and prepares a renderer. No process starts until something needs one.
     pub fn new(path: &Path, password: Option<&[u8]>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
         Self::with_file(Self::open_file(path)?, path, password, config, policy)

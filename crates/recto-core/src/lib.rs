@@ -175,11 +175,11 @@ pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError
 }
 
 /// What [`open_reader_cached`] may keep: enough for a page's annotations and their streams, and gone with the read.
-const READ_CACHE_BYTES: u64 = 4 * 1024 * 1024;
-const READ_CACHE_ENTRIES: usize = 256;
+pub(crate) const READ_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const READ_CACHE_ENTRIES: usize = 256;
 
 /// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
-fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
+pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
     let reader = opened.map_err(|_| OpenError::NotPdf)?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);

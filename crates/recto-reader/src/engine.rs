@@ -769,7 +769,8 @@ fn run(shared: &Shared) {
         lock(&shared.reader).note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
             // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
-            let links = renderers.contains_key(&job.file).then(|| recto_core::nav::page_links(&job.file, &[job.source_page]).ok().and_then(|read| read.into_iter().next()).map(|(_, links)| Arc::new(links)));
+            // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+            let links = renderers.get(&job.file).filter(|open| !open.replaced && !open.doc.file_seen_changed()).and_then(|open| open.doc.read_structure(|file, password| recto_core::nav::page_links_in(file, password, &[job.source_page]).ok().and_then(|read| read.into_iter().next()).map(|(_, links)| Arc::new(links))));
             let mut reader = lock(&shared.reader);
             let outcome = match links {
                 Some(found) => Outcome::Links(found),

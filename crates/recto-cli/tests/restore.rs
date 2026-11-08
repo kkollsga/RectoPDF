@@ -386,6 +386,8 @@ const KNOWN_PATHS: &[&str] = &[
     "app.links.page_field",
     "session.tabs[].back.len",
     "session.tabs[].forward.len",
+    "session.tabs[].back[].by_agent",
+    "session.tabs[].forward[].by_agent",
     "session.tabs[].back[].page",
     "session.tabs[].back[].within",
     "session.tabs[].forward[].page",

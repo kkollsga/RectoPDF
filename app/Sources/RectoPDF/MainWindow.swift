@@ -733,7 +733,7 @@ final class BookMark: NSView {
         alert.beginSheetModal(for: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.delegate.sheetShowing = nil
-            guard let address = core.linkPromptAnswered(open: response == .alertFirstButtonReturn) else { return }
+            guard let address = core.linkPromptAnswered(id: prompt.id, open: response == .alertFirstButtonReturn) else { return }
             self?.delegate.openAddress(address)
         }
     }

@@ -206,6 +206,14 @@ pub fn page_links(path: &Path, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, O
     Ok(links_of(&open_reader_cached(path)?, pages))
 }
 
+/// [`page_links`] through a file already open, with the password it was opened with if it's protected: the file a page view is drawing, whatever is at its path now.
+pub fn page_links_in(file: std::fs::File, password: Option<&[u8]>, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, OpenError> {
+    let source = lopdf::FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
+    let options = lopdf::IndexedReaderOptions { password: password.map(<[u8]>::to_vec), ..lopdf::IndexedReaderOptions::default() };
+    let reader = crate::checked_reader(IndexedReader::open_cached(source, options, lopdf::IndexedReaderCacheOptions::new(crate::READ_CACHE_BYTES, crate::READ_CACHE_ENTRIES)))?;
+    Ok(links_of(&reader, pages))
+}
+
 /// [`page_links`] on bytes in memory: the same walk, for the fuzzer.
 pub fn page_links_bytes(bytes: Arc<[u8]>, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, OpenError> {
     Ok(links_of(&open_bytes(bytes)?, pages))
@@ -375,7 +383,11 @@ pub fn judge_address(bytes: &[u8]) -> LinkTarget {
             _ => LinkTarget::Refused(Refused::BadAddress),
         };
     }
-    let Some(scheme) = scheme_of(bytes) else {
+    // A backslash is a slash to a browser and not to a reader of the address, so `https://evil.example\@bank.com/` would show one host and go to another; and Foundation rewrites these before opening, so what opened wouldn't be what was shown.
+    if bytes.iter().any(|b| matches!(b, b'\\' | b'"' | b'<' | b'>' | b'^' | b'`' | b'{' | b'|' | b'}')) {
+        return LinkTarget::Refused(Refused::BadAddress);
+    }
+        let Some(scheme) = scheme_of(bytes) else {
         // A relative address would go against a base the file chooses, so it's another address than the one shown.
         return LinkTarget::Refused(Refused::BadAddress);
     };
@@ -845,6 +857,10 @@ mod tests {
             (b"https://example.com/\x00", Refused::BadAddress),
             (b"https:///etc", Refused::BadAddress),
             (b"https:", Refused::BadAddress),
+            (b"https://evil.example\\@bank.com/", Refused::BadAddress),
+            (b"https://example.com/<script>", Refused::BadAddress),
+            (b"https://example.com/a|b", Refused::BadAddress),
+            (b"https://example.com/{x}", Refused::BadAddress),
             (b"https://\xc3\xa9xample.com", Refused::BadAddress),
             (b"", Refused::BadAddress),
         ] {

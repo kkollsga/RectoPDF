@@ -84,3 +84,17 @@ fn trees_that_loop_end() {
     let read = page_links_bytes(Arc::from(bytes), &[0]).unwrap();
     assert_eq!(read[0].1.links[0].target, LinkTarget::Nowhere);
 }
+
+/// Failure: links are read from whatever is at the file's path now, so after the file's replaced and before the page view takes that up, the new version's links are offered over the old version's pages.
+#[test]
+fn links_through_an_open_file_are_that_files() {
+    let file = TempPdf::new("links.pdf", &linked_document());
+    let held = std::fs::File::open(&file.0).unwrap();
+    // Replaced by a rename, as an editor saves: the path now has a file with no links.
+    let other = file.0.with_file_name("other.pdf");
+    std::fs::write(&other, document(1, "", "", Vec::new())).unwrap();
+    std::fs::rename(&other, &file.0).unwrap();
+    assert!(page_links(&file.0, &[0]).unwrap()[0].1.links.is_empty(), "the path is the new file");
+    let read = recto_core::nav::page_links_in(held, None, &[0]).unwrap();
+    assert_eq!(read[0].1.links.len(), LINKS_ON_PAGE_ONE.len(), "the open file is the old one, whose pages are showing");
+}

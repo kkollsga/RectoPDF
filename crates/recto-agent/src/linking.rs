@@ -4,7 +4,7 @@
 
 use crate::{AgentError, Event, SessionAccess, exit, locate, select, where_json};
 use recto_core::nav::{LinkTarget, PageLinks};
-use recto_session::{DocLoader, Session, TabId};
+use recto_session::{Author, DocLoader, Session, TabId};
 use serde_json::{Value, json};
 
 /// What a link does, in an agent's terms: where it goes now, with edits counted, or why it doesn't.
@@ -71,11 +71,11 @@ pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, eve
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
                 let to = s.position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
-                s.jump(id, to, within.map_or(0.0, f64::from))?;
+                s.jump_as(id, to, within.map_or(0.0, f64::from), Author::Agent)?;
                 "page"
             }
             LinkTarget::History { back } => {
-                let moved = if *back { s.go_back(id)? } else { s.go_forward(id)? };
+                let moved = s.step_as(id, *back, Author::Agent)?;
                 if !moved {
                     return Err(nothing_that_way(*back));
                 }
@@ -109,7 +109,7 @@ fn nothing_that_way(back: bool) -> AgentError {
 pub fn step<A: SessionAccess>(access: &A, tab: &str, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let moved = if back { s.go_back(id)? } else { s.go_forward(id)? };
+        let moved = s.step_as(id, back, Author::Agent)?;
         if !moved {
             return Err(nothing_that_way(back));
         }
@@ -124,7 +124,7 @@ pub fn goto_label<A: SessionAccess>(access: &A, tab: &str, label: &str, events: 
     access.with(|s| {
         let id = select(s, tab)?;
         let page = s.page_for_typed(id, label).ok_or_else(|| AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND).then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page."))?;
-        s.jump(id, page, 0.0)?;
+        s.jump_as(id, page, 0.0, Author::Agent)?;
         events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
         Ok(where_json(s, id))
     })

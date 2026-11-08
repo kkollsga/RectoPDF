@@ -960,6 +960,8 @@ struct Inner {
     action_notice: Mutex<Option<String>>,
     /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
     link_prompt: Mutex<Option<linking::LinkPrompt>>,
+    /// Link sheets asked so far, which numbers each.
+    link_prompts_made: AtomicU64,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
 }
@@ -1376,6 +1378,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             link_prompt: Mutex::new(None),
+            link_prompts_made: AtomicU64::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -1801,9 +1804,15 @@ impl AppCore {
         linking::PointerLook { cursor: if engine.pointer_is_over_text(x, y) { "ibeam" } else { "arrow" }.into(), hint: None }
     }
 
-    /// The sheet asking about a web or email address was answered. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
-    pub fn link_prompt_answered(&self, open: bool) -> Option<String> {
-        let prompt = lock(&self.inner.link_prompt).take();
+    /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
+    pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
+        let mut asked = lock(&self.inner.link_prompt);
+        // An answer is to the sheet that was shown: a later link's asking is left for its own answer.
+        if asked.as_ref().is_none_or(|prompt| prompt.id != id) {
+            return None;
+        }
+        let prompt = asked.take();
+        drop(asked);
         self.inner.core.push(CoreCall::Reconcile);
         prompt.filter(|_| open).map(|prompt| prompt.address)
     }
@@ -2960,7 +2969,7 @@ fn follow_link(inner: &Inner, pane: usize, engine: &Engine, hit: recto_reader::l
         },
         recto_core::nav::LinkTarget::History { back } => inner.core.push(CoreCall::Step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
-            *lock(&inner.link_prompt) = Some(linking::prompt_for(&address));
+            *lock(&inner.link_prompt) = Some(linking::prompt_for(inner.link_prompts_made.fetch_add(1, Ordering::SeqCst) + 1, &address));
             inner.core.push(CoreCall::Reconcile);
         }
         recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
