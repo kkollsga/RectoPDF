@@ -100,7 +100,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
 - [x] Sandbox spike: PDFium sandboxed in a nested helper, not XPC (`docs/research/2026-11-07-sandbox-spike.md`)
-- [ ] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout
+- [x] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout (`app/render-helper.sh`, `docs/ENGINEERING.md`, "Renderer")
+- [ ] The indexer and headings helpers read untrusted PDFs with lopdf, and the headings helper with distillPDF's image decoders too, outside any sandbox. The app parses the same files with the same lopdf in its own process, so sandboxing them alone wouldn't narrow lopdf's exposure; distillPDF's decoders are what only they add. Not the renderer's pattern: they open the file by path, the indexer writes its index, and both start render workers, which a sandboxed parent can't start in their own sandbox. Decide whether the headings helper gets a wall of its own
 
 **Done when:** you can read in it, an agent can screenshot every state without touching your screen, and the budgets are measured.
 
@@ -265,7 +266,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase 7: Release
 
-- [ ] **Release blocker:** the renderer runs in the sandbox, tested on the signed build
+- [x] Release blocker, first half: the renderer is built into its sandboxed helper, signed (ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on) and fails closed, each failure named
+- [ ] **Release blocker, second half:** the renderer's sandbox on a notarized run of the release; the sandbox and wall tests passing on `macos-15` and `macos-26` CI runners, where the home folder is under `/Users` (the `sandbox` job in `ci.yml`, first run to be watched); and the Developer ID run of the renderer suite matched to the ad hoc one. That gap is explained: the 138 against 143 was the 5 tests of `sandbox.rs`, left out by the filter of that run because they lay out ad hoc helpers of their own, and `surfaces.rs`'s 8 used the bare worker in both runs, since fixed to follow `RECTO_TEST_WORKER`
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
@@ -277,7 +279,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
-- [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo)
+- [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo). It also settles what the sandboxed renderer helper couldn't be tested for here: notarization of a nested helper, Gatekeeper and quarantine on a downloaded copy, and App Translocation
 - [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording

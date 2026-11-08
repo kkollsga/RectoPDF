@@ -38,7 +38,11 @@ fn every_message_survives_a_round_trip() {
         let reply = TileReply { status, ..tile() };
         assert_eq!(TileReply::decode(payload(&reply.encode())), Ok(reply));
     }
-    assert_eq!(decode_hello(payload(&encode_hello(42))), Ok(42));
+    for walled in [false, true] {
+        assert_eq!(decode_hello(payload(&encode_hello(Hello { pid: 42, walled }))), Ok(Hello { pid: 42, walled }));
+    }
+    assert!(decode_hello(&[42, 0, 0, 0, 2]).is_err(), "an unknown flag is refused");
+    assert!(decode_hello(&[42, 0, 0, 0]).is_err(), "the flags byte is required");
     assert_eq!(decode_opened(payload(&encode_opened(9, 77))), Ok((9, 77)));
     let traits = PageTraits { job_id: 3, largest_image_pixels: 1 << 40 };
     assert_eq!(PageTraits::decode(payload(&traits.encode())), Ok(traits));

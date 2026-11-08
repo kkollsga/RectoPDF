@@ -133,7 +133,8 @@ jobs:
           # Apple's Developer ID intermediate, in case the runner lacks it: the chain must verify.
           curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
             && security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc" >/dev/null 2>&1 || true
-          identity=$(security find-identity -v -p codesigning "$kc" | sed -n "s/.*\"\(Developer ID Application: .*($team)\)\"\$/\1/p" | head -1)
+          # The keychain search list just set, which is what codesign and app/render-helper.sh search too, so the identity found here is the one they'll find.
+          identity=$(security find-identity -v -p codesigning | sed -n "s/.*\"\(Developer ID Application: .*($team)\)\"\$/\1/p" | sort -u | head -1)
           [ -n "$identity" ] || { echo "::error::MACOS_CERT_P12 holds no valid Developer ID Application identity of team $team"; exit 1; }
           printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           xcrun notarytool store-credentials recto-notary --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" \

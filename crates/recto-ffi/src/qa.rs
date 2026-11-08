@@ -153,6 +153,11 @@ impl QaBridge {
     }
 
     /// The workers of every page view, now and at their peaks.
+    /// Live workers that said their walls were up.
+    fn walled_workers(&self) -> u32 {
+        self.engines().iter().map(|engine| engine.walled_workers()).sum()
+    }
+
     fn workers_footprint(&self) -> (u64, u64, usize) {
         self.engines().iter().fold((0, 0, 0), |(now, peak, count), engine| {
             let (one, top) = engine.workers_footprint();
@@ -352,6 +357,7 @@ impl QaBridge {
                 "compressed_bytes": mine.compressed,
                 "heap_bytes": mine.heap,
                 "workers": workers,
+                "workers_walled": self.walled_workers(),
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,

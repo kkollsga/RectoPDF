@@ -79,7 +79,9 @@ team_of() { codesign -dv --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p';
 check_built() {
     echo "==> Verify the app"
     codesign --verify --deep --strict "$APP"
-    for f in "$APP/Contents/MacOS/"*; do
+    # The renderer is sandboxed, signed as it should be, and nothing could run in its place outside the sandbox.
+    "$APP_DIR/render-helper.sh" --check "$APP"
+    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"*; do
         lipo -archs "$f" | grep -qx arm64 || { echo "unexpected architectures in $f: $(lipo -archs "$f")" >&2; exit 1; }
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
@@ -135,7 +137,10 @@ pages = state["app"]["pages"]
 assert state["reader"]["settled"] is True, "it never settled"
 assert state["reader"]["pages"] == 1, "the PDF did not open"
 assert pages["tile_layers"] > 0, "nothing was drawn: %r" % pages
-assert state["memory"]["worker_bytes"] > 0 or state["reader"]["tiles"].get("attached", 0) > 0, "no worker drew it"
+# A tile in a layer came as an IOSurface over the Mach link: the app has no other way for one to arrive, so this is the tile path after the worker dropped its rights.
+assert state["reader"]["tiles"].get("attached", 0) > 0, "no surface tile arrived: %r" % state["reader"]["tiles"]
+# The release worker refuses to run without its walls, and its hello says it has them up.
+assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it was sandboxed: %r" % state["memory"]
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
@@ -164,6 +169,7 @@ sign_it() {
     "$APP_DIR/build.sh" --sign-only
     echo "==> Developer ID: team $(team_of "$APP")"
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
+    [ "$(team_of "$APP/Contents/Helpers/RectoRender.app")" = "$TEAM_ID" ] || { echo "the renderer helper isn't signed by team $TEAM_ID" >&2; exit 1; }
     echo "==> Notarize and staple the app (waits for Apple)"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notarize.zip"
     notarize "$WORK/notarize.zip"
@@ -216,6 +222,7 @@ check_zip() {
     (cd "$OUT" && shasum -a 256 -c SHA256SUMS >/dev/null)
     "$APP/Contents/MacOS/recto-updater" check-zip "$OUT/$ZIP" "$check"
     codesign --verify --deep --strict "$check/RectoPDF.app"
+    "$APP_DIR/render-helper.sh" --check "$check/RectoPDF.app"
     [ -x "$check/RectoPDF.app/Contents/MacOS/recto-updater" ] || { echo "the zipped app has no installer, so it could never update again" >&2; exit 1; }
     if [ "$1" = signed ]; then
         [ "$(team_of "$check/RectoPDF.app")" = "$TEAM_ID" ] || { echo "the zipped app lost its signature" >&2; exit 1; }
@@ -228,6 +235,7 @@ if [ "$CHECK_SIGNED" = 1 ]; then
     # In the signing job, once the keys are gone: the stapled app runs and draws, and the zip is one the updater takes.
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     xcrun stapler validate "$APP"
+    "$APP_DIR/render-helper.sh" --check "$APP"
     run_it
     check_zip signed
 elif [ "$ALREADY_BUILT" = 1 ]; then
