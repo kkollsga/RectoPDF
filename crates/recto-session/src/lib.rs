@@ -82,6 +82,8 @@ pub struct TabRecord {
     place: Option<PlaceRecord>,
     /// Quarter turns of the view. Nothing turns the view yet.
     pub view_rotation: u8,
+    /// How its pages are laid out: a page to a row, or two side by side.
+    pub spread: record::Spread,
     /// Selection work: what's selected. Nothing sets it yet.
     selection: Option<Box<Selection>>,
     /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
@@ -578,8 +580,8 @@ pub fn row_full_text(text: &str, is_file_name: bool) -> RowFullText {
 pub struct ViewSettings {
     /// `None` goes with the window: white with a light one, dark with a dark one.
     pub paper: Option<Paper>,
-    /// Sidebar hidden, page number only, agent icon kept.
-    pub focus: bool,
+    /// The sidebar's hidden. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode".
+    pub sidebar_hidden: bool,
     /// Owner, 2026-11-07: "Add an option in the macos top bar to turn off agent bar (hides the icon)".
     pub agent_icon_hidden: bool,
 }
@@ -973,6 +975,7 @@ impl<L: DocLoader> Session<L> {
             stamp,
             place: None,
             view_rotation: 0,
+            spread: record::Spread::Single,
             selection: None,
             notice: None,
             place_dirty: true,
@@ -1755,6 +1758,22 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// Lays a tab's pages out another way. Says whether that changed anything.
+    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
+        match self.tab_mut(id) {
+            Some(tab) if tab.spread != spread => {
+                tab.spread = spread;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// How a tab's pages are laid out.
+    pub fn spread_of(&self, id: TabId) -> Option<record::Spread> {
+        self.tab(id).map(|tab| tab.spread)
+    }
+
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
@@ -1870,11 +1889,11 @@ impl<L: DocLoader> Session<L> {
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
         let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _ } = self;
-        let ViewSettings { paper, focus, agent_icon_hidden } = *view;
+        let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1884,6 +1903,7 @@ impl<L: DocLoader> Session<L> {
                     place: *place,
                     view_rotation: *view_rotation,
                     toc_open: *toc_open,
+                    layout: *spread,
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
@@ -1894,7 +1914,7 @@ impl<L: DocLoader> Session<L> {
                 }
             })
             .collect();
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs }
+        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -1933,8 +1953,9 @@ impl<L: DocLoader> Session<L> {
         self.next_id = record.next_id;
         self.find = record.find.clone();
         self.edit_mode = record.edit_mode;
-        let ViewRecord { paper, focus, agent_icon_hidden } = record.view;
-        self.view = ViewSettings { paper: paper.map(Paper::from_record), focus, agent_icon_hidden };
+        let sidebar_hidden = record.view.sidebar_comes_back_hidden();
+        let ViewRecord { paper, focus: _, sidebar_hidden: _, agent_icon_hidden } = record.view;
+        self.view = ViewSettings { paper: paper.map(Paper::from_record), sidebar_hidden, agent_icon_hidden };
         self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
@@ -1980,6 +2001,7 @@ impl<L: DocLoader> Session<L> {
                 stamp: entry.file.map(Into::into),
                 place: entry.place,
                 view_rotation: entry.view_rotation,
+                spread: entry.layout,
                 selection: entry.selection.map(Box::new),
                 notice: notice.map(Box::new),
                 place_dirty: false,
@@ -2098,6 +2120,18 @@ impl<L: DocLoader> Session<L> {
     /// [`Self::undo_edit`] for whoever's asking: an agent's can be refused, if it would push the owner's steps out of the history.
     pub fn undo_edit_as(&mut self, id: TabId, by: Author) -> Result<bool, SessionError> {
         self.step_back_or_on(id, by, PageEdits::try_undo)
+    }
+
+    /// Whether a tab's pages can be edited now: it's there, more than the renderer can read its file, and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
+    pub fn can_edit_pages(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| !tab.renderer_only && !matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
+    }
+
+    /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
+    pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
+        let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
+        let one_page = self.edit_mode;
+        self.edit_pages_as(id, Author::Owner, |edits| if one_page { edits.rotate(page, 1, quarter_turns) } else { edits.rotate(0, edits.len(), quarter_turns) })
     }
 
     /// [`Self::redo_edit`] for whoever's asking.
@@ -3596,6 +3630,42 @@ mod tests {
         (a, b)
     }
 
+    /// Failure: the panel's Rotate outside edit mode turns one page, or takes a step a page, so one undo doesn't take it back; or in edit mode it turns every page. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+    #[test]
+    fn the_panels_rotate_turns_every_page_as_one_step() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert!(s.can_edit_pages(a));
+        s.rotate_from_panel(a, 1).unwrap();
+        assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
+        assert!(s.is_edited(a), "it's an unsaved edit, for Save to commit");
+        assert!(s.undo_edit_as(a, Author::Owner).unwrap());
+        assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0), "one undo takes it all back");
+        assert!(!s.undo_and_redo(a).0, "it was one step");
+        s.set_edit_mode(true);
+        s.go_to(a, 3).unwrap();
+        s.rotate_from_panel(a, -1).unwrap();
+        let turns: Vec<u8> = s.page_edits(a).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect();
+        assert_eq!(turns, [0, 0, 0, 3, 0], "edit mode turns the page being read");
+    }
+
+    /// Failure: a record from a build with focus view, written with it on, comes back with the sidebar showing, or the next record still says focus, so it can't be turned off. Owner, 2026-11-08: focus view became the sidebar's button.
+    #[test]
+    fn an_older_records_focus_view_comes_back_as_a_hidden_sidebar() {
+        let old: record::ViewRecord = serde_json::from_str(r#"{"paper":null,"focus":true,"agent_icon_hidden":false}"#).unwrap();
+        let mut saved = journaled(1).to_record();
+        saved.view = old;
+        let mut back = journaled(1);
+        back.restore(&saved, HashMap::new()).unwrap();
+        assert!(back.view().sidebar_hidden);
+        let written = serde_json::to_string(&back.to_record().view).unwrap();
+        assert!(!written.contains("focus") && written.contains("\"sidebar_hidden\":true"), "{written}");
+        back.set_view(ViewSettings { sidebar_hidden: false, ..back.view() });
+        let mut again = journaled(1);
+        again.restore(&back.to_record(), HashMap::new()).unwrap();
+        assert!(!again.view().sidebar_hidden, "shown again stays shown");
+    }
+
     /// Failure: anything about the session is different after going through its record and journals: a tab, its order, the active one, a place, a fold, unsaved edits, the steps undone, or who made them. Compares the whole of both.
     #[test]
     fn a_session_comes_back_whole_from_its_record_and_journals() {
@@ -3605,8 +3675,10 @@ mod tests {
         s.set_find(true, "ran", "typed but not run");
         s.set_edit_mode(true);
         s.set_view_rotation(a, 1);
+        assert!(s.set_spread(a, record::Spread::TwoUpCover));
+        assert!(!s.set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
         s.set_selection(a, Some(Selection { from_page: 1, from_char: 2, to_page: 2, to_char: 9 }));
-        s.set_view(ViewSettings { paper: Some(Paper::Warm), focus: true, agent_icon_hidden: true });
+        s.set_view(ViewSettings { paper: Some(Paper::Warm), sidebar_hidden: true, agent_icon_hidden: true });
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
         let bytes = record::encode_record(&s.to_record(), 7);
@@ -3616,6 +3688,7 @@ mod tests {
         assert_eq!(back.to_record(), s.to_record());
         assert_eq!(back.edits_record(a), s.edits_record(a));
         assert_eq!(back.view(), s.view());
+        assert_eq!(back.spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
         assert_eq!(back.active(), s.active());
         assert_eq!(back.tier(a), Tier::Hot, "it's the active one");
         assert!(back.warm_tabs().next().is_none(), "and nothing's been opened");

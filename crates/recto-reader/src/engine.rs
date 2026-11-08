@@ -122,9 +122,17 @@ impl Engine {
     }
 
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
-    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread) {
         let mut reader = lock(&self.shared.reader);
-        reader.activate(tab, pages, page, map, warm, saved);
+        reader.activate(tab, pages, page, map, warm, saved, spread);
+        self.after(reader);
+    }
+
+    /// Lays the tab showing out another way, keeping the place in it.
+    pub fn set_spread(&self, spread: crate::layout::Spread) {
+        let mut reader = lock(&self.shared.reader);
+        reader.set_spread(spread);
         self.after(reader);
     }
 
@@ -195,6 +203,11 @@ impl Engine {
         value
     }
 
+    /// The tab showing's fit, document points per PDF point, if a tab is showing: what a zoom level is worked out from.
+    pub fn fit(&self) -> Option<f64> {
+        lock(&self.shared.reader).fit()
+    }
+
     /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
     pub fn set_warm(&self, warm: &[u32]) {
         let mut reader = lock(&self.shared.reader);
@@ -217,12 +230,6 @@ impl Engine {
     pub fn set_paper(&self, paper: PaperKind) {
         let mut reader = lock(&self.shared.reader);
         reader.set_paper(paper);
-        self.after(reader);
-    }
-
-    pub fn set_focus(&self, focus: bool) {
-        let mut reader = lock(&self.shared.reader);
-        reader.set_focus(focus);
         self.after(reader);
     }
 

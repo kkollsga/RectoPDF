@@ -804,6 +804,9 @@ fn settings_and_the_menu_say_how_things_stand() {
     let menu = |run: &Run<'_>| run.ok(&["qa", "state"])["app"]["menu_bar"][0]["items"].clone();
     let item = |items: &Value, id: &str| items.as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
 
+    run.ok(&["qa", "menu", "file.settings"]);
+    assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "File > Settings… opens it, by the owner's word");
+    run.ok(&["qa", "settings", "close"]);
     run.ok(&["qa", "menu", "app.settings"]);
     assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "the menu item opens it");
     for look in ["light", "dark"] {
@@ -830,10 +833,10 @@ fn settings_and_the_menu_say_how_things_stand() {
     bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "menu", "app.update"]);
     bed.wait_status(&run, "available");
-    // The menu bar is published after the status, on the session thread's next turn: under load the two looks can fall between them, so it's waited for, to a bound.
+    // The status is the updater's at once, and the menu is the window's once it's been told, on its own thread: a moment later, which the menu is waited for.
     let began = Instant::now();
     while item(&menu(&run), "app.update")["title"] != format!("Update to {NEW}…") {
-        assert!(began.elapsed() < Duration::from_secs(10), "the menu never offered the update: {}", item(&menu(&run), "app.update"));
+        assert!(began.elapsed() < Duration::from_secs(10), "the menu offers the update: {}", item(&menu(&run), "app.update"));
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(item(&menu(&run), "app.update")["enabled"], true);

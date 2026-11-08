@@ -348,6 +348,15 @@ final class Bridge: AppListener, @unchecked Sendable {
         perform("edit.select_all")
     }
 
+    /// Undo and Redo of the tab's edits, once nothing with the focus has wanted them, as a text field typing a zoom level does.
+    @objc func undo(_ sender: Any?) {
+        perform("edit.undo")
+    }
+
+    @objc func redo(_ sender: Any?) {
+        perform("edit.redo")
+    }
+
     /// Rust says what can be chosen, each time a menu opens or its key is pressed.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let id = item.representedObject as? String else { return item.action != nil }

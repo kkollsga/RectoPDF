@@ -162,11 +162,14 @@ pub enum Command {
         #[serde(default)]
         paper: Option<String>,
         #[serde(default)]
-        focus: Option<String>,
+        sidebar: Option<String>,
         #[serde(default)]
         agent_icon: Option<String>,
         #[serde(default)]
         zoom: Option<String>,
+        /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
+        #[serde(default)]
+        layout: Option<String>,
     },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
@@ -560,7 +563,7 @@ impl Command {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
             // Asking how things are shown changes nothing. Changing it is moving around.
-            Self::View { paper: None, focus: None, agent_icon: None, zoom: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            Self::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
             Self::View { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
@@ -867,6 +870,11 @@ pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
     view.paper.map_or("auto", recto_session::Paper::name)
 }
 
+/// What watchers are told when how pages are shown changes: the same words wherever it was changed from.
+pub fn view_changed(view: recto_session::ViewSettings) -> Event {
+    Event::new("view_changed", json!({ "paper": paper_name(view), "sidebar": !view.sidebar_hidden }))
+}
+
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 /// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 pub fn only_the_user_quits() -> AgentError {
@@ -887,7 +895,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.find();
@@ -896,7 +904,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         find_json["query"] = json!(find.query);
         find_json["draft"] = json!(find.draft);
     }
-    json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "focus": session.view().focus })
+    json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "sidebar": !session.view().sidebar_hidden })
 }
 
 /// Updates and settings are the app's. A session with no window has nothing to replace, and nothing to set.
@@ -987,18 +995,25 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             })
         }
         Command::View { zoom: Some(_), .. } => Err(AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED).then("It works when `recto` is talking to the app.")),
-        Command::View { paper, focus, agent_icon, zoom: None } => access.with(|s| {
+        Command::View { paper, sidebar, agent_icon, zoom: None, layout } => access.with(|s| {
             let was = s.view();
+            if let Some(name) = layout.as_deref() {
+                let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
+                let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+                if s.set_spread(id, spread) {
+                    events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
+                }
+            }
             let mut view = was;
             match paper.as_deref() {
                 Some("auto") => view.paper = None,
                 Some(name) => view.paper = Some(recto_session::Paper::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a paper. It's one of {}, or `auto`.", recto_core::clean_line(name), recto_session::Paper::ALL.map(recto_session::Paper::name).join(", ")), exit::USAGE))?),
                 None => {}
             }
-            match focus.as_deref() {
-                Some("on") => view.focus = true,
-                Some("off") => view.focus = false,
-                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for focus. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
+            match sidebar.as_deref() {
+                Some("on") => view.sidebar_hidden = false,
+                Some("off") => view.sidebar_hidden = true,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for the sidebar. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
                 None => {}
             }
             match agent_icon.as_deref() {
@@ -1009,9 +1024,9 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             }
             s.set_view(view);
             if view != was {
-                events.push(Event::new("view_changed", json!({ "paper": paper_name(view), "focus": view.focus })));
+                events.push(view_changed(view));
             }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus, "agent_icon": !view.agent_icon_hidden }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         }),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
@@ -1093,8 +1108,12 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
-            let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
+            // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
+            if pages == "all" {
+                return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| e.rotate(0, e.len(), turns));
+            }
+            let (start, len) = parse_pages(pages, false)?;
             edit(access, level, tab, events, format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")), |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
@@ -1440,6 +1459,11 @@ fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: 
         data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", tab.page + 1));
     }
     data
+}
+
+/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
+pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
+    edits_event(session, id)
 }
 
 fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
@@ -1893,7 +1917,7 @@ mod tests {
             Command::Watch { events: None, timeout_ms: None, count: None },
             Command::WatchStop {},
             Command::Log { last: None },
-            Command::View { paper: None, focus: None, agent_icon: None, zoom: None },
+            Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None },
             Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
             Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
@@ -1929,9 +1953,9 @@ mod tests {
     /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.
     #[test]
     fn view_asks_at_read_only_and_changes_at_control() {
-        assert_eq!(Command::View { paper: None, focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::ReadOnly));
-        assert_eq!(Command::View { paper: Some("white".into()), focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
-        assert_eq!(Command::View { paper: None, focus: Some("on".into()), agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::View { paper: Some("white".into()), sidebar: None, agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, sidebar: Some("off".into()), agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::Control));
     }
 
     /// Failure: a session with no app takes a QA command and does nothing, or says something that reads as though it worked. It's refused plainly, and not as a matter of level, since no level would help.
@@ -2066,6 +2090,12 @@ mod tests {
         assert_eq!(tabs["tabs"][0]["edited"], true);
         run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "2-3".into(), degrees: -90 }).unwrap();
         assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
+        let turns = |s: &Session<_>| s.page_edits(id).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect::<Vec<u8>>();
+        let before = turns(&s);
+        run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "all".into(), degrees: 90 }).unwrap();
+        assert!(turns(&s).iter().zip(&before).all(|(now, was)| *now == (was + 1) % 4), "every page a quarter more: {:?} from {before:?}", turns(&s));
+        assert!(s.undo_edit(id));
+        assert_eq!(turns(&s), before, "one undo takes every page back, as it was one step");
         run(&mut s, Level::Control, &Command::PageDelete { tab: "active".into(), pages: "1".into() }).unwrap();
         assert_eq!(s.pages_in(id), 9);
         run(&mut s, Level::Control, &Command::PageInsert { tab: "active".into(), path: "/d/b.pdf".into(), at: 10 }).unwrap();

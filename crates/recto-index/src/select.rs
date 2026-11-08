@@ -8,6 +8,7 @@
 //!
 //! **Cost.** A page held here is about 20 B a character: over bench100's pages with text, 55 KiB at the middle, and 242 at most. Past [`MAX_SELECTABLE_CHARS`] a page selects nothing. A hit looks along the page's lines, at most [`MAX_LINES`], and then one line. The model holds two points, so a selection of a whole document costs what one word's does: nothing per page.
 
+use crate::chrome::{self, EdgeLine};
 use crate::{hidden_in_either_order, normalize, order};
 use recto_proto::{CharBox, CharRecord, PageFrame};
 
@@ -115,6 +116,17 @@ impl Line {
     }
 }
 
+/// A piece of a line that shows and runs across, cut where its letters leave a wide gap: its characters, where its letters' tops and baseline are, and their size. See [`PageText::find_edges`].
+struct Piece {
+    start: u32,
+    end: u32,
+    x0: f32,
+    top: f32,
+    bottom: f32,
+    baseline: f32,
+    size: f32,
+}
+
 /// A page's text in reading order, each character with its box as it's shown.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageText {
@@ -129,6 +141,8 @@ pub struct PageText {
     hidden_checked: bool,
     copy_restricted: bool,
     too_long: bool,
+    /// The lines at its top and bottom edges that may be chrome, at most [`chrome::MAX_EDGE_LINES`]. See [`crate::chrome`].
+    edges: Vec<EdgeLine>,
 }
 
 const NO_BOX: [f32; 4] = [0.0; 4];
@@ -192,8 +206,9 @@ impl PageText {
             }
             views.push(view);
         }
-        let mut page = Self { text, boxes: views, hidden, lines: Vec::new(), width, height, hidden_checked, copy_restricted, too_long: false };
+        let mut page = Self { text, boxes: views, hidden, lines: Vec::new(), width, height, hidden_checked, copy_restricted, too_long: false, edges: Vec::new() };
         page.find_lines(frame.turns & 3 == 2);
+        page.find_edges();
         page
     }
 
@@ -224,6 +239,174 @@ impl PageText {
         let usual = heights.get(heights.len() / 2).copied().unwrap_or(0.0);
         let lines: Vec<Line> = spans.iter().filter(|span| span.0 < span.1).map(|span| self.measure(*span, usual, upside_down)).collect();
         self.lines = lines;
+    }
+
+    /// Finds the pieces of lines at the page's top and bottom edges that may be chrome: see [`crate::chrome`]. A line is cut into pieces where its letters leave a gap of [`chrome::PIECE_GAP`] sizes, so a page number set at the end of a footnote's line is a piece of its own. The pieces in the rows of a block at either edge, a few rows at most with a wide gap between them and the rest, are candidates; so is any piece in the edge bands that's a page number, set apart or not, as it can be confirmed by its neighbours' numbers. A look along the page's lines, and a sort, once.
+    fn find_edges(&mut self) {
+        if self.height <= 0.0 {
+            return;
+        }
+        let mut pieces: Vec<Piece> = Vec::new();
+        for line in &self.lines {
+            if !line.seen() || line.sideways {
+                continue;
+            }
+            let mut current: Option<(Piece, [f32; SAMPLE], usize, f32)> = None;
+            let finish = |current: Option<(Piece, [f32; SAMPLE], usize, f32)>, end: u32, pieces: &mut Vec<Piece>| {
+                if let Some((mut piece, mut bottoms, sampled, _)) = current {
+                    let bottoms = &mut bottoms[..sampled];
+                    bottoms.sort_by(f32::total_cmp);
+                    piece.baseline = bottoms[sampled / 2];
+                    piece.end = end;
+                    pieces.push(piece);
+                }
+            };
+            for at in line.start..line.end {
+                let index = at as usize;
+                if !self.shows(index) || self.text[index].is_whitespace() {
+                    continue;
+                }
+                let view = self.boxes[index];
+                let size = view[3] - view[1];
+                // A wide gap after the last letter, going forward along the line, starts a new piece.
+                let new_piece = current.as_ref().is_some_and(|(piece, _, _, right)| !line.backward && view[0] - right > chrome::PIECE_GAP * piece.size.max(size).max(1.0));
+                if new_piece {
+                    finish(current.take(), at, &mut pieces);
+                }
+                let (piece, bottoms, sampled, right) = current.get_or_insert_with(|| (Piece { start: at, end: at, x0: view[0], top: view[1], bottom: view[3], baseline: 0.0, size: 0.0 }, [0f32; SAMPLE], 0, view[2]));
+                (piece.top, piece.bottom, piece.size, piece.x0) = (piece.top.min(view[1]), piece.bottom.max(view[3]), piece.size.max(size), piece.x0.min(view[0]));
+                *right = right.max(view[2]);
+                if *sampled < SAMPLE {
+                    bottoms[*sampled] = view[3];
+                    *sampled += 1;
+                }
+            }
+            finish(current, line.end, &mut pieces);
+        }
+        if pieces.len() < 2 {
+            return;
+        }
+        pieces.sort_by(|one, two| one.baseline.total_cmp(&two.baseline));
+        // Rows: pieces whose baselines are within a third of their size, as a running head's left and right parts are.
+        let mut rows: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut from = 0;
+        for at in 1..=pieces.len() {
+            if at == pieces.len() || pieces[at].baseline - pieces[from].baseline > pieces[from].size.max(pieces[at].size).max(1.0) / 3.0 {
+                rows.push(from..at);
+                from = at;
+            }
+        }
+        // The usual line's size, over lines and not pieces, so a table of small figures cut into many pieces doesn't pull it down.
+        let usual = {
+            let mut sizes: Vec<f32> = self.lines.iter().filter(|line| line.seen() && !line.sideways).filter_map(|line| (line.start..line.end).filter(|at| self.shows(*at as usize) && !self.text[*at as usize].is_whitespace()).map(|at| self.boxes[at as usize][3] - self.boxes[at as usize][1]).reduce(f32::max)).collect();
+            sizes.sort_by(f32::total_cmp);
+            sizes.get(sizes.len() / 2).copied().unwrap_or(1.0).max(1.0)
+        };
+        let band = self.height * chrome::BAND;
+        let row_size = |row: &std::ops::Range<usize>| pieces[row.clone()].iter().map(|piece| piece.size).fold(0f32, f32::max).max(1.0);
+        let row_baseline = |row: &std::ops::Range<usize>| pieces[row.start].baseline;
+        let in_band = |piece: &Piece, top: bool| if top { piece.bottom <= band } else { piece.top >= self.height - band };
+        let mut edges: Vec<EdgeLine> = Vec::new();
+        let mut taken: Vec<u32> = Vec::new();
+        let mut row_id: u16 = 0;
+        for top in [true, false] {
+            let order: Vec<&std::ops::Range<usize>> = if top { rows.iter().collect() } else { rows.iter().rev().collect() };
+            // The block from the edge: rows at line spacing from each other, then a wide gap.
+            let mut block = 0;
+            let mut isolated = false;
+            while block < order.len() {
+                block += 1;
+                let Some(next) = order.get(block) else { break };
+                let gap = (row_baseline(next) - row_baseline(order[block - 1])).abs();
+                if gap >= chrome::MIN_GAP * row_size(order[block - 1]).max(row_size(next)).max(6.0) {
+                    isolated = true;
+                    break;
+                }
+                if block >= chrome::MAX_BLOCK_ROWS {
+                    break;
+                }
+            }
+            let block_rows: &[&std::ops::Range<usize>] = if isolated && order[..block].iter().all(|row| pieces[(*row).clone()].iter().all(|piece| in_band(piece, top))) { &order[..block] } else { &[] };
+            for row in block_rows {
+                let mut members: Vec<&Piece> = pieces[(*row).clone()].iter().collect();
+                members.sort_by(|one, two| one.x0.total_cmp(&two.x0));
+                // A row is decided whole, so it goes in whole or not at all.
+                if edges.len() + members.len() > chrome::MAX_EDGE_LINES {
+                    break;
+                }
+                let row_key = chrome::key(members.iter().flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' '))));
+                let count = members.len();
+                for (at, piece) in members.into_iter().enumerate() {
+                    let place = chrome::InRow { row: row_id, alone: count == 1, last: at + 1 == count };
+                    edges.push(self.edge_line(top, piece, usual, row_key, true, place));
+                    taken.push(piece.start);
+                }
+                row_id += 1;
+            }
+            // A page number anywhere in the band, set apart or not: only its neighbours' numbers can make it chrome.
+            for row in &order {
+                let mut members: Vec<&Piece> = pieces[(*row).clone()].iter().collect();
+                members.sort_by(|one, two| one.x0.total_cmp(&two.x0));
+                let count = members.len();
+                for (at, piece) in members.into_iter().enumerate() {
+                    if edges.len() >= chrome::MAX_EDGE_LINES || !in_band(piece, top) || taken.contains(&piece.start) {
+                        continue;
+                    }
+                    let text: String = self.visible_chars(piece.start, piece.end).collect();
+                    if chrome::page_number(&text).is_some() {
+                        let key = chrome::key(text.chars());
+                        edges.push(self.edge_line(top, piece, usual, key, false, chrome::InRow { row: row_id, alone: count == 1, last: at + 1 == count }));
+                        taken.push(piece.start);
+                    }
+                }
+                row_id += 1;
+            }
+        }
+        self.edges = edges;
+    }
+
+    /// One candidate, as a copy compares it.
+    fn edge_line(&self, top: bool, piece: &Piece, usual: f32, row_key: u64, isolated: bool, place: chrome::InRow) -> EdgeLine {
+        let (start, end, size) = (piece.start, piece.end, piece.size);
+        let from_edge = if top { piece.top } else { self.height - piece.bottom };
+        let text: String = self.visible_chars(start, end).collect();
+        let (left, right) = (start..end).filter(|at| self.shows(*at as usize)).map(|at| self.boxes[at as usize]).fold((f32::INFINITY, f32::NEG_INFINITY), |(left, right), view| (left.min(view[0]), right.max(view[2])));
+        let middle = if left <= right { (left + right) / 2.0 } else { 0.0 };
+        EdgeLine {
+            top,
+            from_edge,
+            size,
+            key: chrome::key(text.chars()),
+            row_key,
+            start,
+            end,
+            number: chrome::page_number(&text),
+            relative: size / usual,
+            words: text.chars().any(char::is_alphanumeric),
+            digits_only: text.chars().any(|ch| ch.is_ascii_digit()) && !text.chars().any(char::is_alphabetic),
+            isolated,
+            // A date or a time: `3/14/2019`, `4.5.2016`, `12:30`, and not a decimal or a section's number, `3.2`, which a figure's scale or a heading repeats.
+            dated: !text.trim().contains(char::is_whitespace) && text.chars().filter(|ch| ch.is_ascii_digit()).count() >= 2 && (text.contains(['/', ':']) || text.matches(['.', '-']).count() >= 2),
+            substantial: text.split_whitespace().count() >= 2 && text.chars().filter(|ch| ch.is_alphabetic()).count() >= 10,
+            from_left: middle,
+            from_right: self.width - middle,
+            place,
+        }
+    }
+
+    /// The characters of `[start, end)` that aren't hidden.
+    fn visible_chars(&self, start: u32, end: u32) -> impl Iterator<Item = char> + '_ {
+        (start as usize..(end as usize).min(self.text.len())).filter(|at| !self.is_hidden(*at)).map(|at| self.text[at])
+    }
+
+    /// The lines at its edges that may be chrome, for its neighbours to be compared with.
+    pub fn edge_lines(&self) -> &[EdgeLine] {
+        &self.edges
+    }
+
+    /// What a copy of this page leaves out as chrome, given its neighbours' edge lines with how many pages away each is. See [`crate::chrome`].
+    pub fn chrome_spans(&self, neighbours: &[(i64, &[EdgeLine])]) -> Vec<(u32, u32)> {
+        chrome::chrome_spans(&self.edges, neighbours)
     }
 
     /// Whether this stretch runs up or down the page as it's shown: further that way than across, between the middles of its characters.
@@ -350,7 +533,7 @@ impl PageText {
 
     /// About what this holds.
     pub fn bytes(&self) -> usize {
-        size_of::<Self>() + self.text.capacity() * size_of::<char>() + self.boxes.capacity() * size_of::<[f32; 4]>() + self.hidden.capacity() + self.lines.capacity() * size_of::<Line>()
+        size_of::<Self>() + self.text.capacity() * size_of::<char>() + self.boxes.capacity() * size_of::<[f32; 4]>() + self.hidden.capacity() + self.lines.capacity() * size_of::<Line>() + self.edges.capacity() * size_of::<EdgeLine>()
     }
 
     fn line_at(&self, x: f32, y: f32) -> Option<&Line> {
@@ -489,34 +672,45 @@ impl PageText {
         }
     }
 
-    /// Puts `[start, end)` on the end of `out`, past what's hidden, and says how many hidden characters went. Taking hidden words out of a line leaves their spaces either side, or a line of nothing, and that's taken out too.
-    fn copy_into(&self, start: u32, end: u32, out: &mut String, room: usize) -> (u64, bool) {
+    /// Puts `[start, end)` on the end of `out`, past what's hidden and what's in `leave_out`, which is chrome, and says how many printed characters of each went. Taking words out of a line leaves their spaces either side, or a line of nothing, and that's taken out too.
+    fn copy_into(&self, start: u32, end: u32, out: &mut String, room: usize, leave_out: &[(u32, u32)]) -> (u64, u64, bool) {
         let end = end.min(self.len());
-        let (mut left_out, mut after_hidden) = (0u64, false);
+        let (mut hidden_out, mut chrome_out, mut after_gap) = (0u64, 0u64, false);
+        // Where `out` ends after the last printed character this put there, which is where it started if none.
+        let mut last_kept = out.trim_end().len();
         for at in start..end {
+            let left_out = leave_out.iter().any(|(from, to)| (*from..*to).contains(&at));
             let at = at as usize;
             let ch = self.text[at];
-            if self.is_hidden(at) {
-                left_out += u64::from(!ch.is_whitespace());
-                after_hidden = true;
+            if self.is_hidden(at) || left_out {
+                let printed = u64::from(!ch.is_whitespace());
+                if self.is_hidden(at) { hidden_out += printed } else { chrome_out += printed }
+                after_gap = true;
                 continue;
             }
-            if after_hidden && ch.is_whitespace() && (out.is_empty() || out.ends_with(char::is_whitespace)) {
+            if after_gap && ch.is_whitespace() && (out.is_empty() || out.ends_with(char::is_whitespace)) {
                 continue;
             }
-            after_hidden = false;
+            after_gap = false;
             if out.len() + ch.len_utf8() > room {
-                return (left_out, true);
+                return (hidden_out, chrome_out, true);
             }
             out.push(ch);
+            if !ch.is_whitespace() {
+                last_kept = out.len();
+            }
         }
-        (left_out, false)
+        // What ended in words left out leaves no line break or space behind it, as a footer would.
+        if after_gap {
+            out.truncate(last_kept);
+        }
+        (hidden_out, chrome_out, false)
     }
 
     /// The characters of `[start, end)` as they are, for `recto select`.
     pub fn text_of(&self, start: u32, end: u32) -> String {
         let mut out = String::new();
-        self.copy_into(start, end, &mut out, usize::MAX);
+        self.copy_into(start, end, &mut out, usize::MAX, &[]);
         out
     }
 }
@@ -692,12 +886,25 @@ impl Selection {
     }
 }
 
+/// What a copy leaves out of `page` as chrome, given a way to the edge lines of the pages around it that could be read: see [`crate::chrome`]. Whether the pick was only chrome is the copy's to decide, over all of it: see [`CopiedText::finish`].
+pub fn chrome_for<'a>(page: u32, text: &PageText, pages: u32, edges_of: impl Fn(u32) -> Option<&'a [EdgeLine]>) -> Vec<(u32, u32)> {
+    let neighbours: Vec<(i64, &[EdgeLine])> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), edges_of(other)?))).collect();
+    text.chrome_spans(&neighbours)
+}
+
+/// The pages whose edge lines a copy of `page` compares with, in a document of `pages`.
+pub fn neighbour_pages(page: u32, pages: u32) -> impl Iterator<Item = u32> {
+    (page.saturating_sub(chrome::NEIGHBOURS)..=page.saturating_add(chrome::NEIGHBOURS).min(pages.saturating_sub(1))).filter(move |other| *other != page)
+}
+
 /// Text on its way to the clipboard, a page at a time, up to a limit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CopiedText {
     pub text: String,
     /// Printed characters left out, because they can't be seen.
     pub hidden_left_out: u64,
+    /// Printed characters left out as running heads, footers and page numbers. See [`crate::chrome`].
+    pub chrome_left_out: u64,
     pub pages_read: u32,
     /// Pages that couldn't be checked for hidden text, so what they hold is copied as it is.
     pub pages_unchecked: u32,
@@ -708,11 +915,13 @@ pub struct CopiedText {
     /// It stopped before the end of the selection, at this page, for lack of room.
     pub stopped_at: Option<u32>,
     pub restricted: bool,
+    /// The same pick with its chrome kept, for as long as nothing else has been copied: what the pick was if it turns out to be only chrome. Empty once anything else is in [`Self::text`], so it's never more than the chrome of the pages before the body starts.
+    chrome_only: String,
 }
 
 impl CopiedText {
-    /// Adds what a range holds of one page, with a line between pages. Says whether there's room for more.
-    pub fn add_page(&mut self, page: u32, text: &PageText, range: &Range, room: usize) -> bool {
+    /// Adds what a range holds of one page, with a line between pages, less `leave_out`, from [`chrome_for`]. Says whether there's room for more. [`Self::finish`] ends it.
+    pub fn add_page(&mut self, page: u32, text: &PageText, range: &Range, room: usize, leave_out: &[(u32, u32)]) -> bool {
         self.pages_read += 1;
         self.restricted |= text.copy_restricted();
         self.pages_unchecked += u32::from(!text.hidden_checked() && !text.is_empty());
@@ -724,12 +933,32 @@ impl CopiedText {
         if !self.text.is_empty() && !self.text.ends_with('\n') {
             self.text.push('\n');
         }
-        let (left_out, stopped) = text.copy_into(start, end, &mut self.text, room);
-        self.hidden_left_out += left_out;
+        // Until the body starts, what the chrome was is kept beside it, in case the pick is nothing else.
+        if self.text.is_empty() && !leave_out.is_empty() {
+            if !self.chrome_only.is_empty() && !self.chrome_only.ends_with('\n') {
+                self.chrome_only.push('\n');
+            }
+            text.copy_into(start, end, &mut self.chrome_only, room, &[]);
+        }
+        let (hidden, chrome, stopped) = text.copy_into(start, end, &mut self.text, room, leave_out);
+        self.hidden_left_out += hidden;
+        self.chrome_left_out += chrome;
+        if !self.text.is_empty() {
+            self.chrome_only = String::new();
+        }
         if stopped {
             self.stopped_at = Some(page);
         }
         !stopped
+    }
+
+    /// Ends a copy. A pick that was only running heads, footers and page numbers gets them: someone who selects only a header wants it, wherever the pick runs (owner, 2026-11-07, in SPEC: "selecting only a header copies it").
+    pub fn finish(&mut self) {
+        if self.text.is_empty() && !self.chrome_only.is_empty() {
+            self.text = std::mem::take(&mut self.chrome_only);
+            self.chrome_left_out = 0;
+        }
+        self.chrome_only = String::new();
     }
 
     pub fn add_failed_page(&mut self) {
@@ -787,6 +1016,160 @@ mod tests {
         selection.release();
         let range = selection.range(&One(page))?;
         Some((range.start.at, range.end.at))
+    }
+
+    /// A report's pages: a running head at the top, two lines of body, and the page number at the bottom.
+    fn report(pages: u32) -> Vec<PageText> {
+        (0..pages)
+            .map(|page| {
+                let (one, two, number) = (format!("Body line one of page {page}"), format!("Body line two of page {page}"), format!("{}", page + 1));
+                page_of(&[("Annual report 2024", 72.0, 750.0), (&one, 72.0, 700.0), (&two, 72.0, 685.0), (&number, 540.0, 30.0)])
+            })
+            .collect()
+    }
+
+    /// A copy as `recto copy` and the app make it: each page with its neighbours.
+    fn copy_of(pages: &[PageText], range: Range) -> CopiedText {
+        let mut copied = CopiedText::default();
+        for page in range.start.page..=range.end.page {
+            let leave_out = chrome_for(page, &pages[page as usize], pages.len() as u32, |other| pages.get(other as usize).map(PageText::edge_lines));
+            copied.add_page(page, &pages[page as usize], &range, usize::MAX, &leave_out);
+        }
+        copied.finish();
+        copied
+    }
+
+    /// Failure: a selection across pages copies the page number and the running head into the middle of the body text, as the owner found (2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."), and the same within a page when the body is picked with them.
+    #[test]
+    fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
+        let pages = report(3);
+        let at = |page: &PageText, needle: &str| page.text.iter().collect::<String>().find(needle).unwrap() as u32;
+        let range = Range { start: Place { page: 0, at: at(&pages[0], "two") }, end: Place { page: 1, at: at(&pages[1], "two") } };
+        let copied = copy_of(&pages, range);
+        assert_eq!(copied.text, "two of page 0\nBody line one of page 1\nBody line ", "{:?}", copied.text);
+        assert!(copied.chrome_left_out > 0);
+        let whole = copy_of(&pages, Range::pages(1, 1));
+        assert_eq!(whole.text, "Body line one of page 1\nBody line two of page 1", "a whole page, picked with its chrome: {:?}", whole.text);
+        let everything = copy_of(&pages, Range::all(3));
+        assert!(!everything.text.contains("Annual") && !everything.text.lines().any(|line| line.trim().parse::<u32>().is_ok()), "{:?}", everything.text);
+    }
+
+    /// Failure: a pick of only chrome that runs over a page break, from one page's number to the next page's running head, copies nothing, and a note calls it a scan (review of e3fc6e0). Whether the pick was only chrome is decided over all of it.
+    #[test]
+    fn chrome_picked_across_a_page_break_is_copied() {
+        let pages = report(3);
+        let text = |page: usize| pages[page].text.iter().collect::<String>();
+        let number = text(1).rfind('2').unwrap() as u32;
+        let head_end = text(2).find("2024").unwrap() as u32 + 4;
+        let copied = copy_of(&pages, Range { start: Place { page: 1, at: number }, end: Place { page: 2, at: head_end } });
+        assert_eq!(copied.text, "2\nAnnual report 2024", "{:?}", copied.text);
+        assert_eq!(copied.chrome_left_out, 0, "nothing was left out of what's copied");
+    }
+
+    /// Failure: a page number on the same row as the last line of a page's text, or just under it, stays in a copy, as on 24 pages of the owner's part B (review of e3fc6e0), because it isn't set apart from the body.
+    #[test]
+    fn a_page_number_by_the_last_line_is_left_out() {
+        // A page of body text down to its foot, lines 15 points apart, its number at `number_y`.
+        let page = |page: u32, number_y: f32| {
+            let lines: Vec<(String, f32, f32)> = (0..37).map(|line| (format!("Body line {line} of page {page}"), 72.0, 600.0 - line as f32 * 15.0)).chain(std::iter::once((format!("{}", page + 1), 540.0, number_y))).collect();
+            let borrowed: Vec<(&str, f32, f32)> = lines.iter().map(|(text, x, y)| (text.as_str(), *x, *y)).collect();
+            page_of(&borrowed)
+        };
+        for (number_y, place) in [(60.0, "on the last line's row"), (49.0, "just under it")] {
+            let pages: Vec<PageText> = (0..4).map(|at| page(at, number_y)).collect();
+            let copied = copy_of(&pages, Range::pages(1, 2));
+            assert!(!copied.text.lines().any(|line| line.trim().parse::<u32>().is_ok()), "{place}: {:?}", copied.text);
+            assert!(copied.text.contains("Body line 36 of page 1\nBody line 0 of page 2"), "{place}: {:?}", copied.text);
+        }
+    }
+
+
+    /// A page of lines at their own sizes: each `(text, x, y, size)`, a character 0.6 of the size wide and the size tall.
+    fn page_sized(lines: &[(&str, f32, f32, f32)]) -> PageText {
+        let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+        for (text, x, y, size) in lines {
+            for (index, ch) in text.chars().enumerate() {
+                let left = x + index as f32 * size * 0.6;
+                chars.push(CharRecord::new(ch as u32, 0));
+                boxes.push(if ch == ' ' { [left, *y, left + size * 0.6, *y] } else { [left, *y, left + size * 0.5, y + size] });
+            }
+            chars.push(CharRecord::new('\r' as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+            chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+        }
+        PageText::build(&chars, &boxes, FRAME, true, false)
+    }
+
+    /// Body lines down a page, 14 points apart, so its edges have something to be set apart from.
+    fn body(page: u32, from: f32, count: u32) -> Vec<(String, f32, f32, f32)> {
+        (0..count).map(|line| (format!("Body line {line} of page {page} with words"), 72.0, from - line as f32 * 14.0, 10.0)).collect()
+    }
+
+    fn sized(lines: &[(String, f32, f32, f32)]) -> PageText {
+        let borrowed: Vec<(&str, f32, f32, f32)> = lines.iter().map(|(text, x, y, size)| (text.as_str(), *x, *y, *size)).collect();
+        page_sized(&borrowed)
+    }
+
+    /// Failure: a running head cut into pieces at its wide gaps comes back into a copy in parts, as RFC 9420's "July 2023" and a year at the right of a head did once pieces were judged alone, or a head is kept as too big because a table of small figures, cut into many pieces, pulled the usual size down (review of 880cfb2). A row that repeats goes whole, its figures too, and the usual size is the lines'.
+    #[test]
+    fn a_repeated_row_goes_whole() {
+        let pages: Vec<PageText> = (0..4)
+            .map(|page| {
+                let mut lines = vec![("RFC 9420".to_string(), 72.0, 750.0, 10.0), ("MLS".to_string(), 290.0, 750.0, 10.0), ("July 2023".to_string(), 480.0, 750.0, 10.0), ("Annual report".to_string(), 72.0, 735.0, 9.0), ("2024".to_string(), 520.0, 735.0, 9.0)];
+                lines.extend(body(page, 600.0, 30));
+                // A table of small figures, each a piece of its own: the usual line is still the body's.
+                for row in 0..10 {
+                    lines.push(((0..8).map(|_| "12").collect::<Vec<_>>().join("        "), 72.0, 160.0 - row as f32 * 8.0, 6.0));
+                }
+                sized(&lines)
+            })
+            .collect();
+        let copied = copy_of(&pages, Range::pages(1, 2));
+        for gone in ["RFC", "MLS", "July", "Annual", "2024"] {
+            assert!(!copied.text.contains(gone), "{gone}: {:?}", copied.text);
+        }
+        assert!(copied.text.starts_with("Body line 0 of page 1"), "{:?}", copied.text);
+    }
+
+    /// Failure: numbers that count with the pages but aren't page numbers leave a copy (review of 880cfb2): a question's number starting its row, a slide's 24 pt section number before its title, a timeline's 20 pt year. Only a number alone in its row, ending it or centred, about the size page numbers are, is counted with its neighbours; the footer's "- 2 -" and a centred number beside its section's name still go.
+    #[test]
+    fn numbers_that_count_with_the_pages_but_start_a_row_or_are_large_stay() {
+        let questions: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", page + 1), 72.0, 720.0, 11.0), (["Explain photosynthesis briefly.", "Name two noble gases.", "Describe the water cycle.", "Define inertia in your words."][page as usize].to_string(), 100.0, 720.0, 11.0), ("Answer:".to_string(), 72.0, 600.0, 11.0), ("Student wrote some answer text here.".to_string(), 72.0, 586.0, 11.0), (format!("- {} -", page + 1), 290.0, 30.0, 9.0)])).collect();
+        let copied = copy_of(&questions, Range::pages(1, 1));
+        assert!(copied.text.starts_with("2\nName") || copied.text.starts_with("2 Name"), "the question's number: {:?}", copied.text);
+        assert!(!copied.text.contains("- 2 -"), "the page number: {:?}", copied.text);
+        let slides: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", page + 1), 40.0, 740.0, 24.0), (["Introduction", "Background", "Method", "Results"][page as usize].to_string(), 80.0, 740.0, 24.0), ("Some bullet text for this slide.".to_string(), 80.0, 600.0, 14.0), ("Another bullet with more words.".to_string(), 80.0, 580.0, 14.0)])).collect();
+        let copied = copy_of(&slides, Range::pages(1, 1));
+        assert!(copied.text.starts_with('2'), "the slide's section number: {:?}", copied.text);
+        // A page number centred, with its section's name at the far right, as UN reports have them, still goes.
+        let centred: Vec<PageText> = (0..4)
+            .map(|page| {
+                let mut lines = body(page, 700.0, 40);
+                lines.extend([(format!("{}", page + 1), 303.0, 30.0, 6.0), (["Introduction", "Foreword", "Promise in peril", "Methods"][page as usize].to_string(), 500.0, 30.0, 6.0)]);
+                sized(&lines)
+            })
+            .collect();
+        let copied = copy_of(&centred, Range::pages(1, 1));
+        assert!(!copied.text.lines().any(|line| line.trim() == "2"), "the centred page number: {:?}", copied.text);
+        let timeline: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", 1914 + page), 72.0, 730.0, 20.0), (format!("Events of the year {} are described here.", 1914 + page), 72.0, 690.0, 11.0), ("More text about that year follows on this line.".to_string(), 72.0, 676.0, 11.0)])).collect();
+        let copied = copy_of(&timeline, Range::pages(1, 1));
+        assert!(copied.text.starts_with("1915"), "the year: {:?}", copied.text);
+    }
+
+    /// Failure: someone who selects only a running head, or only a page number, gets nothing, which isn't what they picked. Or a line at the top that repeats but sits at line spacing above the body, as a table's header on each page does, is taken for chrome.
+    #[test]
+    fn chrome_picked_by_itself_is_copied_and_body_at_the_edge_is_kept() {
+        let pages = report(3);
+        let head = pages[1].text.iter().collect::<String>().find("Annual").unwrap() as u32;
+        let only_head = copy_of(&pages, Range { start: Place { page: 1, at: head }, end: Place { page: 1, at: head + 18 } });
+        assert_eq!(only_head.text, "Annual report 2024");
+        let tables: Vec<PageText> = (0..3).map(|page| page_of(&[("Year Revenue Cost", 72.0, 750.0), (&format!("{} 12 4", 2000 + page), 72.0, 735.0), ("2010 13 5", 72.0, 720.0), ("2011 14 5", 72.0, 705.0), ("2012 15 6", 72.0, 690.0), ("words of the body here", 72.0, 500.0)])).collect();
+        let copied = copy_of(&tables, Range::pages(1, 1));
+        assert!(copied.text.starts_with("Year Revenue Cost"), "{:?}", copied.text);
+        let alone = report(1);
+        let copied = copy_of(&alone, Range::pages(0, 0));
+        assert!(copied.text.starts_with("Annual report 2024") && !copied.text.ends_with('1'), "one page alone: its head can't be told from a title, and its number can: {:?}", copied.text);
     }
 
     /// Failure: a line grows with the page, so a page held for selection costs far more than the budget says.
@@ -1055,7 +1438,7 @@ mod tests {
         line("last", 72.0, 660.0, 0, &mut chars, &mut boxes);
         let page = PageText::build(&chars, &boxes, FRAME, true, false);
         let mut copied = CopiedText::default();
-        assert!(copied.add_page(0, &page, &Range::pages(0, 0), usize::MAX));
+        assert!(copied.add_page(0, &page, &Range::pages(0, 0), usize::MAX, &[]));
         assert_eq!(copied.text, "see now\nlast");
         assert_eq!(copied.hidden_left_out, 12, "`secret` and `beyond`");
         let (start, end) = page.unit_at(100.0, shown(700.0), Unit::Word).unwrap();
@@ -1103,11 +1486,11 @@ mod tests {
         let page = page_of(&[("twelve chars", 72.0, 700.0)]);
         let range = Range::pages(0, 1000);
         let mut copied = CopiedText::default();
-        assert!(copied.add_page(0, &page, &range, 64));
-        assert!(copied.add_page(1, &page, &range, 64));
+        assert!(copied.add_page(0, &page, &range, 64, &[]));
+        assert!(copied.add_page(1, &page, &range, 64, &[]));
         assert_eq!(copied.text.matches("twelve chars\n").count(), 2, "{:?}", copied.text);
         let mut full = CopiedText::default();
-        assert!(!full.add_page(0, &page, &range, 5), "no room");
+        assert!(!full.add_page(0, &page, &range, 5, &[]), "no room");
         assert_eq!(full.stopped_at, Some(0));
         assert_eq!(full.text, "twelv");
         let mut failed = CopiedText::default();
@@ -1124,7 +1507,7 @@ mod tests {
         assert!(page.too_long() && page.is_empty() && page.copy_restricted());
         assert!(page.bytes() < 1024);
         let mut copied = CopiedText::default();
-        copied.add_page(0, &page, &Range::pages(0, 0), 100);
+        copied.add_page(0, &page, &Range::pages(0, 0), 100, &[]);
         assert_eq!((copied.pages_too_long, copied.restricted), (1, true));
     }
 

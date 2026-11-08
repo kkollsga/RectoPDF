@@ -2,6 +2,8 @@
 //! with the call. The session's scheduler will own long-lived ones, behind the same calls.
 
 use crate::{AgentError, exit};
+use recto_index::chrome::EdgeLine;
+use recto_index::select::{PageText, neighbour_pages};
 use recto_index::{hidden_report, read_page};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
 use recto_render_service::{
@@ -327,6 +329,7 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
     let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);
     let normalized = &reading.normalized;
     let hidden = hidden_report(&characters.chars, characters.hidden_checked);
+    let chrome = chrome_of(&mut doc, page, &characters);
     // Document text goes under `untrusted`, so nothing reading this mistakes it for an instruction.
     Ok(json!({
         "page": page + 1,
@@ -343,8 +346,24 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
         // Where `hidden_runs` lie in the text, in characters. Numbers only, so it isn't untrusted.
         "hidden_spans": reading.hidden_spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>(),
         "hidden_spans_dropped": reading.hidden_spans_dropped,
+        // Running heads, footers and page numbers, by the rule a copy leaves them out by. Marked, never taken out.
+        "chrome_spans": chrome.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>(),
         "untrusted": { "text": normalized.text, "also_spelled": normalized.also_spelled, "hidden_runs": hidden.runs },
     }))
+}
+
+/// Where a page's running heads, footers and page numbers are in its text, in characters, by `recto_index::chrome`: its edge lines against those of the pages either side, read with no drawing. A page whose neighbours can't be read is judged with what's known. The text a copy goes by is the text `read_page` gives, so the places are the same.
+fn chrome_of(doc: &mut DocRenderer, page: u32, characters: &recto_render_service::PageCharacters) -> Vec<(u32, u32)> {
+    let own = PageText::build(&characters.chars, &characters.boxes, characters.frame, characters.hidden_checked, characters.copy_restricted);
+    if own.edge_lines().is_empty() {
+        return Vec::new();
+    }
+    let pages = doc.page_count().unwrap_or(page + 1);
+    let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?))).map(|(away, read)| (away, PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted).edge_lines().to_vec())).collect();
+    let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
+    let mut spans = own.chrome_spans(&borrowed);
+    spans.sort_unstable();
+    spans
 }
 
 /// What `budget render` measures. Field meanings are on the command.

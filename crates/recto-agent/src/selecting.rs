@@ -1,10 +1,11 @@
 //! `recto select` and `recto copy`: what a click, a drag or a range of characters takes on a page, where it shows and what it copies. By the same methods as the app's page view, through `recto_index::select`, with a worker of its own for as long as the command takes.
 //!
-//! It holds one page's text at a time past the two pages a drag starts and ends on, so a copy of a whole document costs what its longest page does, plus the copy.
+//! It holds one page's text at a time past the two pages a drag starts and ends on, and the next [`chrome::NEIGHBOURS`] read ahead, so a copy of a whole document costs what its few longest pages do, plus the copy. Running heads, footers and page numbers are left out of body text by comparing each page's edges with its neighbours' (see `recto_index::chrome`): a page past either end of the pick is read for that without the hidden-text check, as only its edge lines are kept.
 
 use crate::render::open_for_text;
 use crate::{AgentError, SessionAccess, exit, no_such_page, select as select_tab, source_changed};
-use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Place, Range, Selection, Texts, Unit};
+use recto_index::chrome::{self, EdgeLine};
+use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for, neighbour_pages};
 use recto_render_service::DocRenderer;
 use recto_session::TabId;
 use serde_json::{Value, json};
@@ -62,6 +63,10 @@ struct Pages<'a, A: SessionAccess> {
 impl<A: SessionAccess> Pages<'_, A> {
     /// A page's text, or `None` if it couldn't be read, which is a page failing and not the command.
     fn read(&mut self, position: u32) -> Result<Option<PageText>, AgentError> {
+        self.read_checked(position, true)
+    }
+
+    fn read_checked(&mut self, position: u32, hidden_check: bool) -> Result<Option<PageText>, AgentError> {
         let id = self.id;
         let source = self.access.with(|s| s.page_source(id, position)).ok_or_else(no_such_page)?;
         if !source.is_current() {
@@ -80,7 +85,7 @@ impl<A: SessionAccess> Pages<'_, A> {
             }
         }
         let Some((_, doc)) = self.docs.last_mut() else { return Ok(None) };
-        Ok(doc.page_characters(source.page, true, true).ok().map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
+        Ok(doc.page_characters(source.page, true, hidden_check).ok().map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
     }
 }
 
@@ -179,26 +184,58 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
     let mut ran_out = None;
     let (mut start_at, mut end_at) = (None, None);
     let mut page = range.start.page;
+    // Pages read ahead for their edges, which the copy reaches next, and every edge read so far that a page still to come compares with.
+    let mut ahead: HashMap<u32, PageText> = HashMap::new();
+    let mut edges: HashMap<u32, Vec<EdgeLine>> = HashMap::new();
     while page <= last_page {
         if page - range.start.page >= page_cap || started.elapsed() >= time {
             ran_out = Some(page);
             break;
         }
-        let text = match reading.ends.remove(&page) {
-            Some(_) if reading.failed_ends.contains(&page) => None,
-            Some(text) => Some(text),
-            None => reading.read(page)?,
+        let text = match (reading.ends.remove(&page), ahead.remove(&page)) {
+            (Some(_), _) if reading.failed_ends.contains(&page) => None,
+            (Some(text), _) | (None, Some(text)) => Some(text),
+            (None, None) => {
+                counted.reads += 1;
+                reading.read(page)?
+            }
         };
-        counted.reads += 1;
         counted.most_workers = counted.most_workers.max(reading.docs.len());
         let Some(text) = text else {
             copied.add_failed_page();
             if rects {
                 listed.push(json!({ "page": page + 1, "failed": true, "rects": [] }));
             }
+            edges.insert(page, Vec::new());
             page += 1;
             continue;
         };
+        // Its first page already says so, and the same goes for the rest: the permissions are the file's. Before anything else is read.
+        if text.copy_restricted() && !pick.anyway && !rects {
+            return Err(AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."));
+        }
+        edges.insert(page, text.edge_lines().to_vec());
+        for other in neighbour_pages(page, pages) {
+            if edges.contains_key(&other) {
+                continue;
+            }
+            // An end page already read, with the check, goes by that read.
+            if let Some(end) = reading.ends.get(&other) {
+                edges.insert(other, if reading.failed_ends.contains(&other) { Vec::new() } else { end.edge_lines().to_vec() });
+                continue;
+            }
+            // One the copy reaches is read as it would be then, and kept. One past the pick is read only for its edges, and a failure there is only less to compare with.
+            let reaches = other > page && other <= last_page;
+            counted.reads += 1;
+            let read = if reaches { reading.read(other)? } else { reading.read_checked(other, false).ok().flatten() };
+            counted.most_workers = counted.most_workers.max(reading.docs.len());
+            edges.insert(other, read.as_ref().map(|text| text.edge_lines().to_vec()).unwrap_or_default());
+            if reaches && let Some(text) = read {
+                ahead.insert(other, text);
+            }
+        }
+        edges.retain(|seen, _| *seen + chrome::NEIGHBOURS >= page);
+        let leave_out = chrome_for(page, &text, pages, |other| edges.get(&other).map(Vec::as_slice));
         if rects {
             let (start, end) = range.on_page(page).unwrap_or((0, 0));
             let shapes: Vec<[f64; 4]> = text.rects(start, end).iter().map(|rect| [round(rect.x), round(rect.y), round(rect.width), round(rect.height)]).collect();
@@ -211,16 +248,13 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         if page == range.end.page {
             end_at = Some(range.end.at.min(text.len()));
         }
-        let room_left = copied.add_page(page, &text, &range, room);
-        // Its first page already says so, and the same goes for the rest: the permissions are the file's.
-        if copied.restricted && !pick.anyway && !rects {
-            return Err(AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."));
-        }
+        let room_left = copied.add_page(page, &text, &range, room, &leave_out);
         if !room_left {
             break;
         }
         page += 1;
     }
+    copied.finish();
     let withheld = copied.restricted && !pick.anyway;
     let stopped_at = copied.stopped_at.or(ran_out);
     let mut note = Vec::new();
@@ -229,6 +263,9 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
     }
     if copied.hidden_left_out > 0 {
         note.push(format!("{} characters of text that looks hidden are left out.", copied.hidden_left_out));
+    }
+    if copied.chrome_left_out > 0 {
+        note.push(format!("{} characters of running heads, footers and page numbers are left out of the body text. Pick only them to copy them.", copied.chrome_left_out));
     }
     if copied.text.is_empty() && !withheld && !range.is_empty() && copied.pages_failed == 0 && copied.pages_too_long == 0 {
         note.push("There's no text there to select. It may be a scan.".to_string());
@@ -239,6 +276,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         "end": { "page": range.end.page.min(last_page) + 1, "at": end_at },
         "chars": if withheld { None } else { Some(copied.text.chars().count()) },
         "hidden_left_out": copied.hidden_left_out,
+        "chrome_left_out": copied.chrome_left_out,
         "pages_read": copied.pages_read,
         "pages_unchecked": copied.pages_unchecked,
         "pages_failed": copied.pages_failed,
@@ -321,6 +359,18 @@ mod tests {
         }
         assert_eq!(counted.reads, 7);
         assert!(counted.most_workers <= MAX_WORKERS, "{}", counted.most_workers);
+    }
+
+    /// Failure: a page a drag ends on is read a second time, without the hidden-text check, as a neighbour of the page before it, so pages before it compare with an unchecked read (review of e3fc6e0), and a pick costs a worker read more than it needs. A drag over pages 2 and 3 of 6 reads its ends, then pages 1, 4 and 5 for their edges, and nothing twice.
+    #[test]
+    fn an_end_page_isnt_read_again_as_a_neighbour() {
+        let file = TempPdf::new("six.pdf", &words("Some words on the page", 6));
+        let mut session = opened(&file);
+        let mut counted = Counted::default();
+        let access = Direct(RefCell::new(&mut session), None);
+        let pick = Pick { page: Some(2), at: Some("80,80"), to_page: Some(3), to: Some("200,80"), all: false, ..whole() };
+        run_counted(&access, &pick, false, &mut counted).unwrap();
+        assert_eq!(counted.reads, 3, "pages 1, 4 and 5, past the two ends already read");
     }
 
     /// Failure: the page a drag ends on can't be read, and the answer says "it may be a scan", which sends someone looking for the wrong thing. It says the page couldn't be read.

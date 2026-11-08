@@ -3,7 +3,7 @@
 #
 #   app/qa/shots.sh OUT_DIR READER.pdf HEAVY.pdf [more PDFs for tabs...]
 #
-# OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, focus, heavy and low-res, each -light and -dark with the paper that goes with the window, and dark-white-paper and light-dark-paper.
+# OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, sidebar-hidden, heavy and low-res, each -light and -dark with the paper that goes with the window, and dark-white-paper and light-dark-paper.
 # Given more PDFs, the first of them onward are other tabs for sidebar-long-contents. DARK_PAGES is `name=file:page` words, for dark-name shots.
 set -euo pipefail
 out="$1"; reader="$2"; heavy="$3"; shift 3
@@ -45,10 +45,10 @@ for look in light dark; do
     r qa click-row 0
     settle
     shot "sidebar-open-$look"
-    r view --focus on
+    r view --sidebar off
     settle
-    shot "focus-$look"
-    r view --focus off
+    shot "sidebar-hidden-$look"
+    r view --sidebar on
     settle
 done
 r qa appearance dark

@@ -130,6 +130,9 @@ final class CenteringClipView: NSClipView {
     private(set) var pointerSteps: UInt64 = 0
 
     private let delegateAutoscrollEvery: TimeInterval
+    /// Told when the zoom or the page's fit has changed, for the zoom level in the top left. Asked on each viewport, and only called on a change.
+    var zoomChanged: (() -> Void)?
+    private var toldZoom: (Double, Double) = (0, 0)
 
     init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
         self.core = core
@@ -213,12 +216,20 @@ final class CenteringClipView: NSClipView {
         // Only where the pages can show: a zoomed page's rectangle runs under the sidebar, which the compositor's own tint can't reach.
         let visible = scrollView.convert(scrollView.bounds, to: view)
         let rects = pageLayers.values.compactMap { page -> NSRect? in
-            let size = CGSize(width: page.bounds.width * fit, height: page.bounds.height * fit)
-            let rect = NSRect(origin: page.position, size: size)
-            let clipped = documentView.convert(rect, to: view).intersection(visible)
+            // The frame is where the page shows, turned or not.
+            let clipped = documentView.convert(page.frame, to: view).intersection(visible)
             return clipped.isNull ? nil : clipped
         }
         return (tint, rects)
+    }
+
+    /// Whether any page showing is under a rectangle of a view, for QA: what sits in the top right corner must never be over the page.
+    func pagesOverlap(_ rect: NSRect, in view: NSView) -> Bool {
+        let visible = scrollView.convert(scrollView.bounds, to: view)
+        return pageLayers.values.contains { page in
+            let shown = documentView.convert(page.frame, to: view).intersection(visible)
+            return !shown.isNull && shown.intersects(rect)
+        }
     }
 
     func hideTintForShot(_ hidden: Bool) {
@@ -295,7 +306,7 @@ final class CenteringClipView: NSClipView {
         for (number, pieces) in highlightRects {
             guard let page = pageLayers[number] else { continue }
             for piece in pieces {
-                let inDocument = NSRect(x: page.position.x + piece.x * fit, y: page.position.y + piece.y * fit, width: piece.width * fit, height: piece.height * fit)
+                let inDocument = page.convert(CGRect(x: piece.x, y: piece.y, width: piece.width, height: piece.height), to: documentView.layer)
                 let clipped = documentView.convert(inDocument, to: view).intersection(visible)
                 if !clipped.isNull { rects.append(clipped) }
             }
@@ -406,14 +417,21 @@ final class CenteringClipView: NSClipView {
     /// A place on the first highlighted line or the middle of the page, for QA's check of what the mouse reaches.
     func documentPointOnText() -> NSPoint? {
         guard let page = pageLayers.keys.min(), let layer = pageLayers[page] else { return nil }
-        return NSPoint(x: layer.position.x + layer.bounds.midX * fit, y: layer.position.y + layer.bounds.midY * fit)
+        return NSPoint(x: layer.frame.midX, y: layer.frame.midY)
     }
 
+    /// Rust's list: Copy and Select All by their standard selectors, then the layouts, which go to the app's own action as the menu bar's items do.
     func contextMenu() -> NSMenu {
         let menu = NSMenu()
         for entry in core.contextMenu() {
-            let item = menu.addItem(withTitle: entry.title, action: NSSelectorFromString(entry.systemAction), keyEquivalent: "")
+            if entry.id.isEmpty {
+                menu.addItem(.separator())
+                continue
+            }
+            let isSystem = !entry.systemAction.isEmpty
+            let item = menu.addItem(withTitle: entry.title, action: isSystem ? NSSelectorFromString(entry.systemAction) : #selector(AppDelegate.menuChosen(_:)), keyEquivalent: "")
             item.representedObject = entry.id
+            item.state = entry.checked ? .on : .off
         }
         return menu
     }
@@ -467,7 +485,7 @@ final class CenteringClipView: NSClipView {
     /// The room left either side of a fitted page, for what goes in the margin.
     func marginWidth() -> CGFloat {
         guard let page = pageLayers.values.first else { return scrollView.bounds.width / 4 }
-        let width = page.bounds.width * CGFloat(fit) * scrollView.magnification
+        let width = page.frame.width * scrollView.magnification
         return max((scrollView.bounds.width - width) / 2, 0)
     }
 
@@ -489,6 +507,10 @@ final class CenteringClipView: NSClipView {
         guard frameWidth > 0 else { return }
         let ops = core.setViewport(viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo))
         apply(ops)
+        if toldZoom != (scrollView.magnification, fit) {
+            toldZoom = (scrollView.magnification, fit)
+            zoomChanged?()
+        }
     }
 
     /// There's more from Rust: tiles that have arrived, a change of tab. Called when it says so.
@@ -548,13 +570,16 @@ final class CenteringClipView: NSClipView {
             origin.x = x
             clip.setBoundsOrigin(clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
             scrollView.reflectScrolledClipView(clip)
-        case let .showPage(page, x, y, width, height, fit, paperRgb):
+        case let .showPage(page, x, y, width, height, fit, paperRgb, turns):
             self.fit = fit
             let layer = pageLayers[page] ?? makePageLayer(page)
-            // Its own coordinates are PDF points. The scale brings them to the document's, so a change of fit moves one transform and no tile.
+            // Its own coordinates are PDF points of the page before it's turned. The scale brings them to the document's, so a change of fit moves one transform and no tile, and a turn is the same transform turned about its top left, moved so the turned page's top left is where Rust put it. y runs down here, so a positive angle is clockwise.
             layer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            layer.position = CGPoint(x: x, y: y)
-            layer.setAffineTransform(CGAffineTransform(scaleX: fit, y: fit))
+            let (w, h) = (width * fit, height * fit)
+            let offsets: [CGPoint] = [.zero, CGPoint(x: h, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: w)]
+            let turn = Int(turns % 4)
+            layer.position = CGPoint(x: x + offsets[turn].x, y: y + offsets[turn].y)
+            layer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(turn) * .pi / 2).scaledBy(x: fit, y: fit))
             layer.backgroundColor = Theme.rgb(paperRgb).cgColor
             applyTint(to: layer, page: page)
         case let .hidePage(page):
@@ -645,6 +670,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorIsIBeam ? "ibeam" : "arrow", "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
+        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorIsIBeam ? "ibeam" : "arrow", "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
     }
 }

@@ -27,6 +27,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git
+- Never `git stash`: the stash is shared by every worktree and session in a repo, and `git stash pop` can take someone else's work (it happened three times on 2026-11-07, once touching the owner's own WIP in the lopdf fork). Set work aside with a temporary commit on your own branch.
 - Never `git switch --orphan`. Never `git add -A` without checking `git status`. Check a commit's size before any push.
 - **Pushing `main` of `kkollsga/RectoPDF`:** owner, 2026-11-07: "Push automatically". The coordinator pushes `main` after each merge that passes its check. Workers don't push.
 - A pre-push hook enforces that (`tools/hooks/install.sh`): `main` only goes up if `tools/check.sh --full` passed on that commit, or only documents changed since. Never use `--no-verify`.
@@ -88,6 +89,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 
 ## Product rules from the owner, first use of the restore build (2026-11-07)
 - "We dont need detailed zoom options in the left sidebar menu. Zoom is pretty natural to people. Instead lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset."
+- Replaces where the zoom level goes: "The zoom level should be in the upper right of the app (not in the sidebar)".
 - "Focus mode enable disable should be in the right click menu. In the right click menu you can select side by side layout, with and without header page."
 - Replaces the focus part of that: "Actually instead of focus view, simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode". So there is no focus mode; a sidebar button beside the window controls shows and hides the sidebar.
 - Contents: "The hover delay before showing the full toc name makes in not intuitive, and the expanded name should have the color of the title." "there should be a collapse toggle button for sections with sub chapters on the left side of the headers." Page numbers on the right that don't make sense, and section indents, are bugs.
@@ -98,4 +100,8 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The full app settings should be accessible from file -> settings"
 - "The sidebar menu is more for tools, like edit mode etc. When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
 - "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
+- "and improve the styling of the scrollbar. The sidebar thumb should always be visible, and lets hide the rail."
+- "the thumb should be thinner": slimmer than the system's default thumb, in the sidebar and the page area.
+- "add some margin above the first page, and below the last page"
+- "the scroll thumb always visible, the rail always hidden": for the page area too, whatever the system's scroll bar setting.
 - "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."

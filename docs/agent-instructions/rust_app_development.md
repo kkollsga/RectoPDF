@@ -1326,6 +1326,10 @@ Slow suites usually get blamed for lost time. Here the cause was how often they 
 - **Put it in the tools, because agents under pressure default to the biggest test.** A pass on identical code counts, so reverts and doc-only commits don't rerun. Each branch has a small budget of full runs, and going over it needs a stated reason. A ledger shows runs per branch at every process review. Keep these as speed bumps that can always be passed, never locks on a needed push. Include what the code doesn't track in the fingerprint: tool versions, the OS, and which stages are skipped. The cost is honest: one of those 9 identical reruns found a real load-sensitive bug, so keep a way to force a run, and let CI run everything.
 - **Keep the safety.** None of this removes a stage, a review, CI or fuzzing.
 
+### Check that a reported test exists
+
+A worker reported two tests as committed that were never added: its edit script missed its anchor and didn't stop. Scripted edits must fail loudly when the text they look for isn't there (an assertion on the match, not a silent no-op), and a report's test names are worth a `grep` before they're trusted. A review that only reads the report would have passed both.
+
 ### Failures that only happen elsewhere
 
 - **Bring the evidence before the explanation.** A test failing only on CI cost four rounds of check and CI here, because the first fix was a guess and the first diagnostic looked after the moment that mattered. When a failure happens on a machine you can't reach, make the test capture state and thread stacks during the failing window, and push that first. Sampling costs little and is only read on failure.

@@ -185,7 +185,7 @@ impl QaBridge {
             Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
-                "shot" | "shot_settings" | "shot_menu" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
+                "shot" | "shot_settings" | "shot_menu" | "shot_menus" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
@@ -265,7 +265,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -275,7 +275,7 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "mouse_up" | "notice_button" => {}
+            "mouse_up" | "notice_button" | "zoom_escape" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -450,7 +450,12 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
-        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view."),
+        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
+        "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
+        "key_action" => one_of(&["undo", "redo"]),
+        "context_menu" => crate::menus::context_menu(None).iter().any(|item| !item.id.is_empty() && item.id == value),
+        // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
+        "zoom_type" => value.chars().count() <= 32,
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
         "contents_scroll" => row(),

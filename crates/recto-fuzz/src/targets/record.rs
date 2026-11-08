@@ -92,7 +92,7 @@ fn use_a_sleep_file(bytes: &[u8]) {
 }
 
 fn use_a_log(bytes: &[u8]) {
-    let mut main = recto_session::record::SessionRecord { app: record::AppRecord::default(), view: record::ViewRecord::default(), find: record::FindRecord::default(), edit_mode: false, active: None, next_id: 3, tabs: vec![record::TabEntry { id: 1, path: record::PathField::Text("/fuzz/p12.pdf".into()), file: None, page: 0, page_count: 12, place: None, view_rotation: 0, toc_open: true, renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }] };
+    let mut main = recto_session::record::SessionRecord { app: record::AppRecord::default(), view: record::ViewRecord::default(), find: record::FindRecord::default(), edit_mode: false, active: None, next_id: 3, tabs: vec![record::TabEntry { id: 1, path: record::PathField::Text("/fuzz/p12.pdf".into()), file: None, page: 0, page_count: 12, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }] };
     record::apply_places_log(&mut main, 1, bytes);
     record::validate_record(&main).expect("a log can't break a record");
 }

@@ -330,7 +330,18 @@ pub struct ReaderView {
     pub home: bool,
     /// Something the reader needs to be told, such as a page at a lower resolution, in words.
     pub note: Option<String>,
-    pub focus: bool,
+    /// The sidebar's hidden, by its button or the View menu.
+    pub sidebar_hidden: bool,
+    /// The tab showing's layout, by its name: `single`, `two-up` or `two-up-cover`. Empty with none showing.
+    pub layout: String,
+    /// The tab showing has unsaved edits, which the red window button's dot shows.
+    pub edited: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// Edit mode's on, which the panel's Rotate goes by. Published, so drawing the panel never waits on the session.
+    pub edit_mode: bool,
+    /// Whether the panel's Rotate can turn the tab showing: there is one, more than the renderer can read it, and its edits can be read.
+    pub can_rotate: bool,
     pub place: String,
     /// The paper's name, which QA and the menu use.
     pub paper: String,
@@ -390,6 +401,8 @@ pub struct AppStrings {
     pub open_panel_title: String,
     pub add_tooltip: String,
     pub agent_tooltip: String,
+    /// The sidebar's button, beside the window's controls.
+    pub sidebar_button_tooltip: String,
     /// What goes beside a tab's name when something's wrong with its file. Its notice is what hovering over it says.
     pub notice_mark: String,
 }
@@ -436,7 +449,8 @@ pub enum ReaderOp {
     ScrollTo { y: f64, seq: u64 },
     /// Across, when zoomed in.
     ScrollAcross { x: f64 },
-    ShowPage { page: u32, x: f64, y: f64, width: f64, height: f64, fit: f64, paper_rgb: u32 },
+    /// `width` and `height` are the page before it's turned, and `turns` quarter turns clockwise turn it, with its turned top left at `x` and `y`.
+    ShowPage { page: u32, x: f64, y: f64, width: f64, height: f64, fit: f64, paper_rgb: u32, turns: u8 },
     HidePage { page: u32 },
     /// `surface` is an `IOSurfaceRef` the host now owns one reference to, as a number, or zero if `rgb` is the colour.
     Attach { id: u64, page: u32, x: f64, y: f64, width: f64, height: f64, surface: u64, rgb: Option<u32>, crop_width: f64, crop_height: f64, below: bool },
@@ -453,7 +467,7 @@ impl From<Op> for ReaderOp {
             Op::Magnify { value } => Self::Magnify { value },
             Op::ScrollTo { y, seq } => Self::ScrollTo { y, seq },
             Op::ScrollAcross { x } => Self::ScrollAcross { x },
-            Op::ShowPage { page, x, y, width, height, fit, paper_rgb } => Self::ShowPage { page, x, y, width, height, fit, paper_rgb },
+            Op::ShowPage { page, x, y, width, height, fit, paper_rgb, turns } => Self::ShowPage { page, x, y, width, height, fit, paper_rgb, turns },
             Op::HidePage { page } => Self::HidePage { page },
             Op::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below } => Self::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below },
             Op::Detach { id } => Self::Detach { id },
@@ -590,12 +604,15 @@ impl AppHost {
             };
         }
         // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-        if let Command::View { paper, focus, agent_icon, zoom: Some(word) } = command {
+        if let Command::View { paper, sidebar, agent_icon, zoom: Some(word), layout } = command {
             let zoom = menus::zoom_from_word(word).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.", recto_core::clean_line(word)), recto_agent::exit::USAGE))?;
-            let rest = Command::View { paper: paper.clone(), focus: focus.clone(), agent_icon: agent_icon.clone(), zoom: None };
+            let rest = Command::View { paper: paper.clone(), sidebar: sidebar.clone(), agent_icon: agent_icon.clone(), zoom: None, layout: layout.clone() };
             let mut answer = self.session.run(level, &rest, events)?;
             let value = self.engine.zoom(zoom).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
             answer["zoom"] = json!(value);
+            if let Some(fit) = self.engine.fit() {
+                answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
+            }
             self.core.push(CoreCall::Reconcile);
             return Ok(answer);
         }
@@ -629,7 +646,14 @@ enum CoreCall {
     Tap(TabId),
     GoTo(TabId, u32),
     Open(PathBuf),
-    SetFocus(bool),
+    /// The sidebar hidden, or not.
+    SetSidebarHidden(bool),
+    /// The tab showing laid out another way.
+    SetSpread(record::Spread),
+    /// The panel's Rotate, by the owner.
+    Rotate(i32),
+    /// Edit > Undo or Redo, by the owner: true for Undo.
+    UndoOrRedo(bool),
     SetPaper(Paper),
     ToggleAgentIcon,
     ClearEditHistory,
@@ -706,7 +730,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetFocus(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -806,7 +830,8 @@ struct Synced {
     map: PageMap,
     warm: Vec<u32>,
     paper: Option<PaperKind>,
-    focus: Option<bool>,
+    /// How the tab showing is laid out, as the page view was last told.
+    spread: Option<record::Spread>,
 }
 
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
@@ -860,6 +885,8 @@ struct Inner {
     qa: Option<Arc<QaBridge>>,
     paths: Option<StatePaths>,
     open_failure: Mutex<Option<String>>,
+    /// Why something the reader chose couldn't be done, as a notice that goes by itself.
+    action_notice: Mutex<Option<String>>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1168,12 +1195,6 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
-/// Whether the window's buttons show. Focus view has nothing but the page, until the pointer goes where they'd be.
-#[uniffi::export]
-pub fn window_buttons_show(focus: bool, pointer_near: bool) -> bool {
-    !focus || pointer_near
-}
-
 /// Whether this launch is a quiet run, which is decided before AppKit does anything. The same parser as the rest of the launch, so the two can't disagree. A launch that won't parse ends straight away, and shows nothing on the way.
 #[uniffi::export]
 pub fn launch_is_quiet(args: Vec<String>) -> bool {
@@ -1246,7 +1267,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1255,6 +1276,7 @@ impl AppCore {
             qa,
             paths: Some(paths),
             open_failure: Mutex::new(None),
+            action_notice: Mutex::new(None),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -1301,6 +1323,7 @@ impl AppCore {
             open_panel_title: "Open a PDF".into(),
             add_tooltip: "Open another PDF".into(),
             agent_tooltip: "The agent isn't built yet".into(),
+            sidebar_button_tooltip: "Show or hide the sidebar (⌃⌘S)".into(),
             notice_mark: "\u{26A0}\u{FE0E}".into(),
         }
     }
@@ -1462,14 +1485,14 @@ impl AppCore {
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
-        menus::menu_bar(ViewSettings { focus: reader.focus, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, &self.inner.updates.menu_item().title)
+        menus::menu_bar(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title)
     }
 
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.focus)
+        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate)
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -1487,10 +1510,11 @@ impl AppCore {
             menus::Action::Zoom(zoom) => {
                 self.inner.engine.zoom(zoom);
             }
-            menus::Action::ToggleFocus => {
-                let focus = !lock(&self.inner.published).reader.focus;
-                self.inner.core.push(CoreCall::SetFocus(focus));
-            }
+            menus::Action::ToggleSidebar => self.toggle_sidebar(),
+            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread(spread)),
+            menus::Action::Rotate(turns) => self.inner.core.push(CoreCall::Rotate(turns)),
+            menus::Action::Undo => self.inner.core.push(CoreCall::UndoOrRedo(true)),
+            menus::Action::Redo => self.inner.core.push(CoreCall::UndoOrRedo(false)),
             menus::Action::ToggleAgentIcon => self.inner.core.push(CoreCall::ToggleAgentIcon),
             menus::Action::SetPaper(paper) => self.inner.core.push(CoreCall::SetPaper(paper)),
             menus::Action::TogglePanel => {
@@ -1508,6 +1532,10 @@ impl AppCore {
         if id == "app.update" {
             return self.inner.updates.menu_item().enabled;
         }
+        if id == "edit.undo" || id == "edit.redo" {
+            let reader = lock(&self.inner.published).reader.clone();
+            return if id == "edit.undo" { reader.can_undo } else { reader.can_redo };
+        }
         menus::enabled(&id, self.inner.engine.has_document(), self.inner.engine.has_selection())
     }
 
@@ -1518,7 +1546,7 @@ impl AppCore {
 
     /// What a right-click on a page offers.
     pub fn context_menu(&self) -> Vec<MenuEntry> {
-        menus::context_menu()
+        menus::context_menu(record::Spread::from_name(&lock(&self.inner.published).reader.layout))
     }
 
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
@@ -1562,6 +1590,7 @@ impl AppCore {
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
         self.inner.engine.dismiss_selection_notice();
+        lock(&self.inner.action_notice).take();
         self.inner.updates.dismiss_notice();
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -1576,14 +1605,27 @@ impl AppCore {
         menus::plain_key(&characters).map(str::to_string)
     }
 
+    /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.
+    pub fn zoom_label(&self, magnification: f64, fit: f64) -> menus::ZoomLabel {
+        menus::zoom_label(magnification, fit)
+    }
+
+    /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
+    pub fn zoom_typed(&self, text: String, decimal_separator: String) -> bool {
+        let decimal = decimal_separator.chars().next().unwrap_or('.');
+        let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else { return false };
+        self.inner.engine.zoom(zoom).is_some()
+    }
+
     /// The zoom after this much ⌘-scroll, from where it is.
     pub fn zoom_after_scroll(&self, current: f64, points: f64) -> f64 {
         recto_reader::tiles::zoom_after_scroll(current, points)
     }
 
-    pub fn toggle_focus(&self) {
-        let focus = !lock(&self.inner.published).reader.focus;
-        self.inner.core.push(CoreCall::SetFocus(focus));
+    /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
+    pub fn toggle_sidebar(&self) {
+        let hidden = !lock(&self.inner.published).reader.sidebar_hidden;
+        self.inner.core.push(CoreCall::SetSidebarHidden(hidden));
     }
 
     pub fn window_closed(&self) {
@@ -2153,14 +2195,35 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
-            CoreCall::SetFocus(focus) => {
-                let view = host.session.with_session(|session| {
-                    let view = ViewSettings { focus, ..session.view() };
-                    session.set_view(view);
-                    view
+            CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
+            CoreCall::Rotate(turns) => {
+                let refused = host.session.with_session(|session| match session.active() {
+                    None => Some(recto_session::SessionError::NoSuchTab),
+                    Some(id) => match session.rotate_from_panel(id, turns) {
+                        Ok(()) => {
+                            events.push(recto_agent::edits_changed(session, id));
+                            None
+                        }
+                        Err(error) => Some(error),
+                    },
                 });
-                events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
+                // It says why, by the page, and goes by itself.
+                *lock(&inner.action_notice) = refused.map(|error| format!("Couldn't rotate: {}", error.message()));
             }
+            CoreCall::UndoOrRedo(undo) => host.session.with_session(|session| {
+                if let Some(id) = session.active()
+                    && (if undo { session.undo_edit_as(id, recto_session::Author::Owner) } else { session.redo_edit_as(id, recto_session::Author::Owner) }).unwrap_or(false)
+                {
+                    events.push(recto_agent::edits_changed(session, id));
+                }
+            }),
+            CoreCall::SetSpread(spread) => host.session.with_session(|session| {
+                if let Some(id) = session.active()
+                    && session.set_spread(id, spread)
+                {
+                    events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
+                }
+            }),
             CoreCall::Flush(marker) => {
                 reconcile(inner, &mut synced, &mut events);
                 // What was asked before this includes any file being read for it.
@@ -2344,7 +2407,7 @@ fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut Vie
         session.set_view(view);
         view
     });
-    events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
+    events.push(recto_agent::view_changed(view));
 }
 
 /// What a tap on a tab does, once whatever it needs from disk is here.
@@ -2405,6 +2468,15 @@ fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32,
     (u32::try_from(start).unwrap_or(u32::MAX), count(before), count(after))
 }
 
+/// The session's word for a layout, as the page view has it.
+fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
+    match spread {
+        record::Spread::Single => recto_reader::layout::Spread::Single,
+        record::Spread::TwoUp => recto_reader::layout::Spread::TwoUp,
+        record::Spread::TwoUpCover => recto_reader::layout::Spread::TwoUpCover,
+    }
+}
+
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // A tab about to be shown that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
@@ -2430,11 +2502,16 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             let own = session.path_of(id)?;
             let same_file = session.own_stamp(id).map(sleeper::version_of);
             let map = match session.page_edits(id) {
-                None => PageMap { files: vec![own], slots: None, own: same_file },
+                None => PageMap { files: vec![own], slots: None, own: same_file, turns: None },
                 Some(edits) => {
                     let mut files = vec![own];
                     files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
-                    PageMap { files, slots: Some(edits.slots().iter().map(|slot| (slot.source, slot.page)).collect()), own: same_file }
+                    // A page's quarter turns, one byte a page of an edited tab, and none at all while nothing's turned.
+                    let turns = edits.slots().iter().any(|slot| slot.quarter_turns % 4 != 0).then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
+                    // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
+                    let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
+                    let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
+                    PageMap { files, slots, own: same_file, turns }
                 }
             };
             let warm: Vec<u32> = session.warm_tabs().filter(|other| *other != id).map(|other| other.0).collect();
@@ -2442,7 +2519,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
             // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
             let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
-            Some((id, pages, tab.page, map, warm, problem, saved))
+            Some((id, pages, tab.page, map, warm, problem, saved, tab.spread))
         });
         let model = session.sidebar();
         let mut current = None;
@@ -2492,7 +2569,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
         (snapshot, view, tabs, contents, rail_filled, session.view())
     });
-    // The paper and focus first, so what's asked for next is drawn right.
+    // The paper first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst);
     let shown = Paper::resolved(view.paper, dark);
     // Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
@@ -2505,18 +2582,22 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         synced.paper = Some(paper);
         inner.engine.set_paper(paper);
     }
-    if synced.focus != Some(view.focus) {
-        synced.focus = Some(view.focus);
-        inner.engine.set_focus(view.focus);
-    }
     let mut problem = None;
+    let layout = snapshot.as_ref().map_or(String::new(), |shown| shown.7.name().to_string());
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate) = inner.host.session.with_session(|session| {
+        let edit_mode = session.edit_mode();
+        match snapshot.as_ref() {
+            Some(shown) => (session.is_edited(shown.0), session.undo_and_redo(shown.0), edit_mode, session.can_edit_pages(shown.0)),
+            None => (false, (false, false), edit_mode, false),
+        }
+    });
     match snapshot {
         None => {
             if synced.tab.take().is_some() {
                 inner.engine.deactivate();
             }
         }
-        Some((id, pages, page, map, warm, tab_problem, saved)) => {
+        Some((id, pages, page, map, warm, tab_problem, saved, spread)) => {
             problem = tab_problem;
             // Its file's being looked at: nothing goes on the page until that's known.
             let holding = *lock(&inner.holding_tab) == Some(id) && synced.tab.is_none();
@@ -2537,7 +2618,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                     inner.engine.note_wake(id.0, Instant::now());
                     inner.give_sleep_view(id);
                 }
-                inner.engine.activate(id.0, pages, page, map.clone(), &warm, saved);
+                inner.engine.activate(id.0, pages, page, map.clone(), &warm, saved, reader_spread(spread));
+                synced.spread = Some(spread);
                 // What was selected comes back on the tab it was on, once.
                 let selection = lock(&inner.app).selection_resume.take().filter(|(tab, _)| *tab == id).map(|(_, selection)| selection);
                 if let Some(selection) = selection {
@@ -2550,6 +2632,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 synced.page = page;
                 synced.warm = warm;
             } else {
+                if synced.spread != Some(spread) {
+                    inner.engine.set_spread(reader_spread(spread));
+                    synced.spread = Some(spread);
+                }
                 if synced.page != page {
                     inner.engine.jump_to(page);
                     synced.page = page;
@@ -2568,8 +2654,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
-    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
+    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
@@ -2644,7 +2730,7 @@ mod tests {
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
         queue.push(CoreCall::Tap(TabId(2)));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::SetSidebarHidden(true));
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
@@ -2666,7 +2752,7 @@ mod tests {
         queue.push(CoreCall::Tap(TabId(1)));
         queue.push(CoreCall::GoTo(TabId(1), 2));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::SetSidebarHidden(true));
         queue.push(CoreCall::SetPaper(Paper::Dark));
         queue.push(CoreCall::ToggleAgentIcon);
         assert_eq!(lock(&queue.calls).len(), 0);
@@ -2704,15 +2790,6 @@ mod tests {
     fn stop_is_refused_by_a_normal_app() {
         let host = AppHost { engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)), session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None, saver: Arc::new(Saver::new(RecordStore::open(&StatePaths::overridden(&std::env::temp_dir().join(format!("rf-{}", std::process::id()))).unwrap(), Flavor::App), Arc::new(CoreQueue::default()))), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
-    }
-
-    /// Failure: focus view's buttons show with no pointer there, or don't come back when it is, or go missing from an ordinary window.
-    #[test]
-    fn the_window_buttons_rule() {
-        assert!(window_buttons_show(false, false));
-        assert!(window_buttons_show(false, true));
-        assert!(!window_buttons_show(true, false));
-        assert!(window_buttons_show(true, true));
     }
 
     /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.

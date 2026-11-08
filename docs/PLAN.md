@@ -111,6 +111,16 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Selecting, from its review, and the owner's to tighten in the planned hidden-text work: hidden text the check doesn't flag still reaches a copy, as pairs of white letters split by a visible dot, under `MIN_FLAGGED_RUN`, and white text printed over black, which has ink under it
 - [ ] Selecting, from its review: a pointer move at rest starts a worker to read its page, 0 to 4.5 MiB on a tiny file, and that hasn't been measured on a heavy page
 - [ ] Selecting, from its review: 16 MiB on the real clipboard hasn't been measured, and `setString` is synchronous on the UI thread
+- [ ] Chrome in a copy, from the review of `build/render-fixes`, real content still left out: a table's header set off from its rows at the top of every page (`eu_dma` p65 to 66, a made `table.pdf`), numbered headings like "Article 12" and "Article 13" at the top of consecutive pages, which masking digits makes the same line (a made `articles.pdf`), a continued table's caption (NASA `ntrs20210023723` p42, 44), a box's heading at the same place on two pages (UN SDG 2023 p55 to 56), a map legend's label (NASA `ntrs20240002628` p271 to 272) and the labels at the top of an IRS form's identical copies (`f1099msc`). Caught since by the step and figures rules: a slide's axis labels repeated at the foot, a lone year at the foot of a one-page letter, axis labels on figure pages, footnote marks
+- [ ] Chrome: a page number glued to the last word of a page by a line-end hyphen stays in a copy, as "neces-197" on part B p197, the only numbered page of 324 there that keeps its number. Hyphen joining shouldn't join a word to a lone number on the same row
+- [ ] Chrome: a header or footer whose piece is short and whose row differs between pages stays ("July 2023" on RFC 9420's pages, "Preprint" beside a page number on some arXiv pages)
+- [ ] Dark paper: a choropleth map of a few flat classes on white flips with the chart rule, as its fills are as flat as a stacked bar chart's and pixels alone don't tell them apart. None in bench100. SPEC says a map keeps its colours, so this needs another signal, such as the image's own name or many touching regions
+- [ ] Dark paper: the first chart rule, white over 0.45 with at most 0.20 colour, predates the shading check and still flips a shaded object that's under a fifth of its image, as a small product shot on white. The shading check could apply to it too, after a look at the 84 earlier flips that span 4 lightnesses
+- [ ] Chrome: about 20 real page numbers that start a row whose title changes from page to page stay in a copy (USGS running heads on 11 pages, NASA `ntrs20180005693`, `ntrs20210011071`, `ntrs20220005969` on 8, arXiv on 4), as the rule leaves a number that starts its row so that questions', headings' and footnotes' numbers stay. A number at the outer edge, mirrored on facing pages, could count, after a look at what else that takes
+- [ ] Chrome: a page whose every line repeats on its neighbours, as a worksheet of identical questions, is all chrome, so a copy of it falls back to everything, its page number too
+- [ ] Chrome, `recto text`: `chrome_spans` compares with the file's own pages either side, not the tab's positions, so after unsaved moves or inserts its neighbours are the file's, and a page from an added file compares with that file's
+- [ ] Dark paper: an object shaded moderately, through only 3 lightnesses of one colour on white, still flips with the chart rule. The made balls span 4; a flatter rendering would pass
+- [ ] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
@@ -155,6 +165,20 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
 - [x] What blind agents asked for: a whole-document hit total in `search`
 - [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
+- From the owner's first use of the restore build (2026-11-07 and 08):
+  - [x] A sidebar button beside the window's controls replaces focus view; View > Hide Sidebar on ⌃⌘S; `recto view --sidebar`
+  - [x] The zoom level in the top right beside the agent icon (owner, 2026-11-08), clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
+  - [x] The page number always in the lower right
+  - [x] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
+  - [x] File > Settings…
+  - [x] Rotate in the `⋯` panel turns every page as one unsaved edit, outside edit mode, drawn turned, with Edit > Undo and Redo
+  - [x] The agent icon's margins: the same to the right and above, and less above than before
+  - [x] Margin above the first page and below the last
+  - [ ] The page's scroller: a slim thumb always shown, no rail, the sidebar's width and colours
+  - [ ] From the side-by-side review: a round trip through a small view, as a narrow window, can move the reader to the left page of a pair (finding 4)
+  - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
+  - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
+  - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
@@ -166,6 +190,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Agreement gate between lopdf and PDFium
 - [ ] Native Save, Save As, close prompt, atomic writes, one backup
 - [ ] Undoing a delete past a Save keeps only the removed pages, within 64 MiB per PDF, in place of a whole-file clone (owner, 2026-11-07)
+- [ ] Save's gate, from the streaming rewrite's review: open the reader Save writes from with `object_bytes` at 1 MiB, since at the default 4 MiB a 4 KB hostile file reaches about 1.5 GB during a save, while the corpus's largest object is 50 KB; warn whenever `objects_missing` isn't empty, because MuPDF and poppler can repair what the copy drops; show `document_data_kept` honestly and offer Remove Hidden Data; never call `remove_object` on something a kept page uses, as nothing reports it
+- [ ] Fork: a big parsed object costs about 365 times its source bytes in memory during a rewrite; find the copies
 - [ ] Save's gate, from the saved point's review: no edits while a save writes, since an edit after the `Saving` line came back reading as saved with its rotation not in the file; a crash in a redaction's save must leave no history or kept file, proved reachable today, so mark it in the `Saving` line or clear before the rename; Save As with the record behind; the kept copy isn't fsynced, so a power cut could leave wrong contents with the right stamp; check Spotlight doesn't index kept PDFs, possibly with a `.noindex` folder; a redaction's save keeps nothing, enforced rather than documented; an added PDF rewritten after a save, as drawing goes by path with no stamp check; which levels see a kept file's path in `recto edits`
 - [ ] Edit mode: page grid, drag, drop PDFs, rotate, delete, extract, split, merge
 - [ ] Annotations: highlight, underline, strikeout, note, draw
@@ -266,10 +292,20 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **Tab names:** the file name, with the full name and title on hover.
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
 
+## Decisions made by the owner, 2026-11-08
+
+"I agree with all your recommendations":
+- **The lopdf streaming rewrite** goes to the fork's `work/streaming-rewrite` branch.
+- **Dark paper:** the text-weight curve applies to text and lines; coloured areas in flipped images keep the gentler old curve, so charts keep richer colours.
+- **Usage rights (UR3), as on IRS forms:** a rewrite such as a page delete allows a normal Save, removes the usage rights and shows a quiet note. Usage rights aren't a person's signature. Signed files still follow decision 27.
+- **`recto text` marks headers, footers and page numbers** in a separate field next to hidden spans; the text itself is unchanged.
+- **Copying images and snapshots from copy-restricted PDFs** gets the same notice with Copy anyway as text.
+- **The first Save keeps one backup of the original.**
+- **Later:** signing secrets in a protected `release` environment with the owner as required reviewer; a public release waits for Anthropic's written answer and adds an API-key route; a trademark name search before release.
+
 ## Decisions waiting on you
 
 | Decision | Needed by | Current default |
 |---|---|---|
-| Image copy and snapshot on copy-restricted PDFs: the same notice with Copy anyway as text has? | Phase 3 | Yes |
-| What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
-| Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
+| Move paper colour from the `⋯` panel to View > Paper, keeping the panel for tools | Phase 3 | Move it |
+| Remove the sidebar footer's "N of M", now that the page number is always in the lower right | Phase 3 | Remove it |

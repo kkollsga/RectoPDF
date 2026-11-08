@@ -248,10 +248,21 @@ pub struct ViewRecord {
     /// `white`, `warm` or `dark`. None goes with the window.
     #[serde(default)]
     pub paper: Option<PaperName>,
-    #[serde(default)]
+    /// What an older build wrote for focus view, which hid the sidebar. Read so a record with it on comes back with the sidebar hidden, and never written: owner, 2026-11-08, there's no focus mode now.
+    #[serde(default, skip_serializing)]
     pub focus: bool,
+    /// The sidebar's hidden, by its button beside the window's controls or the View menu.
+    #[serde(default)]
+    pub sidebar_hidden: bool,
     #[serde(default)]
     pub agent_icon_hidden: bool,
+}
+
+impl ViewRecord {
+    /// Whether the sidebar comes back hidden: by its own field, or by an older build's focus view.
+    pub fn sidebar_comes_back_hidden(&self) -> bool {
+        self.sidebar_hidden || self.focus
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +271,45 @@ pub enum PaperName {
     White,
     Warm,
     Dark,
+}
+
+/// How a tab's pages are laid out, kept per tab. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Spread {
+    /// A page to a row.
+    #[default]
+    Single,
+    /// Two pages side by side: 1 and 2, then 3 and 4.
+    TwoUp,
+    /// The first page alone, as a cover, then 2 and 3 side by side.
+    TwoUpCover,
+}
+
+impl Spread {
+    pub const ALL: [Self; 3] = [Self::Single, Self::TwoUp, Self::TwoUpCover];
+
+    /// As `recto view --layout` takes it and the record keeps it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::TwoUp => "two-up",
+            Self::TwoUpCover => "two-up-cover",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|spread| spread.name() == name)
+    }
+
+    /// As a menu says it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Single => "Single Page",
+            Self::TwoUp => "Side by Side",
+            Self::TwoUpCover => "Side by Side, First Page Alone",
+        }
+    }
 }
 
 /// Find, as the reader left it. Nothing draws a Find field yet.
@@ -571,6 +621,9 @@ pub struct TabEntry {
     pub view_rotation: u8,
     #[serde(default = "yes")]
     pub toc_open: bool,
+    /// How its pages are laid out. An older build reads past it, and a record without it is a page to a row.
+    #[serde(default)]
+    pub layout: Spread,
     #[serde(default)]
     pub renderer_only: bool,
     /// Selection work: this is what's kept. It's set with `Session::set_selection`.
@@ -1299,7 +1352,7 @@ mod tests {
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }
+        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {
