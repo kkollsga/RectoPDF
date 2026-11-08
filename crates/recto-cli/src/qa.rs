@@ -494,7 +494,7 @@ pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     }
     let sweep = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "6", "timeout_ms": 5000 }))?;
     let after_sweep = run.state()?;
-    report["scroll"] = json!({ "pages_per_second": 6, "steps": sweep["steps"], "ui_step_us": sweep["step_us"], "budget_ui_step_us_p99": 2000, "blank_seen_steps": sweep["blank_seen_steps"], "peak_tree_mib": mib(sweep["peak_tree_bytes"].as_u64().unwrap_or(0)), "settled": sweep["settled"], "pages_after": after_sweep["panes"]["panes"].as_array().map(|panes| panes.iter().map(|pane| pane["page"].clone()).collect::<Vec<_>>()), "note": "Steps in the first pane, which leads the others when synced. The UI thread's work, off screen." });
+    report["scroll"] = json!({ "pages_per_second": 6, "steps": sweep["steps"], "ui_step_us": sweep["step_us"], "ui_step_cpu_us": sweep["step_cpu_us"], "slowest_steps_us_and_cpu_us": sweep["slowest_steps_us_and_cpu_us"], "budget_ui_step_us_p99": 2000, "blank_seen_steps": sweep["blank_seen_steps"], "peak_tree_mib": mib(sweep["peak_tree_bytes"].as_u64().unwrap_or(0)), "settled": sweep["settled"], "pages_after": after_sweep["panes"]["panes"].as_array().map(|panes| panes.iter().map(|pane| pane["page"].clone()).collect::<Vec<_>>()), "note": "Steps in the first pane, which leads the others when synced. The UI thread's work, off screen." });
     report["after_scroll"] = shown(&after_sweep);
     // Starting from the record with the comparison in it: from the process starting to its first frame, and to every pane settled.
     let mut first = Vec::new();

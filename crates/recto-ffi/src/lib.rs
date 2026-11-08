@@ -1750,9 +1750,9 @@ impl AppCore {
     }
 
     /// How long a scroll step of `qa sweep` took on the UI thread, and where the contents were on it: their scroll, less any change of rows above, and whether the place being read was showing.
-    pub fn qa_note_step(&self, micros: u64, contents_y: f64, current_visible: bool) {
+    pub fn qa_note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
         if let Some(qa) = &self.inner.qa {
-            qa.note_step(micros, contents_y, current_visible);
+            qa.note_step(micros, cpu_micros, contents_y, current_visible);
         }
     }
 

@@ -34,10 +34,12 @@ import QuartzCore
         case "scroll_step":
             // Time spent here is the UI thread's share of a frame: the scroll, Rust's call, and applying what it said.
             let started = CACurrentMediaTime()
+            let cpuStarted = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             controller?.pages.scroll(by: Double(value) ?? 0)
             let took = CACurrentMediaTime() - started
+            let cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStarted
             let contents = controller?.sidebar.contentsSample() ?? (y: 0, currentVisible: true)
-            delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), contentsY: contents.y, currentVisible: contents.currentVisible)
+            delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), cpuMicros: cpu / 1000, contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
             answer(id, state())

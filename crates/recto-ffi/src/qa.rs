@@ -28,6 +28,8 @@ const SWEEP_STEP: Duration = Duration::from_micros(8333);
 #[derive(Clone, Copy)]
 struct Step {
     micros: u32,
+    /// Of those, the time the UI thread was on a processor: the rest it was waiting, for a lock or for its turn.
+    cpu_micros: u32,
     at: Instant,
     contents_y: f64,
     current_visible: bool,
@@ -161,12 +163,12 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn note_step(&self, micros: u64, contents_y: f64, current_visible: bool) {
+    pub(crate) fn note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
         self.step_waiting.store(false, Ordering::SeqCst);
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
         if steps.len() < 16_384 {
-            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
+            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), cpu_micros: u32::try_from(cpu_micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
         }
     }
 
@@ -402,6 +404,12 @@ impl QaBridge {
         let recorded = lock(&self.steps).clone();
         let mut steps: Vec<u32> = recorded.iter().map(|step| step.micros).collect();
         steps.sort_unstable();
+        let mut cpu: Vec<u32> = recorded.iter().map(|step| step.cpu_micros).collect();
+        cpu.sort_unstable();
+        // The slowest steps, by how much of each was on a processor: a step that waited is a lock or the Mac being busy, and one that worked is this code.
+        let mut slowest: Vec<(u32, u32)> = recorded.iter().map(|step| (step.micros, step.cpu_micros)).collect();
+        slowest.sort_unstable_by(|one, two| two.cmp(one));
+        slowest.truncate(5);
         // What the contents did, step by step, while the page scrolled.
         let began = recorded.first().map_or_else(Instant::now, |step| step.at);
         let positions: Vec<(f64, f64)> = recorded.iter().map(|step| (step.at.duration_since(began).as_secs_f64(), step.contents_y)).collect();
@@ -415,6 +423,8 @@ impl QaBridge {
             "sent": sent,
             "skipped_because_the_last_was_still_running": skipped,
             "step_us": { "p50": at(0.5), "p99": at(0.99), "worst": steps.last().copied().unwrap_or(0) },
+            "step_cpu_us": { "p50": cpu.get(cpu.len() / 2).copied().unwrap_or(0), "p99": cpu.get(((cpu.len() as f64 - 1.0) * 0.99).round() as usize).copied().unwrap_or(0), "worst": cpu.last().copied().unwrap_or(0) },
+            "slowest_steps_us_and_cpu_us": slowest,
             "blank_seen_steps": after["counts"]["blank_seen_steps"].as_u64().unwrap_or(0) - before["counts"]["blank_seen_steps"].as_u64().unwrap_or(0),
             "blank_steps": after["counts"]["blank_steps"].as_u64().unwrap_or(0) - before["counts"]["blank_steps"].as_u64().unwrap_or(0),
             "cancelled": after["counts"]["cancelled"].as_u64().unwrap_or(0) - before["counts"]["cancelled"].as_u64().unwrap_or(0),
