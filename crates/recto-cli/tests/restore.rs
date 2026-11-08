@@ -214,6 +214,8 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("reader.selection.text_", "Page text held for a selection, which is read again when it's wanted."),
     ("reader.selection.unit", "What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows."),
     ("app.copy_notice", "A line about a copy, which fades. A copy is over by then, or a hand-off waits for it."),
+    ("snapshot.", "The snapshot tool starts off on every launch, as a tool does in Preview, the one exception it adds to decision 23. A box being drawn ends with the drag, and a snapshot on its way to the clipboard is waited for by a hand-off."),
+    ("app.pages.snapshot_box", "The snapshot tool's box, there only while a drag is going on."),
     ("update.", "The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name."),
 ];
 
@@ -380,6 +382,11 @@ fn everything_comes_back_after_a_quit() {
 
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
 const KNOWN_PATHS: &[&str] = &[
+    "app.pages.snapshot_box",
+    "snapshot.busy",
+    "snapshot.drawing",
+    "snapshot.notice",
+    "snapshot.on",
     "app.links.address_opened",
     "app.links.hint",
     "app.links.hint_in_lower_left",
