@@ -17,6 +17,8 @@ pub struct MenuEntry {
     pub hidden: bool,
     /// The standard selector this goes by, such as `copy:`, so it reaches whatever has the focus first, as it does in any Mac app: a text field in an open panel keeps its own ⌘C. Empty for items that are this app's own.
     pub system_action: String,
+    /// The item whose submenu this is in, by its id, such as `file.open_recent`. Empty for an item of the menu itself.
+    pub parent: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -68,10 +70,14 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// File > Open Recent's file at this place in the list.
+    OpenRecent(usize),
+    /// File > Open Recent > Clear Menu.
+    ClearRecent,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
-    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false, system_action: String::new() }
+    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false, system_action: String::new(), parent: String::new() }
 }
 
 /// The items that go by a standard selector. In the menu bar and the context menu alike.
@@ -114,6 +120,8 @@ pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
         "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" => has_document,
+        // A submenu's own item opens it, and does nothing itself.
+        "file.open_recent" => true,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -124,12 +132,29 @@ fn line() -> MenuEntry {
 }
 
 /// The whole menu bar, as it stands.
+/// Open Recent's submenu: each file by its name, newest first, then Clear Menu, as on any Mac. Names come from file names, cleaned. Empty, it's Clear Menu alone, greyed out.
+fn recent_entries(recent: &[String]) -> Vec<MenuEntry> {
+    let in_recent = |item: MenuEntry| MenuEntry { parent: "file.open_recent".into(), ..item };
+    let mut entries: Vec<MenuEntry> = recent.iter().enumerate().map(|(at, name)| in_recent(entry(&format!("recent.{at}"), &recto_core::clean_line(name), ""))).collect();
+    if !entries.is_empty() {
+        entries.push(in_recent(line()));
+    }
+    entries.push(in_recent(entry("recent.clear", "Clear Menu", "")));
+    entries
+}
+
+#[cfg(test)]
 pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: &str) -> Vec<MenuModel> {
+    menu_bar_with(view, shown, update_title, &[])
+}
+
+/// The menu bar, with the names of files opened lately for Open Recent.
+pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[String]) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
-        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")] },
+        MenuModel { title: "File".into(), entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")].into_iter().chain(recent_entries(recent)).chain([line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")]).collect() },
         MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
@@ -246,6 +271,9 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.white" => Action::SetPaper(Paper::White),
         "paper.warm" => Action::SetPaper(Paper::Warm),
         "paper.dark" => Action::SetPaper(Paper::Dark),
+        "file.open_recent" => Action::Host(HostAction::None),
+        "recent.clear" => Action::ClearRecent,
+        recent if recent.starts_with("recent.") => Action::OpenRecent(recent["recent.".len()..].parse().ok().filter(|at: &usize| *at < recto_session::MAX_RECENT)?),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
         _ => return None,
@@ -416,5 +444,17 @@ mod tests {
         assert_eq!(zoom_from_word("x%"), None);
         assert_eq!(zoom_from_word("NaN"), None);
         assert_eq!(zoom_from_word("zzz"), None);
+    }
+
+    /// Failure: File has no Open Recent, it doesn't list the files newest first under it, Clear Menu isn't there, a name with control characters reaches the menu, or an id past the list does something.
+    #[test]
+    fn open_recent_lists_files_and_clears() {
+        let file = menu_bar_with(ViewSettings::default(), None, "", &["report".into(), "a\u{202E}b".into()]).into_iter().find(|menu| menu.title == "File").unwrap().entries;
+        let under: Vec<(String, String)> = file.iter().filter(|item| item.parent == "file.open_recent" && !item.id.is_empty()).map(|item| (item.id.clone(), item.title.clone())).collect();
+        assert_eq!(under, [("recent.0".to_string(), "report".to_string()), ("recent.1".to_string(), "ab".to_string()), ("recent.clear".to_string(), "Clear Menu".to_string())]);
+        assert!(file.iter().any(|item| item.id == "file.open_recent" && item.parent.is_empty()));
+        assert_eq!((action("recent.1"), action("recent.clear")), (Some(Action::OpenRecent(1)), Some(Action::ClearRecent)));
+        assert_eq!(action("recent.999"), None);
+        assert_eq!(action("recent.x"), None);
     }
 }

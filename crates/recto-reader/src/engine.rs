@@ -42,6 +42,43 @@ pub struct EngineConfig {
     /// Where the worker is. Found beside this program if left out.
     pub service: Option<ServiceConfig>,
     pub policy: Option<Policy>,
+    /// Passwords the person has typed for protected files, shared by every page view, for their workers to open those files with.
+    pub keys: Option<Arc<Keyring>>,
+}
+
+/// **Passwords for protected files, while they're open,** by path. In memory only: never written, logged or journaled, and each is overwritten when it goes (`recto_core::Password`). The app forgets one when its tab closes.
+#[derive(Default)]
+pub struct Keyring {
+    keys: Mutex<HashMap<PathBuf, Arc<recto_core::Password>>>,
+}
+
+impl std::fmt::Debug for Keyring {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Keyring({} held)", lock(&self.keys).len())
+    }
+}
+
+impl Keyring {
+    pub fn set(&self, path: &Path, password: Arc<recto_core::Password>) {
+        lock(&self.keys).insert(path.to_path_buf(), password);
+    }
+
+    pub fn get(&self, path: &Path) -> Option<Arc<recto_core::Password>> {
+        lock(&self.keys).get(path).cloned()
+    }
+
+    /// Keeps only the passwords for these files, the ones open in tabs: any other goes, and is overwritten.
+    pub fn keep_only(&self, open: &[PathBuf]) {
+        lock(&self.keys).retain(|path, _| open.contains(path));
+    }
+
+    pub fn len(&self) -> usize {
+        lock(&self.keys).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -337,6 +374,13 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         lock(&self.shared.pending).follow = None;
         reader.deactivate();
+        self.after(reader);
+    }
+
+    /// A password's been given for a file: see [`Reader::key_given`].
+    pub fn key_given(&self, path: &Path) {
+        let mut reader = lock(&self.shared.reader);
+        reader.key_given(path);
         self.after(reader);
     }
 
@@ -910,7 +954,8 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         };
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
-        let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
+        let key = shared.config.keys.as_ref().and_then(|keys| keys.get(path));
+        let doc = DocRenderer::with_file(file, path, key.as_deref().map(recto_core::Password::bytes), config, policy.clone()).map_err(Unopened::Failed)?;
         renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new(), replaced: false });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))

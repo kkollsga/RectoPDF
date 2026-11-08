@@ -1863,3 +1863,122 @@ fn a_save_leaves_the_view_as_it_was() {
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
+
+/// Waits for the sheet over the window to be of this kind, and gives the state then.
+fn sheet_of(run: &Run, kind: &str) -> Value {
+    wait_for(run, |state| state["app"]["sheet"]["kind"] == kind)
+}
+
+/// Failure: a protected PDF just says it needs a password and can't be opened; a wrong password opens it, or the tries aren't counted and bounded; the right one doesn't draw its pages; an agent can read its text once it's open; or the password reaches the state folder, so it's on disk.
+#[test]
+fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    let asked = sheet_of(&run, "password");
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("locked.pdf"), "{asked}");
+    let wrong = run.ok(&["qa", "password", "not it"]);
+    let wrong = if wrong["sheet"]["informative"].as_str().is_some_and(|text| text.contains("4 tries left")) { wrong } else { wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains("4 tries left")))["app"].clone() };
+    assert_eq!(wrong["sheet"]["kind"], "password", "{wrong}");
+    run.ok(&["qa", "password", "open sesame"]);
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    let open = run.report();
+    assert!(open["reader"]["tiles"]["attached"].as_u64().unwrap() > 0 && open["reader"]["note"].is_null(), "its pages are drawn: {open}");
+    let (refused, code) = run.state.json(&["text", "1"]);
+    assert_eq!((code, &refused["error"]["code"]), (exit::PROTECTED, &json!("needs_password")), "an agent still can't read it: {refused}");
+    run.ok(&["session", "save"]);
+    let mut found = Vec::new();
+    for entry in walk(&run.state.root) {
+        if std::fs::read(&entry).is_ok_and(|bytes| bytes.windows(b"open sesame".len()).any(|window| window == b"open sesame")) {
+            found.push(entry);
+        }
+    }
+    assert!(found.is_empty(), "the password is on disk: {found:?}");
+}
+
+/// Every file under a folder.
+fn walk(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut waiting = vec![root.to_path_buf()];
+    while let Some(folder) = waiting.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { waiting.push(path) } else { out.push(path) }
+        }
+    }
+    out
+}
+
+/// Failure: wrong passwords are asked for without end, or Cancel leaves the sheet coming back at once; the person isn't told why it stopped.
+#[test]
+fn wrong_passwords_are_bounded_and_cancel_is_heard() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("right", 1));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    run.ok(&["qa", "sheet-answer", "second"]);
+    let cancelled = wait_for(&run, |state| state["app"]["sheet"] == json!({}));
+    assert_eq!(cancelled["app"]["home"], true, "nothing opened: {cancelled}");
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    for tries_left in (1..5).rev() {
+        sheet_of(&run, "password");
+        run.ok(&["qa", "password", "wrong"]);
+        wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains(&format!("{tries_left} tr"))));
+    }
+    run.ok(&["qa", "password", "wrong"]);
+    let stopped = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("stopped asking")));
+    assert_eq!((&stopped["app"]["sheet"], &stopped["app"]["home"]), (&json!({}), &json!(true)), "{stopped}");
+}
+
+/// Failure: File > Open Recent misses files opened, lists them out of order, doesn't open one, or Clear Menu leaves any; or an agent sees whole paths below Control.
+#[test]
+fn open_recent_lists_opens_and_clears() {
+    let Some(run) = Run::start() else { return };
+    let (a, b) = (long_document(3), outlined());
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["open", b.0.to_str().unwrap()]);
+    run.settled();
+    let state = run.report();
+    let file = state["app"]["menu_bar"].as_array().unwrap().iter().find(|menu| menu["title"] == "File").unwrap()["items"].as_array().unwrap().clone();
+    let ids: Vec<&str> = file.iter().map(|item| item["id"].as_str().unwrap()).collect();
+    let at = ids.iter().position(|id| *id == "file.open_recent").expect("Open Recent in File");
+    assert_eq!(&ids[at + 1..at + 4], ["recent.0", "recent.1", "recent.clear"], "{ids:?}");
+    let listed = run.ok(&["recent"]);
+    assert_eq!(listed["count"], 2);
+    assert_eq!(listed["files"][0]["untrusted"]["path"], b.0.to_str().unwrap(), "newest first: {listed}");
+    run.ok(&["close"]);
+    run.settled();
+    let menu = run.report()["app"]["menu_bar"].to_string();
+    assert!(menu.contains("recent.0"), "{menu}");
+    run.ok(&["qa", "menu", "recent.0"]);
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    run.ok(&["qa", "menu", "recent.clear"]);
+    let cleared = wait_for(&run, |state| state["session"]["recent"].is_null() || state["session"]["recent"].as_array().is_some_and(Vec::is_empty));
+    assert!(!cleared["app"]["menu_bar"].to_string().contains("recent.0"), "{cleared}");
+}
+
+/// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
+#[test]
+fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let moved = file.0.with_file_name("moved away.pdf");
+    std::fs::rename(&file.0, &moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let followed = wait_for(&run, |state| state["session"]["tabs"][0]["path"].as_str().is_some_and(|path| path.ends_with("moved away.pdf")));
+    assert!(followed["session"]["tabs"][0]["notice"]["moved"].is_object(), "and says so: {followed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::write(&moved, recto_testpdf::pages(&[Page::new(text_lines(&["Another version"]))])).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let changed = wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("changed by something other than RectoPDF")));
+    assert_eq!(changed["session"]["tabs"][0]["page_count"], 1, "the new version is what's shown: {changed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::remove_file(&moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("can't be found")));
+    std::fs::rename(&moved, &file.0).ok();
+}

@@ -239,3 +239,17 @@ pub fn password_protected() -> Vec<u8> {
     let key = "AB".repeat(32);
     String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
 }
+
+/// A real protected file: it opens only with the user password given, written by lopdf's eager writer, which alone encrypts.
+#[allow(clippy::disallowed_methods, dead_code)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file. Not every test binary uses it.
+pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let plain: Vec<recto_testpdf::Page> = (0..pages).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)]))).collect();
+    let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&plain)).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: password, key_length: 128, permissions: Permissions::all() }).unwrap();
+    document.encrypt(&encryption).unwrap();
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
+}

@@ -469,10 +469,10 @@ impl FileNotice {
     /// A plain sentence for the reader. A tab's name and path come from outside, so there's none of either in here.
     pub fn message(&self, has_edits: bool) -> &'static str {
         match (self, has_edits) {
-            (Self::Moved { .. }, true) => "This file moved since you last had it open, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
-            (Self::Moved { .. }, false) => "This file moved since you last had it open, and the tab followed it.",
-            (Self::Changed, true) => "This file has changed since you last had it open. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
-            (Self::Changed, false) => "This file has changed since you last had it open, so this is the new version.",
+            (Self::Moved { .. }, true) => "This file was moved, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
+            (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
+            (Self::Changed, true) => "This file was changed by something other than RectoPDF. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
+            (Self::Changed, false) => "This file was changed by something other than RectoPDF, so this is the new version.",
             (Self::Missing, true) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them.",
             (Self::Missing, false) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected.",
             (Self::NeedsPassword, _) => "This PDF needs its password again. Passwords aren't kept between launches.",
@@ -667,7 +667,13 @@ pub struct SessionRecord {
     /// Tabs side by side, if they were. Added after version 1, so an older record has none and an older app ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonRecord>,
+    /// Files opened lately, newest first: File > Open Recent and ⌘K. Read up to [`MAX_RECENT_READ`], and held to [`crate::MAX_RECENT`] when taken in; a path that couldn't be a file's is left out.
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_RECENT_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<PathField>,
 }
+
+/// Most recent files read from a record: past the list's own cap, so a record from a build with a longer one still reads.
+pub const MAX_RECENT_READ: usize = 256;
 
 /// A comparison as the record keeps it: which tabs, left to right, synced scroll, and where each pane was when it went on. Each pane's place is its tab's own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1380,7 +1386,7 @@ mod tests {
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {
-        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None }
+        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None, recent: Vec::new() }
     }
 
     fn found(path: &str, stamp: FileStamp) -> Option<(PathBuf, FileStamp)> {

@@ -375,6 +375,8 @@ fn everything_comes_back_after_a_quit() {
 
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
 const KNOWN_PATHS: &[&str] = &[
+    "session.recent.len",
+    "session.recent[]",
     "app.activation",
     "app.agent_icon",
     "app.agent_icon_margins.clear_of_pages",
@@ -2223,4 +2225,36 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     assert_eq!(dark["app"]["appearance"], "dark");
     let dark = bubble(&dark);
     assert!((width(&dark) - width(&light)).abs() < 0.5 && dark["lines"] == light["lines"], "the same note is the same shape in light and dark: {light} and {dark}");
+}
+
+/// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
+#[test]
+fn a_protected_tab_asks_again_after_a_quit() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let locked = state.root.join("locked.pdf");
+    std::fs::write(&locked, common::locked_with("open sesame", 1)).unwrap();
+    run.ok(&["qa", "open-file", locked.to_str().unwrap()]);
+    let until = |run: &Run, holds: &dyn Fn(&Value) -> bool| {
+        for _ in 0..500 {
+            let state = run.report();
+            if holds(&state) {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("it never came to pass: {}", run.report());
+    };
+    until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
+    run.ok(&["qa", "password", "open sesame"]);
+    until(&run, &|state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
+    run.settled();
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
+    run.ok(&["qa", "sheet-answer", "second"]);
+    let declined = until(&run, &|state| state["app"]["sheet"] == json!({}));
+    assert!(declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")), "{declined}");
+    run.quit();
 }

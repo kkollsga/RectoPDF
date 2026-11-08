@@ -157,6 +157,10 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
+    /// Files opened lately, as File > Open Recent lists them.
+    Recent {},
+    /// Clears that list, as Open Recent > Clear Menu does.
+    RecentClear {},
     Budget {},
     /// How the app shows pages.
     View {
@@ -525,6 +529,8 @@ impl Command {
             Self::Tap { .. } => "tap",
             Self::Goto { .. } => "goto",
             Self::Close { .. } => "close",
+            Self::Recent {} => "recent",
+            Self::RecentClear {} => "recent_clear",
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
@@ -623,7 +629,7 @@ impl Command {
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
-            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
+            Self::Recent {} | Self::RecentClear {} | Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
 }
@@ -994,6 +1000,11 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             go_to(s, id, *page)?;
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
             Ok(where_json(s, id))
+        }),
+        Command::Recent {} => Ok(access.with(|s| recent_json(s, level))),
+        Command::RecentClear {} => access.with(|s| {
+            let cleared = s.clear_recent();
+            Ok(json!({ "cleared": cleared }))
         }),
         Command::Close { tab } => {
             // What would refuse it comes first: no reading a file for a close that won't happen.
@@ -1748,6 +1759,23 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
     }
 }
 
+/// Files opened lately, newest first. A name comes from outside, so it's under `untrusted`; a whole path says where someone keeps their files, so it's given from Control, which can open one anyway.
+fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
+    let files: Vec<Value> = session
+        .recent_files()
+        .iter()
+        .enumerate()
+        .map(|(at, file)| {
+            let mut out = json!({ "file": at + 1, "open_tab": file.open.map(|id| format!("#{}", id.0)), "untrusted": { "name": recto_core::clean_line(&file.name) } });
+            if level >= Level::Control {
+                out["untrusted"]["path"] = json!(file.path.to_string_lossy());
+            }
+            out
+        })
+        .collect();
+    json!({ "count": files.len(), "files": files, "paths_shown": level >= Level::Control })
+}
+
 fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let Some(tab) = session.tab(id) else { return Value::Null };
     let edited = session.is_edited(id);
@@ -1981,6 +2009,8 @@ mod tests {
             Command::Sidebar {},
             Command::Tap { tab: tab() },
             Command::Goto { tab: tab(), page: 1 },
+            Command::Recent {},
+            Command::RecentClear {},
             Command::Close { tab: tab() },
             Command::Budget {},
             Command::Compare { tabs: None, sync: None, off: false },
@@ -2635,5 +2665,28 @@ mod tests {
         assert_eq!((&ok["v"], &ok["ok"]), (&json!(VERSION), &json!(true)));
         let failed = envelope(&Err(AgentError::new("c", "m", exit::FAILED)));
         assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("c")));
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+    use recto_session::DiskLoader;
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+
+    /// Failure: an agent can't see what was opened lately, sees whole paths below Control, or `recent clear` leaves any.
+    #[test]
+    fn recent_lists_names_and_paths_only_from_control() {
+        let file = TempPdf::new("report.pdf", &pages(&[Page::new(text_lines(&["a"]))]));
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        let read = run(&mut session, Level::ReadOnly, &Command::Recent {}).unwrap();
+        assert_eq!((read["count"].as_u64(), read["files"][0]["untrusted"]["name"].as_str(), read["files"][0]["open_tab"].as_str()), (Some(1), Some("report"), Some("#1")));
+        assert!(read["files"][0]["untrusted"]["path"].is_null(), "no whole path at Read-only: {read}");
+        let control = run(&mut session, Level::Control, &Command::Recent {}).unwrap();
+        assert_eq!(control["files"][0]["untrusted"]["path"], file.0.to_str().unwrap());
+        assert_eq!(run(&mut session, Level::ReadOnly, &Command::RecentClear {}).unwrap_err().code, "permission_denied");
+        assert_eq!(run(&mut session, Level::Control, &Command::RecentClear {}).unwrap()["cleared"], true);
+        assert_eq!(run(&mut session, Level::ReadOnly, &Command::Recent {}).unwrap()["count"], 0);
     }
 }

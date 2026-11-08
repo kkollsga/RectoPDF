@@ -347,7 +347,7 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     let file = document(1);
     let events = Arc::new(Events::default());
     let policy = recto_render_service::Policy { retire_bytes: 1, ..recto_render_service::Policy::default() };
-    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, events);
+    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy), keys: None }, events);
     engine.set_viewport(view(0.0));
     engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, follows: None }, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));

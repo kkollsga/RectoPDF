@@ -199,3 +199,16 @@ fn a_user_password_pdf_reads_as_needing_its_password_not_as_not_a_pdf() {
     let file = TempPdf::new("locked.pdf", &locked_pdf());
     assert_eq!(inspect(&file.0).unwrap_err(), OpenError::PasswordNeeded);
 }
+
+/// Failure: a protected PDF opens with no password or a wrong one, doesn't open with the right one, or a password can be printed or holds a NUL the renderer would cut at.
+#[test]
+fn a_protected_file_opens_only_with_its_password() {
+    use recto_core::{Password, inspect_with_password};
+    let file = TempPdf::new("locked.pdf", &locked_pdf());
+    assert_eq!(inspect_with_password(&file.0, &Password::new("wrong").unwrap()).unwrap_err(), OpenError::PasswordNeeded);
+    let facts = inspect_with_password(&file.0, &Password::new("open sesame").unwrap()).unwrap();
+    assert_eq!((facts.page_count, facts.encrypted), (1, true));
+    let password = Password::new("open sesame").unwrap();
+    assert!(!format!("{password:?}").contains("sesame"), "never printed");
+    assert!(Password::new("").is_none() && Password::new("a\0b").is_none() && Password::new(&"x".repeat(recto_core::MAX_PASSWORD_BYTES + 1)).is_none());
+}

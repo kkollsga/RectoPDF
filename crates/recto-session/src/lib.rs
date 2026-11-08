@@ -24,6 +24,8 @@ use std::sync::Arc;
 pub const MAX_WARM: usize = 3;
 /// A cap on tabs, because everything grown from outside has one.
 pub const MAX_TABS: usize = 10_000;
+/// Files kept in File > Open Recent and offered to ⌘K: twice what a Mac app lists by default, and a few kilobytes at most.
+pub const MAX_RECENT: usize = 20;
 
 /// Reads a document's facts. A seam so tests can stand in for the disk.
 pub trait DocLoader {
@@ -744,6 +746,18 @@ pub struct Session<L = DiskLoader> {
     generated: Vec<(TabId, GeneratedView)>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
     saved_over: Vec<(TabId, FileStamp, FileStamp)>,
+    /// Files opened lately, newest first, at most [`MAX_RECENT`]. In the state record.
+    recent: VecDeque<PathBuf>,
+}
+
+/// A file opened lately, for File > Open Recent and ⌘K.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentFile {
+    pub path: PathBuf,
+    /// Its name as a tab shows it: the file's name without `.pdf`.
+    pub name: String,
+    /// The tab it's open in now, if it is.
+    pub open: Option<TabId>,
 }
 
 /// Saves remembered for the page view to carry its view over: one per tab saved lately is plenty, as it's asked for straight after.
@@ -855,7 +869,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new() }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new(), recent: VecDeque::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -947,12 +961,38 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         self.activate(id);
+        if let Some(own) = self.path_of(id) {
+            self.note_recent(&own);
+        }
+    }
+
+    /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
+    pub fn note_recent(&mut self, path: &Path) {
+        if !path.is_absolute() || !PathField::from_path(path).fits() {
+            return;
+        }
+        self.recent.retain(|known| known != path);
+        self.recent.push_front(path.to_path_buf());
+        self.recent.truncate(MAX_RECENT);
+    }
+
+    /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
+    pub fn recent_files(&self) -> Vec<RecentFile> {
+        self.recent.iter().map(|path| RecentFile { path: path.clone(), name: tab_name(path), open: self.tab_for_path(path) }).collect()
+    }
+
+    /// File > Open Recent > Clear Menu.
+    pub fn clear_recent(&mut self) -> bool {
+        let had = !self.recent.is_empty();
+        self.recent.clear();
+        had
     }
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
     pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
         let id = self.tab_for_path(path)?;
         self.activate(id);
+        self.note_recent(path);
         Some(id)
     }
 
@@ -1012,6 +1052,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
+        self.note_recent(path);
         self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
@@ -1084,7 +1125,23 @@ impl<L: DocLoader> Session<L> {
         self.woken.push((id, loaded, stamp));
     }
 
-    /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
+    /// **A protected tab, opened with the password the person typed:** its facts, read with that password off this lock, take the place of the problem it had, as a wake does. The password itself never comes here.
+    pub fn unlock(&mut self, id: TabId, facts: DocFacts, stamp: Option<FileStamp>) {
+        if self.tab(id).is_none() {
+            return;
+        }
+        self.give_woken(id, Ok(facts), stamp);
+        if self.active == Some(id) {
+            self.activate(id);
+        }
+    }
+
+    /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
+    pub fn needs_password(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| tab.problem == Some(OpenError::PasswordNeeded))
+    }
+
+        /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
     pub fn tap(&mut self, id: TabId) -> Result<(), SessionError> {
         if self.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
@@ -2018,7 +2075,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _, recent } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -2045,7 +2102,8 @@ impl<L: DocLoader> Session<L> {
             })
             .collect();
         let comparison = comparison.as_ref().map(|comparison| record::ComparisonRecord { tabs: comparison.tabs.iter().map(|tab| tab.0).collect(), synced: comparison.synced, sync_from: comparison.sync_from.clone() });
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison }
+        let recent = recent.iter().map(|path| PathField::from_path(path)).collect();
+        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison, recent }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -2084,6 +2142,7 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
+        self.recent = record.recent.iter().filter(|path| path.fits()).filter_map(PathField::to_path).filter(|path| path.is_absolute()).take(MAX_RECENT).collect();
         self.edit_mode = record.edit_mode;
         let sidebar_hidden = record.view.sidebar_comes_back_hidden();
         let ViewRecord { paper, focus: _, sidebar_hidden: _, agent_icon_hidden } = record.view;
@@ -5261,5 +5320,43 @@ mod tests {
         assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
         assert!(read_ahead > loads);
         assert_eq!(back.active(), Some(ids[0]));
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+
+    struct Any;
+
+    impl DocLoader for Any {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+        }
+    }
+
+    /// Failure: File > Open Recent misses a file just opened, lists one twice, grows without a cap, or forgets them all after a quit; or Clear Menu leaves any.
+    #[test]
+    fn recent_files_are_newest_first_capped_and_kept() {
+        let mut s = Session::new(Any);
+        for at in 0..(MAX_RECENT + 5) {
+            s.open(&PathBuf::from(format!("/d/file{at}.pdf"))).unwrap();
+        }
+        s.open(Path::new("/d/file10.pdf")).unwrap();
+        let recent = s.recent_files();
+        assert_eq!(recent.len(), MAX_RECENT);
+        assert_eq!(recent[0].path, PathBuf::from("/d/file10.pdf"), "opening again brings it to the front");
+        assert_eq!(recent.iter().filter(|file| file.path == Path::new("/d/file10.pdf")).count(), 1);
+        assert_eq!((recent[0].name.as_str(), recent[0].open.is_some()), ("file10", true));
+        let record = s.to_record();
+        let mut again = Session::new(Any);
+        again.restore(&record, HashMap::new()).unwrap();
+        assert_eq!(again.recent_files().iter().map(|file| file.path.clone()).collect::<Vec<_>>(), recent.iter().map(|file| file.path.clone()).collect::<Vec<_>>());
+        let mut forged = record.clone();
+        forged.recent = vec![PathField::Text("relative.pdf".into()), PathField::Text("/d/ok.pdf".into())];
+        again.restore(&forged, HashMap::new()).unwrap();
+        assert_eq!(again.recent_files().len(), 1, "only a whole path is kept from a record");
+        assert!(again.clear_recent());
+        assert!(again.recent_files().is_empty() && again.to_record().recent.is_empty());
     }
 }

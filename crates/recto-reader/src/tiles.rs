@@ -741,6 +741,18 @@ impl Reader {
         std::mem::take(&mut self.reopen_files)
     }
 
+    /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
+    pub fn key_given(&mut self, path: &std::path::Path) {
+        self.reopen_files.push(path.to_path_buf());
+        for doc in self.docs.values_mut() {
+            if doc.map.files.iter().any(|file| file == path) {
+                doc.problem = None;
+                doc.issues.clear();
+            }
+        }
+        self.refresh(MAX_ATTACH_PER_TURN);
+    }
+
     /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
     pub fn hold_drawing(&mut self, on: bool) {
         self.hold_drawing = on;

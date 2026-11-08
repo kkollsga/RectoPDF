@@ -212,6 +212,11 @@ import QuartzCore
             guard let (target, enabled) = QAChannel.keyWindowTarget(for: action, in: controller.window) else { return fail(id, "Nothing in the window answers that.") }
             guard enabled else { return fail(id, "That's greyed out with the window key.") }
             target.perform(action, with: nil)
+        case "password":
+            // Types into the password sheet's secure field and presses Open, through the sheet's own ending, as a person's click ends it.
+            guard let controller, let sheet = controller.window.attachedSheet, controller.passwordField.window === sheet else { return fail(id, "No password sheet is open.") }
+            controller.passwordField.stringValue = value
+            controller.window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
         case "zoom_escape":
             // Escape in the field, by the method AppKit calls for it.
             guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
@@ -266,7 +271,9 @@ import QuartzCore
 
     /// An item of the real menu bar, by its id.
     private func menuItem(_ id: String) -> NSMenuItem? {
-        NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { ($0.representedObject as? String) == id && !$0.isHidden }
+        // Submenus' items too, as Open Recent's files are.
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
+        return (items + items.compactMap(\.submenu).flatMap(\.items)).first { ($0.representedObject as? String) == id && !$0.isHidden }
     }
 
     private func state() -> [String: Any] {
@@ -319,7 +326,11 @@ import QuartzCore
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
                 menu.update()
-                return ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }]
+                return ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.flatMap { item -> [NSMenuItem] in
+                    // A submenu's items follow its own, as Open Recent's files do.
+                    item.submenu?.update()
+                    return [item] + (item.submenu?.items.filter { !$0.isSeparatorItem && !$0.isHidden } ?? [])
+                }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }]
             },
             "pages": pages,
             "panes": controller.paneReport(),

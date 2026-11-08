@@ -88,6 +88,20 @@ pub fn render(tag: &str, data: &Value) -> String {
             let _ = write!(out, "\n{QUOTED_NAMES}");
             out
         }
+        "recent" => match data["files"].as_array().filter(|files| !files.is_empty()) {
+            Some(files) => {
+                let mut out = format!("{} opened lately, newest first:", count(files.len() as u64, "file", "files"));
+                for file in files {
+                    let open = file["open_tab"].as_str().map(|tab| format!(", open as {tab}")).unwrap_or_default();
+                    let path = file["untrusted"]["path"].as_str().map(|path| format!(" at {path:?}")).unwrap_or_default();
+                    let _ = write!(out, "\n{}. {:?}{path}{open}", number(&file["file"]), text(&file["untrusted"]["name"]));
+                }
+                let _ = write!(out, "\n{QUOTED_NAMES}");
+                out
+            }
+            None => "No files opened lately.".to_string(),
+        },
+        "recent_clear" => if data["cleared"] == true { "Cleared the list of files opened lately." } else { "There were no files opened lately to clear." }.to_string(),
         "facts" => facts(data),
         "contents" => contents(data),
         "search" => search(data),
