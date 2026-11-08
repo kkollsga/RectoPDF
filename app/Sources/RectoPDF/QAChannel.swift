@@ -522,8 +522,9 @@ import QuartzCore
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         let opened = (sidebar.panelReport()["open"] as? Bool) == true
         found["panel_opens"] = opened
-        if opened, let warm = sidebar.panel?.buttons["paper.warm"] {
-            found["panel_button_answers"] = warm.action.flatMap { action in (warm.target as? NSObject)?.responds(to: action) } ?? false
+        // Rotate: a tool the panel always has. Paper is View > Paper's.
+        if opened, let rotate = sidebar.panel?.buttons["rotate.right"] {
+            found["panel_button_answers"] = rotate.action.flatMap { action in (rotate.target as? NSObject)?.responds(to: action) } ?? false
         }
         sidebar.moreButton.performClick(nil)
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))

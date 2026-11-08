@@ -289,8 +289,6 @@ pub struct SidebarView {
     /// The contents row of the place being read.
     pub contents_current: Option<u32>,
     pub toc_open: bool,
-    /// "32 of 96". Empty with nothing open.
-    pub place: String,
     pub edited: bool,
     pub undone_owner_steps: bool,
     /// A quiet line over the active tab's contents, about generated contents, which stays put while they scroll. Drawn only while they're showing.
@@ -376,6 +374,7 @@ pub struct ReaderView {
     pub edit_mode: bool,
     /// Whether the panel's Rotate can turn the tab showing: there is one, more than the renderer can read it, and its edits can be read.
     pub can_rotate: bool,
+    /// The page number in the lower right, such as "32 of 96". Empty with nothing open. The sidebar has no footer saying it again (the owner's default of 2026-11-08).
     pub place: String,
     /// The paper's name, which QA and the menu use.
     pub paper: String,
@@ -1519,7 +1518,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, save_enabled: false, print_ready: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new(), password_prompt: None } }),
+            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, save_enabled: false, print_ready: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new(), password_prompt: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1818,7 +1817,7 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let recent = Arc::clone(&lock(&self.inner.published).recent);
         let items: Vec<menus::RecentItem> = recent.iter().map(|file| menus::RecentItem { key: &file.key, name: &file.name }).collect();
-        let mut bar = menus::menu_bar_with(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items);
+        let mut bar = menus::menu_bar_with(ViewSettings { paper: Paper::from_name(&reader.paper), sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items);
         bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
         bar
     }
@@ -1873,8 +1872,7 @@ impl AppCore {
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate);
+        let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
         snapshot_tool::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
         panel
     }
@@ -3491,7 +3489,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // What the page views hold of tabs they're about to let go of goes in the session first, as a cold tab holds nothing there.
     inner.take_places();
     let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
-    let (snapshots, plan, sidebar, tabs, contents, rail_filled, view) = inner.host.session.with_session(|session| {
+    let (snapshots, plan, sidebar, tabs, contents, rail_filled, view, place) = inner.host.session.with_session(|session| {
         let active = session.active();
         let panes = session.panes();
         for (pane, page) in &moved {
@@ -3557,8 +3555,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         };
         // The note over the contents stays put while they scroll, so it's drawn apart from them.
         let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow { kind: RowKind::Note, tab: row.tab.0, text: row.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: row.action.map(|action| action.id().to_string()), expandable: false, expanded: false, in_comparison: false });
-        let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
-        (snapshots, plan, view, tabs, contents, rail_filled, session.view())
+        let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, edited: model.edited, undone_owner_steps: model.undone_owner_steps };
+        (snapshots, plan, view, tabs, contents, rail_filled, session.view(), model.place.clone())
     });
     // The paper first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst);
@@ -3679,7 +3677,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), action_id: notice.offers_copy_anyway.then(|| "edit.copy_anyway".to_string()), fades: notice.fades }).or_else(|| inner.printing.selection_notice()).or_else(|| inner.tool.selection_notice()).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, action_id: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, action_id: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now, print_ready: inner.printing.has_ready(), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text, password_prompt };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place, paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now, print_ready: inner.printing.has_ready(), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text, password_prompt };
     // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
     let recent_key = (inner.host.session.with_session(|session| session.recent_version()), sidebar.tabs_version);
     let recent = (lock(&inner.published).recent_key != Some(recent_key)).then(|| {

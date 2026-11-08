@@ -117,6 +117,12 @@ fn layout_entries(shown: Option<Spread>) -> Vec<MenuEntry> {
     Spread::ALL.iter().map(|spread| MenuEntry { checked: shown == Some(*spread), ..entry(&layout_id(*spread), spread.label(), "") }).collect()
 }
 
+/// View > Paper: its own item, which opens the submenu, then each paper, the one showing ticked. The owner's default of 2026-11-08 (PLAN, decisions waiting): paper goes with the view, so it's in View, and the sidebar's panel keeps to tools.
+fn paper_entries(shown: Option<Paper>) -> Vec<MenuEntry> {
+    let in_paper = |item: MenuEntry| MenuEntry { parent: "view.paper".into(), ..item };
+    std::iter::once(entry("view.paper", "Paper", "")).chain(Paper::ALL.iter().map(|paper| in_paper(MenuEntry { checked: shown == Some(*paper), ..entry(&format!("paper.{}", paper.name()), paper.label(), "") }))).collect()
+}
+
 fn layout_id(spread: Spread) -> String {
     format!("layout.{}", spread.name().replace('-', "_"))
 }
@@ -144,6 +150,8 @@ pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool
         "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "file.print" | "find.open" | "find.next" | "find.previous" => has_document,
         // A submenu's own item opens it, and does nothing itself.
         "file.open_recent" => true,
+        // View > Paper's own item opens its submenu, and a paper is always there to choose.
+        "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => true,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -184,7 +192,7 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
     menu_bar_with(view, shown, update_title, &[])
 }
 
-/// The menu bar, with the names of files opened lately for Open Recent.
+/// The menu bar, with the names of files opened lately for Open Recent. `view.paper` is the paper showing, which View > Paper ticks.
 pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[RecentItem]) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
@@ -206,6 +214,8 @@ pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_ti
                 line(),
             ]
             .into_iter()
+            .chain(paper_entries(view.paper))
+            .chain([line()])
             .chain(layout_entries(shown))
             .chain([
                 line(),
@@ -262,8 +272,8 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
-pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool) -> PanelModel {
+/// The panel: tools. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." Paper is in View > Paper, by the owner's default of 2026-11-08. So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
+pub(crate) fn panel(open: bool, edit_mode: bool, can_rotate: bool) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected, enabled: true };
     let rotate = |id: &str, title: &str| PanelItem { enabled: can_rotate, ..item(id, title, false) };
     let open = open || edit_mode;
@@ -273,9 +283,8 @@ pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool)
     }
     if open {
         sections.push(PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] });
-        sections.push(PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() });
     }
-    PanelModel { open, button_tooltip: "View options".into(), sections }
+    PanelModel { open, button_tooltip: "Tools".into(), sections }
 }
 
 /// What an id does. Ids from the host, and only these do anything.
@@ -314,7 +323,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.white" => Action::SetPaper(Paper::White),
         "paper.warm" => Action::SetPaper(Paper::Warm),
         "paper.dark" => Action::SetPaper(Paper::Dark),
-        "file.open_recent" => Action::Host(HostAction::None),
+        "file.open_recent" | "view.paper" => Action::Host(HostAction::None),
         "recent.clear" => Action::ClearRecent,
         recent if recent.starts_with("recent.") => {
             let key = &recent["recent.".len()..];
@@ -365,11 +374,11 @@ mod tests {
     /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
     #[test]
     fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
-        let editing = panel(false, Paper::White, true, true);
+        let editing = panel(false, true, true);
         assert!(editing.open, "open in edit mode, whatever the button last did");
         assert_eq!(editing.sections[0].items[0].id, "edit_mode.done");
         assert_eq!(action("edit_mode.done"), Some(Action::LeaveEditMode));
-        assert!(!panel(false, Paper::White, false, true).open);
+        assert!(!panel(false, false, true).open);
         let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
         let key = |id: &str| edit.entries.iter().find(|item| item.id == id).map(|item| item.key.clone()).unwrap();
         assert_eq!((key("find.open"), key("find.next"), key("find.previous")), ("f".to_string(), "g".to_string(), "G".to_string()));
@@ -387,7 +396,7 @@ mod tests {
                 }
             }
         }
-        for section in panel(true, Paper::White, false, true).sections {
+        for section in panel(true, false, true).sections {
             for item in section.items {
                 assert!(action(&item.id).is_some(), "{}", item.id);
             }
@@ -421,16 +430,20 @@ mod tests {
         assert!(context_menu(None, Some(false)).iter().all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())), "no keys shown in a context menu");
     }
 
-    /// Failure: the toggle doesn't say which way it is, or the paper showing isn't picked out, or the panel has anything in it at rest.
+    /// Failure: the toggle doesn't say which way it is, or the paper showing isn't ticked in View > Paper, or the panel has anything in it at rest, or still offers paper, which is View's now (the owner's default of 2026-11-08).
     #[test]
     fn the_lists_say_how_things_stand() {
         let checked = |view, id: &str| menu_bar(view, None, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
-        assert!(panel(false, Paper::White, false, true).sections.is_empty(), "only the button at rest");
-        let open = panel(true, Paper::Warm, false, true);
-        let selected: Vec<String> = open.sections.iter().flat_map(|section| &section.items).filter(|item| item.selected).map(|item| item.id.clone()).collect();
-        assert_eq!(selected, vec!["paper.warm".to_string()]);
+        assert!(panel(false, false, true).sections.is_empty(), "only the button at rest");
+        let open = panel(true, false, true);
+        assert!(open.sections.iter().flat_map(|section| &section.items).all(|item| !item.id.starts_with("paper.")), "the panel keeps to tools");
+        let view = menu_bar(ViewSettings { paper: Some(Paper::Warm), ..ViewSettings::default() }, None, "").into_iter().find(|menu| menu.title == "View").unwrap();
+        let paper: Vec<(&str, bool, &str)> = view.entries.iter().filter(|item| item.id.starts_with("paper.")).map(|item| (item.id.as_str(), item.checked, item.parent.as_str())).collect();
+        assert_eq!(paper, [("paper.white", false, "view.paper"), ("paper.warm", true, "view.paper"), ("paper.dark", false, "view.paper")], "in View > Paper, the one showing ticked");
+        assert!(view.entries.iter().any(|item| item.id == "view.paper" && item.parent.is_empty() && item.title == "Paper"));
+        assert_eq!(action("paper.dark"), Some(Action::SetPaper(Paper::Dark)));
     }
 
     /// Failure: the sidebar's menu item doesn't say what choosing it does, or hasn't the Mac's usual ⌃⌘S, or focus view is still there. Owner, 2026-11-08: "No need mor a separate mode".
@@ -448,11 +461,11 @@ mod tests {
     /// Failure: the panel's Rotate isn't there, or says it turns every page in edit mode where it turns one, or can be pressed where it can't turn anything, or Undo and Redo aren't on the Edit menu with their keys and standard selectors.
     #[test]
     fn the_panel_rotates_and_the_edit_menu_undoes() {
-        let rotate = |edit_mode| panel(true, Paper::White, edit_mode, true).sections.into_iter().find(|section| section.items.iter().any(|item| item.id == "rotate.right")).unwrap();
+        let rotate = |edit_mode| panel(true, edit_mode, true).sections.into_iter().find(|section| section.items.iter().any(|item| item.id == "rotate.right")).unwrap();
         assert_eq!(rotate(false).title, "Rotate all pages");
         assert_eq!(rotate(true).title, "Rotate this page");
         assert_eq!((action("rotate.left"), action("rotate.right")), (Some(Action::Rotate(-1)), Some(Action::Rotate(1))));
-        let greyed = panel(true, Paper::White, false, false).sections.into_iter().flat_map(|section| section.items).filter(|item| item.id.starts_with("rotate.")).all(|item| !item.enabled);
+        let greyed = panel(true, false, false).sections.into_iter().flat_map(|section| section.items).filter(|item| item.id.starts_with("rotate.")).all(|item| !item.enabled);
         assert!(greyed, "Rotate is greyed out where it can't turn anything");
         let edit = menu_bar(ViewSettings::default(), None, "").into_iter().find(|menu| menu.title == "Edit").unwrap().entries;
         let keyed = |id: &str| edit.iter().find(|item| item.id == id).map(|item| (item.key.clone(), item.system_action.clone())).unwrap();

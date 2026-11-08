@@ -181,7 +181,7 @@ pub struct SidebarModel<'a> {
     pub rail_filled: usize,
     /// Whether the active PDF's contents are showing, which decides the chevron.
     pub toc_open: bool,
-    /// The footer line, such as "32 of 96". Empty with no PDF open.
+    /// The place, such as "32 of 96", which the page number in the lower right shows. Empty with no PDF open.
     pub place: String,
     /// Whether the active PDF has unsaved changes, which shows its dot and the Save buttons.
     pub edited: bool,
@@ -3371,7 +3371,7 @@ mod tests {
         assert_eq!(row_full_text("\n\n", false).text, "");
     }
 
-    /// Failure: a long outline pushes the other tabs or the footer off screen, the reason the owner asked for this. Holds at every window height down to the smallest, for every mix of tabs and rows: the tabs kept never lose their room, and nothing goes past the room there is unless the tab list itself is too long, when that scrolls.
+    /// Failure: a long outline pushes the other tabs or the bottom bar off screen, the reason the owner asked for this. Holds at every window height down to the smallest, for every mix of tabs and rows: the tabs kept never lose their room, and nothing goes past the room there is unless the tab list itself is too long, when that scrolls.
     #[test]
     fn a_long_outline_never_pushes_the_other_tabs_away() {
         for room in [0.0, 50.0, 100.0, 208.0, 328.0, 700.0, 1400.0] {
@@ -3388,7 +3388,7 @@ mod tests {
         }
     }
 
-    /// Failure: a long outline pushes the other tabs and the footer off, as a rule of "what the tabs leave" did with one tab: the owner saw no maximum at all. It stops at the maximum however few tabs there are, a short outline takes only what it needs, and the tabs scroll only if they don't fit in what's left.
+    /// Failure: a long outline pushes the other tabs and the bottom bar off, as a rule of "what the tabs leave" did with one tab: the owner saw no maximum at all. It stops at the maximum however few tabs there are, a short outline takes only what it needs, and the tabs scroll only if they don't fit in what's left.
     #[test]
     fn the_contents_have_a_true_maximum() {
         let most = 700.0 * CONTENTS_MAX_SHARE;

@@ -377,9 +377,8 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **The first Save keeps one backup of the original.**
 - **Later:** signing secrets in a protected `release` environment with the owner as required reviewer; a public release waits for Anthropic's written answer and adds an API-key route; a trademark name search before release.
 
+- **Defaults taken, 2026-11-08** (from the decisions waiting, both "yes" by default, as the coordinator asked): paper colour moved from the `⋯` panel to View > Paper, the panel keeping to tools; the sidebar footer's "N of M" removed, as the page number is always in the lower right.
+
 ## Decisions waiting on you
 
-| Decision | Needed by | Current default |
-|---|---|---|
-| Move paper colour from the `⋯` panel to View > Paper, keeping the panel for tools | Phase 3 | Move it |
-| Remove the sidebar footer's "N of M", now that the page number is always in the lower right | Phase 3 | Remove it |
+None right now.

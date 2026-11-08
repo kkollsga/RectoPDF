@@ -511,14 +511,13 @@ mod tests {
     /// Failure: the snapshot tool pushes edit mode's Done off the top of the panel, where the reader leaves edit mode from, or shows in a closed panel.
     #[test]
     fn the_tools_go_first_except_after_edit_modes_done() {
-        let shown = recto_session::Paper::White;
-        let mut reading = crate::menus::panel(true, shown, false, true);
+        let mut reading = crate::menus::panel(true, false, true);
         add_to_panel(&mut reading, false, false);
         assert_eq!(reading.sections[0].items[0].id, TOGGLE_ID);
-        let mut editing = crate::menus::panel(true, shown, true, true);
+        let mut editing = crate::menus::panel(true, true, true);
         add_to_panel(&mut editing, false, true);
         assert_eq!((editing.sections[0].items[0].id.as_str(), editing.sections[1].items[0].id.as_str()), ("edit_mode.done", TOGGLE_ID));
-        let mut closed = crate::menus::panel(false, shown, false, true);
+        let mut closed = crate::menus::panel(false, false, true);
         add_to_panel(&mut closed, true, false);
         assert!(closed.sections.iter().all(|section| section.items.iter().all(|item| item.id != TOGGLE_ID)));
     }
