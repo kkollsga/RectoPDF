@@ -379,7 +379,7 @@ pub static TABLE: &[Spec] = &[
         tag: "page_rotate",
         group: GROUP_EDIT,
         access: Access::At(Level::Control),
-        summary: "Turns pages clockwise. `all` turns every page as one step, as the sidebar panel's Rotate does outside edit mode.",
+        summary: "Turns pages clockwise. `all` turns every page as one step, as Rotate in the sidebar does outside edit mode.",
         args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4`, `4-6`, or `all`." }, Arg { key: "degrees", flag: Some("--by"), kind: Kind::Degrees, required: true, help: "`90`, `180`, `270`, or `-90` for the other way." }, TAB],
         data: EDIT_STATE,
         emits: &["edits_changed"],
