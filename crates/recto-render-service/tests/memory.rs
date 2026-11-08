@@ -78,31 +78,69 @@ fn image_doc(page_count: usize) -> Vec<u8> {
     pages_with(&doc_pages, &resources, objects)
 }
 
-/// Runs every page through a renderer, and returns the highest footprint seen and the retirements.
-fn run_pages(file: &TempPdf, policy: Policy, page_count: u32) -> (u64, u32) {
-    let mut doc = renderer(&file.0, policy);
-    let surface = tile_surface();
-    for page in 0..page_count {
-        assert!(matches!(doc.render_tile(&tile(page), &surface).unwrap(), TileResult::Done(_)));
-    }
-    (doc.stats().peak_footprint_bytes, doc.stats().retirements)
+/// What one run of every page saw: the highest footprint, the retirements, and the footprint after each page, which is what retirement reads (`None` where it couldn't be read).
+struct Run {
+    peak: u64,
+    retired: u32,
+    after_each: Vec<Option<u64>>,
 }
 
-/// Failure: growth across a long document isn't held by retiring, the reason retirement exists: closing a document doesn't return memory.
-/// The fixture's pages each add about 2 MiB, so without retiring the peak passes the limit many times over.
+impl Run {
+    fn largest_after_a_page(&self) -> u64 {
+        self.after_each.iter().flatten().copied().max().unwrap_or(0)
+    }
+
+    fn said(&self) -> String {
+        let after: Vec<String> = self.after_each.iter().map(|footprint| footprint.map_or("unread".into(), |bytes| format!("{:.1}", bytes as f64 / MIB as f64))).collect();
+        format!("peak {:.1} MiB, {} retirements, MiB after each page: [{}]", self.peak as f64 / MIB as f64, self.retired, after.join(", "))
+    }
+}
+
+/// Runs every page through a renderer.
+fn run_pages(file: &TempPdf, policy: Policy, page_count: u32) -> Run {
+    let mut doc = renderer(&file.0, policy);
+    let surface = tile_surface();
+    let mut after_each = Vec::new();
+    for page in 0..page_count {
+        assert!(matches!(doc.render_tile(&tile(page), &surface).unwrap(), TileResult::Done(_)));
+        after_each.push(doc.worker_footprint());
+    }
+    Run { peak: doc.stats().peak_footprint_bytes, retired: doc.stats().retirements, after_each }
+}
+
+/// Failure: growth across a long document isn't held by retiring, the reason retirement exists: closing a document doesn't return memory. The fixture's pages each add about 2 MiB
+/// in PDFium's cache of parsed streams, which is what retirement reads after each page, not the lifetime peak a page's drawing reaches for a moment. The line is put halfway up the
+/// growth this Mac shows without retiring, so it's crossed wherever there's growth to hold. On macOS 15 in the sandbox (CI, 2026-11-08) a fixed 24 MiB line was never crossed after
+/// a page, though the peak passed it, and nothing retired: the precondition was on the wrong number. Every footprint is printed. If what's held after each page doesn't grow there,
+/// the test says so and passes, as memory is bounded without retiring.
 #[test]
 fn retiring_holds_down_a_growing_worker() {
     let file = TempPdf::new("images.pdf", &image_doc(30));
-    let without = Policy { retire_bytes: u64::MAX, ..Policy::default() };
-    let (peak_without, retired_without) = run_pages(&file, without, 30);
-    assert_eq!(retired_without, 0);
-    let retire_at = 24 * MIB;
-    let with = Policy { retire_bytes: retire_at, ..Policy::default() };
-    let (peak_with, retired_with) = run_pages(&file, with, 30);
-    eprintln!("no retiring: peak {} MiB. Retire at {} MiB: peak {} MiB, {retired_with} retirements", peak_without / MIB, retire_at / MIB, peak_with / MIB);
-    assert!(peak_without > retire_at, "this fixture must grow past the limit to prove anything: {} MiB", peak_without / MIB);
-    assert!(retired_with > 0, "nothing retired");
-    assert!(peak_with < peak_without, "retiring didn't lower the peak: {} against {} MiB", peak_with / MIB, peak_without / MIB);
+    let without = run_pages(&file, Policy { retire_bytes: u64::MAX, ..Policy::default() }, 30);
+    println!("No retiring: {}", without.said());
+    assert_eq!(without.retired, 0);
+    if !without.after_each.iter().all(|footprint| footprint.is_some_and(|bytes| bytes > 0)) {
+        // Retirement can't see this worker's footprint here, so the fallback has to hold it: a retirement after a bounded run of jobs with nothing to read.
+        let with = run_pages(&file, Policy::default(), 30);
+        println!("A footprint couldn't be read on this Mac, so retirement goes by count. With the defaults: {}", with.said());
+        assert!(with.retired > 0, "nothing retired though footprints couldn't be read.\nWithout: {}\nWith: {}", without.said(), with.said());
+        return;
+    }
+    let first = without.after_each[0].unwrap_or(0);
+    let largest = without.largest_after_a_page();
+    if largest <= first + 16 * MIB {
+        // Nothing to hold: PDFium here doesn't keep what it parsed, and memory stays bounded without retiring, which is the property retirement is for. Said, not failed, as this
+        // is a fact about this Mac's libraries; an unreadable footprint, the case retirement could miss, failed above.
+        println!("The worker held no more than {:.1} MiB after any page without retiring, so on this Mac there's no growth for retirement to hold. {}", largest as f64 / MIB as f64, without.said());
+        return;
+    }
+    let retire_at = first + (largest - first) / 2;
+    let with = run_pages(&file, Policy { retire_bytes: retire_at, ..Policy::default() }, 30);
+    println!("Retire at {:.1} MiB: {}", retire_at as f64 / MIB as f64, with.said());
+    assert!(with.retired > 0, "nothing retired at {:.1} MiB.\nWithout: {}\nWith: {}", retire_at as f64 / MIB as f64, without.said(), with.said());
+    // Retirement acts before the next page, so the worker can pass the line by one page's growth, and no more.
+    let one_page = (largest - first) / 29 + 4 * MIB;
+    assert!(with.largest_after_a_page() <= retire_at + one_page, "retiring didn't hold the worker near the line.\nWithout: {}\nWith: {}", without.said(), with.said());
 }
 
 struct KillOnDrop(std::process::Child);

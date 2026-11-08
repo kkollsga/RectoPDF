@@ -108,3 +108,10 @@ jobs:
           app/render-helper.sh --layout "$contents" target/debug/recto-render-service target/pdfium/libpdfium.dylib
           app/render-helper.sh --check "$contents/Helpers/RectoRender.app"
           RECTO_TEST_WORKER="$contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service" cargo nextest run --locked --no-fail-fast -p recto-render-service
+      # Printed even when it passes: the sandboxed worker's footprint after each page, which retirement reads, with and without retiring. On macOS 15 it once never
+      # crossed a fixed line though the peak did.
+      - name: What retirement sees of the sandboxed worker here
+        if: ${{ !cancelled() }}
+        run: |
+          contents="$RUNNER_TEMP/Host.app/Contents"
+          RECTO_TEST_WORKER="$contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service" cargo nextest run --locked -p recto-render-service --test memory --no-capture -E 'test(retiring_holds_down_a_growing_worker)'
