@@ -268,6 +268,7 @@ fn a_signed_field_locks(reader: &IndexedReader, root: &Dictionary) -> bool {
     };
     let mut seen = HashSet::new();
     let mut visits = 0;
+    let mut queued = stack.len();
     while let Some(field) = stack.pop() {
         visits += 1;
         if visits > MAX_FIELDS_FOR_LOCKS {
@@ -284,7 +285,13 @@ fn a_signed_field_locks(reader: &IndexedReader, root: &Dictionary) -> bool {
             return true;
         }
         if let Ok(Object::Array(kids)) = field.get(b"Kids") {
-            stack.extend(kids.iter().take(MAX_FIELDS_FOR_LOCKS).cloned());
+            // Everything ever queued counts, so a tree of wide nodes can't hold millions (review).
+            let room = MAX_FIELDS_FOR_LOCKS.saturating_sub(queued);
+            if kids.len() > room {
+                return true;
+            }
+            queued += kids.len();
+            stack.extend(kids.iter().cloned());
         }
     }
     false
@@ -624,6 +631,8 @@ struct Plan {
     copies: Vec<Option<Copy>>,
     drop_usage_rights: bool,
     missing: u64,
+    /// The most an update may append: twice what's saved and added, and 64 MiB more.
+    append_cap: u64,
 }
 
 /// What's copied from one added PDF.
@@ -657,27 +666,31 @@ impl Plan {
             pages.push((*page, (base + 90 * i64::from(page.quarter_turns)).rem_euclid(360)));
         }
         let mut copies: Vec<Option<Copy>> = (0..sources.len()).map(|_| None).collect();
-        let missing = 0;
+        let mut missing = 0;
         let mut total = 0;
         // Counted down from the bound, so a smaller one can be asked for.
         let mut work = MAX_COPY_WORK.saturating_sub(work_limit);
         for (at, opened) in sources.iter().enumerate() {
             let Some((source, source_map)) = opened else { continue };
             let wanted: Vec<u32> = request.pages.iter().filter(|page| usize::from(page.source) == at + 1).map(|page| page.page).collect();
-            let copy = discover(source, source_map, &wanted, MAX_COPIED_OBJECTS - total, &mut work).map_err(|error| match error {
+            let copy = discover(source, source_map, &wanted, &mut missing, MAX_COPIED_OBJECTS.saturating_sub(total), &mut work).map_err(|error| match error {
                 SaveError::TooLarge => SaveError::TooLarge,
                 _ => SaveError::AddedFileUnreadable { name: file_label(request.added[at].path) },
             })?;
             total += copy.order.len();
             copies[at] = Some(copy);
         }
-        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights: facts.usage_rights && !facts.certified, missing })
+        let sizes: u64 = reader.source_len() + sources.iter().flatten().map(|(source, _)| source.source_len()).sum::<u64>();
+        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights: facts.usage_rights && !facts.certified, missing, append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024) })
     }
 
     /// Writes the plan into an update. Gives back the document's page objects in order, for reading the result back.
     fn write<W: lopdf::AppendOutput>(&self, reader: &IndexedReader, sources: &[Opened], writer: &mut AppendWriter<'_, W>) -> Result<Vec<ObjectId>, SaveError> {
         let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
         let began = writer.position();
+        // Bounded by what's being saved: a small file's pages rewritten under a new tree can't append gigabytes (review).
+        let cap = self.append_cap;
+        let within = |writer: &AppendWriter<'_, W>| if writer.position().saturating_sub(began) > cap { Err(SaveError::TooLarge) } else { Ok(()) };
         // An inherited value written in place, as a `/Resources` dictionary on the root of the tree can be, goes in once as an object of its own that every
         // page names: otherwise each page would carry its own copy, and 200,000 pages under a 1 MiB dictionary would append 200 GB (review).
         let mut shared: HashMap<(usize, ObjectId, &'static [u8]), Object> = HashMap::new();
@@ -696,6 +709,7 @@ impl Plan {
         let mut used_own: HashSet<ObjectId> = HashSet::new();
         let mut used_copy: Vec<HashSet<u32>> = vec![HashSet::new(); self.copies.len()];
         for (page, degrees) in &self.pages {
+            within(writer)?;
             if page.source == 0 {
                 let entry = map.get(page.page as usize).ok_or(SaveError::Damaged)?;
                 let id = entry.id();
@@ -767,6 +781,7 @@ impl Plan {
             let pages: HashSet<u32> = source_map.iter().map(|entry| entry.id().0).collect();
             let numbers = &renumbered[at];
             for id in &copy.order {
+                within(writer)?;
                 if pages.contains(&id.0) {
                     if !used_copy[at].contains(&id.0) {
                         // A page found only as something another page names, such as a link's target, isn't in this document: it goes as nothing, as remap has it. Its number was taken, so it's written as null.
@@ -814,6 +829,7 @@ impl Plan {
             update_catalog(reader, writer, self.drop_usage_rights, &layers)?;
         }
         // A copy of the document as it is, for a Save As with nothing unsaved: an update has to hold something, and the catalog as it was changes nothing.
+        within(writer)?;
         if writer.position() == began {
             let root = catalog_id(reader).ok_or(SaveError::Damaged)?;
             writer.write_object(root, &Object::Dictionary(page_dict(reader, root)?)).map_err(from_append)?;
@@ -873,7 +889,7 @@ fn left_behind(annotation: bool, key: &[u8]) -> bool {
 }
 
 /// Everything the wanted pages of an added PDF reach, found before anything's written. Another page of that PDF, its page tree and its catalog aren't followed: a link or a bookmark would otherwise bring its whole document along. What can't be read refuses the save. **Bounded for hostile files:** an id is queued once, when it's first seen, and every value looked at counts against [`MAX_COPY_WORK`], so a page that names millions of references, or objects that each name all the others, is refused with [`SaveError::TooLarge`] rather than held. Nothing is cloned to be looked at.
-fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], room: usize, work: &mut u64) -> Result<Copy, SaveError> {
+fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], missing: &mut u64, room: usize, work: &mut u64) -> Result<Copy, SaveError> {
     let wanted_ids: HashSet<u32> = wanted.iter().filter_map(|page| map.get(*page as usize)).map(|entry| entry.id().0).collect();
     let all_pages: HashSet<u32> = map.iter().map(|entry| entry.id().0).collect();
     let mut copy = Copy::default();
@@ -881,6 +897,9 @@ fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], room: 
     let mut stack: Vec<ObjectId> = Vec::new();
     for page in wanted {
         let entry = map.get(*page as usize).ok_or(SaveError::Damaged)?;
+        if copy.order.len() >= room {
+            return Err(SaveError::TooLarge);
+        }
         if copy.map.insert(entry.id().0, Some(())).is_none() {
             queued.insert(entry.id().0);
             copy.order.push(entry.id());
@@ -903,7 +922,13 @@ fn discover(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], room: 
                 }
                 Object::Dictionary(descriptor.dictionary().clone())
             }
-            // Something an added page names that can't be read, as one past the 1 MiB limit, refuses the save: leaving it out would change the page unasked.
+            // A number the file's cross-reference data doesn't have is null, by ISO 32000, as every viewer reads it: it goes as nothing, and is counted. One that's
+            // there and can't be read, as one past the 1 MiB limit, refuses the save: leaving it out would change the page unasked.
+            Err(_) if source.object_location(id).is_none() => {
+                *missing += 1;
+                copy.map.insert(id.0, None);
+                continue;
+            }
             Err(_) => source.resolve_object(id).map_err(|_| SaveError::Damaged)?,
         };
         if let Object::Dictionary(dict) = &object

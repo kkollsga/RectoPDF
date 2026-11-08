@@ -559,3 +559,22 @@ fn an_added_pages_hidden_layers_stay_hidden() {
     assert_eq!(named(properties.get(b"OCGs").unwrap()), ["Hidden", "Shown"]);
     assert_eq!(named(properties.get(b"D").and_then(Object::as_dict).unwrap().get(b"OFF").unwrap()), ["Hidden"], "hidden there, hidden here");
 }
+
+/// Failure (review round 2): a reference to an object number the file's cross-reference data doesn't have, as real files carry, refuses the save, though ISO 32000 and every viewer read it as null. It goes as nothing, and the save says it left something out.
+#[test]
+fn a_dangling_reference_in_an_added_page_is_null() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let other = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Gone 99 0 R >> >> >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+    ]);
+    let other_path = dir.write("other.pdf", &other);
+    let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let outcome = save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.objects_missing, 1);
+    assert_eq!(read_pages(&path)[1].0, "ADDED");
+}
