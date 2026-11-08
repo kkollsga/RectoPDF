@@ -2018,6 +2018,7 @@ mod tests {
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None, generated: false },
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
+            Command::Find { query: Some("x".into()), next: false, previous: false, close: false, limit: None },
             Command::Index { tab: tab(), agent: false },
             Command::IndexStatus { tab: tab() },
             Command::IndexClear { tab: tab(), all: false },

@@ -443,7 +443,7 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_SYNC,
         summary: "Prints events from now on, one per line. It reports only what happens after it starts, and nothing from before: `recto tabs` and `recto edits` say how things stand. It ends when `--timeout` or `--count` runs out, if access drops below Read-only, if the session stops, or when `recto watch stop` is run. Killing the process ends it too, at once.",
         args: &[
-            Arg { key: "events", flag: Some("--events"), kind: Kind::List(EVENT_GROUPS), required: false, help: "Which: `tabs`, `pages`, `edits`, `draws`, `indexing`, `contents` (generated contents being made), `access`, `view`, with commas between. All if left out." },
+            Arg { key: "events", flag: Some("--events"), kind: Kind::List(EVENT_GROUPS), required: false, help: "Which: `tabs`, `pages`, `edits`, `draws`, `indexing`, `contents` (generated contents being made), `access`, `view`, `find` (Find's hits coming in, and done), with commas between. All if left out." },
             Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to watch: `30s`, `5m`. 10m if left out." },
             Arg { key: "count", flag: Some("--count"), kind: Kind::Count(1_000_000), required: false, help: "Stop after this many events. Exit 7 if the time runs out first." },
         ],
