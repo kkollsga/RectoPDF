@@ -11,6 +11,7 @@ pub mod linking;
 mod loader;
 mod reading;
 pub mod extract;
+pub mod print;
 pub mod saving;
 mod render;
 pub use render::{output_exists, publish_picture};
@@ -288,6 +289,17 @@ pub enum Command {
         scale: f32,
         #[serde(default)]
         anyway: bool,
+    },
+    /// Pages printed to a new PDF, through what the app prints with.
+    Print {
+        #[serde(default = "active_tab")]
+        tab: String,
+        /// `4`, `4-6` or `4-`: all of them if left out.
+        #[serde(default)]
+        pages: Option<String>,
+        #[serde(default = "print_dpi")]
+        dpi: u32,
+        to_pdf: PathBuf,
     },
     /// A page's text, normalised for search, with the hidden-text flag.
     Text {
@@ -600,6 +612,7 @@ impl Command {
             Self::Images { .. } => "images",
             Self::Image { .. } => "image",
             Self::Snapshot { .. } => "snapshot",
+            Self::Print { .. } => "print",
             Self::Text { .. } => "text",
             Self::Select { .. } => "select",
             Self::Copy { .. } => "copy",
@@ -666,7 +679,7 @@ impl Command {
 
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
-        matches!(self, Self::Render { .. } | Self::ExportSvg { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Text { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+        matches!(self, Self::Render { .. } | Self::ExportSvg { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Print { .. } | Self::Text { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
@@ -688,6 +701,7 @@ impl Command {
             Self::Images { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             Self::Image { tab, page, number, out, anyway } => json!({ "tab": tab_of(tab), "page": page, "number": number, "anyway": anyway, "untrusted": file(out) }),
             // Which page and format, and not where on it.
+            Self::Print { tab, pages, dpi, to_pdf } => json!({ "tab": tab_of(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "untrusted": file(to_pdf) }),
             Self::Snapshot { tab, page, format, out, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "as": recto_core::clean_line(format), "anyway": anyway, "untrusted": out.as_deref().map(file) }),
             // Which pages, and not where on them or what's there.
             Self::Select { tab, page, to_page, all, anyway, .. } | Self::Copy { tab, page, to_page, all, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
@@ -710,12 +724,12 @@ impl Command {
     /// The selector this command acts on, if it has one.
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
-        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. })
+        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Print { .. })
     }
 
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Images { tab, .. } | Self::Image { tab, .. } | Self::Snapshot { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Images { tab, .. } | Self::Image { tab, .. } | Self::Snapshot { tab, .. } | Self::Print { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -1213,6 +1227,11 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
+        Command::Print { tab, pages, dpi, to_pdf } => {
+            require_absolute(to_pdf)?;
+            let list = print_pages(access, tab, pages.as_deref())?;
+            print::print_to_file(&list, *dpi, to_pdf)
+        }
         Command::Text { tab, page } => {
             let (id, position, source) = locate(access, tab, *page)?;
             let read = render::text(&source.path, source.page + 1);
@@ -1392,6 +1411,37 @@ fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, 
         return Err(source_changed(&source.path));
     }
     Ok((id, position, source))
+}
+
+fn print_dpi() -> u32 {
+    print::DEFAULT_DPI
+}
+
+/// The pages a print takes, as the tab has them, edits and all: each one's file and page there, and its unsaved turn. `pages` is `4`, `4-6` or `4-`, and all of them if left out.
+pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Vec<print::PrintPage>, AgentError> {
+    let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
+    let sources = access.with(|s| {
+        let id = select(s, tab)?;
+        let total = s.pages_in(id);
+        let (start, len) = range.unwrap_or((0, total));
+        if start >= total {
+            return Err(no_such_page());
+        }
+        let end = start.saturating_add(len).min(total);
+        if end - start > print::MAX_PAGES {
+            return Err(AgentError::new("too_many_pages", format!("A print is at most {} pages.", print::MAX_PAGES), exit::FAILED).then("Print a range of pages at a time, with `--pages`."));
+        }
+        (start..end).map(|position| s.page_source(id, position).ok_or_else(no_such_page)).collect::<Result<Vec<_>, _>>()
+    })?;
+    sources
+        .into_iter()
+        .map(|source| {
+            if !source.is_current() {
+                return Err(source_changed(&source.path));
+            }
+            Ok(print::PrintPage { path: source.path, page: source.page, quarter_turns: source.quarter_turns })
+        })
+        .collect()
 }
 
 fn no_such_page() -> AgentError {
@@ -2128,6 +2178,7 @@ mod tests {
             Command::Images { tab: tab(), page: 1 },
             Command::Image { tab: tab(), page: 1, number: 1, out: "/d/x.png".into(), anyway: false },
             Command::Snapshot { tab: tab(), page: 1, rect: [0.0, 0.0, 10.0, 10.0], format: "png".into(), out: Some("/d/x.png".into()), scale: 2.0, anyway: false },
+            Command::Print { tab: tab(), pages: None, dpi: 300, to_pdf: "/d/x.pdf".into() },
             Command::Text { tab: tab(), page: 1 },
             Command::Select { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },
             Command::Copy { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },

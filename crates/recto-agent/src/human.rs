@@ -158,6 +158,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "images" => images(data),
         "image" => format!("Image {} of page {} written to {} in {}: {}, {} x {} pixels, {}.", number(&data["number"]), number(&data["page"]), text(&data["out"]), duration(number(&data["took_ms"])), text(&data["says"]), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"]))),
         "snapshot" => snapshot(data),
+        "print" => format!("Printed {} to {} at {} dpi in {}, {}.{}", count(number(&data["pages"]), "page", "pages"), text(&data["out"]), number(&data["dpi"]), duration(number(&data["took_ms"])), bytes(number(&data["bytes"])), if number(&data["turned_pages"]) > 0 { format!(" {} turned as the unsaved edits have them.", count(number(&data["turned_pages"]), "page", "pages")) } else { String::new() }),
         "wait" => wait(data),
         "permission_show" => permission_show(data),
         "permission_request" => permission_request(data),

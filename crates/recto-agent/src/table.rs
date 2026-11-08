@@ -393,6 +393,23 @@ pub static TABLE: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "print",
+        tag: "print",
+        group: GROUP_READ,
+        access: Access::At(Level::Full),
+        summary: "Prints pages to a new PDF, through the same drawing the app's File > Print uses: the real pages, drawn at print resolution, never the screen's, with no paper colour, and unsaved turns as the edits have them. Whole or not at all, and it never replaces a file.",
+        args: &[
+            Arg { key: "to_pdf", flag: Some("--to-pdf"), kind: Kind::Path, required: true, help: "A new file ending in `.pdf`." },
+            Arg { key: "pages", flag: Some("--pages"), kind: Kind::PagesOpen, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end. Every page if left out." },
+            Arg { key: "dpi", flag: Some("--dpi"), kind: Kind::Positive(600), required: false, help: "Dots per inch, from 72 to 600. 300 if left out." },
+            TAB,
+        ],
+        data: "`{ out, pages, dpi, bytes, heavy_pages, worker_peak_bytes, took_ms, turned_pages }`. Each page is one picture at its own size in points, `/Rotate`d by its unsaved turn. `heavy_pages` counts pages that needed the larger limit, which waits for the heavy slot as any export does.",
+        examples: &["recto print --to-pdf /tmp/printed.pdf", "recto print --pages 3-5 --dpi 150 --to-pdf /tmp/three.pdf --json"],
+        client_wait_s: 3600,
+        ..BASE
+    },
+    Spec {
         name: "signatures",
         tag: "signatures",
         group: GROUP_READ,
