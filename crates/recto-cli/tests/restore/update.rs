@@ -830,7 +830,12 @@ fn settings_and_the_menu_say_how_things_stand() {
     bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "menu", "app.update"]);
     bed.wait_status(&run, "available");
-    assert_eq!(item(&menu(&run), "app.update")["title"], format!("Update to {NEW}…"));
+    // The menu bar is published after the status, on the session thread's next turn: under load the two looks can fall between them, so it's waited for, to a bound.
+    let began = Instant::now();
+    while item(&menu(&run), "app.update")["title"] != format!("Update to {NEW}…") {
+        assert!(began.elapsed() < Duration::from_secs(10), "the menu never offered the update: {}", item(&menu(&run), "app.update"));
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(item(&menu(&run), "app.update")["enabled"], true);
     for look in ["light", "dark"] {
         run.ok(&["qa", "appearance", look]);
