@@ -416,6 +416,7 @@ mod tests {
         bed.wait_for("the hand-off", |bed| bed.handed_off().is_some());
         let plan = bed.handed_off().unwrap();
         assert_eq!((plan.from.as_str(), plan.to.as_str(), plan.any_version), ("0.1.0", "0.1.0.1", true));
+        assert_eq!(stage::app_version(&plan.new_app()).as_deref(), Some("0.1.0.1"), "staged beside the app");
         // Its arrival is an update's, as a release's is: what was out of sight stays so, and it comes back behind if it was.
         let arrived = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
         arrived.launched(Facts {
@@ -424,7 +425,6 @@ mod tests {
             system: "15.0".into(),
         });
         assert!(arrived.reopened_by_update(), "a development build's arrival is reopened by an update");
-        assert_eq!(stage::app_version(&plan.new_app()).as_deref(), Some("0.1.0.1"), "staged beside the app");
     }
 
     /// Failure: a build goes in while the owner is using the app, waits the release's 30 minutes, never goes, or `--now` waits anyway. The owner's rule for dev work: 5 minutes without use.
