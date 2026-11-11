@@ -1389,7 +1389,7 @@ mod tests {
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
     }
 
-    /// Failure: synced scroll makes the UI thread wait for another pane's page view while that pane's own thread holds it, which is how a scroll step reached 4 to 9 ms. With the page view busy, the place is left for its own thread, the latest only, and it gets there as soon as that thread lets go. It waits for the page view to come free first, as its own thread may hold it from the activation (failed once under load, 2026-11-11).
+    /// Failure: synced scroll makes the UI thread wait for another pane's page view while that pane's own thread holds it, which is how a scroll step reached 4 to 9 ms. With the page view busy, the place is left for its own thread, the latest only, and it gets there as soon as that thread lets go. It waits for the activation's thread to let go first, as a call made while it held the view failed under load (2026-11-11).
     #[test]
     fn synced_scroll_never_waits_for_a_busy_pane() {
         let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
@@ -1416,12 +1416,14 @@ mod tests {
             live: false,
             scrolled_to: 0,
         });
-        // The page view's own thread can still hold it from the activation for a moment, which is the busy case: so once it's free, the call goes at once. A first call that found it busy left its place for that thread, which this one replaces.
-        let began = Instant::now();
-        while !engine.follow_soon(10, 0.5) {
-            assert!(began.elapsed() < Duration::from_secs(5), "the page view never came free");
-            std::thread::sleep(Duration::from_millis(1));
+        // The page view's own thread holds it a moment for the activation, a file that isn't there, which never settles. Once that thread has let go, free over several looks in a row, the first call on a free view goes at once.
+        let (began, mut free_looks) = (Instant::now(), 0);
+        while free_looks < 5 {
+            free_looks = if engine.shared.reader.try_lock().is_ok() { free_looks + 1 } else { 0 };
+            assert!(began.elapsed() < Duration::from_secs(5), "the activation's thread never let go");
+            std::thread::sleep(Duration::from_millis(5));
         }
+        assert!(engine.follow_soon(10, 0.5), "free: it goes now");
         assert_eq!(engine.reading_anchor(), Some((10, 0.5)), "free: it goes now");
         let held = engine.shared.reader.lock().unwrap();
         let started = Instant::now();
