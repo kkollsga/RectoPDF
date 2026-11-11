@@ -34,9 +34,11 @@ package() {
   [[ "$dev" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}$ ]] || fail "$dev isn't X.Y.Z.N with N from 1"
   [ -x "$built/Contents/MacOS/RectoPDF" ] || fail "no app at $built"
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")" = "$release" ] || fail "the app at $built isn't $release"
-  mkdir -p "$out"
-  app="$out/RectoPDF.app"
-  rm -rf "$app"
+  # A folder of its own, so the app it's made from can be anywhere, the folder it's zipped into included.
+  local staging="$out/.packaging"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  app="$staging/RectoPDF.app"
   # A clone where the disk does them: no copy of the bytes.
   cp -c -R "$built" "$app" 2>/dev/null || cp -R "$built" "$app"
   /usr/libexec/PlistBuddy -c "Delete :RectoDevVersion" "$app/Contents/Info.plist" >/dev/null 2>&1 || true
@@ -51,7 +53,7 @@ package() {
   rm -f "$out"/RectoPDF-*.zip
   # Without resource forks or extended attributes: the updater's reader would write one out as a file the signature doesn't cover.
   ditto -c -k --norsrc --noextattr --keepParent "$app" "$out/RectoPDF-$dev.zip"
-  rm -rf "$app"
+  rm -rf "$staging"
   echo "$out/RectoPDF-$dev.zip"
 }
 
