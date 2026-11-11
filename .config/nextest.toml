@@ -5,3 +5,10 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 # On CI, every test runs and every failure shows at once, as a round trip there costs minutes. It takes what isn't set here from `default`. Picked by NEXTEST_PROFILE in .github/workflows/ci.yml.
 [profile.ci]
 fail-fast = false
+
+# The binaries holding the slowest tests (10 to 50 s each, against a median under a tenth of a second) start first, so the run doesn't wait on one
+# that happened to start last. On 2026-11-11 the socket test that takes 24 s started with 26 s of a 50 s run left. Only the order changes: each test
+# is still a process of its own, with the same limits. docs/reports/build-performance-2026-11-11.md has the numbers.
+[[profile.default.overrides]]
+filter = 'binary(installer) | binary(smoke) | binary(socket) | binary(engine) | binary(long_session)'
+priority = 50
