@@ -165,7 +165,7 @@ fn a_long_session_stays_flat() {
     let _ = pid;
 }
 
-/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, the pictures queued for writing stay under their cap, and its footprint doesn't climb with the tabs. Numbers that matter come from a release build: `--no-capture` prints them.
+/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. And (review 1) memory pressure wrote the tabs going dormant on the session thread, behind every file queued, while nothing else was served. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, one writer at most, the pictures queued and being written stay under their cap, and its footprint doesn't climb with the tabs. Memory pressure then, with the queue full, doesn't hold up showing a tab for a slow write. And once the queue's written, there's no writer and no thread left for it. Numbers that matter come from a release build: `--no-capture` prints them.
 #[test]
 fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     use common::app::{Run, long_document};
@@ -231,5 +231,43 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         peak_footprint <= footprint_full + cap + 16 * 1024 * 1024,
         "the footprint climbed with the tabs leaving: {footprint_full} then {peak_footprint}"
     );
+    // The system asks for memory back, with the queue full and its writer in a slow write, and a tab's shown: the two warm ones off screen go dormant with their files queued, and the tab's up in less than one slow write. Written on the session thread, each waited for the writer and then its own write, ten seconds at the least.
+    assert!(leaving["queued"].as_u64().unwrap() >= 1, "the queue's still being written: {leaving}");
+    let first = report["session"]["tabs"][0]["id"].as_u64().unwrap();
+    let asked = std::time::Instant::now();
+    run.ok(&["qa", "memory-pressure", "warning"]);
+    run.ok(&["tap", &format!("#{first}")]);
+    run.settled();
+    let shown_in = asked.elapsed();
+    let after = run.report();
+    println!(
+        "memory pressure, and a tab shown, in {shown_in:?}: {}",
+        after["record"]["sleep"]["gone_dormant"]
+    );
+    assert!(
+        after["record"]["sleep"]["gone_dormant"]["pressure"].as_u64().unwrap() >= 1,
+        "{}",
+        after["record"]["sleep"]
+    );
+    assert_eq!(after["session"]["active"], first);
+    assert!(shown_in < std::time::Duration::from_secs(5), "a tab waited {shown_in:?} behind sleep files");
+    // At rest, once what's queued is written: no writer, and no thread for one.
+    let began = std::time::Instant::now();
+    let rest = loop {
+        let (threads, _, report) = sample(&run);
+        let leaving = report["record"]["sleep"]["leaving"].clone();
+        if leaving["writer"] == false && threads <= threads_full + 1 {
+            break leaving;
+        }
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(120),
+            "still writing, {threads} threads: {leaving}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(rest["writers_running"], 0, "{rest}");
+    assert_eq!(rest["queued"], 0, "{rest}");
+    assert_eq!(rest["queued_bytes"], 0, "nothing's held for it at rest: {rest}");
+    assert!(rest["peak_writers"].as_u64().unwrap() <= 1, "{rest}");
     run.quit();
 }

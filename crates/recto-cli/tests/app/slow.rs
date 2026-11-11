@@ -25,8 +25,9 @@ fn a_slow_run_waits_at_every_seam_it_passes() {
     run.settled();
     // Left alone, a second counting as five minutes: it goes dormant, with a sleep file, and wakes from it when tapped.
     run.ok(&["qa", "dormant-after", "1"]);
+    // Its sleep file's written by the queue's writer, which ends once it's done.
     wait_for_long(&run, |report| {
-        report["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap_or(0) >= 1
+        report["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap_or(0) >= 1 && report["record"]["sleep"]["leaving"]["writer"] == false
     });
     run.ok(&["qa", "dormant-after", "300"]);
     let tabs = run.report()["session"]["tabs"].as_array().unwrap().clone();

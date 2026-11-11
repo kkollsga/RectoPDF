@@ -599,8 +599,12 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     let workers_before = run.report()["reader_workers"].clone();
     // Left alone, a second counting as five minutes.
     run.ok(&["qa", "dormant-after", "1"]);
+    // Its sleep file's written off the session thread, by the queue's writer, which ends once it's done.
     wait_until("it goes dormant", || {
-        run.report()["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap() >= 1 && run.report()["reader"]["documents_held"] == 1
+        let report = run.report();
+        report["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap() >= 1
+            && report["reader"]["documents_held"] == 1
+            && report["record"]["sleep"]["leaving"]["writer"] == false
     });
     let after = run.report();
     assert_eq!(
