@@ -39,6 +39,8 @@ pub struct PaletteRow {
     pub aside: String,
     /// The title comes from a file, as a tab's name does, so it's only ever drawn as text.
     pub from_file: bool,
+    /// What VoiceOver says for the row: its title, where it lives, and its key in words, as "Find Next, Edit, Command G".
+    pub spoken: String,
 }
 
 fn row(id: String, title: String, detail: &str, shortcut: String, from_file: bool) -> PaletteRow {
@@ -47,6 +49,11 @@ fn row(id: String, title: String, detail: &str, shortcut: String, from_file: boo
     } else {
         format!("{detail}  {shortcut}")
     };
+    let spoken = if shortcut.is_empty() {
+        format!("{title}, {detail}")
+    } else {
+        format!("{title}, {detail}, {}", spoken_key(&shortcut))
+    };
     PaletteRow {
         id,
         title,
@@ -54,7 +61,28 @@ fn row(id: String, title: String, detail: &str, shortcut: String, from_file: boo
         shortcut,
         aside,
         from_file,
+        spoken,
     }
+}
+
+/// A key as it's said, not drawn: `⇧⌘G` is "Shift Command G", in the order a Mac draws its marks.
+fn spoken_key(shortcut: &str) -> String {
+    shortcut
+        .chars()
+        .map(|mark| match mark {
+            '⌃' => "Control".to_string(),
+            '⌥' => "Option".to_string(),
+            '⇧' => "Shift".to_string(),
+            '⌘' => "Command".to_string(),
+            '+' => "Plus".to_string(),
+            '-' => "Minus".to_string(),
+            '=' => "Equals".to_string(),
+            '[' => "Left Bracket".to_string(),
+            ']' => "Right Bracket".to_string(),
+            other => other.to_uppercase().collect(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Everything the palette draws.
@@ -67,6 +95,8 @@ pub struct PaletteView {
     pub selected: Option<u32>,
     /// What's said with no rows.
     pub empty: String,
+    /// What VoiceOver calls the list of rows.
+    pub list_label: String,
 }
 
 /// A menu item's key as a Mac shows it.
@@ -310,6 +340,7 @@ pub(crate) fn view(core: &AppCore) -> PaletteView {
         rows,
         selected,
         empty: "Nothing matches".into(),
+        list_label: "Commands and documents".into(),
     }
 }
 
@@ -408,5 +439,15 @@ mod tests {
         assert_eq!(shortcut(&entry("s", true)), "⌃⌘S");
         assert_eq!(shortcut(&entry("+", false)), "⌘+");
         assert_eq!(shortcut(&entry("", false)), "");
+    }
+
+    /// Failure: VoiceOver reads a palette row as its marks, or without where it lives or its key, so a row can't be told from another with the same title, or a key isn't said as a person would press it.
+    #[test]
+    fn a_row_is_said_in_words() {
+        assert_eq!(row("find.next".into(), "Find Next".into(), "Edit", "⌘G".into(), false).spoken, "Find Next, Edit, Command G");
+        assert_eq!(spoken_key("⇧⌘G"), "Shift Command G");
+        assert_eq!(spoken_key("⌃⌘S"), "Control Command S");
+        assert_eq!(spoken_key("⌘+"), "Command Plus");
+        assert_eq!(row("tab:2".into(), "report.pdf".into(), "Open tab", String::new(), true).spoken, "report.pdf, Open tab");
     }
 }

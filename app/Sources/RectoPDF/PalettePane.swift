@@ -22,6 +22,11 @@ final class PaletteRowCell: NSView {
     func show(_ row: PaletteRow, selected: Bool) {
         shown = row
         self.selected = selected
+        // VoiceOver hears the row as one item, in Rust's words, and which row Return runs.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(row.spoken)
+        setAccessibilitySelected(selected)
         applyLook()
     }
 
@@ -49,7 +54,7 @@ final class PaletteRowCell: NSView {
     let listScroll = NSScrollView()
     let list = NSTableView()
     private let core: AppCore
-    private(set) var model = PaletteView(open: false, text: "", placeholder: "", rows: [], selected: nil, empty: "")
+    private(set) var model = PaletteView(open: false, text: "", placeholder: "", rows: [], selected: nil, empty: "", listLabel: "")
     /// What a run leaves for the host, as a menu item's would.
     var hostAction: ((HostAction) -> Void)?
     /// ⌘K asked for the keyboard.
@@ -84,6 +89,8 @@ final class PaletteRowCell: NSView {
         list.delegate = self
         list.target = self
         list.action = #selector(rowClicked)
+        // A list to VoiceOver, not a table of one column.
+        list.setAccessibilityRole(.list)
         view.addSubview(listScroll)
     }
 
@@ -97,6 +104,13 @@ final class PaletteRowCell: NSView {
         if field.stringValue != model.text, field.currentEditor() == nil || !model.open { field.stringValue = model.text }
         empty.set(model.rows.isEmpty && model.open ? model.empty : "", font: .systemFont(ofSize: 12.5), color: Theme.textQuiet.ns)
         list.reloadData()
+        list.setAccessibilityLabel(model.listLabel)
+        // The row Return runs is the list's selection to VoiceOver. Nothing's drawn for it by the table: the row draws its own.
+        let selection = model.selected.map { IndexSet(integer: Int($0)) } ?? IndexSet()
+        if list.selectedRowIndexes != selection {
+            list.selectRowIndexes(selection, byExtendingSelection: false)
+            NSAccessibility.post(element: list, notification: .selectedRowsChanged)
+        }
         if let selected = model.selected { list.scrollRowToVisible(Int(selected)) }
         placeViews()
         if model.open, wantsFocus { focusField() }
@@ -194,6 +208,21 @@ final class PaletteRowCell: NSView {
             "selected": model.selected.map { Int($0) as Any } ?? NSNull(),
             "field_has_focus": field.currentEditor() != nil,
             "visible_rows": list.rows(in: list.visibleRect).length,
+            "accessibility": accessibilityReport(),
+        ]
+    }
+
+    /// What VoiceOver is given, read back from the views themselves: the list's role and name, each row on screen's words, and which is selected.
+    private func accessibilityReport() -> [String: Any] {
+        let shown = list.rows(in: list.visibleRect)
+        let cells = (shown.location..<(shown.location + shown.length)).compactMap { list.view(atColumn: 0, row: $0, makeIfNecessary: false) as? PaletteRowCell }
+        let selected = cells.filter { $0.isAccessibilitySelected() }
+        return [
+            "role": list.accessibilityRole()?.rawValue ?? "",
+            "label": list.accessibilityLabel() ?? "",
+            "selected_rows": list.selectedRowIndexes.map { $0 },
+            "rows": cells.prefix(8).map { ["role": $0.accessibilityRole()?.rawValue ?? "", "label": $0.accessibilityLabel() ?? "", "element": $0.isAccessibilityElement()] as [String: Any] },
+            "selected_labels": selected.map { $0.accessibilityLabel() ?? "" },
         ]
     }
 }
