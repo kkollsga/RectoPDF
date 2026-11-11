@@ -7,6 +7,8 @@ target/pdfium
 env RECTO_QA_SLOW
 env RECTO_QA_RESTORE_DELAY_MS
 env RECTO_QA_REMAKE_DELAY_MS
+# A test's outside change to a quiet run's activation policy.
+env RECTO_QA_POLICY_NUDGE_MS
 # Whether the app tests run, and whether a missing app fails them.
 env RECTO_REQUIRE_APP
 env RECTO_SKIP_APP
