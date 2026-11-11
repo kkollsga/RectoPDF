@@ -412,8 +412,17 @@ pub struct TempPdf(pub PathBuf);
 
 impl TempPdf {
     pub fn new(name: &str, bytes: &[u8]) -> Self {
-        let dir = std::env::temp_dir().join(format!("recto-render-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        std::fs::create_dir_all(&dir).unwrap();
+        // A folder of its own, never one already there: a process id comes round again, and a test that was killed or left a file
+        // leaves its folder behind, so a later test with the same id and count would share it (2026-11-11: a save test found
+        // another test's `large.svg` beside its document).
+        let dir = loop {
+            let dir = std::env::temp_dir().join(format!("recto-render-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => break dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("making {}: {error}", dir.display()),
+            }
+        };
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         Self(path)
@@ -426,5 +435,27 @@ impl Drop for TempPdf {
         if let Some(dir) = self.0.parent() {
             let _ = std::fs::remove_dir(dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: a temp file goes into a folder left behind by an earlier process with the same id, and a test finds that process's
+    /// files beside its own.
+    #[test]
+    fn a_folder_left_behind_is_never_shared() {
+        let next = NEXT.load(Ordering::Relaxed);
+        let stale = std::env::temp_dir().join(format!("recto-render-test-{}-{next}", std::process::id()));
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("left.svg"), b"x").unwrap();
+        let file = TempPdf::new("doc.pdf", b"%PDF-1.7");
+        let dir = file.0.parent().unwrap();
+        assert_ne!(dir, stale);
+        let beside: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(beside, ["doc.pdf"]);
+        let _ = std::fs::remove_file(stale.join("left.svg"));
+        let _ = std::fs::remove_dir(&stale);
     }
 }
