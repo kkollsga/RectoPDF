@@ -3737,10 +3737,8 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Restored(loaded) => {
                 let first_time = !inner.restored.load(Ordering::SeqCst);
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
-                // What every other call does as it ends, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
-                generated_contents::look_if_chosen(inner);
-                find::keep_up(inner);
-                reconcile(inner, &mut synced, &mut events);
+                // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
+                after_call(inner, &mut synced, &mut reads, events);
                 if first_time {
                     // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
                     let listener = Arc::clone(&inner.listener);
@@ -3999,16 +3997,8 @@ fn session_thread(inner: &Arc<Inner>) {
                     events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
                 }
             }),
-            CoreCall::Flush(marker) => {
-                reconcile(inner, &mut synced, &mut events);
-                // What was asked before this includes any file being read for it.
-                if reads.running.is_empty() {
-                    marker.finished();
-                } else {
-                    reads.flushes.push(marker);
-                }
-                continue;
-            }
+            // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
+            CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
                 events.push(Event::new(
@@ -4022,19 +4012,24 @@ fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
         }
-        generated_contents::look_if_chosen(inner);
-        find::keep_up(inner);
-        reconcile(inner, &mut synced, &mut events);
-        if reads.running.is_empty() {
-            for marker in reads.flushes.drain(..) {
-                marker.finished();
-            }
+        after_call(inner, &mut synced, &mut reads, events);
+    }
+}
+
+/// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
+fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
+    generated_contents::look_if_chosen(inner);
+    find::keep_up(inner);
+    reconcile(inner, synced, &mut events);
+    if reads.running.is_empty() {
+        for marker in reads.flushes.drain(..) {
+            marker.finished();
         }
-        if !events.is_empty()
-            && let Some(announcer) = lock(&inner.announcer).as_ref()
-        {
-            announcer.announce(events);
-        }
+    }
+    if !events.is_empty()
+        && let Some(announcer) = lock(&inner.announcer).as_ref()
+    {
+        announcer.announce(events);
     }
 }
 
@@ -5473,6 +5468,34 @@ mod tests {
         fn note_changed(&self) {}
         fn page_moved(&self) {}
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Failure (review 1 of the slow mode): an arm of the session thread's loop left it early, with `continue`, and skipped what every call ends with. The state's coming in announced nothing it did and left Find's field behind for the window made from it (CI, run 43062872948), and a flush's own changes were never announced. Only these leave early, each for its reason: an open before the state's in, put off whole; a drawn page, which announces itself and makes no view; and the state's coming in, after its tail, before the host's told.
+    #[test]
+    fn every_call_on_the_session_thread_ends_with_what_every_call_ends_with() {
+        let source = include_str!("lib.rs");
+        let body = &source[source.find("fn session_thread(").unwrap()..source.find("fn after_call(").unwrap()];
+        let body = &body[body.find("match call {").unwrap()..];
+        let mut arm = "";
+        let mut early = Vec::new();
+        let mut tail_before = std::collections::HashSet::new();
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            if line.len() - trimmed.len() == 12 && trimmed.starts_with("CoreCall::") {
+                arm = trimmed.split(['(', ' ']).next().unwrap();
+            }
+            if trimmed.starts_with("after_call(") {
+                tail_before.insert(arm);
+            }
+            if trimmed == "continue;" {
+                early.push(arm);
+            }
+        }
+        assert_eq!(early, ["CoreCall::Restored", "CoreCall::Open", "CoreCall::Page"], "the arms that leave early");
+        assert!(
+            tail_before.contains("CoreCall::Restored"),
+            "the state's coming in ends with the tail before it goes"
+        );
     }
 
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
