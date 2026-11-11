@@ -1,0 +1,49 @@
+# Checks the release's signing secrets work, building and publishing nothing (docs/RELEASING.md): the certificate opens with its
+# password and is the team's Developer ID Application identity, it signs with a secure timestamp, and Apple accepts the
+# notarization key. Run by hand (`gh workflow run release-preflight.yml`); in the `release` Environment, so it waits for the
+# owner's approval like a release. It loads the keys with the same script the release's signing job does.
+name: Release preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-preflight
+jobs:
+  preflight:
+    name: Signing secrets
+    runs-on: macos-26
+    environment: release
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Certificate and notarization key, from the Environment's secrets
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          kc="$RUNNER_TEMP/recto-preflight.keychain-db"
+          identity=$(tools/release/keychain.sh "$kc")
+          echo "PREFLIGHT_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "PREFLIGHT_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          echo "The certificate opens: $identity"
+      - name: It signs, with Apple's secure timestamp, and the signature verifies
+        run: |
+          cp /usr/bin/true "$RUNNER_TEMP/preflight-probe"
+          codesign --force --options runtime --timestamp --sign "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/preflight-probe"
+          codesign --verify --strict --verbose=2 "$RUNNER_TEMP/preflight-probe"
+          codesign -dv "$RUNNER_TEMP/preflight-probe" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp)='
+      - name: Apple accepts the notarization key
+        run: |
+          xcrun notarytool history --keychain-profile recto-notary --keychain "$PREFLIGHT_KEYCHAIN" --output-format json >/dev/null
+          echo "notarytool: the key, its ID and the issuer are accepted"
+      - name: Remove the keychain and anything of a secret
+        if: always()
+        run: |
+          tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
+          rm -f "$RUNNER_TEMP/preflight-probe"

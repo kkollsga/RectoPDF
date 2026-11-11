@@ -23,6 +23,8 @@ Once, by you: the certificate and the key are tied to your Apple account. Never 
 
 Without those secrets the release workflow fails at once. There's no unsigned release.
 
+**Checking them without a release:** `gh workflow run release-preflight.yml --repo kkollsga/RectoPDF`, approved on GitHub as a release is. It builds and publishes nothing: it loads the keys with `tools/release/keychain.sh`, the script the release's signing job uses, signs a probe with a secure timestamp, and asks Apple whether the notarization key is accepted.
+
 ## Releasing
 
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, **all or nothing**:
