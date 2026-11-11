@@ -275,7 +275,22 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
 /// Failure: anything the user can see or has changed doesn't survive a quit and a launch. **The test that matters most:** the whole of `qa state` is compared, across a normal quit, with a short named list of exceptions. A field added to `qa state` fails this until it's carried over or named, so state is complete by construction. In dark too, with light and dark screenshots to look at when `RECTO_RESTORE_SHOTS` names a folder.
 #[test]
 fn everything_comes_back_after_a_quit() {
-    for (look, paper) in [("light", "warm"), ("dark", "dark")] {
+    comes_back_after_a_quit([&[], &[]]);
+}
+
+/// Failure (CI, main at f4b4d22): on a slower machine the state was read after the window's second of patience, the window went up without it, and what came in later didn't bring everything back: the sidebar's contents with no height there, and here, with the disk slow on purpose, the window's size and full screen, the appearance, Settings, every pane's place and the contents' scroll. Just past the patience, the window that went up without the state also wrote its own default size over what had come in. **The whole of `qa state` across a quit, with the state read 1.05 s and 1.5 s late**, so it comes in after the window's up. Everything comes back as from an on-time read.
+#[test]
+fn everything_comes_back_when_the_state_is_read_late() {
+    // Just past the patience, where the window that went up without it can still be saying its own size and focus as the state comes in; and well past it.
+    comes_back_after_a_quit([
+        &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1050"))],
+        &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))],
+    ]);
+}
+
+/// A rich state, a quit, and a launch with this in its environment, and the whole of `qa state` compared, in light and in dark.
+fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2]) {
+    for ((look, paper), second_launch) in [("light", "warm"), ("dark", "dark")].into_iter().zip(second_launch) {
         let state = State::new();
         let Some(run) = Run::on(&state) else { return };
         let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
@@ -291,7 +306,10 @@ fn everything_comes_back_after_a_quit() {
         }
         let before = run.report();
         run.quit();
-        let run = Run::on(&state).unwrap();
+        let run = Run::on_with_env(&state, second_launch).unwrap();
+        // Read late on purpose, it's waited for: what's compared is what's there once it has been.
+        let tabs = before["session"]["tabs"].as_array().unwrap().len();
+        common::app::wait_for_long(&run, |report| report["session"]["tabs"].as_array().is_some_and(|now| now.len() == tabs));
         run.ok(&["qa", "scroller-style", "overlay"]);
         run.settled();
         let after = run.report();

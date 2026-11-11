@@ -514,6 +514,17 @@ impl QaBridge {
         let started = Instant::now();
         let left = || limit.saturating_sub(started.elapsed());
         let mut animations_waited = Duration::ZERO;
+        // Before anything, what's shown has to have been made from the state, which may be read late and taken in by making the window again (CI, 2026-11-11): a report before then is of a window that's about to go.
+        while !self
+            .inner()
+            .is_none_or(|inner| inner.restored.load(Ordering::SeqCst) && inner.shown_with_state.load(Ordering::SeqCst))
+        {
+            if left().is_zero() {
+                return Err(AgentError::new("timed_out", "The state hasn't been read and shown yet.", exit::TIMED_OUT)
+                    .then("A slow disk holds it up: `recto qa state` says what the window shows meanwhile."));
+            }
+            std::thread::sleep(ANIMATION_POLL.min(left()));
+        }
         loop {
             // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
             if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
