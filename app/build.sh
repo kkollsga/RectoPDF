@@ -87,6 +87,14 @@ mkdir -p "$APP/Contents/Resources"
 # Without extended attributes (-X): a checkout's file can carry one (macOS adds `com.apple.provenance`), a zip holds it as a `._` entry,
 # and the updater's reader writes that out as a file the signature doesn't cover, so the update is refused.
 cp -X "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt"
+# The icon, from its source (app/icon/build.sh): AppIcon.icns always, and Assets.car, macOS 26's dark and tinted icon, where Xcode's actool is.
+"$APP_DIR/icon/build.sh" "$BUILD/icon"
+cp -X "$BUILD/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+ICON_NAME=""
+if [ -f "$BUILD/icon/Assets.car" ]; then
+    cp -X "$BUILD/icon/Assets.car" "$APP/Contents/Resources/Assets.car"
+    ICON_NAME="<key>CFBundleIconName</key><string>AppIcon</string>"
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -98,6 +106,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>RectoPDF</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    $ICON_NAME
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>

@@ -1,13 +1,17 @@
-// RectoPDF app icon concepts: one geometry, two outputs.
+// RectoPDF's app icon, "Recto": an open book seen from its right, the narrow left page (verso) in shade, the wide right page (recto) lit
+// and forward, on the app's calm blue. The owner chose it on 2026-11-11 from four concepts (this file's history has the other three).
 //
-//   swift app/icon/icons.swift <out-dir>
+//   swift app/icon/icons.swift <out-dir>      Writes, into <out-dir>:
+//     AppIcon.iconset/   every size a Mac bundle needs, for `iconutil -c icns` (16, 32, 128, 256, 512 at 1x and 2x)
+//     AppIcon.icon/      the same artwork as an Icon Composer document, with a dark appearance, for `actool` (macOS 26's dark and tinted modes)
+//     AppIcon.svg        the large artwork as SVG, for looking at
+//     sheet.png          every size on a light and a dark desktop, for looking at
 //
-// Each concept is a list of filled paths on Apple's 1024 grid (the macOS icon body is an 824 x 824 rounded square, its continuous
-// "squircle" corners drawn here as a superellipse, centred with a 100 px margin, with a soft drop shadow below it). The same list is
-// written as `app/icon/<concept>.svg` (the vector source) and drawn with CoreGraphics into PNGs at 1024, 128, 32 and 16 px, plus a
-// comparison sheet per concept on a light and a dark desktop. Drawing the PNGs from the list, rather than asking NSImage to render the
-// SVG, keeps both outputs from one source and needs no SVG renderer: NSImage's SVG support skips filters, so the shadow would be lost.
-// No dependencies beyond AppKit.
+// This file is the vector source. The artwork is a list of filled paths on Apple's 1024 grid (the icon body an 824 x 824 rounded square
+// at a 100 px margin, its continuous corners drawn as a superellipse, with a soft drop shadow). CoreGraphics draws the PNGs from the list
+// and the SVGs are written from it, so there's one geometry and no SVG renderer is needed. Below 64 px a smooth curve or a 1.25 px line
+// blurs, so 16 and 32 px have their own drawings on the pixel grid: the same book with straight edges, whole-pixel lines and less text.
+// AppKit only. app/icon/build.sh runs it and turns its output into AppIcon.icns and Assets.car.
 import AppKit
 
 // MARK: Geometry
@@ -26,24 +30,25 @@ struct Item {
     var path: Path
     var paint: Paint
     var shadow: Shadow? = nil
-    /// Clip to the icon body, so nothing spills past the squircle.
+    /// Clip to the icon body, so nothing spills past it.
     var clipped = true
+    /// Which Icon Composer layer it belongs to; nil for the body, which Icon Composer draws itself.
+    var layer: String? = nil
 }
-struct Concept { var name: String; var title: String; var line: String; var items: [Item] }
+/// One drawing: the body it clips to and what's drawn, in 1024-canvas units.
+struct Art { var body: Path; var items: [Item] }
 
 let k = 0.5522847498
 
-func rrect(_ x: Double, _ y: Double, _ w: Double, _ h: Double, _ r: Double) -> Path { rrect4(x, y, w, h, r, r, r, r) }
-
-/// A rounded rectangle with its own radius per corner: top left, top right, bottom right, bottom left.
-func rrect4(_ x: Double, _ y: Double, _ w: Double, _ h: Double, _ tl: Double, _ tr: Double, _ br: Double, _ bl: Double) -> Path {
-    [.m(x + tl, y), .l(x + w - tr, y), .c(x + w - tr + tr * k, y, x + w, y + tr - tr * k, x + w, y + tr),
-     .l(x + w, y + h - br), .c(x + w, y + h - br + br * k, x + w - br + br * k, y + h, x + w - br, y + h),
-     .l(x + bl, y + h), .c(x + bl - bl * k, y + h, x, y + h - bl + bl * k, x, y + h - bl),
-     .l(x, y + tl), .c(x, y + tl - tl * k, x + tl - tl * k, y, x + tl, y), .z]
+func rect(_ x: Double, _ y: Double, _ w: Double, _ h: Double) -> Path { [.m(x, y), .l(x + w, y), .l(x + w, y + h), .l(x, y + h), .z] }
+func rrect(_ x: Double, _ y: Double, _ w: Double, _ h: Double, _ r: Double) -> Path {
+    [.m(x + r, y), .l(x + w - r, y), .c(x + w - r + r * k, y, x + w, y + r - r * k, x + w, y + r),
+     .l(x + w, y + h - r), .c(x + w, y + h - r + r * k, x + w - r + r * k, y + h, x + w - r, y + h),
+     .l(x + r, y + h), .c(x + r - r * k, y + h, x, y + h - r + r * k, x, y + h - r),
+     .l(x, y + r), .c(x, y + r - r * k, x + r - r * k, y, x + r, y), .z]
 }
 
-/// Apple's icon body: 824 x 824 at (100, 100), continuous corners, approximated by a superellipse of exponent 5.
+/// Apple's icon body: an s x s square at (x, y) with continuous corners, approximated by a superellipse of exponent 5.
 func squircle(_ x: Double = 100, _ y: Double = 100, _ s: Double = 824, n: Double = 5) -> Path {
     let cx = x + s / 2, cy = y + s / 2, a = s / 2
     var p: Path = []
@@ -59,114 +64,78 @@ func squircle(_ x: Double = 100, _ y: Double = 100, _ s: Double = 824, n: Double
     return p
 }
 
-/// The four-point star of the in-app agent button: points on the axes, sides pulled in towards the centre.
-func star(_ cx: Double, _ cy: Double, _ r: Double, pinch: Double = 0.16) -> Path {
-    let q = r * pinch
-    return [.m(cx, cy - r),
-            .c(cx + q * 0.6, cy - q * 1.6, cx + q * 1.6, cy - q * 0.6, cx + r, cy),
-            .c(cx + q * 1.6, cy + q * 0.6, cx + q * 0.6, cy + q * 1.6, cx, cy + r),
-            .c(cx - q * 0.6, cy + q * 1.6, cx - q * 1.6, cy + q * 0.6, cx - r, cy),
-            .c(cx - q * 1.6, cy - q * 0.6, cx - q * 0.6, cy - q * 1.6, cx, cy - r), .z]
-}
-
-// MARK: Palette (the app's accent is 0x176A94 light, 0x84CBF0 dark)
+// MARK: Palette (the app's accent is 0x176A94 in light, 0x84CBF0 in dark)
 
 let accent: UInt32 = 0x176A94
-let accentLight: UInt32 = 0x84CBF0
 let navy: UInt32 = 0x0E3550
 let paper: UInt32 = 0xFFFFFF
+let tileTop: UInt32 = 0x2283B8, tileBottom: UInt32 = 0x10577F
+/// The tile in macOS's dark appearance: the same blue, deeper, so the lit page stands out as it does on a dark desktop.
+let darkTop: UInt32 = 0x1A4A6A, darkBottom: UInt32 = 0x0B263A
+let versoOuter: UInt32 = 0x9FCDE8, versoGutter: UInt32 = 0x5F9CC5
 
-let body = squircle()
-func background(_ top: UInt32, _ bottom: UInt32) -> Item {
-    Item(path: body, paint: .linear(0, 100, 0, 924, [Stop(at: 0, rgb: top), Stop(at: 1, rgb: bottom)]),
-         shadow: Shadow(dy: 10, blur: 22, alpha: 0.28), clipped: false)
-}
-/// A faint light edge along the top of the body, the "subtle depth" of current macOS icons.
-let sheen = Item(path: body, paint: .linear(0, 100, 0, 512, [Stop(at: 0, rgb: 0xFFFFFF, alpha: 0.10), Stop(at: 1, rgb: 0xFFFFFF, alpha: 0)]))
-func textLines(x: Double, y: Double, widths: [Double], gap: Double, height: Double, rgb: UInt32, alpha: Double) -> [Item] {
-    widths.enumerated().map { i, w in Item(path: rrect(x, y + Double(i) * gap, w, height, height / 2), paint: .solid(rgb, alpha)) }
+func tile(_ body: Path, top: Double, bottom: Double, shadow: Shadow?) -> Item {
+    Item(path: body, paint: .linear(0, top, 0, bottom, [Stop(at: 0, rgb: tileTop), Stop(at: 1, rgb: tileBottom)]), shadow: shadow, clipped: false)
 }
 
-// MARK: Concepts
+// MARK: The artwork
 
-/// 1. Recto: an open book seen from its right, the left page (verso) narrow and in shade, the right page (recto) wide, lit and forward.
-/// The asymmetry is the point: Apple Books is a symmetric white book, this is one lit page with the book behind it.
-func recto() -> Concept {
+/// The large artwork, 64 px and up.
+func large() -> Art {
+    let body = squircle()
     let g = 404.0
     // Page tops rise from the gutter like a book lying open; bottoms follow.
     let verso: Path = [.m(g, 318), .c(352, 290, 290, 282, 232, 292), .l(232, 712), .c(290, 702, 352, 710, g, 744), .z]
-    let rectoPage: Path = [.m(g, 318), .c(520, 284, 660, 276, 800, 290), .l(800, 716), .c(660, 702, 520, 708, g, 744), .z]
-    let under: Path = [.m(g, 342), .c(340, 310, 280, 304, 214, 314), .l(214, 746), .c(280, 738, 340, 744, g, 776),
+    let recto: Path = [.m(g, 318), .c(520, 284, 660, 276, 800, 290), .l(800, 716), .c(660, 702, 520, 708, g, 744), .z]
+    let cover: Path = [.m(g, 342), .c(340, 310, 280, 304, 214, 314), .l(214, 746), .c(280, 738, 340, 744, g, 776),
                        .c(520, 742, 660, 734, 818, 744), .l(818, 314), .c(660, 300, 520, 308, g, 342), .z]
-    var items = [background(0x2283B8, 0x10577F), sheen,
-                 Item(path: under, paint: .solid(navy, 0.55)),
-                 Item(path: verso, paint: .linear(232, 0, g, 0, [Stop(at: 0, rgb: 0x9FCDE8), Stop(at: 1, rgb: 0x5F9CC5)])),
-                 Item(path: rectoPage, paint: .linear(g, 0, 800, 0, [Stop(at: 0, rgb: 0xDCEBF5), Stop(at: 0.14, rgb: paper), Stop(at: 1, rgb: paper)]),
-                      shadow: Shadow(dy: 6, blur: 18, alpha: 0.25, rgb: navy))]
-    items += textLines(x: 474, y: 378, widths: [150], gap: 0, height: 30, rgb: accent, alpha: 0.95)
-    items += textLines(x: 474, y: 456, widths: [254, 226, 254, 170], gap: 58, height: 20, rgb: accent, alpha: 0.30)
-    return Concept(name: "1-recto", title: "1  Recto",
-                   line: "An open book seen from its right, the narrow left page in shade and the wide right page (the recto) lit and forward: the app's name as a picture, reading at a glance, and lopsided on purpose so it isn't Apple Books' symmetric white book.",
-                   items: items)
+    var items = [tile(body, top: 100, bottom: 924, shadow: Shadow(dy: 10, blur: 22, alpha: 0.28)),
+                 // A faint light edge along the top: the "subtle depth" of current macOS icons. Icon Composer adds its own, so no layer.
+                 Item(path: body, paint: .linear(0, 100, 0, 512, [Stop(at: 0, rgb: 0xFFFFFF, alpha: 0.10), Stop(at: 1, rgb: 0xFFFFFF, alpha: 0)])),
+                 Item(path: cover, paint: .solid(navy, 0.55), layer: "cover"),
+                 Item(path: verso, paint: .linear(232, 0, g, 0, [Stop(at: 0, rgb: versoOuter), Stop(at: 1, rgb: versoGutter)]), layer: "verso"),
+                 Item(path: recto, paint: .linear(g, 0, 800, 0, [Stop(at: 0, rgb: 0xDCEBF5), Stop(at: 0.14, rgb: paper), Stop(at: 1, rgb: paper)]),
+                      shadow: Shadow(dy: 6, blur: 18, alpha: 0.25, rgb: navy), layer: "recto")]
+    items.append(Item(path: rrect(474, 378, 150, 30, 15), paint: .solid(accent, 0.95), layer: "text"))
+    for (i, w) in [254.0, 226, 254, 170].enumerated() {
+        items.append(Item(path: rrect(474, 456 + Double(i) * 58, w, 20, 10), paint: .solid(accent, 0.30), layer: "text"))
+    }
+    return Art(body: body, items: items)
 }
 
-/// 2. Spine: one portrait page bound on its left, its inner edge shading into the binding like the right page of a book.
-func spine() -> Concept {
-    let x = 300.0, y = 196.0, w = 460.0, h = 632.0
-    var items = [background(0xF1F6FA, 0xC4D7E6),
-                 Item(path: rrect4(x, y, w, h, 6, 30, 30, 6), paint: .solid(paper, 1), shadow: Shadow(dy: 10, blur: 26, alpha: 0.22, rgb: navy)),
-                 Item(path: rrect(x, y, 70, h, 0), paint: .linear(x, 0, x + 70, 0, [Stop(at: 0, rgb: accent, alpha: 0.28), Stop(at: 1, rgb: accent, alpha: 0)])),
-                 Item(path: rrect(x - 52, y - 14, 60, h + 28, 18), paint: .linear(0, y, 0, y + h, [Stop(at: 0, rgb: 0x1E7DB0), Stop(at: 1, rgb: 0x115A82)]),
-                      shadow: Shadow(dy: 4, blur: 10, alpha: 0.25, rgb: navy))]
-    items += textLines(x: x + 96, y: y + 92, widths: [210], gap: 0, height: 34, rgb: accent, alpha: 0.95)
-    items += textLines(x: x + 96, y: y + 186, widths: [300, 270, 300, 220, 300, 250], gap: 62, height: 20, rgb: 0x8FA6B8, alpha: 0.55)
-    return Concept(name: "2-spine", title: "2  Spine",
-                   line: "A single page bound on its left in the accent blue, its inner edge shading into the binding: a document at a glance, the right-hand page of a book on a second look, light and calm where Acrobat is red.",
-                   items: items)
+/// The book on a `grid`-pixel canvas, for 16 and 32 px: every edge on a pixel boundary, so nothing is half a pixel of blur.
+/// `px` converts pixel coordinates to canvas units.
+func small(_ grid: Int) -> Art {
+    let u = 1024 / Double(grid)
+    func box(_ x: Double, _ y: Double, _ w: Double, _ h: Double) -> Path { rect(x * u, y * u, w * u, h * u) }
+    var items: [Item] = []
+    let body: Path
+    if grid == 16 {
+        // A 14 px body: the 13 px of the 1024 grid's margin would put every edge between pixels.
+        body = squircle(1 * u, 1 * u, 14 * u)
+        items = [tile(body, top: u, bottom: 15 * u, shadow: nil),
+                 Item(path: box(3, 5, 10, 7), paint: .solid(navy, 0.70)), // The cover: one dark row under the pages.
+                 Item(path: box(3, 4, 3, 7), paint: .solid(0x82BADD, 1)),
+                 Item(path: box(6, 4, 7, 7), paint: .solid(paper, 1)),
+                 Item(path: box(7, 6, 4, 1), paint: .solid(accent, 0.85)),
+                 Item(path: box(7, 8, 5, 1), paint: .solid(accent, 0.35))]
+    } else {
+        body = squircle(3 * u, 3 * u, 26 * u)
+        items = [tile(body, top: 3 * u, bottom: 29 * u, shadow: Shadow(dy: 0.5 * u, blur: 1 * u, alpha: 0.30)),
+                 Item(path: box(6, 10, 20, 15), paint: .solid(navy, 0.60)),
+                 Item(path: box(7, 9, 6, 15), paint: .linear(7 * u, 0, 13 * u, 0, [Stop(at: 0, rgb: versoOuter), Stop(at: 1, rgb: versoGutter)])),
+                 Item(path: box(13, 9, 12, 15), paint: .solid(paper, 1)),
+                 Item(path: box(13, 9, 1, 15), paint: .solid(0xDCEBF5, 1)), // The gutter's shade on the lit page.
+                 Item(path: box(15, 12, 6, 2), paint: .solid(accent, 0.95))]
+        for (i, w) in [8.0, 7, 8].enumerated() {
+            items.append(Item(path: box(15, 16 + Double(i) * 2, w, 1), paint: .solid(accent, 0.35)))
+        }
+    }
+    return Art(body: body, items: items)
 }
 
-/// 3. Turn: a white page on a night-blue tile, its lower right corner lifting to show the next page underneath.
-func turn() -> Concept {
-    let x = 262.0, y = 184.0, w = 500.0, h = 656.0, r = 26.0, c = 250.0
-    let rx = x + w, by = y + h
-    // The fold, bowed in towards the page's middle as a curling sheet's is.
-    let fold: [Seg] = [.c(rx - c * 0.30, by - c * 0.66, rx - c * 0.66, by - c * 0.30, rx - c, by)]
-    // The page with its lower right corner cut along the fold.
-    let page: Path = [.m(x + r, y), .l(rx - r, y), .c(rx - r + r * k, y, rx, y + r - r * k, rx, y + r), .l(rx, by - c)] + fold +
-                     [.l(x + r, by), .c(x + r - r * k, by, x, by - r + r * k, x, by - r), .l(x, y + r), .c(x, y + r - r * k, x + r - r * k, y, x + r, y), .z]
-    // The lifted flap, curling up and in from the fold, its tip towards the top left.
-    let flap: Path = [.m(rx, by - c)] + fold +
-                     [.c(rx - c * 1.16, by - c * 0.42, rx - c * 1.14, by - c * 0.80, rx - c * 1.04, by - c * 0.98),
-                      .c(rx - c * 0.80, by - c * 1.12, rx - c * 0.40, by - c * 1.10, rx, by - c), .z]
-    var items = [background(0x1A4466, 0x0B2338), sheen,
-                 Item(path: rrect(x, y, w, h, r), paint: .solid(accentLight, 1), shadow: Shadow(dy: 10, blur: 26, alpha: 0.35)),
-                 Item(path: page, paint: .solid(paper, 1))]
-    items += textLines(x: x + 70, y: y + 96, widths: [220], gap: 0, height: 34, rgb: accent, alpha: 0.95)
-    items += textLines(x: x + 70, y: y + 190, widths: [360, 330, 360, 280, 200], gap: 62, height: 20, rgb: 0x8FA6B8, alpha: 0.55)
-    // Shaded across the curl like a rolled sheet: blue at the fold, white on the crest, a touch of blue again at the tip.
-    items.append(Item(path: flap, paint: .linear(rx - c * 0.5, by - c * 0.5, rx - c * 1.05, by - c * 1.05,
-                                                 [Stop(at: 0, rgb: 0x9CCFEC), Stop(at: 0.55, rgb: paper), Stop(at: 1, rgb: 0xD6E9F5)]),
-                      shadow: Shadow(dy: 10, blur: 26, alpha: 0.40, rgb: navy)))
-    return Concept(name: "3-turn", title: "3  Turn",
-                   line: "A page on a night-blue tile with its corner lifting onto the next page: turning pages says reader rather than file, and a curl into blue is unlike Acrobat's red sheet or Preview's loupe.",
-                   items: items)
-}
-
-/// 4. Star page: a white page with a folded corner, the agent's four-point star in the accent where the text would be.
-func starPage() -> Concept {
-    let x = 282.0, y = 176.0, w = 460.0, h = 672.0, r = 26.0, f = 128.0
-    let rx = x + w, by = y + h
-    let page: Path = [.m(x + r, y), .l(rx - f, y), .l(rx, y + f), .l(rx, by - r), .c(rx, by - r + r * k, rx - r + r * k, by, rx - r, by),
-                      .l(x + r, by), .c(x + r - r * k, by, x, by - r + r * k, x, by - r), .l(x, y + r), .c(x, y + r - r * k, x + r - r * k, y, x + r, y), .z]
-    let fold: Path = [.m(rx - f, y), .l(rx - f, y + f - 18), .c(rx - f, y + f - 8, rx - f + 8, y + f, rx - f + 18, y + f), .l(rx, y + f), .z]
-    let items = [background(0x2283B8, 0x10577F), sheen,
-                 Item(path: page, paint: .solid(paper, 1), shadow: Shadow(dy: 10, blur: 26, alpha: 0.30, rgb: navy)),
-                 Item(path: fold, paint: .solid(0xB9DDF1, 1)),
-                 Item(path: star(x + w / 2, y + h * 0.56, 168), paint: .linear(0, y + h * 0.56 - 168, 0, y + h * 0.56 + 168, [Stop(at: 0, rgb: 0x2283B8), Stop(at: 1, rgb: 0x10577F)]))]
-    return Concept(name: "4-star", title: "4  Star page",
-                   line: "A page with a folded corner carrying the app's own four-point star: a document shape at any size, tied to RectoPDF's agent button, blue not red, and no letters.",
-                   items: items)
-}
+/// The drawing for an icon of `pixels`.
+func art(forPixels pixels: Int) -> Art { pixels <= 16 ? small(16) : pixels <= 32 ? small(32) : large() }
 
 // MARK: SVG
 
@@ -182,10 +151,11 @@ func svgPath(_ p: Path) -> String {
         }
     }.joined(separator: " ")
 }
-func svg(_ concept: Concept) -> String {
-    var defs: [String] = ["<clipPath id=\"body\"><path d=\"\(svgPath(body))\"/></clipPath>"]
+/// `items` as an SVG document. `transform` wraps them all (Icon Composer's layers are full bleed); `clip` clips to the body.
+func svg(_ items: [Item], body: Path, clip: Bool, shadows: Bool, transform: String? = nil) -> String {
+    var defs: [String] = clip ? ["<clipPath id=\"body\"><path d=\"\(svgPath(body))\"/></clipPath>"] : []
     var shapes: [String] = []
-    for (i, item) in concept.items.enumerated() {
+    for (i, item) in items.enumerated() {
         var attrs: [String] = []
         switch item.paint {
         case let .solid(rgb, a):
@@ -196,23 +166,67 @@ func svg(_ concept: Concept) -> String {
             defs.append("<linearGradient id=\"g\(i)\" gradientUnits=\"userSpaceOnUse\" x1=\"\(f(x1))\" y1=\"\(f(y1))\" x2=\"\(f(x2))\" y2=\"\(f(y2))\">\(s)</linearGradient>")
             attrs.append("fill=\"url(#g\(i))\"")
         }
-        if let s = item.shadow {
+        if shadows, let s = item.shadow {
             // CoreGraphics' blur is about twice an SVG standard deviation.
             defs.append("<filter id=\"s\(i)\" x=\"-20%\" y=\"-20%\" width=\"140%\" height=\"140%\"><feDropShadow dx=\"0\" dy=\"\(f(s.dy))\" stdDeviation=\"\(f(s.blur / 2))\" flood-color=\"\(hex(s.rgb))\" flood-opacity=\"\(f(s.alpha))\"/></filter>")
             attrs.append("filter=\"url(#s\(i))\"")
         }
         let shape = "<path d=\"\(svgPath(item.path))\" \(attrs.joined(separator: " "))/>"
-        shapes.append(item.clipped ? "<g clip-path=\"url(#body)\">\(shape)</g>" : shape)
+        shapes.append(clip && item.clipped ? "<g clip-path=\"url(#body)\">\(shape)</g>" : shape)
     }
+    let content = shapes.joined(separator: "\n")
     return """
     <?xml version="1.0" encoding="UTF-8"?>
-    <!-- RectoPDF app icon concept \(concept.title.replacingOccurrences(of: "  ", with: " ")). Generated by app/icon/icons.swift from the same geometry as its PNGs; edit the script, not this file. -->
+    <!-- RectoPDF's app icon. Generated by app/icon/icons.swift; edit that, not this. -->
     <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
     <defs>\(defs.joined(separator: "\n"))</defs>
-    \(shapes.joined(separator: "\n"))
+    \(transform.map { "<g transform=\"\($0)\">\n\(content)\n</g>" } ?? content)
     </svg>
 
     """
+}
+
+// MARK: Icon Composer
+
+/// An sRGB colour as Icon Composer writes one.
+func ic(_ rgb: UInt32) -> String {
+    String(format: "srgb:%.5f,%.5f,%.5f,1.00000", Double((rgb >> 16) & 0xFF) / 255, Double((rgb >> 8) & 0xFF) / 255, Double(rgb & 0xFF) / 255)
+}
+
+/// The artwork as an Icon Composer document: the tile is Icon Composer's own fill (a dark one in the dark appearance; the tinted
+/// appearances are derived by the system), and the book's parts are SVG layers on its full-bleed canvas, where the body is the whole
+/// 1024 square, so they're scaled up from the 824 body about its corner.
+func writeIconComposer(_ art: Art, to dir: URL) throws {
+    let assets = dir.appendingPathComponent("Assets")
+    try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+    let scale = 1024.0 / 824.0
+    let transform = "translate(\(f(-100 * scale)) \(f(-100 * scale))) scale(\(String(format: "%.6f", scale)))"
+    // Top first, as Icon Composer lists them.
+    let order = ["text", "recto", "verso", "cover"]
+    for name in order {
+        let items = art.items.filter { $0.layer == name }
+        try svg(items, body: art.body, clip: false, shadows: false, transform: transform)
+            .write(to: assets.appendingPathComponent("\(name).svg"), atomically: true, encoding: .utf8)
+    }
+    func gradient(_ top: UInt32, _ bottom: UInt32) -> [String: Any] {
+        ["linear-gradient": [ic(top), ic(bottom)], "orientation": ["start": ["x": 0.5, "y": 0.0], "stop": ["x": 0.5, "y": 1.0]]]
+    }
+    let layers: [[String: Any]] = order.map { ["image-name": "\($0).svg", "name": $0, "glass": false] }
+    let doc: [String: Any] = [
+        "fill-specializations": [
+            ["value": gradient(tileTop, tileBottom)],
+            ["appearance": "dark", "value": gradient(darkTop, darkBottom)],
+        ],
+        "groups": [[
+            "layers": layers,
+            "shadow": ["kind": "neutral", "opacity": 0.5],
+            "translucency": ["enabled": false, "value": 0.5],
+            "specular": true,
+        ]],
+        "supported-platforms": ["squares": ["macOS"]],
+    ]
+    let json = try JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys])
+    try json.write(to: dir.appendingPathComponent("icon.json"))
 }
 
 // MARK: CoreGraphics
@@ -234,15 +248,15 @@ func cgPath(_ p: Path) -> CGPath {
     return path
 }
 
-/// Draws the concept into `ctx` at `size` px, the canvas's (0, 0) top left as in the SVG.
-func draw(_ concept: Concept, in ctx: CGContext, size: Double) {
+/// Draws `art` into `ctx` at `size` px, the canvas's (0, 0) top left as in the SVG.
+func draw(_ art: Art, in ctx: CGContext, size: Double) {
     let scale = size / 1024
     ctx.saveGState()
     ctx.translateBy(x: 0, y: size)
     ctx.scaleBy(x: scale, y: -scale)
-    for item in concept.items {
+    for item in art.items {
         ctx.saveGState()
-        if item.clipped { ctx.addPath(cgPath(body)); ctx.clip() }
+        if item.clipped { ctx.addPath(cgPath(art.body)); ctx.clip() }
         if let s = item.shadow {
             // Shadow offsets are in device space and y points up there, so "down" is negative.
             ctx.setShadow(offset: CGSize(width: 0, height: -s.dy * scale), blur: s.blur * scale, color: cg(s.rgb, s.alpha))
@@ -268,54 +282,38 @@ func bitmap(_ w: Int, _ h: Int) -> CGContext {
     ctx.interpolationQuality = .high
     return ctx
 }
-func icon(_ concept: Concept, _ size: Int) -> CGImage {
-    let ctx = bitmap(size, size)
-    draw(concept, in: ctx, size: Double(size))
+func icon(_ pixels: Int) -> CGImage {
+    let ctx = bitmap(pixels, pixels)
+    draw(art(forPixels: pixels), in: ctx, size: Double(pixels))
     return ctx.makeImage()!
 }
-func writePNG(_ image: CGImage, _ url: URL) {
+func writePNG(_ image: CGImage, _ url: URL) throws {
     let rep = NSBitmapImageRep(cgImage: image)
-    try! rep.representation(using: .png, properties: [:])!.write(to: url)
+    try rep.representation(using: .png, properties: [:])!.write(to: url)
 }
 
-/// One sheet: a light desktop above, a dark one below; on each the 1024 shown at 512, then 128, 32 and 16 at true size, then 32 and
-/// 16 enlarged four times with hard pixels so their actual pixels can be judged, then the 16 beside a file name as in a Finder list.
-func sheet(_ concept: Concept, icons: [Int: CGImage]) -> CGImage {
-    let w = 1640, rowH = 620, top = 70, h = top + 2 * rowH
+/// Every size on a light desktop above and a dark one below: the 1024 shown at 512, each other size at its true size, and 16 and 32
+/// enlarged four times with hard pixels so their pixels can be judged.
+func sheet(_ icons: [Int: CGImage]) -> CGImage {
+    let w = 1640, rowH = 600, h = 2 * rowH
     let ctx = bitmap(w, h)
-    ctx.setFillColor(cg(0xFFFFFF)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-    let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
-    NSGraphicsContext.current = ns
-    func text(_ s: String, _ x: Double, _ yTop: Double, _ size: Double, _ color: NSColor, weight: NSFont.Weight = .regular) {
-        let a = NSAttributedString(string: s, attributes: [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color])
-        a.draw(at: NSPoint(x: x, y: Double(h) - yTop - a.size().height))
-    }
-    text(concept.title, 30, 18, 26, .black, weight: .semibold)
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
     for (row, dark) in [false, true].enumerated() {
-        let y0 = top + row * rowH // from the top
-        let bg: UInt32 = dark ? 0x1E1F22 : 0xECECEF
-        let fg: NSColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.12, alpha: 1)
-        let sub: NSColor = dark ? NSColor(white: 0.6, alpha: 1) : NSColor(white: 0.45, alpha: 1)
-        ctx.setFillColor(cg(bg)); ctx.fill(CGRect(x: 0, y: h - y0 - rowH, width: w, height: rowH))
-        func put(_ img: CGImage, _ x: Int, _ yTop: Int, _ size: Int, crisp: Bool = false) {
+        let y0 = row * rowH
+        ctx.setFillColor(cg(dark ? 0x1E1F22 : 0xECECEF)); ctx.fill(CGRect(x: 0, y: h - y0 - rowH, width: w, height: rowH))
+        func put(_ px: Int, _ x: Int, _ yTop: Int, _ size: Int, crisp: Bool = false) {
             ctx.interpolationQuality = crisp ? .none : .high
-            ctx.draw(img, in: CGRect(x: x, y: h - yTop - size, width: size, height: size))
+            ctx.draw(icons[px]!, in: CGRect(x: x, y: h - yTop - size, width: size, height: size))
         }
-        put(icons[1024]!, 40, y0 + 54, 512)
-        text(dark ? "Dark desktop" : "Light desktop", 40, Double(y0 + 16), 15, sub)
-        let cy = y0 + 54 + 256 // the row's middle
-        put(icons[128]!, 610, cy - 64, 128); text("128", 660, Double(cy + 80), 13, sub)
-        put(icons[32]!, 790, cy - 16, 32); text("32", 797, Double(cy + 80), 13, sub)
-        put(icons[16]!, 870, cy - 8, 16); text("16", 870, Double(cy + 80), 13, sub)
-        put(icons[32]!, 950, cy - 64, 128, crisp: true); text("32 at 4x", 982, Double(cy + 80), 13, sub)
-        put(icons[16]!, 1110, cy - 32, 64, crisp: true); text("16 at 4x", 1112, Double(cy + 80), 13, sub)
-        // A Finder list row: 16 px icon and a name.
-        for (i, name) in ["RectoPDF", "Quarterly report.pdf"].enumerated() {
-            let ry = cy - 30 + i * 30
-            if i == 0 { put(icons[16]!, 1240, ry, 16) } else { put(icons[16]!, 1240, ry, 16) }
-            text(name, 1264, Double(ry - 1), 13, fg)
-        }
-        text("Finder list", 1240, Double(cy + 80), 13, sub)
+        put(1024, 40, y0 + 44, 512)
+        let cy = y0 + 300
+        var x = 600
+        for px in [256, 128, 64, 32, 16] { put(px, x, cy - px / 2, px); x += px + 24 }
+        put(32, 1180, cy - 64, 128, crisp: true)
+        put(16, 1340, cy - 32, 64, crisp: true)
+        let label = NSAttributedString(string: dark ? "Dark desktop. Then 256, 128, 64, 32, 16; 32 and 16 at 4x" : "Light desktop. Then 256, 128, 64, 32, 16; 32 and 16 at 4x",
+                                       attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: dark ? NSColor(white: 0.6, alpha: 1) : NSColor(white: 0.4, alpha: 1)])
+        label.draw(at: NSPoint(x: 40, y: Double(h - y0) - 30))
     }
     NSGraphicsContext.current = nil
     return ctx.makeImage()!
@@ -326,15 +324,24 @@ func sheet(_ concept: Concept, icons: [Int: CGImage]) -> CGImage {
 let args = CommandLine.arguments
 guard args.count == 2 else { print("usage: swift app/icon/icons.swift <out-dir>"); exit(2) }
 let out = URL(fileURLWithPath: args[1], isDirectory: true)
-let sourceDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-try! FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-for concept in [recto(), spine(), turn(), starPage()] {
-    try! svg(concept).write(to: sourceDir.appendingPathComponent("\(concept.name).svg"), atomically: true, encoding: .utf8)
+let fm = FileManager.default
+do {
+    let iconset = out.appendingPathComponent("AppIcon.iconset")
+    let composer = out.appendingPathComponent("AppIcon.icon")
+    for old in [iconset, composer] where fm.fileExists(atPath: old.path) { try fm.removeItem(at: old) }
+    try fm.createDirectory(at: iconset, withIntermediateDirectories: true)
     var icons: [Int: CGImage] = [:]
-    for size in [1024, 128, 32, 16] {
-        icons[size] = icon(concept, size)
-        writePNG(icons[size]!, out.appendingPathComponent("\(concept.name)-\(size).png"))
+    for px in [16, 32, 64, 128, 256, 512, 1024] { icons[px] = icon(px) }
+    // iconutil's names: icon_<points>x<points>[@2x].png.
+    for points in [16, 32, 128, 256, 512] {
+        try writePNG(icons[points]!, iconset.appendingPathComponent("icon_\(points)x\(points).png"))
+        try writePNG(icons[points * 2]!, iconset.appendingPathComponent("icon_\(points)x\(points)@2x.png"))
     }
-    writePNG(sheet(concept, icons: icons), out.appendingPathComponent("\(concept.name)-sheet.png"))
-    print("\(concept.name): \(concept.line)")
+    try writeIconComposer(large(), to: composer)
+    let big = large()
+    try svg(big.items, body: big.body, clip: true, shadows: true).write(to: out.appendingPathComponent("AppIcon.svg"), atomically: true, encoding: .utf8)
+    try writePNG(sheet(icons), out.appendingPathComponent("sheet.png"))
+} catch {
+    FileHandle.standardError.write("icons: \(error)\n".data(using: .utf8)!)
+    exit(1)
 }
