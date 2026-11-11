@@ -12,7 +12,6 @@ use recto_session::record::{self, CURRENT_VERSION, MAIN_KIND, PlaceDelta, Record
 use recto_session::{RestoredEdits, Session};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 const BUDGET: Budget = Budget {
@@ -141,12 +140,10 @@ fn use_a_log(bytes: &[u8]) {
     record::validate_record(&main).expect("a log can't break a record");
 }
 
-static NEXT_FOLDER: AtomicU32 = AtomicU32::new(0);
-
 /// A state folder of its own, for each input. Under `RECTO_FUZZ_STATE` if there's one, as `tools/fuzz.sh` clears that up.
-fn folder() -> PathBuf {
+fn folder() -> recto_testpdf::TempDir {
     let base = std::env::var_os("RECTO_FUZZ_STATE").map_or_else(|| std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), PathBuf::from);
-    base.join(format!("rec{}-{}", std::process::id(), NEXT_FOLDER.fetch_add(1, Ordering::Relaxed)))
+    recto_testpdf::TempDir::new_in(&base, "rec")
 }
 
 /// The store itself, on what's on disk: whichever way the input lands, a launch comes back with something or says why, an edit made after it goes out and reads back, and nothing's left broken for the launch after.

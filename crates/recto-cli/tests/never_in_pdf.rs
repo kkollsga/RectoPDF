@@ -38,11 +38,7 @@ impl SaveHooks for Keeping<'_> {
 /// Failure: text from a removed page, a PDF added and undone, or the journal itself reaches a saved file. They're all in the history first, as this checks, so it's the saving that keeps them out, and undo past the save still has them.
 #[test]
 fn a_saved_pdf_has_nothing_of_the_history_in_it() {
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("recto-never-in-pdf-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-never-in-pdf-");
     std::fs::create_dir_all(&root).unwrap();
     let state = root.join("state");
     let paths = StatePaths::overridden(&state).unwrap();

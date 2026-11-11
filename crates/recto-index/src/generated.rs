@@ -437,11 +437,7 @@ mod tests {
     /// Failure: a new version of a file leaves the old version's headings on disk, a forged file in the folder is used, or the folder grows past its limits, or something not ours is removed.
     #[test]
     fn a_new_version_replaces_the_old_and_the_folder_keeps_to_its_limits() {
-        let temp = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-generated-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&temp);
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-generated-");
         local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("contents.noindex");
         let pdf = temp.join("a.pdf");
@@ -477,8 +473,7 @@ mod tests {
     /// Failure: `recto index clear` leaves a document's generated contents on disk, heading text from the file, though it says it removes the copy of documents' text; or clearing one file takes another's, or something in the folder that isn't ours.
     #[test]
     fn clearing_takes_one_files_contents_or_all_and_nothing_else() {
-        let temp = std::env::temp_dir().join(format!("recto-generated-clear-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&temp);
+        let temp = recto_testpdf::TempDir::new("recto-generated-clear-");
         let root = temp.join("generated");
         let (one, two) = (temp.join("one.pdf"), temp.join("two.pdf"));
         local::ensure_private_dir(&temp).unwrap();

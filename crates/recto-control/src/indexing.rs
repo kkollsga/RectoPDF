@@ -562,11 +562,7 @@ mod tests {
     /// Failure: the owner's rule of 90 days and a maximum size only holds when a build succeeds, so a session that only reads what's there, or whose builds all fail, keeps text past both for good. The first ask of a session must apply each, with nothing being built.
     #[test]
     fn the_first_ask_of_a_session_applies_both_limits() {
-        let temp = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-limits-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-limits-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
         let build = |key: CorpusKey| corpus::build(&root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
@@ -629,11 +625,7 @@ mod tests {
                 json!({ "state": "changed" })
             }
         }
-        let temp = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-any-way-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-any-way-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
         corpus::build(&root, key(1), &mut OnePage, &corpus::DocMeta::default(), &BuildLimits::default()).unwrap();

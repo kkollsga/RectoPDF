@@ -40,11 +40,7 @@ mod tests {
     /// `indexer_missing`, while the app beside the real `recto` works.
     #[test]
     fn a_program_reached_through_a_link_finds_the_helpers_beside_the_real_one() {
-        let root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-beside-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-beside-");
         let (real, linked) = (root.join("App/MacOS"), root.join("bin"));
         std::fs::create_dir_all(&real).unwrap();
         std::fs::create_dir_all(&linked).unwrap();

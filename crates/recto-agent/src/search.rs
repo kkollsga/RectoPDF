@@ -1459,15 +1459,9 @@ mod tests {
 
     /// A corpus of these pages, and a plan to read all of them. A page with no text failed when it was built. The file is whatever's given.
     struct Fixture {
-        folder: PathBuf,
+        _folder: recto_testpdf::TempDir,
         plan: Plan,
         indexing: crate::index::ReadOnlyCorpus,
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.folder);
-        }
     }
 
     struct Pages(Vec<Option<(String, bool)>>);
@@ -1492,11 +1486,7 @@ mod tests {
     }
 
     fn fixture(name: &str, file: &[u8], pages: Vec<Option<(String, bool)>>) -> Fixture {
-        let folder = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-search-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&folder);
+        let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-search-{name}-"));
         recto_platform::local::ensure_private_dir(&folder).unwrap();
         let path = folder.join("doc.pdf");
         std::fs::write(&path, file).unwrap();
@@ -1512,7 +1502,7 @@ mod tests {
         )
         .unwrap();
         Fixture {
-            folder,
+            _folder: folder,
             plan: Plan {
                 files: vec![PlanFile {
                     path,

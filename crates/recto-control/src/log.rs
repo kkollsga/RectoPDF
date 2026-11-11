@@ -293,16 +293,17 @@ pub fn iso8601(ms: u64) -> String {
 mod tests {
     use super::*;
 
-    fn temp_paths(name: &str) -> StatePaths {
-        let root = std::env::temp_dir().join(format!("recto-log-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        StatePaths::overridden(&root).unwrap()
+    fn temp_paths(name: &str) -> (recto_testpdf::TempDir, StatePaths) {
+        // The state folder itself isn't made: a test puts a file there instead.
+        let root = recto_testpdf::TempDir::new(&format!("recto-log-{name}-"));
+        let paths = StatePaths::overridden(&root.join("state")).unwrap();
+        (root, paths)
     }
 
     /// Failure: a long session or a client in a loop fills the disk. Each file must stay under its cap, and the newest stays.
     #[test]
     fn the_log_is_capped_and_rotated() {
-        let paths = temp_paths("rotate");
+        let (_root, paths) = temp_paths("rotate");
         let mut log = ActivityLog::new(&paths);
         let details = json!({ "tab": "x".repeat(200) });
         for _ in 0..12_000 {
@@ -324,7 +325,7 @@ mod tests {
     /// Failure: a refused `discard`, or a failed command of any kind that changes things when it works, writes to the file of changes, so repeating it pushes out real edits. Going by a list of refusals, this fails again on the next code nobody added to it, so these include codes the list never had.
     #[test]
     fn a_failed_command_isnt_a_change() {
-        let paths = temp_paths("failed");
+        let (_root, paths) = temp_paths("failed");
         let mut log = ActivityLog::new(&paths);
         log.record("page_delete", Level::Control, "ok", &json!({ "pages": "2" }));
         let size = std::fs::metadata(&paths.log).unwrap().len();
@@ -360,7 +361,7 @@ mod tests {
     /// Failure: an agent erases its own record by asking for `status` about 28,000 times, or sending bad lines, or reading, or being refused. None of them can touch what changed something, and the repeats collapse.
     #[test]
     fn no_flood_can_erase_an_earlier_edit() {
-        let paths = temp_paths("flood");
+        let (_root, paths) = temp_paths("flood");
         let mut log = ActivityLog::new(&paths);
         log.record("page_delete", Level::Control, "ok", &json!({ "pages": "2" }));
         let edits_size = std::fs::metadata(&paths.log).unwrap().len();
@@ -392,7 +393,7 @@ mod tests {
     /// Failure: repeats are held back so long that a crash loses that anything happened, or the first of a kind isn't written at once.
     #[test]
     fn the_first_of_a_kind_is_written_at_once() {
-        let paths = temp_paths("first");
+        let (_root, paths) = temp_paths("first");
         let mut log = ActivityLog::new(&paths);
         log.record("unknown", Level::Off, "bad_command", &Value::Null);
         assert!(std::fs::read_to_string(&paths.other_log).unwrap().contains("bad_command"));
@@ -402,7 +403,7 @@ mod tests {
     /// Failure: a line cut short when a process died breaks reading the whole log.
     #[test]
     fn a_torn_line_is_skipped() {
-        let paths = temp_paths("torn");
+        let (_root, paths) = temp_paths("torn");
         let mut log = ActivityLog::new(&paths);
         log.record("open", Level::Control, "ok", &Value::Null);
         {
@@ -425,7 +426,7 @@ mod tests {
     /// Failure: a state folder that can't be written stops the command rather than reporting itself, or the failure goes unseen.
     #[test]
     fn a_log_that_cant_be_written_says_so() {
-        let paths = temp_paths("cant");
+        let (_root, paths) = temp_paths("cant");
         std::fs::write(&paths.root, b"a file where the folder should be").unwrap();
         let mut log = ActivityLog::new(&paths);
         log.record("open", Level::Control, "ok", &Value::Null);
@@ -436,7 +437,7 @@ mod tests {
     /// Failure: an agent uses `--anyway` and it leaves no line, or one that's counted in with others, or one that a flood of ordinary reading can push out, or by which an agent at Read-only can push out what's changed. Owner, 2026-11-07: "each use" goes in the log.
     #[test]
     fn each_use_of_anyway_has_its_own_line_that_nothing_else_can_push_out() {
-        let dir = std::env::temp_dir().join(format!("recto-log-anyway-{}", std::process::id()));
+        let dir = recto_testpdf::TempDir::new("recto-log-anyway-");
         let paths = StatePaths::overridden(&dir).unwrap();
         let mut log = ActivityLog::new(&paths);
         let anyway = json!({ "tab": "#1", "page": 1, "anyway": true });
@@ -466,7 +467,7 @@ mod tests {
     /// Failure: an image or a snapshot taken past a file's permissions leaves no line of its own, though the owner decided they get the same notice as text (2026-11-08) and each use of `--anyway` goes in the log.
     #[test]
     fn an_image_or_snapshot_taken_anyway_has_its_own_line() {
-        let dir = std::env::temp_dir().join(format!("recto-log-anyway-images-{}", std::process::id()));
+        let dir = recto_testpdf::TempDir::new("recto-log-anyway-images-");
         let paths = StatePaths::overridden(&dir).unwrap();
         let mut log = ActivityLog::new(&paths);
         log.record("image", Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "number": 2, "anyway": true }));
@@ -486,7 +487,7 @@ mod tests {
     /// Failure: an export of a file that asks not to be copied, taken with `--anyway`, leaves no line of its own, though the owner decided exports get the same step as Copy (2026-11-08); or a print to a PDF isn't recorded as a file written, as `render` and `export svg` are.
     #[test]
     fn an_export_taken_anyway_has_its_own_line_and_a_print_is_a_change() {
-        let dir = std::env::temp_dir().join(format!("recto-log-anyway-exports-{}", std::process::id()));
+        let dir = recto_testpdf::TempDir::new("recto-log-anyway-exports-");
         let paths = StatePaths::overridden(&dir).unwrap();
         let mut log = ActivityLog::new(&paths);
         for cmd in ["render", "export_svg", "print"] {

@@ -1,17 +1,10 @@
 use super::*;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 /// A folder of its own, private and removed at the end.
-struct Temp(PathBuf);
+struct Temp(recto_testpdf::TempDir);
 
 impl Temp {
     fn new() -> Self {
-        let path = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-corpus-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let path = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-corpus-");
         local::ensure_private_dir(&path).unwrap();
         Self(path)
     }
@@ -20,12 +13,6 @@ impl Temp {
         let path = self.0.join(name);
         fs::write(&path, bytes).unwrap();
         path
-    }
-}
-
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

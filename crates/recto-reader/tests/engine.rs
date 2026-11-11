@@ -325,7 +325,7 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
 fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
-    let folder = std::env::temp_dir().join(format!("recto-fifo-{}", std::process::id()));
+    let folder = recto_testpdf::TempDir::new("recto-fifo-");
     std::fs::create_dir_all(&folder).unwrap();
     let dead = folder.join("dead.pdf");
     let _ = std::fs::remove_file(&dead);

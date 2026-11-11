@@ -561,7 +561,7 @@ mod tests {
     /// Failure (review round 2): Save As decides "replace" from the disk at save time, so a file someone makes at the chosen name after the person answered "new" is replaced, though nobody agreed to that. A file there at the answer is replaced, as the sheet asked; one made after is refused; none is a new file.
     #[test]
     fn save_as_keeps_the_answer_the_person_gave() {
-        let dir = std::env::temp_dir().join(format!("recto-answer-{}", std::process::id()));
+        let dir = recto_testpdf::TempDir::new("recto-answer-");
         std::fs::create_dir_all(&dir).unwrap();
         let before = dir.join("there-before.pdf");
         std::fs::write(&before, b"x").unwrap();

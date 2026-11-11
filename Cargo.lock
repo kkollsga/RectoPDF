@@ -744,6 +744,7 @@ dependencies = [
  "recto-core",
  "recto-platform",
  "recto-proto",
+ "recto-testpdf",
  "serde_json",
  "sha2",
 ]
@@ -764,6 +765,7 @@ name = "recto-platform"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "recto-testpdf",
 ]
 
 [[package]]
@@ -812,6 +814,7 @@ dependencies = [
  "flate2",
  "recto-core",
  "recto-platform",
+ "recto-testpdf",
  "serde",
  "serde_json",
 ]
@@ -838,6 +841,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "recto-platform",
+ "recto-testpdf",
  "serde",
  "serde_json",
  "sha2",

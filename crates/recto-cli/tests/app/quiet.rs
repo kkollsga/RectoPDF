@@ -89,7 +89,7 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
     let run = Run::start().unwrap();
     let file = numbered(3);
-    let folder = std::env::temp_dir().join(format!("recto-quiet-shots-{}", std::process::id()));
+    let folder = recto_testpdf::TempDir::new("recto-quiet-shots-");
     std::fs::create_dir_all(&folder).unwrap();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();

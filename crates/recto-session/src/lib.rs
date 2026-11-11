@@ -4597,7 +4597,7 @@ mod tests {
     /// Failure: a file replaced behind an edited tab, or behind an added PDF, is read at the old page numbers as if nothing happened. A tab with no edits has nothing to get wrong, and reads the file as it is.
     #[test]
     fn a_page_knows_whether_its_file_is_the_one_it_was_numbered_from() {
-        let dir = std::env::temp_dir().join(format!("recto-stamp-{}", std::process::id()));
+        let dir = recto_testpdf::TempDir::new("recto-stamp-");
         std::fs::create_dir_all(&dir).unwrap();
         let (own, added) = (dir.join("own.pdf"), dir.join("added.pdf"));
         std::fs::write(&own, b"one").unwrap();
@@ -5739,11 +5739,7 @@ mod tests {
     /// Failure (decision 25): a history stays on a file changed outside the app, when a tab's woken with nothing else having looked, and its steps get laid on the wrong pages.
     #[test]
     fn a_file_changed_under_a_history_clears_it_on_waking() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-changed-history-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-changed-history-");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.pdf");
         std::fs::write(&file, b"as it was").unwrap();
@@ -5982,11 +5978,7 @@ mod tests {
     /// Failure (review): a sleep file's word on a file's length goes on being believed once the worker has said otherwise, so a phantom page takes a rotation, or it's written into the next sleep file as if it had been checked. And a file read the usual way is left alone, as two readers of a damaged file can differ.
     #[test]
     fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-file-length-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-file-length-");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.pdf");
         std::fs::write(&path, b"three pages").unwrap();
@@ -6176,11 +6168,7 @@ mod tests {
                 })
             }
         }
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-sleep-facts-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-sleep-facts-");
         std::fs::create_dir_all(&dir).unwrap();
         let file = |name: &str| {
             let path = dir.join(name);
@@ -6232,11 +6220,7 @@ mod tests {
     /// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and pages past the end are drawn or written. A file read at its own stamp and another length than the list says shows the list isn't about it.
     #[test]
     fn a_list_of_another_length_than_its_file_isnt_believed() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-forged-list-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-forged-list-");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.pdf");
         std::fs::write(&file, b"five pages").unwrap();
@@ -6260,8 +6244,7 @@ mod tests {
     /// Failure (decision 26): a link to an open PDF, or a file moved and opened by its new name, makes a second tab. A copy is another file, and a PDF added as pages isn't a tab. Each case on real files, as what's the same is the file on disk.
     #[test]
     fn a_pdf_can_only_be_opened_once() {
-        let dir = std::env::temp_dir().join(format!("recto-once-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new("recto-once-");
         std::fs::create_dir_all(&dir).unwrap();
         let (file, link, hard, copy, moved) = (
             dir.join("a.pdf"),
@@ -6308,11 +6291,7 @@ mod tests {
     /// Failure (final review N2): a different PDF with the inode a tab remembers took the tab over: after a move and a rewrite in place, or on another volume under the same device number. The tab's path became the other file, with edits for 6 pages on one of 3 and no notice. The number alone isn't the file: it's a different one, and gets its own tab, and the edits stay. A file changed in place at the tab's own path is still that tab. And (final review) a file replaced under a tab, with a new inode, is reached through a link all the same.
     #[test]
     fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-hijack-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-hijack-");
         std::fs::create_dir_all(&dir).unwrap();
         let (y, z) = (dir.join("y.pdf"), dir.join("z.pdf"));
         std::fs::write(&y, b"six pages").unwrap();

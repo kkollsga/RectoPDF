@@ -5,18 +5,19 @@ use recto_core::save::{self, AddedFile, PageRef, SaveError, SaveHooks, SaveReque
 use recto_platform::FileStamp;
 use recto_testpdf::{Object as Raw, Page, build, pages, text_lines};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
-/// A folder of the test's own, removed at the end.
-struct Dir(PathBuf);
+/// A folder of the test's own, removed at the end. The path is the canonical one, which the writer reports.
+struct Dir(PathBuf, recto_testpdf::TempDir);
 
 impl Dir {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("recto-save-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir.canonicalize().unwrap())
+        let dir = recto_testpdf::TempDir::new("recto-save-test-");
+        Self(dir.canonicalize().unwrap(), dir)
+    }
+
+    /// The folder as made, before the canonical name.
+    fn made(&self) -> &Path {
+        &self.1
     }
 
     fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
@@ -28,8 +29,8 @@ impl Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("/bin/chmod").args(["-R", "u+w"]).arg(&self.0).status();
-        let _ = std::fs::remove_dir_all(&self.0);
+        // What a test made read-only, so the folder's own drop can remove it.
+        let _ = std::process::Command::new("/bin/chmod").args(["-R", "u+w"]).arg(self.made()).status();
     }
 }
 

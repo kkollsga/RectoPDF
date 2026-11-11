@@ -350,7 +350,7 @@ mod tests {
 
     /// An installed app of a version, a server for releases, and somewhere to build zips.
     struct Bed {
-        dir: PathBuf,
+        dir: recto_testpdf::TempDir,
         server: Server,
         fake: Arc<Fake>,
         updater: Arc<Updater>,

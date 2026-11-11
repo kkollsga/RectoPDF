@@ -419,14 +419,8 @@ pub(crate) mod tests {
     use sha2::Digest as _;
     use std::process::Command;
 
-    pub(crate) fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-stage-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    pub(crate) fn temp_dir(name: &str) -> recto_testpdf::TempDir {
+        recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-stage-{name}-"))
     }
 
     /// A small stand-in app, ad-hoc signed, as a release's own would be.
@@ -475,7 +469,7 @@ pub(crate) mod tests {
 
     /// An installed "old" app, a server with a release on it, and state, all in a temp folder.
     struct Bed {
-        dir: PathBuf,
+        dir: recto_testpdf::TempDir,
         server: Server,
         source: Source,
         files: Files,

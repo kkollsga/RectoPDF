@@ -448,14 +448,8 @@ pub(crate) mod tests {
         out
     }
 
-    fn folder(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-zip-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn folder(name: &str) -> recto_testpdf::TempDir {
+        recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-zip-{name}-"))
     }
 
     fn check(zip: &[u8]) -> Result<Vec<Entry>, ZipError> {

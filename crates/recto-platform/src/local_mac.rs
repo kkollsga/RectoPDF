@@ -892,10 +892,8 @@ pub fn set_attribute(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("recto-local-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
+    fn temp(name: &str) -> recto_testpdf::TempDir {
+        recto_testpdf::TempDir::new(&format!("recto-local-{name}-"))
     }
 
     /// Failure (PLAN, "A quiet QA app outlives a test or script"): a quiet run whose test was killed, or whose worktree was removed, runs on to its time limit, as nothing was watching for either. A watch ends when the process does, when a folder or file goes, or at the limit, and what's already gone counts at once.
@@ -927,7 +925,7 @@ mod tests {
         remover.join().unwrap();
         assert_eq!(wait_until_gone(&[me], &[&file], Duration::from_secs(20)), Gone::Path(0), "never there");
         let remover = {
-            let dir = dir.clone();
+            let dir = dir.to_path_buf();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
                 std::fs::remove_dir_all(dir).unwrap();

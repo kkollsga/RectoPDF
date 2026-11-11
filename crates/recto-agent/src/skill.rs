@@ -345,10 +345,11 @@ pub fn needs(spec: &Spec) -> Option<Level> {
 mod tests {
     use super::*;
 
-    fn folder(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("recto-skill-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        path
+    /// A folder that isn't there yet, in one of the test's own.
+    fn folder(name: &str) -> (recto_testpdf::TempDir, std::path::PathBuf) {
+        let temp = recto_testpdf::TempDir::new(&format!("recto-skill-{name}-"));
+        let path = temp.join("skills");
+        (temp, path)
     }
 
     fn action(data: &Value, index: usize) -> &str {
@@ -358,7 +359,7 @@ mod tests {
     /// Failure: install overwrites a file the user edited, or says nothing about it. It must refuse, write nothing, and name the file. `--replace` is the only way past.
     #[test]
     fn a_changed_file_is_refused_until_the_user_says_otherwise() {
-        let dir = folder("changed");
+        let (_temp, dir) = folder("changed");
         let first = install(&dir, false, false).unwrap();
         assert_eq!((action(&first, 0), action(&first, 1)), ("create", "create"));
         assert_eq!(std::fs::read_to_string(dir.join(SKILL_FILE)).unwrap(), skill_md());
@@ -379,7 +380,7 @@ mod tests {
     /// Failure: a file from an older `recto` counts as changed, so every upgrade needs `--replace` and people stop reading the warning. One edited by a person must not pass.
     #[test]
     fn an_older_generated_file_is_updated_quietly() {
-        let dir = folder("older");
+        let (_temp, dir) = folder("older");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(SKILL_FILE), sealed("An older version.\n".to_string())).unwrap();
         let updated = install(&dir, false, false).unwrap();
@@ -393,7 +394,7 @@ mod tests {
     /// Failure: a dry run writes something, or a link planted where a skill goes is written through.
     #[test]
     fn a_dry_run_writes_nothing_and_a_link_is_refused() {
-        let dir = folder("dry");
+        let (_temp, dir) = folder("dry");
         let shown = install(&dir, false, true).unwrap();
         assert_eq!(shown["dry_run"], true);
         assert!(!dir.exists());

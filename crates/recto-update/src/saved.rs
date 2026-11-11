@@ -128,9 +128,8 @@ impl Saved {
 mod tests {
     use super::*;
 
-    fn folder(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("recto-saved-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn folder(name: &str) -> recto_testpdf::TempDir {
+        let dir = recto_testpdf::TempDir::new(&format!("recto-saved-{name}-"));
         local::ensure_private_dir(&dir).unwrap();
         dir
     }

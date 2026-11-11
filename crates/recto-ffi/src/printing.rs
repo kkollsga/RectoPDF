@@ -438,7 +438,7 @@ mod tests {
     /// Failure: a run that died mid-print leaves its print file in the temp folder for ever, or the sweep at launch removes a live run's, this run's, or a file that only looks like one.
     #[test]
     fn a_launch_sweeps_only_the_print_files_of_runs_that_died() {
-        let folder = std::env::temp_dir().join(format!("recto-print-sweep-{}", std::process::id()));
+        let folder = recto_testpdf::TempDir::new("recto-print-sweep-");
         std::fs::create_dir_all(&folder).unwrap();
         let (dead, live, mine) = (4_000_001u32, 4_000_002u32, std::process::id());
         let file = |name: String| {

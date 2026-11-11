@@ -1642,10 +1642,7 @@ fn warm_paper_only_changes_what_is_on_screen() {
 fn a_shortened_name_can_be_read_in_full() {
     let Some(run) = Run::start() else { return };
     let long_name = "a-really-long-file-name-that-will-not-fit-in-the-sidebar-at-all-and-goes-on-and-on-and-on";
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("recto-reveal-{}", std::process::id()));
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-reveal-");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{long_name}.pdf"));
     std::fs::write(&path, pages(&[Page::new(text_lines(&["A page"]))])).unwrap();
@@ -2779,7 +2776,7 @@ fn a_protected_file_moved_while_open_keeps_its_password() {
 #[test]
 fn qa_password_is_only_for_a_tests_own_file() {
     let Some(run) = Run::start() else { return };
-    let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("not-a-test-folder-{}", std::process::id()));
+    let outside = recto_testpdf::TempDir::new_in(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), "not-a-test-folder-");
     std::fs::create_dir_all(&outside).unwrap();
     let file = outside.join("locked.pdf");
     std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();

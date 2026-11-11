@@ -7,14 +7,8 @@ fn tool() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/dev-build.sh")
 }
 
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("recto-dev-build-{}-{name}.noindex", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp(name: &str) -> recto_testpdf::TempDir {
+    recto_testpdf::TempDir::with_suffix(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-dev-build-{name}-"), ".noindex")
 }
 
 /// Cargo.toml's version, which a development build's number builds on.

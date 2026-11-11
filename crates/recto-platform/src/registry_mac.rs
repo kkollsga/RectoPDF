@@ -179,8 +179,7 @@ identifier:                 io.github.kkollsga.RectoPDF
     /// Failure: a test's copy stays registered after the test, as forgetting only the top bundle left a kept copy's renderer helper in the system's list (2026-11-11).
     #[test]
     fn every_bundle_in_a_folder_is_found_to_forget() {
-        let dir = std::env::temp_dir().join(format!("recto-registry-{}.noindex", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::with_suffix(&std::env::temp_dir(), "recto-registry-", ".noindex");
         for bundle in [
             "install/RectoPDF.app",
             "install/.RectoPDF-update/previous/RectoPDF.kept",

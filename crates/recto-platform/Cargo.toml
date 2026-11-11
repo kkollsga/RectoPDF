@@ -9,6 +9,10 @@ publish.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 
+[dev-dependencies]
+# Test-only: fresh temp folders.
+recto-testpdf.workspace = true
+
 # For tests only, and never put in the app: a stand-in for a compromised renderer, signed into the renderer helper's layout by `tests/walls.rs`.
 [[bin]]
 name = "recto-sandbox-probe"

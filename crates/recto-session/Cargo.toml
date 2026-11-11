@@ -16,3 +16,7 @@ crc32fast.workspace = true
 flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Test-only: fresh temp folders.
+recto-testpdf.workspace = true

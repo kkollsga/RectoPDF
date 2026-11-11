@@ -25,8 +25,7 @@ pub fn check(data: &[u8]) {
         let Ok(entries) = recto_update::zip::read_directory(&mut Cursor::new(data), APP) else {
             return;
         };
-        let folder = std::env::temp_dir().join(format!("recto-fuzz-update-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        let _ = std::fs::remove_dir_all(&folder);
+        let folder = recto_testpdf::TempDir::new("recto-fuzz-update-");
         if std::fs::create_dir_all(&folder).is_ok() {
             let _ = recto_update::zip::unpack_entries(&mut Cursor::new(data), &entries, &folder, Instant::now() + Duration::from_secs(60));
             let _ = std::fs::remove_dir_all(&folder);
