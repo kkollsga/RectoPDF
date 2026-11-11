@@ -191,6 +191,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
                 &OutputCaps::default(),
                 &written,
                 started,
+                0,
             )?;
             data["all_vector"] = json!(svg.all_vector());
             data["raster_scale"] = json!(svg.raster_scale);
@@ -398,8 +399,10 @@ fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
     note
 }
 
-/// The app's snapshot of a box: PNG, text, SVG and JPG, all on the clipboard at once (SPEC section 6), each as far as it fits. The PNG and JPG come from one drawing; the SVG is promised, and made by [`snapshot_svg`] only if a paste asks for it. `rect` is on the page as it's shown, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
-pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool, stop: &ClipStop) -> ClipOutcome {
+/// The app's snapshot of a box: PNG, text, SVG and JPG, all on the clipboard at once (SPEC section 6), each as far as it fits. The PNG and JPG come from one drawing; the SVG is promised, and made by [`snapshot_svg`] only if a paste asks for it. `rect` is on the page as the file shows it, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
+///
+/// **The pictures are of the page as it's seen** (coordinator's decision, 2026-11-08): `quarter_turns` is how far the reader shows it turned, by an unsaved turn or the view's, and the PNG and JPG come out turned by as much, as the SVG does from [`snapshot_svg`]. The owner's rotate-all is for turning a sideways scan, and a snapshot of it mustn't come out sideways again.
+pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, anyway: bool, stop: &ClipStop) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
         crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
         if !anyway && snapshot::copy_restricted(path, None, page) {
@@ -420,7 +423,7 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool, stop:
         let room = MAX_CLIP_TOTAL.saturating_sub(words.map_or(0, <[u8]>::len)).min(MAX_CLIP_ITEM);
         let (png, jpg) = (RefCell::new(MemoryOut::new(room)), RefCell::new(MemoryOut::new(room)));
         // The picture is what the box is, so a failure there is the snapshot's: the rest are extras.
-        let (_, jpg_came) = snapshot::pictures_into(&mut doc, page, rect, DEFAULT_SCALE, Format::Png, &caps, &png, Some(&jpg), 0)?;
+        let (_, jpg_came) = snapshot::pictures_into(&mut doc, page, rect, DEFAULT_SCALE, Format::Png, &caps, &png, Some(&jpg), 0, quarter_turns)?;
         clip.items.push(ClipItem::Ready {
             uti: UTI_PNG,
             bytes: png.into_inner().bytes,
@@ -454,8 +457,8 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool, stop:
     }
 }
 
-/// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing with text as outlines only, so hidden text stays out as it does from the text item, into at most `cap` bytes. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
-pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], cap: usize) -> Result<Vec<u8>, AgentError> {
+/// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing with text as outlines only, so hidden text stays out as it does from the text item, into at most `cap` bytes, turned by `quarter_turns` as [`snapshot_clip`]'s pictures are. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
+pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, cap: usize) -> Result<Vec<u8>, AgentError> {
     crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
     let mut doc = open_for_text(path)?;
     in_memory(cap.min(MAX_CLIP_ITEM), |out| {
@@ -469,6 +472,7 @@ pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], cap: usize) -> Resul
             &OutputCaps::default(),
             out,
             Instant::now(),
+            quarter_turns,
         )
         .map(drop)
     })

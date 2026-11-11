@@ -10,7 +10,7 @@
 //!
 //! **For the drive's sake** (SPEC §2's disk row): written once per version of a file, when someone asks, at most [`MAX_FILE_BYTES`], and never touched by reading. All of them together are held to [`MAX_FILES`] files, [`MAX_TOTAL_BYTES`] and [`MAX_AGE`], the oldest first, looked at whenever one's written.
 
-use crate::corpus::CorpusKey;
+use crate::corpus::{Cleared, CorpusKey};
 use recto_core::{NONE, Toc, TocLine, clean_line};
 use recto_platform::local;
 use serde_json::{Value, json};
@@ -256,15 +256,33 @@ pub fn write(root: &Path, path: &Path, key: CorpusKey, generated: &Generated) ->
     Ok(())
 }
 
-/// Takes away everything kept for a file, every version that's still there.
-pub fn clear(root: &Path, path: &Path) {
+/// Takes away everything kept for a file, every version that's still there, and says how many went and how many couldn't be removed, whose headings are still on disk.
+pub fn clear(root: &Path, path: &Path) -> Cleared {
     let tag = format!("{}.", path_tag(path));
-    let Ok(listing) = fs::read_dir(root) else { return };
+    remove_ours(root, |name| name.starts_with(&tag))
+}
+
+/// Takes away every document's kept contents: `recto index clear --all`. Only files named as ours, so nothing else in the folder is touched.
+pub fn clear_all(root: &Path) -> Cleared {
+    remove_ours(root, |_| true)
+}
+
+fn remove_ours(root: &Path, which: impl Fn(&str) -> bool) -> Cleared {
+    let mut report = Cleared::default();
+    let listing = match fs::read_dir(root) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return report,
+        Err(error) => {
+            report.note(Err(error));
+            return report;
+        }
+    };
     for entry in listing.flatten() {
-        if entry.file_name().to_str().is_some_and(|name| is_ours(name) && name.starts_with(&tag)) {
-            let _ = fs::remove_file(entry.path());
+        if entry.file_name().to_str().is_some_and(|name| is_ours(name) && which(name)) {
+            report.note(fs::remove_file(entry.path()));
         }
     }
+    report
 }
 
 /// Holds the folder to [`MAX_FILES`], [`MAX_TOTAL_BYTES`] and [`MAX_AGE`], the oldest first, never removing `keep`. Only files named as ours are looked at.
@@ -453,6 +471,31 @@ mod tests {
         assert!(ours <= MAX_FILES, "{ours} kept");
         assert!(root.join("notes.txt").exists());
         clear(&root, &temp.join(format!("{}.pdf", MAX_FILES + 4)));
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// Failure: `recto index clear` leaves a document's generated contents on disk, heading text from the file, though it says it removes the copy of documents' text; or clearing one file takes another's, or something in the folder that isn't ours.
+    #[test]
+    fn clearing_takes_one_files_contents_or_all_and_nothing_else() {
+        let temp = std::env::temp_dir().join(format!("recto-generated-clear-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("generated");
+        let (one, two) = (temp.join("one.pdf"), temp.join("two.pdf"));
+        local::ensure_private_dir(&temp).unwrap();
+        fs::write(&one, b"%PDF").unwrap();
+        fs::write(&two, b"%PDF").unwrap();
+        write(&root, &one, key(1), &sample()).unwrap();
+        write(&root, &two, key(2), &sample()).unwrap();
+        fs::write(root.join("notes.txt"), b"not ours").unwrap();
+        assert_eq!(clear(&root, &one).cleared, 1);
+        assert!(read(&root, &one, key(1)).is_none());
+        assert!(read(&root, &two, key(2)).is_some(), "another file's stay");
+        assert_eq!(clear(&root, &one), Cleared::default(), "nothing left to take");
+        let all = clear_all(&root);
+        assert_eq!((all.cleared, all.failed), (1, 0));
+        assert!(read(&root, &two, key(2)).is_none());
+        assert!(root.join("notes.txt").exists(), "only ours are removed");
+        assert_eq!(clear_all(&temp.join("never made")), Cleared::default());
         let _ = fs::remove_dir_all(&temp);
     }
 }

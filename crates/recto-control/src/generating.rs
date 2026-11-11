@@ -274,9 +274,29 @@ impl Generating for Generator {
             stop.store(true, Ordering::SeqCst);
         }
     }
+
+    fn cancel_files(&self, paths: Option<&[PathBuf]>) {
+        match paths {
+            None => self.cancel(None),
+            Some(paths) => paths.iter().for_each(|path| self.cancel_path(path)),
+        }
+    }
+
+    fn making(&self, paths: Option<&[PathBuf]>) -> bool {
+        self.running_for(paths)
+    }
 }
 
 impl Generator {
+    /// Whether a job for one of these files, or any, is running.
+    fn running_for(&self, paths: Option<&[PathBuf]>) -> bool {
+        self.0
+            .lock()
+            .running
+            .as_ref()
+            .is_some_and(|(_, _, running)| paths.is_none_or(|paths| paths.contains(running)))
+    }
+
     /// Stops what's on its way for a file, by its path: a tab closed, or the reader saying stop. Nothing's read for it.
     pub fn cancel_path(&self, path: &Path) {
         let mut inner = self.0.lock();

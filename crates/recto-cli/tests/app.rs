@@ -3057,7 +3057,7 @@ fn hover(run: &Run, place: &str) -> Value {
     })
 }
 
-/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
+/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere, or its hint stays over the page it went to; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
 #[test]
 fn links_back_forward_and_page_labels_in_the_app() {
     let Some(run) = Run::start() else { return };
@@ -3072,6 +3072,9 @@ fn links_back_forward_and_page_labels_in_the_app() {
     run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(0))]);
     run.ok(&["qa", "mouse-up"]);
     let went = wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    // The page moved under the pointer, which didn't move: no link is under it now, so its hint and hand go (PLAN, links follow-ups: they stayed until the pointer moved).
+    let moved_on = wait_for(&run, |state| state["app"]["links"]["hint"].is_null());
+    assert_ne!(moved_on["app"]["pages"]["cursor"], "link", "{moved_on}");
     let go = |state: &Value, id: &str| {
         state["app"]["menu_bar"]
             .as_array()
@@ -3445,6 +3448,37 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     assert_eq!(run.report()["snapshot"]["on"], false);
 }
 
+/// Failure (PLAN, snapshot follow-ups): with every page turned by an unsaved quarter turn, as the owner's rotate-all does to fix a sideways scan, the snapshot tool's box is drawn on the turned page but the clipboard's picture comes out unturned, sideways again. The coordinator's decision (2026-11-08): what's copied is what's seen. The app's PNG must be `snapshot_clip`'s for the box with the page's turn.
+#[test]
+fn a_snapshot_of_a_turned_page_is_copied_turned() {
+    use sha2::Digest;
+    let Some(run) = Run::start() else { return };
+    let (file, _) = snapshot_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "rotate", "all", "--by", "90"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:300,400"]);
+    let shown = run.report()["app"]["pages"]["snapshot_box"].clone();
+    let side = |name: &str| shown[name].as_f64().unwrap_or_else(|| panic!("{name} in {shown}")) as f32;
+    let rect = [side("x"), side("y"), side("width"), side("height")];
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let items = clipboard_items(&run);
+    assert_eq!(items[0]["type"], "public.png", "{items:?}");
+    let digest = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, turns, false, &recto_agent::extract::ClipStop::default()) {
+        recto_agent::extract::ClipOutcome::Ready(clip) => digest(clip.items[0].bytes().unwrap()),
+        other => panic!("{other:?}"),
+    };
+    let copied = items[0]["sha256"].as_str().unwrap();
+    assert_ne!(copied, picture(0), "the page was copied as the file stores it, unturned");
+    assert_eq!(copied, picture(1), "the page wasn't copied as it's seen, turned a quarter");
+}
+
 /// Failure: a snapshot of a file that asks not to be copied gets round it, or is refused with no "Copy anyway", though the owner decided on 2026-11-08 it gets the same notice as text. The button takes the same box again.
 #[test]
 fn a_snapshot_of_a_copy_restricted_file_offers_copy_anyway() {
@@ -3650,8 +3684,11 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     wait_for(&run, |state| state["app"]["find"]["open"] == false);
     // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
     run.ok(&["qa", "menu", "find.previous"]);
-    let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
-    assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
+    wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    // The status is published on its own beat, so it can say a few pages less for a moment after the step has gone to the last hit (seen in a full run: "291 matches on 291 pages, searching…" with the place already at 300). Once the query's done, it says all of them, and the place is still the last hit.
+    let done = wait_for(&run, |state| state["app"]["find"]["running"] == false);
+    assert_eq!(done["app"]["place"], "300 of 300", "{}", done["app"]);
+    assert_eq!(done["app"]["find"]["status"], "300 matches on 300 pages", "{}", done["app"]["find"]);
 }
 
 /// Failure: the person's own Find in a document they opened with its password finds nothing, or says nothing about why, because it reads pages with no password; or it gets there by writing the decrypted text to a corpus or index; or an agent's `recto find` gets its hits, at any level, as status or with a query.
