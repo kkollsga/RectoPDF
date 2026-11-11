@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Most pages of their own size [`PageLayout::document_width_for`] looks through for a view: more, as far zoomed out over a document of mixed sizes, and it takes the whole document's width.
+pub const MAX_WIDTH_PAGES: usize = 4096;
 /// Space between pages, in document points.
 pub const PAGE_GAP: f64 = 10.0;
 /// Space above the first page and below the last that's part of the document, a little over twice the gap between pages, so the document starts and ends on the margin's colour, and what a document opens at and going to page 1 show. Owner, 2026-11-08: "add some margin above the first page, and below the last page".
@@ -527,6 +529,32 @@ impl PageLayout {
         self.frame_width.max(pages + self.margins.0 + self.margins.1)
     }
 
+    /// **The document's width for a view from `top` to `bottom`,** in document points: the window's room, and wider only where a row the view reaches runs past it, as a fold-out does. So there's room to scroll across beside the wide page while it shows, and none beside every other row, which [`Self::document_width`] would leave (PLAN, side-by-side follow-ups). A view over more than [`MAX_WIDTH_PAGES`] pages of their own size takes the whole document's.
+    pub fn document_width_for(&self, top: f64, bottom: f64) -> f64 {
+        if self.count == 0 || !top.is_finite() || !bottom.is_finite() {
+            return self.document_width();
+        }
+        let (first, last) = (self.row_at(top), self.row_at(bottom.max(top)));
+        let (from, _) = self.row_pages(first);
+        let to = match self.row_pages(last) {
+            (page, None) => page,
+            (_, Some(second)) => second,
+        };
+        let start = self.overrides.partition_point(|o| o.page < from);
+        let end = self.overrides.partition_point(|o| o.page <= to);
+        if end - start > MAX_WIDTH_PAGES {
+            return self.document_width();
+        }
+        let right = self.overrides[start..end]
+            .iter()
+            .map(|o| {
+                let rect = self.rect(o.page);
+                rect.x + rect.width
+            })
+            .fold(0.0, f64::max);
+        self.frame_width.max(right + self.margins.1)
+    }
+
     pub fn document_height(&self) -> f64 {
         let rows = self.rows();
         if rows == 0 {
@@ -994,6 +1022,35 @@ mod tests {
             assert!(
                 wide.x >= MIN_SIDE_MARGIN - 1e-6 && wide.x + wide.width <= layout.document_width() + 1e-6,
                 "{spread:?} the fold-out stays in the document: {wide:?}"
+            );
+        }
+    }
+
+    /// Failure (PLAN, side-by-side follow-ups): one fold-out makes the document as wide as it for every row, so beside every ordinary page or pair there's empty room to scroll across into. The width for a view is the window's, and the fold-out's only where the view reaches its row, so all of it can still be scrolled to.
+    #[test]
+    fn only_a_view_on_the_fold_out_is_wider_than_the_window() {
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            let mut layout = PageLayout::with_spread(40, spread);
+            layout.set_frame(1400.0);
+            layout.set_page_size(0, letter());
+            layout.set_page_size(21, PageBox { width: 3000.0, height: 792.0 });
+            let wide = layout.rect(21);
+            let away = layout.rect(2);
+            assert_eq!(
+                layout.document_width_for(away.y, away.y + 600.0),
+                1400.0,
+                "{spread:?}: no room beside ordinary rows"
+            );
+            let over = layout.document_width_for(wide.y - 100.0, wide.y + 100.0);
+            assert!(
+                over >= wide.x + wide.width && over <= layout.document_width() + 1e-6,
+                "{spread:?}: {over} for {wide:?}"
+            );
+            let last = layout.rect(39);
+            assert_eq!(
+                layout.document_width_for(0.0, last.y + last.height),
+                layout.document_width_for(wide.y, wide.y),
+                "{spread:?}: a view of everything reaches it"
             );
         }
     }

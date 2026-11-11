@@ -197,7 +197,14 @@ final class CenteringClipView: NSClipView {
     /// The clip view moved. It's the reader's only while something of theirs is moving it: a wheel or two fingers, with their momentum, the scroller dragged, a key, a drag past the edge, or `scroll(by:)`. A layout, a resize or a document smaller than the view being centred moves it too, and that isn't the reader leading the other panes: found by restoring a comparison with a map in a pane, which took the reading pane and moved the others.
     @objc private func viewMoved() {
         sendViewport(byReader: !applying && (readerScrolling || PageArea.isReadersOwn(NSApp.currentEvent)))
+        // The page moved under a still pointer, by a jump or a scroll, and the system sends no move for that: a link's hand and hint showing are asked again, so they don't stay over what's no longer a link.
+        if let place = lastPointer, linkHint != nil || cursorLook == "link" {
+            pointerMoved(atWindow: place)
+        }
     }
+
+    /// Where the pointer last moved over the page, in the window, until it leaves.
+    private var lastPointer: NSPoint?
 
     /// Set while `scroll(by:)` moves the view, which is what a scroll does, and what QA and the drag past the edge call.
     private var readerScrolling = false
@@ -405,6 +412,7 @@ final class CenteringClipView: NSClipView {
     }
 
     func pointerMoved(atWindow place: NSPoint) {
+        lastPointer = place
         measured {
             // Over the scroller or anything else above the page, it isn't the page's cursor to set.
             let inFrame = scrollView.superview?.convert(place, from: nil) ?? place
@@ -417,6 +425,7 @@ final class CenteringClipView: NSClipView {
     }
 
     func pointerLeft() {
+        lastPointer = nil
         setCursor("arrow")
         setLinkHint(nil)
     }

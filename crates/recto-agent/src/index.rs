@@ -393,7 +393,9 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
     if all {
         indexing.cancel(None);
         wait_until_stopped(indexing, None);
-        return said_cleared(corpus::clear_all(indexing.root()).map_err(|_| failed())?);
+        let report = corpus::clear_all(indexing.root()).map_err(|_| failed())?;
+        let contents = access.generating().map(|generating| crate::generated::clear(generating, None));
+        return said_cleared(report, contents);
     }
     let (_, files) = tab_files(access, tab)?;
     let mut report = corpus::Cleared::default();
@@ -407,11 +409,16 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
         }
         corpus::forget_file(indexing.root(), &file.path);
     }
-    said_cleared(report)
+    let paths: Vec<PathBuf> = files.into_iter().map(|file| file.path).collect();
+    let contents = access.generating().map(|generating| crate::generated::clear(generating, Some(&paths)));
+    said_cleared(report, contents)
 }
 
-/// Says how a clear went. Text that's still there is a failure: someone asked for it to be gone.
-fn said_cleared(report: corpus::Cleared) -> Result<Value, AgentError> {
+/// Says how a clear went, the search index's and generated contents', if this session makes them. Text that's still there is a failure: someone asked for it to be gone.
+fn said_cleared(mut report: corpus::Cleared, contents: Option<corpus::Cleared>) -> Result<Value, AgentError> {
+    let contents = contents.unwrap_or_default();
+    report.failed += contents.failed;
+    report.being_built += contents.being_built;
     if report.failed > 0 {
         return Err(AgentError::new(
             "clear_incomplete",
@@ -420,5 +427,5 @@ fn said_cleared(report: corpus::Cleared) -> Result<Value, AgentError> {
         )
         .then("Tell the user. `recto index status` gives the folder, and they may need to remove it themselves."));
     }
-    Ok(json!({ "cleared": report.cleared, "being_built": report.being_built }))
+    Ok(json!({ "cleared": report.cleared, "contents_cleared": contents.cleared, "being_built": report.being_built }))
 }

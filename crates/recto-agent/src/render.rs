@@ -38,6 +38,7 @@ pub(crate) fn write_svg_box<O: Output>(
     caps: &OutputCaps,
     out: &std::cell::RefCell<O>,
     started: Instant,
+    quarter_turns: u8,
 ) -> Result<svg::SvgWritten, AgentError> {
     svg::write_svg(
         doc,
@@ -48,6 +49,7 @@ pub(crate) fn write_svg_box<O: Output>(
             text,
             scale,
             strip_metadata: false,
+            quarter_turns,
         },
         caps,
         out,

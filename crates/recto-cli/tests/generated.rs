@@ -154,3 +154,40 @@ fn a_wait_on_a_file_changed_under_its_edits_ends_at_once() {
     assert_ne!(code, recto_agent::exit::TIMED_OUT, "{done}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }
+
+fn kept_files(state: &State) -> usize {
+    std::fs::read_dir(&state.paths.generated)
+        .map(|listing| {
+            listing
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Failure (PLAN, generated contents follow-ups): `recto index clear` leaves generated contents on disk, heading text from the file, though it says it throws away the copy of documents' text. The tab's go with its index, and `--all` takes every document's.
+#[test]
+fn clearing_the_index_takes_generated_contents_too() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
+    state.json(&["open", path(&file)]);
+    state.json(&["contents", "--generated"]);
+    wait_made(&state);
+    assert_eq!(kept_files(&state), 1);
+    let (cleared, code) = state.json(&["index", "clear"]);
+    assert_eq!(code, 0, "{cleared}");
+    assert_eq!(cleared["data"]["contents_cleared"], 1, "{cleared}");
+    assert_eq!(kept_files(&state), 0, "the tab's generated contents are still on disk");
+    let (said, _, _) = state.text(&["index", "clear"]);
+    assert!(!said.contains("generated"), "nothing left to clear says nothing of it: {said}");
+
+    state.json(&["contents", "--generated"]);
+    wait_made(&state);
+    assert_eq!(kept_files(&state), 1);
+    let (said, _, code) = state.text(&["index", "clear", "--all"]);
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("1 document's generated contents"), "{said}");
+    assert_eq!(kept_files(&state), 0, "`--all` left generated contents on disk");
+}

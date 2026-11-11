@@ -45,20 +45,53 @@ pub fn link_json<L: DocLoader>(session: &Session<L>, id: TabId, from: u32, index
     out
 }
 
-/// One page's links, read off the session's lock: a file on a slow disk holds up only this.
+/// One page's links, read off the session's lock: a file on a slow disk holds up only this. With the page's unsaved quarter turns.
 fn read<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageLinks), AgentError> {
+    read_turned(access, tab, page).map(|(id, position, links, _)| (id, position, links))
+}
+
+fn read_turned<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageLinks, u8), AgentError> {
     let (id, position, source) = locate(access, tab, page)?;
     let read = recto_core::nav::page_links(&source.path, &[source.page]).map_err(AgentError::from)?;
     let links = read.into_iter().next().map(|(_, links)| links).unwrap_or_default();
-    Ok((id, position, links))
+    Ok((id, position, links, source.quarter_turns % 4))
 }
 
-/// `recto links`: what's on a page, and where each goes.
+/// A box `[x0, y0, x1, y1]` on a page `size` wide and high as the file shows it, from its top left, where it is once the page is turned clockwise by quarter turns, as `[x, y, width, height]`.
+fn turned_box([x0, y0, x1, y1]: [f32; 4], (width, height): (f32, f32), turns: u8) -> [f32; 4] {
+    let turn = |x: f32, y: f32| match turns % 4 {
+        1 => (height - y, x),
+        2 => (width - x, height - y),
+        3 => (y, width - x),
+        _ => (x, y),
+    };
+    let ((ax, ay), (bx, by)) = (turn(x0, y0), turn(x1, y1));
+    [ax.min(bx), ay.min(by), (ax - bx).abs(), (ay - by).abs()]
+}
+
+/// `recto links`: what's on a page, and where each goes. On a page with an unsaved turn each link also has `shown_rect`, its box on the page as it's seen turned (PLAN, links follow-ups: agents got the file's box for a page the reader sees turned).
 pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value, AgentError> {
-    let (id, position, found) = read(access, tab, page)?;
+    let (id, position, found, turns) = read_turned(access, tab, page)?;
+    let size = found.frame.shown_size().filter(|_| turns != 0);
     access.with(|s| {
-        let links: Vec<Value> = found.links.iter().enumerate().map(|(index, link)| link_json(s, id, position, index, link.rect, &link.target)).collect();
-        Ok(json!({ "tab": id.0, "page": position + 1, "untrusted": { "label": s.page_label_differs(id, position) }, "links": links, "truncated": found.truncated, "note": "`rect` is x, y, width, height in points on the page as the file shows it, from its top left. `recto follow` follows one within the document." }))
+        let links: Vec<Value> = found
+            .links
+            .iter()
+            .enumerate()
+            .map(|(index, link)| {
+                let mut out = link_json(s, id, position, index, link.rect, &link.target);
+                if let Some(size) = size {
+                    out["shown_rect"] = json!(turned_box(link.rect, size, turns));
+                }
+                out
+            })
+            .collect();
+        let mut answer = json!({ "tab": id.0, "page": position + 1, "untrusted": { "label": s.page_label_differs(id, position) }, "links": links, "truncated": found.truncated, "note": "`rect` is x, y, width, height in points on the page as the file shows it, from its top left. `recto follow` follows one within the document." });
+        if size.is_some() {
+            answer["quarter_turns"] = json!(turns);
+            answer["note"] = json!("`rect` is x, y, width, height in points on the page as the file shows it, from its top left, and `shown_rect` the same box on the page as it's seen with its unsaved turn of `quarter_turns` clockwise. `recto follow` follows one within the document.");
+        }
+        Ok(answer)
     })
 }
 
@@ -136,4 +169,23 @@ pub fn goto_label<A: SessionAccess>(access: &A, tab: &str, label: &str, events: 
         events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
         Ok(where_json(s, id))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::turned_box;
+
+    /// Failure: a link's box on a page with an unsaved turn is given where the file has it, so an agent looking at the page as the reader sees it points at the wrong place; or a turn lands the box off the turned page. A box near the top left of a 600 x 800 page, turned each way.
+    #[test]
+    fn a_links_box_turns_with_its_page() {
+        let link = [10.0, 20.0, 110.0, 50.0];
+        let size = (600.0, 800.0);
+        assert_eq!(turned_box(link, size, 0), [10.0, 20.0, 100.0, 30.0]);
+        // A quarter turn clockwise: the page's left edge becomes its top, so the box is at the top right of the 800-wide page.
+        assert_eq!(turned_box(link, size, 1), [750.0, 10.0, 30.0, 100.0]);
+        assert_eq!(turned_box(link, size, 2), [490.0, 750.0, 100.0, 30.0]);
+        assert_eq!(turned_box(link, size, 3), [20.0, 490.0, 30.0, 100.0]);
+        // Four quarter turns are none.
+        assert_eq!(turned_box(link, size, 4), turned_box(link, size, 0));
+    }
 }

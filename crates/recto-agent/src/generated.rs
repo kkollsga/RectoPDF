@@ -3,10 +3,11 @@
 //! **Made when asked, never on open** (SPEC decision 22's rule, which holds here too): asking for them is what starts the helper, and an answer that isn't ready says so at once and never waits.
 
 use crate::{AgentError, ConditionState, SessionAccess, exit};
-use recto_index::corpus::CorpusKey;
+use recto_index::corpus::{Cleared, CorpusKey};
 use recto_index::generated::{self, Generated};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Where one file's generated contents stand, as far as whoever makes them knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +33,35 @@ pub trait Generating: Send + Sync {
     fn held(&self, key: CorpusKey) -> Option<Arc<Generated>>;
     /// Stops what's on its way for this file, or for all.
     fn cancel(&self, key: Option<CorpusKey>);
+    /// Stops what's on its way for these files, by path, every version, or for every file.
+    fn cancel_files(&self, paths: Option<&[PathBuf]>);
+    /// Whether one of these files', or any file's, is being made now.
+    fn making(&self, paths: Option<&[PathBuf]>) -> bool;
+}
+
+/// How long a clear gives a running helper to stop. It ends as soon as it's told, and a stopped one writes nothing.
+const STOP_WAIT: Duration = Duration::from_secs(3);
+
+/// **`recto index clear` takes generated contents too:** headings are the file's text, kept on disk, and the command says it removes that. These files', or with `None` every file's. What's on its way for them stops first, and a running one is waited for a moment, so nothing's written back after. One still running after that is counted as being built.
+pub(crate) fn clear(generating: &dyn Generating, paths: Option<&[PathBuf]>) -> Cleared {
+    generating.cancel_files(paths);
+    let started = Instant::now();
+    while started.elapsed() < STOP_WAIT && generating.making(paths) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut report = match paths {
+        None => generated::clear_all(generating.root()),
+        Some(paths) => paths
+            .iter()
+            .map(|path| generated::clear(generating.root(), path))
+            .fold(Cleared::default(), |sum, one| Cleared {
+                cleared: sum.cleared + one.cleared,
+                being_built: sum.being_built + one.being_built,
+                failed: sum.failed + one.failed,
+            }),
+    };
+    report.being_built += u32::from(generating.making(paths));
+    report
 }
 
 /// One file's generated contents, if they've been made: in memory, or from disk.

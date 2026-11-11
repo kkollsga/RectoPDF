@@ -215,6 +215,16 @@ fn path_style(style: &PaintStyle<'_>) -> PathStyle {
     }
 }
 
+/// What turns a drawing `width` by `height` clockwise by quarter turns, about its top left, y down, so it lands at the origin again, and the turned drawing's size.
+fn turned(quarter_turns: u8, width: f64, height: f64) -> (Matrix, f64, f64) {
+    match quarter_turns % 4 {
+        1 => (Matrix::new(0.0, 1.0, -1.0, 0.0, height, 0.0), height, width),
+        2 => (Matrix::new(-1.0, 0.0, 0.0, -1.0, width, height), width, height),
+        3 => (Matrix::new(0.0, -1.0, 1.0, 0.0, 0.0, width), height, width),
+        _ => (Matrix::IDENTITY, width, height),
+    }
+}
+
 /// One record, written. The stream's rules have been checked by the time it gets here.
 #[allow(clippy::too_many_arguments)]
 fn write_record<'file, O: Output>(
@@ -222,17 +232,19 @@ fn write_record<'file, O: Output>(
     out: &'file RefCell<O>,
     limit: u64,
     title: Option<&str>,
-    strip: bool,
+    (strip, quarter_turns): (bool, u8),
     tally: &mut Tally,
     record: &Record<'_>,
 ) -> io::Result<()> {
     if let Record::Page { width, height, matrix } = record {
         tally.size = (*width, *height);
+        let (width, height) = (f64::from(*width), f64::from(*height));
+        let (turn, wide, high) = turned(quarter_turns, width, height);
         *svg = Some(SvgWriter::begin(
             Capped { out, left: limit, written: 0 },
-            f64::from(*width),
-            f64::from(*height),
-            &mat(matrix),
+            wide,
+            high,
+            &mat(matrix).then(&turn),
             title,
         )?);
         return Ok(());
@@ -453,6 +465,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
             text,
             scale: args.scale,
             strip_metadata: args.strip_metadata,
+            quarter_turns: 0,
         },
         caps,
         &out,
@@ -533,6 +546,8 @@ pub(crate) struct SvgJob<'a> {
     pub text: TextMode,
     pub scale: f32,
     pub strip_metadata: bool,
+    /// Quarter turns clockwise the drawing is turned by, as the page is seen with an unsaved turn. The box is still on the page as the file shows it.
+    pub quarter_turns: u8,
 }
 
 /// How a page's SVG came out.
@@ -610,7 +625,15 @@ pub(crate) fn write_svg<O: Output>(
                     .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
                     .and_then(|mut out| out.start_over())
             }
-            ContentsEvent::Record(record) => write_record(&mut svg, out, caps.max_bytes, title.as_deref(), job.strip_metadata, &mut tally, &record),
+            ContentsEvent::Record(record) => write_record(
+                &mut svg,
+                out,
+                caps.max_bytes,
+                title.as_deref(),
+                (job.strip_metadata, job.quarter_turns),
+                &mut tally,
+                &record,
+            ),
         };
         written.map_err(|error| {
             sink_error = Some(from_io(&error));

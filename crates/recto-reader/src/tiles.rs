@@ -67,7 +67,9 @@ pub fn zoom_percent(magnification: f64, fit: f64) -> f64 {
     if percent.is_finite() { percent } else { 100.0 }
 }
 
-/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. `decimal` is the reader's own decimal sign, as their Mac has it: the other of `.` and `,`, and spaces and `'`, group thousands, so `1,000` is a thousand with `.` and `87,5` is 87.5 with `,`. It's held to the limits when it's applied, like any zoom.
+/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. It's held to the limits when it's applied, like any zoom.
+///
+/// **`.` and `,` are read the same on any Mac,** as a number shows which it means: `1.5` and `1,5` are both one and a half, whatever the Mac's decimal sign (a Mac set to `,`, as Norwegian is, once read `1.5` as 15). With both in it, the last is the decimal sign, as in `1.250,5` and `1,250.5`. One that comes more than once groups thousands, as in `1.000.000`. Only a lone one with exactly three digits after it and one to three before can be either, `1,000` or `1.000`, and there `decimal`, the Mac's own decimal sign, says which. Spaces and `'` group thousands too.
 pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     let text = text.trim();
     let number = text.strip_suffix('%').unwrap_or(text).trim();
@@ -75,17 +77,46 @@ pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     if number.is_empty() || number.chars().count() > 16 {
         return None;
     }
-    let decimal = if decimal == ',' { ',' } else { '.' };
-    let grouping = if decimal == ',' { '.' } else { ',' };
-    let plain: String = number
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'') && *c != grouping)
-        .map(|c| if c == decimal { '.' } else { c })
+    let marks: String = number.chars().filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'')).collect();
+    if !marks.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',') {
+        return None;
+    }
+    let point = decimal_point(&marks, decimal)?;
+    // A mark that groups has three digits after it, up to the next mark: `1.2,5` isn't a number anyone means.
+    let whole = &marks[..point.unwrap_or(marks.len())];
+    if whole.split(['.', ',']).skip(1).any(|group| group.len() != 3) || (whole.contains(['.', ',']) && whole.starts_with(['.', ','])) {
+        return None;
+    }
+    let plain: String = marks
+        .char_indices()
+        .filter_map(|(at, c)| match c {
+            '.' | ',' => (Some(at) == point).then_some('.'),
+            digit => Some(digit),
+        })
         .collect();
-    if plain.is_empty() || plain.len() > 12 || !plain.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+    if plain.is_empty() || plain == "." || plain.len() > 12 {
         return None;
     }
     plain.parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0).map(Zoom::Percent)
+}
+
+/// Where the decimal sign is in a number of digits, `.` and `,`, by [`typed_zoom`]'s rule: `Ok(None)` for a whole number, and `None` for marks no number has, such as a decimal sign twice beside the other mark.
+fn decimal_point(marks: &str, local: char) -> Option<Option<usize>> {
+    let Some(last) = marks.rfind(['.', ',']) else { return Some(None) };
+    let mark = marks.as_bytes()[last] as char;
+    let other = if mark == '.' { ',' } else { '.' };
+    let times = marks.matches(mark).count();
+    if marks.contains(other) {
+        // `1.250,5`: the last is the decimal sign, and the other only groups, before it.
+        return (times == 1 && marks.rfind(other) < Some(last)).then_some(Some(last));
+    }
+    if times > 1 {
+        return Some(None);
+    }
+    let (before, after) = (last, marks.len() - last - 1);
+    let either = after == 3 && (1..=3).contains(&before);
+    let local = if local == ',' { ',' } else { '.' };
+    Some((!either || mark == local).then_some(last))
 }
 
 /// How much one step of zoom is.
@@ -290,6 +321,8 @@ struct DocView {
     versions: HashMap<PathBuf, u64>,
     /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
     left_pictures: Option<Vec<RawPicture>>,
+    /// The document's width as the host was last told it: the window's, or a fold-out's while its row is in view.
+    width_shown: f64,
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -660,6 +693,8 @@ pub struct Reader {
     margins: (f64, f64),
     /// The last viewport was the reader scrolling, and not the host arriving where it was sent, a zoom, a resize or a pinch: what synced scroll goes by.
     user_scrolled: bool,
+    /// The last viewport was the host arriving at a scroll it was sent, as a change of layout sends one to keep the place. Where it arrived is the place, or as near as the view reaches, so the place isn't taken again from it.
+    arrived: bool,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -719,6 +754,7 @@ impl Reader {
             last_wake: None,
             share: 1,
             user_scrolled: false,
+            arrived: false,
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
         }
     }
@@ -1345,6 +1381,7 @@ impl Reader {
                 size_on_trust: false,
                 versions: HashMap::new(),
                 left_pictures: None,
+                width_shown: 0.0,
             }
         });
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
@@ -1687,13 +1724,14 @@ impl Reader {
         doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
         let (top_room, bottom_room) = doc.layout.end_room();
+        let y = Self::place_y(doc);
+        doc.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
         self.ops.push_back(Op::Document {
-            width: doc.layout.document_width(),
+            width: doc.width_shown,
             height: doc.layout.document_height(),
             top_room,
             bottom_room,
         });
-        let y = Self::place_y(doc);
         let seq = self.next_seq;
         self.next_seq += 1;
         if self.jump.is_some() {
@@ -1720,6 +1758,7 @@ impl Reader {
             && viewport.magnification == was.magnification
             && viewport.frame_width == was.frame_width
             && viewport.height == was.height;
+        self.arrived = viewport.scrolled_to > was.scrolled_to && viewport.scrolled_to != u64::MAX;
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
@@ -1734,12 +1773,33 @@ impl Reader {
             self.lay_out();
         } else {
             self.track_place();
+            self.widen_for_view();
         }
         // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);
         self.cancel_if_unwanted();
         self.count_blanks();
         self.take_ops()
+    }
+
+    /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
+    fn widen_for_view(&mut self) {
+        let viewport = self.viewport;
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
+        let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);
+        if (width - doc.width_shown).abs() < 0.5 {
+            return;
+        }
+        doc.width_shown = width;
+        let (top_room, bottom_room) = doc.layout.end_room();
+        self.ops.push_back(Op::Document {
+            width,
+            height: doc.layout.document_height(),
+            top_room,
+            bottom_room,
+        });
     }
 
     /// Follows the reader's place. Only a change the reader made is the session's business: arriving where a jump sent them isn't.
@@ -1757,6 +1817,8 @@ impl Reader {
         // Side by side, the reader's page stays whichever of its row they were on: a jump to a right-hand page, or reading on in a row, isn't a move to the left one.
         let page = match self.last_view_page {
             Some(was) if doc.layout.same_row(was, page) => was,
+            // The host arrived where a change of layout sent it, back to the place: the page the place was kept on, if it's in the row. A round trip through a view too small to reach the place, where the last page was taken for the reader's, otherwise lands on the row's left page (side-by-side review, finding 4).
+            _ if self.arrived && doc.layout.same_row(doc.anchor.0, page) => doc.anchor.0,
             _ => page,
         };
         if let Some(jump) = self.jump {
@@ -1771,7 +1833,8 @@ impl Reader {
             }
             return;
         }
-        let moved = doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
+        // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
+        let moved = !self.arrived && doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
         if moved {
             doc.anchor = doc.layout.anchor_for(viewport.y, page);
             doc.exact_y = None;
@@ -2653,6 +2716,11 @@ impl Reader {
             let size = doc.layout.raw_size(page);
             (size.width, size.height)
         })
+    }
+
+    /// How far a page is shown turned, in quarter turns clockwise: its unsaved turn and the view's together. What a snapshot of it is turned by.
+    pub fn page_turns(&self, page: u32) -> u8 {
+        self.doc().map_or(0, |doc| doc.layout.turns_of(page))
     }
 
     /// The other way, for QA, which says where a click goes as an agent found it from `recto select`, and then does what the mouse does.
@@ -3858,6 +3926,83 @@ mod tests {
         assert_eq!(reader.take_moved_page(), None, "reading on in the row isn't going to the left page");
         reader.set_spread(Spread::Single);
         assert_eq!(reader.places()[0].1.page, 51);
+    }
+
+    /// Failure (PLAN, from the side-by-side review, finding 4): side by side, on the right-hand page of a pair, a round trip through a view too small to reach the place, as a window made narrow and tall, where the last page is taken for the reader's, comes back on the left page of the pair, and the session's page moves with it. Each page, as the host applies what it's sent, comes back to itself.
+    #[test]
+    fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
+        fn host(reader: &mut Reader, mut at: Viewport) -> Viewport {
+            let mut ops = reader.set_viewport(at);
+            for _ in 0..6 {
+                let Some(Op::ScrollTo { y, seq }) = ops.into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+                    break;
+                };
+                at.y = y;
+                at.scrolled_to = seq;
+                ops = reader.set_viewport(at);
+            }
+            at
+        }
+        for (wide, high) in [(200.0, 900.0), (100.0, 60.0), (300.0, 200.0)] {
+            for target in [51u32, 11, 97] {
+                let mut reader = reader_on(100);
+                reader.scrolled_to = 0;
+                reader.set_spread(Spread::TwoUp);
+                settle(&mut reader);
+                reader.jump_to(target);
+                let mut at = follow_host(&mut reader, view(0.0));
+                reader.take_moved_page();
+                for scroll in [0.0, 37.0] {
+                    at.y += scroll;
+                    at = host(&mut reader, at);
+                    let small = host(
+                        &mut reader,
+                        Viewport {
+                            width: wide,
+                            frame_width: wide,
+                            height: high,
+                            ..at
+                        },
+                    );
+                    at = host(
+                        &mut reader,
+                        Viewport {
+                            width: 1168.0,
+                            frame_width: 1168.0,
+                            height: 900.0,
+                            ..small
+                        },
+                    );
+                    assert_eq!(reader.places()[0].1.page, target, "{wide} x {high}, page {target}, {scroll} down");
+                    assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(target));
+                    assert!(reader.take_moved_page().is_none_or(|page| page == target), "the session's page left {target}");
+                }
+            }
+        }
+    }
+
+    /// Failure (PLAN, side-by-side follow-ups): the host is told the document is as wide as a fold-out wherever the view is, leaving room to scroll across beside every other page; or it isn't told it's wider when the fold-out comes into view, so its right side can't be reached.
+    #[test]
+    fn the_host_hears_the_documents_width_for_what_it_shows() {
+        let mut reader = reader_on(40);
+        settle(&mut reader);
+        let doc = reader.docs.get_mut(&1).unwrap();
+        doc.layout.set_page_size(21, PageBox { width: 3000.0, height: 792.0 });
+        let (wide, frame) = (doc.layout.rect(21), doc.layout.document_width_for(0.0, 1.0));
+        reader.lay_out();
+        reader.take_ops();
+        let widths = |ops: Vec<Op>| {
+            ops.into_iter()
+                .filter_map(|op| if let Op::Document { width, .. } = op { Some(width) } else { None })
+                .collect::<Vec<_>>()
+        };
+        let there = widths(reader.set_viewport(view(wide.y - 200.0)));
+        assert!(there.last().is_some_and(|width| *width >= wide.x + wide.width), "{there:?} for {wide:?}");
+        assert!(
+            widths(reader.set_viewport(view(wide.y - 150.0))).is_empty(),
+            "nothing new to say while it's still in view"
+        );
+        assert_eq!(widths(reader.set_viewport(view(0.0))), [frame], "back to the window's width away from it");
     }
 
     /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.
@@ -5257,6 +5402,40 @@ mod tests {
         for nonsense in ["", "%", "abc", "-50", "0", "NaN", "inf", "1e400", "9999999999999", "1%%"] {
             assert_eq!(typed_zoom(nonsense, '.'), None, "{nonsense}");
         }
+    }
+
+    /// Failure (PLAN, side-by-side follow-ups): typing "1.5" in the zoom field on a Mac set to a `,` decimal, as the owner's Norwegian one is, reads as 15%, since `.` groups thousands there; or "1,5" on a Mac set to `.` reads as 15%. A number says which mark it means wherever it can, and the Mac's own decimal sign decides only `1,000` and `1.000`.
+    #[test]
+    fn a_typed_zoom_reads_either_decimal_sign_on_any_mac() {
+        for decimal in ['.', ','] {
+            for (typed, wanted) in [
+                ("1.5", 1.5),
+                ("1,5", 1.5),
+                ("87.5%", 87.5),
+                ("87,5 %", 87.5),
+                ("150.25", 150.25),
+                ("150,25", 150.25),
+                ("1250.5", 1250.5),
+                ("1,250.5", 1250.5),
+                ("1.250,5", 1250.5),
+                ("1.000.000", 1_000_000.0),
+                ("1,000,000", 1_000_000.0),
+                (".5", 0.5),
+                (",5", 0.5),
+                ("150.", 150.0),
+                ("1 000", 1000.0),
+            ] {
+                assert_eq!(typed_zoom(typed, decimal), Some(Zoom::Percent(wanted)), "{typed} with {decimal}");
+            }
+            for nonsense in [".", ",", "1.2,3.4", "1,2.3,4", "1..5", "5.1,2"] {
+                assert_eq!(typed_zoom(nonsense, decimal), None, "{nonsense} with {decimal}");
+            }
+        }
+        // Only these can be either, and the Mac's sign decides.
+        assert_eq!(typed_zoom("1,000", '.'), Some(Zoom::Percent(1000.0)));
+        assert_eq!(typed_zoom("1.000", ','), Some(Zoom::Percent(1000.0)));
+        assert_eq!(typed_zoom("1.000", '.'), Some(Zoom::Percent(1.0)));
+        assert_eq!(typed_zoom("1,000", ','), Some(Zoom::Percent(1.0)));
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
