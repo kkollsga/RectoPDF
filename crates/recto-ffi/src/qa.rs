@@ -28,25 +28,48 @@ fn slow_report() -> Value {
 }
 
 /// A test's outside change to a quiet run's activation policy: how often the run turns itself `accessory`, as something outside the app once did (a full check, 2026-11-11, and `open -g` of a copy with the same identifier, twice in about 145 reports), from `RECTO_QA_POLICY_NUDGE_MS`. Nothing outside a quiet run, and never in a release build.
-pub(crate) fn policy_nudge(quiet: bool) -> Option<Duration> {
+///
+/// `<ms>,in-put-back` also lands one change in the guard's first put-back of each, between its set and its read, as Launch Services' change from an `open` did (three quiet runs side by side, 2026-11-11: a set from `accessory` said it took, and the read after it said `regular`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Nudge {
+    pub every: Duration,
+    pub in_put_back: bool,
+}
+
+pub(crate) fn policy_nudge(quiet: bool) -> Option<Nudge> {
     nudge_for(recto_platform::RELEASE_BUILD, quiet, || std::env::var("RECTO_QA_POLICY_NUDGE_MS").ok())
 }
 
 /// [`policy_nudge`] for a build that is or isn't a release, with the switch read only if it's needed. A release never takes it, whatever its
 /// environment says, as the slow mode doesn't (`recto_platform::slow::arm`): `RELEASE_BUILD` is compiled in.
-fn nudge_for(release: bool, quiet: bool, switch: impl FnOnce() -> Option<String>) -> Option<Duration> {
+fn nudge_for(release: bool, quiet: bool, switch: impl FnOnce() -> Option<String>) -> Option<Nudge> {
     if release || !quiet {
         return None;
     }
-    let ms: u64 = switch()?.parse().ok()?;
-    Some(Duration::from_millis(ms.clamp(5, 10_000)))
+    let switch = switch()?;
+    let (ms, rest) = switch.split_once(',').map_or((switch.as_str(), None), |(ms, rest)| (ms, Some(rest)));
+    let ms: u64 = ms.trim().parse().ok()?;
+    let in_put_back = match rest.map(str::trim) {
+        None => false,
+        Some("in-put-back") => true,
+        Some(_) => return None,
+    };
+    Some(Nudge {
+        every: Duration::from_millis(ms.clamp(5, 10_000)),
+        in_put_back,
+    })
 }
 
 #[uniffi::export]
 impl AppCore {
     /// [`policy_nudge`], in milliseconds, for the host's quiet-run guard.
     pub fn qa_policy_nudge_ms(&self) -> Option<u64> {
-        policy_nudge(self.qa_mode).map(|every| every.as_millis() as u64)
+        policy_nudge(self.qa_mode).map(|nudge| nudge.every.as_millis() as u64)
+    }
+
+    /// Whether [`policy_nudge`] also lands a change inside the guard's put-back.
+    pub fn qa_policy_nudge_in_put_back(&self) -> bool {
+        policy_nudge(self.qa_mode).is_some_and(|nudge| nudge.in_put_back)
     }
 }
 
@@ -845,9 +868,27 @@ mod tests {
             None,
             "a launch that isn't quiet took the nudge"
         );
-        assert_eq!(nudge_for(false, true, || Some("15".to_owned())), Some(Duration::from_millis(15)));
         assert_eq!(
-            nudge_for(false, true, || Some("1".to_owned())),
+            nudge_for(false, true, || Some("15".to_owned())).map(|nudge| (nudge.every, nudge.in_put_back)),
+            Some((Duration::from_millis(15), false))
+        );
+        assert_eq!(
+            nudge_for(false, true, || Some("15,in-put-back".to_owned())).map(|nudge| nudge.in_put_back),
+            Some(true),
+            "the change in the put-back"
+        );
+        assert_eq!(
+            nudge_for(false, true, || Some("15,sometimes".to_owned())),
+            None,
+            "a switch it can't read is off"
+        );
+        assert_eq!(
+            nudge_for(true, true, || Some("15,in-put-back".to_owned())),
+            None,
+            "a release took the change in the put-back"
+        );
+        assert_eq!(
+            nudge_for(false, true, || Some("1".to_owned())).map(|nudge| nudge.every),
             Some(Duration::from_millis(5)),
             "held to its floor"
         );

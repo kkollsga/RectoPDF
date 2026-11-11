@@ -267,3 +267,27 @@ fn a_quiet_run_is_prohibited_whenever_its_looked_at() {
     let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(messages.contains("changed to accessory from outside, and put back"), "{messages}");
 }
+
+/// Failure: the system's change lands inside the guard's put-back, between its set and its read, and the guard takes its one set for done, so a report
+/// straight after says `accessory` or `regular` (`an_update_in_the_middle_of_things_changes_nothing`, a full check, 2026-11-11; three quiet runs side by
+/// side, each nudged and opened by `open -g`, said `regular` in 2 of 900 reports, as a set from `accessory` said it took and the read after said
+/// `regular`). Here each put-back's first set is followed by a change to `accessory` before its read, and every look says `prohibited`.
+#[test]
+fn a_change_landing_in_the_put_back_is_put_back_too() {
+    let state = super::common::State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_POLICY_NUDGE_MS", "15,in-put-back".as_ref())]) else {
+        return;
+    };
+    let mut said = std::collections::BTreeMap::<String, usize>::new();
+    for look in 0..200 {
+        if look % 10 == 0 {
+            run.settled();
+        }
+        let activation = run.report()["app"]["activation"].as_str().unwrap_or("none").to_string();
+        *said.entry(activation).or_default() += 1;
+    }
+    assert_eq!(said.keys().collect::<Vec<_>>(), ["prohibited"], "what 200 reports said: {said:?}");
+    // The change did land in a put-back, and it took a second try: not a run the nudge never reached.
+    let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(messages.contains("back took 2 tries: after the first it read accessory"), "{messages}");
+}

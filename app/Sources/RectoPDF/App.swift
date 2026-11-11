@@ -140,7 +140,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         if isQuiet { quietGuard.install() }
-        if isQuiet, let every = core.qaPolicyNudgeMs() { quietGuard.nudge(every: every) }
+        if isQuiet, let every = core.qaPolicyNudgeMs() { quietGuard.nudge(every: every, inPutBack: core.qaPolicyNudgeInPutBack()) }
     }
 
     /// A SIGTERM, from a logout, a shutdown, `killall` or launchd, is a quit asked for: everything's written, as for the menu's Quit, and nothing's counted as ending early.
