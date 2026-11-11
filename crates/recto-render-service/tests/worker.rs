@@ -705,9 +705,20 @@ fn a_read_the_mac_was_too_busy_for_is_tried_again() {
         "{stopped:?}"
     );
     assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
-    let again = doc
-        .page_characters(1, true, false)
-        .unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
+    // Read again. Under a full check's load the new worker can be too busy for its 400 ms as well (seen 2026-11-11, at load 20+), and that's the
+    // same thing again, not the page being remembered: a second try is allowed, as two busy reads in a row are still under the three that would be.
+    let mut again = doc.page_characters(1, true, false);
+    if matches!(
+        again,
+        Err(RenderFailure::PageReadFailed {
+            reason: KillReason::Deadline,
+            ..
+        })
+    ) {
+        assert!(doc.stats().too_busy >= 2, "a deadline again is only ever the Mac being busy: {:?}", doc.stats());
+        again = doc.page_characters(1, true, false);
+    }
+    let again = again.unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
     assert!(!again.chars.is_empty());
 }
 
