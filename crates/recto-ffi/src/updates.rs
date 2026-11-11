@@ -3,16 +3,18 @@
 use crate::ScreenInfo;
 use crate::{CoreCall, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
+use recto_control::record_store::Loaded;
 use recto_platform::isolate::SharedMemory;
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind, TileRect, TileRequest, TileResult};
 use recto_session::record::SettingsWindow;
 use recto_update::plan::TestLaunch;
 use recto_update::source::Mode;
-use recto_update::updater::{Asked, Facts, HandOffRefused, Host, InstallRefused, Look};
+use recto_update::updater::{Asked, Facts, HandOffRefused, HandedOff, Host, InstallRefused, Look};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 /// When the host's one timer should go off.
@@ -40,6 +42,13 @@ pub struct SettingsModel {
     pub rows: Vec<SettingRow>,
     /// How updates stand now.
     pub status: String,
+}
+
+/// What an update chosen from the menu came to, for an app-modal alert. Rust's words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UpdateAlert {
+    pub message: String,
+    pub button: String,
 }
 
 /// The switch's id, in the window, in QA and nowhere else.
@@ -79,12 +88,18 @@ impl Host for Hooks {
         }
     }
 
-    fn hand_off(&self, limit: Duration) -> Result<(), HandOffRefused> {
+    fn hand_off(&self, limit: Duration) -> Result<HandedOff, HandOffRefused> {
         let inner = self.inner().ok_or_else(|| HandOffRefused::NotSaved("the app is going away".to_owned()))?;
-        inner.hand_off(limit).map(|_| ()).map_err(|error| match error {
-            crate::HandOffError::Busy { items } => HandOffRefused::Busy(items.into_iter().map(|item| item.message).collect()),
-            crate::HandOffError::NotSaved { message, .. } => HandOffRefused::NotSaved(message),
-        })
+        // The tabs in the record as written and read back, which is what the new version reads.
+        inner
+            .hand_off(limit)
+            .map(|report| HandedOff {
+                tabs: u32::try_from(report.tabs).ok(),
+            })
+            .map_err(|error| match error {
+                crate::HandOffError::Busy { items } => HandOffRefused::Busy(items.into_iter().map(|item| item.message).collect()),
+                crate::HandOffError::NotSaved { message, .. } => HandOffRefused::NotSaved(message),
+            })
     }
 
     fn quit_now(&self) -> bool {
@@ -112,7 +127,11 @@ impl Host for Hooks {
     fn relaunch(&self) -> TestLaunch {
         let Some(inner) = self.inner() else { return TestLaunch::default() };
         let root = inner.paths.as_ref().map(|paths| paths.root.display().to_string()).unwrap_or_default();
-        let args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
+        let mut args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
+        // The new run ends with the same test as this one.
+        if inner.qa.is_some() {
+            args.extend(crate::qa::owner_args());
+        }
         TestLaunch {
             args,
             env: vec![("RECTO_STATE_DIR".to_owned(), root)],
@@ -130,6 +149,84 @@ impl Host for Hooks {
         let Some(paths) = inner.paths.as_ref() else { return false };
         draws_a_page(&paths.root.join("update"))
     }
+
+    /// The record as read, once it has been: a first frame that came before that, off a slow disk, says nothing.
+    fn tabs_restored(&self) -> Option<u32> {
+        let read = TABS_READ.load(Ordering::SeqCst);
+        (read != NOT_READ).then(|| u32::try_from(read).unwrap_or(u32::MAX))
+    }
+
+    fn documents_asked_for(&self) -> Vec<PathBuf> {
+        lock(&ASKED_TO_OPEN).clone()
+    }
+}
+
+/// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on. Then a test's broken release ends here, as a new version that crashes once it's up would.
+pub(crate) fn first_frame_shown(updates: &recto_update::updater::Updater) {
+    updates.first_frame(recto_update::wall_ms());
+    let Some(app) = updates.app() else { return };
+    if recto_update::test_breakage(&app, recto_update::TestBreakage::EndsAfterFirstFrame) {
+        std::thread::sleep(Duration::from_millis(300));
+        if recto_update::test_breakage(&app, recto_update::TestBreakage::DamagesTheRecordAsItEnds) {
+            for slot in ["record.a.json", "record.b.json"] {
+                let _ = std::fs::write(updates.session_folder().join(slot), "damaged by the version that kept ending");
+            }
+        }
+        std::process::exit(70);
+    }
+}
+
+const NOT_READ: u64 = u64::MAX;
+/// The tabs in the record as this launch read it: none for a record that wasn't there or couldn't be read.
+static TABS_READ: AtomicU64 = AtomicU64::new(NOT_READ);
+/// What this launch was asked to open before the state was read, at most [`recto_update::plan::MAX_OPEN`].
+static ASKED_TO_OPEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The record's been read: how many tabs it held, for the installer's look at whether this version misread it.
+pub(crate) fn note_tabs_read(loaded: &Loaded) {
+    let tabs = match loaded {
+        Loaded::Restored(restored) => restored.record.tabs.len() as u64,
+        _ => 0,
+    };
+    TABS_READ.store(tabs.min(NOT_READ - 1), Ordering::SeqCst);
+}
+
+/// Documents asked for before the state was read, by the launch's arguments or the system.
+pub(crate) fn note_asked_to_open(paths: &[PathBuf]) {
+    let mut asked = lock(&ASKED_TO_OPEN);
+    for path in paths {
+        if asked.len() < recto_update::plan::MAX_OPEN && path.is_absolute() && !asked.contains(path) {
+            asked.push(path.clone());
+        }
+    }
+}
+
+/// **Back from a version that kept ending,** the record's as it left it, as that holds whatever was done since. If this version can't read it, damaged or of a newer kind, the record from before the update is put back, where this version reads, and read instead. Only at that one launch.
+pub(crate) fn fall_back_if_unreadable(inner: &Inner, loaded: Loaded) -> Loaded {
+    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
+        return loaded;
+    };
+    let into = match loaded {
+        // Damaged, whether or not anything could be brought back from its journals beside it.
+        Loaded::Damaged => inner.saver.store.main_folder(),
+        Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => inner.saver.store.main_folder(),
+        // A newer kind is never written over: this version's own folder beside it is where it reads.
+        Loaded::Newer => inner.saver.store.own_folder(),
+        other => return other,
+    };
+    recto_update::install::restore_record(&before, &into);
+    inner.updates.fell_back();
+    inner.saver.store.load()
+}
+
+/// What a restore that comes after the host has decided keeps: what the host did, not what was saved. Before it has, what was saved, for it to decide on.
+pub(crate) fn out_of_sight_when_restored(saved: bool, decided: Option<bool>) -> bool {
+    decided.unwrap_or(saved)
+}
+
+/// What this launch reads: the record, or nothing at all for a test's broken release that misreads it.
+pub(crate) fn misreads_the_record(facts: Option<&Facts>) -> bool {
+    facts.is_some_and(|facts| recto_update::test_breakage(&facts.app, recto_update::TestBreakage::MisreadsTheRecord))
 }
 
 impl Inner {
@@ -197,6 +294,14 @@ impl Inner {
 
     pub(crate) fn update_report(&self) -> Value {
         self.updates.report()
+    }
+
+    /// With the window open, the margin says it, and nothing more is put up.
+    pub(crate) fn take_update_alert(&self) -> Option<UpdateAlert> {
+        let words = self.updates.take_alert()?;
+        let app = lock(&self.app);
+        let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
+        alert_for(words, !app.window_closed && !in_dock)
     }
 
     pub(crate) fn update_timer_fired(&self) {
@@ -325,6 +430,19 @@ pub(crate) fn opens_in_background(arrived_by_update: bool, was_frontmost: bool) 
     arrived_by_update && !was_frontmost
 }
 
+/// What a menu's update says, as an alert: only with no window showing, closed or in the Dock, where the margin would have said it.
+pub(crate) fn alert_for(words: String, window_showing: bool) -> Option<UpdateAlert> {
+    (!window_showing).then(|| UpdateAlert {
+        message: words,
+        button: "OK".to_owned(),
+    })
+}
+
+/// Whether something out of sight stays so: a window in the Dock, or the app hidden. At a launch an update opened, exactly as it was, whether it arrived, went back or wasn't installed, as what the user didn't watch mustn't put anything in front of them. Any other launch was asked for by someone, who's looking for the app.
+pub(crate) fn stays_out_of_sight(was: bool, reopened_by_update: bool) -> bool {
+    was && reopened_by_update
+}
+
 /// Going into full screen is another Space, and moves the user there. So not by itself: not until they come to it.
 pub(crate) fn full_screen_on_showing(was_full_screen: bool, in_background: bool) -> (bool, bool) {
     (was_full_screen && !in_background, was_full_screen && in_background)
@@ -368,6 +486,33 @@ mod tests {
         assert_eq!(full_screen_on_showing(true, true), (false, true), "not yet");
         assert_eq!(full_screen_on_showing(true, false), (true, false), "at once, as normal");
         assert_eq!(full_screen_on_showing(false, true), (false, false));
+    }
+
+    /// Failure (owner, 2026-11-07: "It's crucial that app state is perfectly recovered before and after update"): a window the user put in the Dock, or an app they hid, comes back on the screen across an update they didn't watch. Or the other way, a launch someone asked for keeps the app out of sight. Out of sight stays so across an update and only then.
+    #[test]
+    fn out_of_sight_stays_so_across_an_update_and_only_then() {
+        assert!(stays_out_of_sight(true, true));
+        assert!(!stays_out_of_sight(true, false), "a launch someone asked for shows it");
+        assert!(!stays_out_of_sight(false, true));
+        assert!(!stays_out_of_sight(false, false));
+    }
+
+    /// Failure: a check chosen from the menu with the window closed says how it went nowhere the user can see. With no window it's an alert; with one, the margin says it and nothing's put over the page.
+    #[test]
+    fn a_menus_answer_is_an_alert_only_with_no_window() {
+        assert!(alert_for("x".into(), false).is_some(), "closed or in the Dock");
+        let alert = alert_for("You're up to date: RectoPDF 0.1.0.".into(), false).unwrap();
+        assert_eq!(alert.message, "You're up to date: RectoPDF 0.1.0.");
+        assert!(!alert.button.is_empty());
+        assert_eq!(alert_for("x".into(), true), None);
+    }
+
+    /// Failure (review 1): a restore that comes after the host has shown the app without it, slow disk and all, writes the saved "hidden" or "in the Dock" back into the record while the app's on the screen, so the next update hides it. Once the host has decided, what it did stands.
+    #[test]
+    fn a_late_restore_keeps_what_the_host_did() {
+        assert!(!out_of_sight_when_restored(true, Some(false)), "shown already, so shown");
+        assert!(out_of_sight_when_restored(true, None), "not decided yet: what was saved, to decide on");
+        assert!(out_of_sight_when_restored(false, Some(true)));
     }
 
     /// Failure: Settings comes back where there's no screen any more, and can't be reached.

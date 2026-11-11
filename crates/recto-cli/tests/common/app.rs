@@ -189,6 +189,19 @@ impl Drop for Run<'_> {
     }
 }
 
+/// The same, for up to 20 s, for what waits on something slow on purpose.
+pub fn wait_for_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
+    let began = Instant::now();
+    loop {
+        let last = run.report();
+        if holds(&last) {
+            return last;
+        }
+        assert!(began.elapsed() < Duration::from_secs(20), "it never came to pass: {last}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Asks for `qa state` until what it says holds, for up to about 4 s, and fails with the last it said.
 pub fn wait_for(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
     let mut last = Value::Null;

@@ -64,7 +64,7 @@ fn main() {
     });
 }
 
-/// How a test's stand-in app behaves: it reaches its first frame, or it does what a broken new version might, damaging the record and then ending or hanging.
+/// How a test's stand-in app behaves: it reaches its first frame, or it does what a broken new version might, damaging the record and then ending or hanging, or coming up having emptied it.
 fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 {
     // The installer opens whatever's at the app's path with the same words, so the old version coming back has to know it isn't the one that's broken.
     let own = std::env::current_exe()
@@ -78,6 +78,14 @@ fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 
         "ok" => {
             let _ = recto_platform::local::write_private_file(&work.join("launch-ok"), format!("{own} {} 0", std::process::id()).as_bytes());
             std::thread::sleep(std::time::Duration::from_secs(4));
+            0
+        }
+        // Comes up, having started empty: what was the record is gone, and it says it restored no tabs.
+        "misreads" => {
+            let _ = std::fs::write(session.join("record.a.json"), "emptied by the new version");
+            let line = recto_update::plan::launch_ok_line(&own, std::process::id(), 0, Some(0));
+            let _ = recto_platform::local::write_private_file(&work.join("launch-ok"), line.as_bytes());
+            std::thread::sleep(std::time::Duration::from_secs(120));
             0
         }
         "exits" => {

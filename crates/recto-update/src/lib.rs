@@ -37,6 +37,34 @@ pub const HELPER: &str = "Contents/MacOS/recto-updater";
 /// Whether this was built as a release: `RECTO_RELEASE` is set when the crate is compiled, by `app/release-zip.sh`, and it can't be turned on later. Nothing at run time can make a release build look elsewhere.
 pub const RELEASE_BUILD: bool = option_env!("RECTO_RELEASE").is_some();
 
+/// A test's broken release, said by a file in its bundle's `Resources`: how the real app is made to misbehave as a new version might after its first frame, so going back can be tested on it. Never in a release build, whatever's in the bundle.
+#[must_use]
+pub fn test_breakage(app: &std::path::Path, what: TestBreakage) -> bool {
+    !RELEASE_BUILD && app.join("Contents/Resources").join(what.file()).exists()
+}
+
+/// What a test's broken release does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestBreakage {
+    /// Starts empty, as if it couldn't make sense of the record.
+    MisreadsTheRecord,
+    /// Ends a moment after its first frame, every launch.
+    EndsAfterFirstFrame,
+    /// As it ends, leaves the record so the version before can't read it.
+    DamagesTheRecordAsItEnds,
+}
+
+impl TestBreakage {
+    #[must_use]
+    pub fn file(self) -> &'static str {
+        match self {
+            Self::MisreadsTheRecord => "test-misreads-the-record",
+            Self::EndsAfterFirstFrame => "test-ends-after-first-frame",
+            Self::DamagesTheRecordAsItEnds => "test-damages-the-record-as-it-ends",
+        }
+    }
+}
+
 /// Now, on the wall clock.
 #[must_use]
 pub fn wall_ms() -> u64 {

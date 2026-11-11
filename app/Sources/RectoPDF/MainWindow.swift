@@ -278,6 +278,8 @@ final class BookMark: NSView {
     private let placement: WindowPlacement
     /// In a quiet run, which never really goes full screen, what it's been told.
     private var quietFullScreen = false
+    /// What going into the Dock does in a quiet run, for QA: its window stays where it is.
+    private var quietMinimised = false
     private var shown = false
     private var firstResponderWatch: NSKeyValueObservation?
     private var waitingToComeForward = false
@@ -405,6 +407,7 @@ final class BookMark: NSView {
     /// The window's made and laid out. It isn't on the screen yet: the page is drawn behind it first, so what comes up is right from its first frame.
     func windowIsUp() {
         quietFullScreen = delegate.isQuiet && placement.fullScreen
+        quietMinimised = delegate.isQuiet && placement.minimised
         for area in paneAreas { area.windowReady() }
         noteWindow()
         firstResponderWatch = window.observe(\.firstResponder, options: []) { [weak self] _, _ in
@@ -424,7 +427,11 @@ final class BookMark: NSView {
         shown = true
         layout()
         if !delegate.isQuiet {
-            if placement.inBackground {
+            if placement.minimised {
+                // In the Dock, as it was when the update came: it comes out when they ask for it, and nothing's put in front of them meanwhile.
+                window.miniaturize(nil)
+                if placement.activate && !placement.inBackground { NSApp.activate() }
+            } else if placement.inBackground {
                 // An update arriving while the user's in something else. It's there to come to, behind whatever's in front, and isn't key, and full screen's another Space, so that waits until they come to it.
                 waitingToComeForward = true
                 pendingFullScreen = placement.fullScreenWhenActive
@@ -491,6 +498,8 @@ final class BookMark: NSView {
 
     var isFullScreen: Bool { delegate.isQuiet ? quietFullScreen : window.styleMask.contains(.fullScreen) || pendingFullScreen }
 
+    var isMinimised: Bool { delegate.isQuiet ? quietMinimised : window.isMiniaturized }
+
     /// The user's come to an app that updated behind their back: now it can be what it was.
     func cameToTheFront() {
         guard waitingToComeForward else { return }
@@ -513,6 +522,12 @@ final class BookMark: NSView {
     func setQuietFullScreen(_ on: Bool) {
         quietFullScreen = on
         noteWindow()
+    }
+
+    /// What going into the Dock does, for QA, by what AppKit's notice would say: a quiet run's window stays where it is.
+    func setQuietMinimised(_ on: Bool) {
+        quietMinimised = on
+        delegate.core.windowMinimisedChanged(minimised: on)
     }
 
     private func buildHome() {
@@ -1130,6 +1145,14 @@ final class BookMark: NSView {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         noteWindow()
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        delegate.core.windowMinimisedChanged(minimised: true)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        delegate.core.windowMinimisedChanged(minimised: false)
     }
 
 

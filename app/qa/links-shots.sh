@@ -13,6 +13,8 @@ app="${RECTO_APP:-$here/app/build/RectoPDF.app/Contents/MacOS/RectoPDF}"
 mkdir -p "$out"
 root="$(mktemp -d)"
 trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+# A quiet run this starts ends with this script, however it ends.
+export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
 "$here/tools/sysguard/heavy.sh" cargo run -q --locked -p recto-testpdf --example write_linked -- "$root/linked.pdf"
 r() { "$recto" "$@" >/dev/null; }

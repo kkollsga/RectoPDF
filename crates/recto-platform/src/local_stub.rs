@@ -243,6 +243,20 @@ pub fn process_exists(_pid: u32) -> bool {
     true
 }
 
+/// What ended a [`wait_until_gone`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gone {
+    Process(u32),
+    Path(usize),
+    TimeUp,
+}
+
+/// Nothing can be watched here, so only the time's up.
+pub fn wait_until_gone(_pids: &[u32], _paths: &[&Path], limit: Duration) -> Gone {
+    std::thread::sleep(limit);
+    Gone::TimeUp
+}
+
 pub fn signal_process(_pid: u32, _kill: bool) -> bool {
     false
 }

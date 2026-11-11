@@ -172,7 +172,7 @@ fn unpack(zip_file: &Path, beside: &Path) -> Result<(), StageError> {
         let new_folder = beside.join("new");
         let _ = std::fs::remove_dir_all(&new_folder);
         std::fs::create_dir_all(&new_folder).map_err(cant_write)?;
-        std::fs::rename(unpacking.join(APP_BUNDLE), new_folder.join(APP_BUNDLE)).map_err(cant_write)?;
+        std::fs::rename(unpacking.join(APP_BUNDLE), new_app_in(beside)).map_err(cant_write)?;
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&unpacking);
@@ -314,7 +314,12 @@ pub(crate) mod tests {
 
     /// A small stand-in app, ad-hoc signed, as a release's own would be.
     pub(crate) fn fake_app(at: &Path, version: &str) -> PathBuf {
-        let app = at.join(APP_BUNDLE);
+        fake_app_at(&at.join(APP_BUNDLE), version)
+    }
+
+    /// The same, at this very path, as a staged or kept copy's name isn't the app's.
+    pub(crate) fn fake_app_at(app: &Path, version: &str) -> PathBuf {
+        let app = app.to_path_buf();
         let macos = app.join("Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
         std::fs::write(app.join("Contents/Info.plist"), format!(r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string><key>CFBundleExecutable</key><string>RectoPDF</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>"#)).unwrap();
