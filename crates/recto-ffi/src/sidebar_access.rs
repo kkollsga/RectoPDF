@@ -226,7 +226,7 @@ impl AppCore {
             }
         };
         let mut last = lock(&self.inner.folds.last);
-        let Some(target) = fold_target(contents.len(), &row, current.map(|at| at as usize), *last, key) else {
+        let Some(target) = fold_target(contents.len(), row, current.map(|at| at as usize), *last, key) else {
             return false;
         };
         if key == FoldKey::Fold {

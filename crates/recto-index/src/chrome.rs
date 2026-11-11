@@ -698,7 +698,9 @@ mod tests {
         let top = |text: &str| line(true, 40.0, text);
         assert!(chrome_spans(0, &[top("Exercise 7")], &[(1, &[top("Exercise 8")])]).is_empty());
         assert!(chrome_spans(1, &[top("Exercise 8")], &[(-1, &[top("Exercise 7")])]).is_empty());
-        let cases: Vec<(u32, Vec<EdgeLine>, Vec<(i64, Vec<EdgeLine>)>)> = vec![
+        // A page's place in its file, its pieces, and its neighbours' as read.
+        type Case = (u32, Vec<EdgeLine>, Vec<(i64, Vec<EdgeLine>)>);
+        let cases: Vec<Case> = vec![
             (
                 5,
                 vec![top("Page 12 of 40")],
