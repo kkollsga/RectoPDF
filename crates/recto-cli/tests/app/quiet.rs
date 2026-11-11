@@ -55,6 +55,21 @@ impl ScreenWatch {
         self.looked.load(Ordering::SeqCst)
     }
 
+    /// Waits, up to 30 s, until it has looked `more` times since now: a step that could flash a window is watched while it's up,
+    /// however starved the watcher is. In a loaded full check it once looked a single time through a whole run (2026-11-11).
+    fn catch_up(&self, more: usize) {
+        let want = self.looks() + more;
+        let began = std::time::Instant::now();
+        while self.looks() < want {
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "the screen watcher looked {} times in 30 s",
+                self.looks()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// What of ours was on screen, how many times it looked, and whether it saw anything at all.
     fn finish(self) -> (Vec<ShownWindow>, usize, bool) {
         self.stop.store(true, Ordering::SeqCst);
@@ -82,12 +97,14 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     // The print panel, a sheet: held, never shown, and in the shot where it would hang.
     run.ok(&["qa", "menu", "file.print"]);
     sheet_up(&run, "print_panel");
+    watch.catch_up(10);
     run.ok(&["qa", "sheet-answer", "cancel"]);
     super::wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
     // A close prompt, an alert, drawn into a shot from its own window.
     run.ok(&["qa", "owner-edit", "rotate:1"]);
     run.ok(&["qa", "menu", "file.close"]);
     sheet_up(&run, "close_prompt");
+    watch.catch_up(10);
     let shot = folder.join("quiet-sheet.png");
     let drawn = run.ok(&["qa", "shot", "--out", shot.to_str().unwrap()]);
     assert!(drawn["bytes"].as_u64().unwrap() > 0, "{drawn}");
@@ -96,14 +113,18 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     run.ok(&["qa", "sheet-answer", "second"]);
     run.ok(&["qa", "menu", "file.save_as"]);
     sheet_up(&run, "save_panel");
+    watch.catch_up(10);
     run.ok(&["qa", "sheet-answer", "cancel"]);
     // Settings, a window of its own, and a print, which goes through the system's printing.
     run.ok(&["qa", "settings", "open"]);
+    watch.catch_up(10);
     run.ok(&["qa", "shot-settings", "--out", folder.join("quiet-settings.png").to_str().unwrap()]);
     run.ok(&["qa", "print-to-pdf", folder.join("quiet-print.pdf").to_str().unwrap()]);
+    watch.catch_up(10);
     run.settled();
     run.ok(&["qa", "window", "close"]);
     run.ok(&["qa", "window", "open"]);
+    watch.catch_up(10);
     run.settled();
     run.ok(&["qa", "shot", "--out", folder.join("quiet-after.png").to_str().unwrap()]);
     actives.push(run.report()["app"]["is_active"].clone());
