@@ -591,7 +591,7 @@ fn rect_of(reader: &IndexedReader, annot: &Dictionary) -> Option<[f32; 4]> {
 }
 
 /// The page's crop within its media box, and its own turn, as PDFium reads them. A box that can't be read is US Letter, as PDFium's is.
-fn frame_of(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> Frame {
+pub(crate) fn frame_of(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> Frame {
     let inherited = entry.inherited();
     let boxed = |owner: Option<ObjectId>, key: &[u8]| -> Option<[f32; 4]> {
         let dict = dict_at(reader, owner?)?;

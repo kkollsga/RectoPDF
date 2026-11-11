@@ -17,6 +17,7 @@ The whole suite decides a hand-back. It's never how you find out why something c
 
 ## How to work
 
+0. **Start from a warm build.** Make your worktree with `tools/worktree.sh new <branch> .worktrees/<name>`, which seeds its `target/` from the main checkout's as an APFS clone: no extra disk, and the first build compiles only the workspace. A worktree made with plain `git worktree add` starts cold.
 1. **Settle what you're testing first.** No final run on a dependency pin, a merge or a set of findings that's about to change. Fix all of a review's findings, then run once.
 2. **Fix before rerunning.** A failure names its test. Read it, fix it, then run that test or `--failed`. The queue refuses a command that failed on code that hasn't changed.
 3. **Run the whole suite once, last,** on the commit you're handing back, and again only if code changed.

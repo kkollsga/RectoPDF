@@ -62,3 +62,10 @@ lto = "fat"
 codegen-units = 1
 panic = "unwind"
 debug = "line-tables-only"
+
+# The owner's dev copy and quick release-like runs: release code, thin LTO across 16 units. After an edit to recto-session it rebuilt the app's
+# Rust in 32 s against release's 74 s (docs/reports/build-performance-2026-11-11.md). Never for a budget or a release: those are `release`.
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

@@ -373,6 +373,38 @@ pub fn linked_document() -> Vec<u8> {
     build(&objects)
 }
 
+/// **A one-page file whose cross-reference data relists about a million object numbers, `sections` times over,** each section an uncompressed
+/// cross-reference stream of 999,000 free entries naming the one before: about 2 MiB a section, and seconds of the structure reader's time (1.3 s
+/// a section in a debug build on the coordinator's Mac), all within the fork's caps. For proving that opening never happens on the UI thread.
+pub fn relisted_xref(sections: usize) -> Vec<u8> {
+    const ENTRIES: usize = 999_000;
+    let mut out = pages(&[Page::new("")]);
+    let tail = out.windows(9).rposition(|window| window == b"startxref").expect("pages() ends with startxref");
+    let mut prev: usize = std::str::from_utf8(&out[tail + 10..])
+        .ok()
+        .and_then(|rest| rest.lines().next())
+        .and_then(|line| line.trim().parse().ok())
+        .expect("a startxref offset");
+    out.truncate(tail);
+    for section in 0..sections {
+        let here = out.len();
+        out.extend(
+            format!(
+                "{} 0 obj\n<< /Type /XRef /Size {} /W [1 1 0] /Index [100 {ENTRIES}] /Root 1 0 R /Prev {prev} /Length {} >>\nstream\n",
+                1_000_200 + section,
+                100 + ENTRIES,
+                ENTRIES * 2
+            )
+            .as_bytes(),
+        );
+        out.resize(out.len() + ENTRIES * 2, 0);
+        out.extend(b"\nendstream\nendobj\n");
+        prev = here;
+    }
+    out.extend(format!("startxref\n{prev}\n%%EOF\n").as_bytes());
+    out
+}
+
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A unique temp file holding the bytes, removed on drop.

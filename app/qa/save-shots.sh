@@ -6,7 +6,8 @@
 # OUT_DIR gets, each -light and -dark: edited (page 1 turned, the red button's dot and the Save icon), saved (the same view after ⌘S's path, with the dot and the icon gone),
 # close-prompt (File > Close with an unsaved turn), delete-edited and delete-saved (page 2 deleted, then saved by the rewrite), undo-past-delete (undone past that save,
 # page 2 back from the history's copy), signed-save-off and certified-save-off (a change a Save would break the signature with: the Save icon is there and off),
-# signed-copy-saved (Save As's unsigned copy, with its note) and usage-rights-saved (a delete on a file with usage rights alone, saved in place, with its note).
+# signed-copy-saved (Save As's unsigned copy, with its note) and usage-rights-saved (a delete on a file with usage rights alone, saved in place, with its note),
+# damaged-save-off and damaged-close-prompt (a file lopdf and PDFium see differently, the agreement gate: Save off, and closing offers Cancel and Don't Save).
 # READER.pdf is copied: the original is never written.
 set -euo pipefail
 out="$1"; reader="$2"
@@ -67,6 +68,40 @@ for n in sorted(offsets):
     out += b'%d 1\n%010d %05d n \n' % (n, offsets[n], gen if n == num else 0)
 out += b'trailer\n<< /Size %d /Root %d %d R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n' % (field + 1, num, gen, startxref, xref)
 open(sys.argv[3], 'wb').write(out)
+PY
+}
+
+# A file lopdf and PDFium walk differently: a /Type /Page with /Kids is a page to lopdf and a branch to PDFium, so each takes another page first.
+damaged() { # OUT
+    /usr/bin/python3 -I - "$1" <<'PY'
+import sys
+def text(words):
+    return b'BT /F1 28 Tf 60 500 Td (%s) Tj ET' % words
+objects = [
+    b'<< /Type /Catalog /Pages 2 0 R >>',
+    b'<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>',
+    b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Kids [4 0 R] /Contents 6 0 R /Resources << /Font << /F1 9 0 R >> >> >>',
+    b'<< /Type /Page /Parent 3 0 R /MediaBox [0 0 500 600] /Contents 7 0 R /Resources << /Font << /F1 9 0 R >> >> >>',
+    b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 9 0 R >> >> >>',
+    text(b"lopdf's first page"),
+    text(b"PDFium's first page"),
+    text(b'The second page'),
+    b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+]
+out = bytearray(b'%PDF-1.7\n')
+offsets = []
+for number, body in enumerate(objects, 1):
+    offsets.append(len(out))
+    if body.startswith(b'BT'):
+        out += b'%d 0 obj\n<< /Length %d >>\nstream\n' % (number, len(body)) + body + b'\nendstream\nendobj\n'
+    else:
+        out += b'%d 0 obj\n' % number + body + b'\nendobj\n'
+xref = len(out)
+out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objects) + 1)
+for offset in offsets:
+    out += b'%010d 00000 n \n' % offset
+out += b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objects) + 1, xref)
+open(sys.argv[1], 'wb').write(out)
 PY
 }
 
@@ -153,6 +188,24 @@ for look in light dark; do
     until_state "not a['document_edited'] and a.get('copy_notice')"
     settle
     shot "usage-rights-saved-$look"
+    r close
+
+    # The agreement gate: a file its two readers see differently can't be saved, and says why.
+    broken="$root/damaged-$look.pdf"
+    damaged "$broken"
+    r open "$broken"
+    settle
+    r qa owner-edit rotate:1
+    until_state "a['save_button']['visible'] and not a['save_button']['enabled'] and 'differently' in a['save_button']['tooltip']"
+    settle
+    shot "damaged-save-off-$look"
+    r qa menu file.close
+    until_state "a['sheet'].get('kind') == 'close_prompt'"
+    settle
+    shot "damaged-close-prompt-$look"
+    r qa sheet-answer first
+    until_state "not a['sheet']"
+    r discard
     r close
 done
 echo "shots are in $out"

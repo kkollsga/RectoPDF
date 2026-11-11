@@ -249,24 +249,45 @@ pub fn encode_open(password: &[u8]) -> Result<Vec<u8>, ProtoError> {
     Ok(frame(Kind::Open, password))
 }
 
-/// The answer to [`Kind::Open`]: how many pages, and which version of the file that is, as a number that differs if the file does.
-pub const OPENED_LEN: usize = 12;
+/// The answer to [`Kind::Open`]: how many pages, which version of the file that is, as a number that differs if the file does, and a byte of flags.
+pub const OPENED_LEN: usize = 13;
 
-pub fn encode_opened(page_count: u32, version: u64) -> Vec<u8> {
-    let mut payload = page_count.to_le_bytes().to_vec();
-    payload.extend_from_slice(&version.to_le_bytes());
+/// What a worker says of a file it opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Opened {
+    pub pages: u32,
+    pub version: u64,
+    /// PDFium couldn't use the file's own cross-reference data, and rebuilt it by scanning the file: for the agreement gate.
+    pub repaired: bool,
+}
+
+const OPENED_REPAIRED: u8 = 1;
+
+pub fn encode_opened(opened: Opened) -> Vec<u8> {
+    let mut payload = opened.pages.to_le_bytes().to_vec();
+    payload.extend_from_slice(&opened.version.to_le_bytes());
+    payload.push(if opened.repaired { OPENED_REPAIRED } else { 0 });
     frame(Kind::Opened, &payload)
 }
 
-pub fn decode_opened(payload: &[u8]) -> Result<(u32, u64), ProtoError> {
+/// Refuses a flag it doesn't know, as [`decode_hello`] does.
+pub fn decode_opened(payload: &[u8]) -> Result<Opened, ProtoError> {
     let mut r = Reader(payload);
     let pages = r.u32()?;
     let version = r.u64()?;
+    let flags = r.u8()?;
     r.end()?;
     if pages > MAX_PAGE_COUNT {
         return Err(ProtoError("more pages than a document can have"));
     }
-    Ok((pages, version))
+    if flags & !OPENED_REPAIRED != 0 {
+        return Err(ProtoError("unknown opened flags"));
+    }
+    Ok(Opened {
+        pages,
+        version,
+        repaired: flags & OPENED_REPAIRED != 0,
+    })
 }
 
 /// The only pixel format for now: blue, green, red, one unused byte. The host treats the tile as opaque.

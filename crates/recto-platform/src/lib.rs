@@ -22,7 +22,15 @@ impl FileStamp {
 
 /// Reads a file's size, modification time and number.
 pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
-    let meta = std::fs::metadata(path)?;
+    Ok(stamp_of(&std::fs::metadata(path)?))
+}
+
+/// [`file_stamp`] of a file already open: the version that was opened, whatever's at its path now.
+pub fn open_file_stamp(file: &std::fs::File) -> std::io::Result<FileStamp> {
+    Ok(stamp_of(&file.metadata()?))
+}
+
+fn stamp_of(meta: &std::fs::Metadata) -> FileStamp {
     let mtime_ns = meta
         .modified()
         .ok()
@@ -35,12 +43,12 @@ pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     };
     #[cfg(not(unix))]
     let (device, inode) = (0, 0);
-    Ok(FileStamp {
+    FileStamp {
         size: meta.len(),
         mtime_ns,
         device,
         inode,
-    })
+    }
 }
 
 /// What tells one version of a file from another, stronger than [`FileStamp`]: a file put in its place has another inode, and writing to it or setting its modification time moves its change time, which can't be set back without moving the clock.

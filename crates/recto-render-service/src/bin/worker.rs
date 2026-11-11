@@ -148,9 +148,13 @@ fn handle(
             let password = (!frame.payload.is_empty()).then_some(frame.payload.as_slice());
             Some(match PdfiumBackend::open(pdfium, file, password) {
                 Ok(opened) => {
-                    let (pages, version) = (opened.page_count(), opened.version());
+                    let answer = proto::Opened {
+                        pages: opened.page_count(),
+                        version: opened.version(),
+                        repaired: opened.repaired(),
+                    };
                     *backend = Some(opened);
-                    proto::encode_opened(pages, version)
+                    proto::encode_opened(answer)
                 }
                 Err(code) => proto::encode_failed(0, code),
             })

@@ -4,6 +4,7 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod agreement;
 pub mod extract;
 pub mod find;
 pub mod generated;

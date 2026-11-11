@@ -258,9 +258,11 @@ run() {
   if [ "$mode" = "--full" ]; then
     stage app-build
     app/build.sh
-    # At most two at once: each is a real app, and this Mac is in use.
+    # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
+    # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
+    # (docs/reports/build-performance-2026-11-11.md).
     stage app-tests
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 2
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     stage registrations
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations
