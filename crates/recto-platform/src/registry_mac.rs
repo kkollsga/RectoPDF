@@ -43,6 +43,25 @@ pub fn forget(bundle: &Path) {
     let _ = child.wait();
 }
 
+/// **Forgets a bundle, and those inside it, until the system's dump no longer has any of them,** within `limit`: whether it did. One `-u` isn't
+/// enough when the copy was launched a moment ago, as the system registers a copy it launches as that launch goes on, and a forgetting that came
+/// first was undone (CI run 43101058944: a test's own copy, opened and then forgotten, was still registered after). Each look is a whole dump,
+/// seconds, so it's for a test and a tool, never the app. The bundle should still be there, so the copies inside it can be found.
+pub fn forget_until_gone(bundle: &Path, limit: Duration) -> bool {
+    let began = Instant::now();
+    loop {
+        forget_all_under(bundle);
+        forget(bundle);
+        if !registered().iter().any(|copy| copy.path.starts_with(bundle)) {
+            return true;
+        }
+        if began.elapsed() >= limit {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// The same without waiting, for a process on its way out: the tool outlives it.
 pub fn forget_soon(bundle: &Path) {
     let _ = Command::new(LSREGISTER)

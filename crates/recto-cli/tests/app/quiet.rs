@@ -204,6 +204,33 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(seen.is_empty(), "a quiet run's windows were on screen: {:?}", &seen[..seen.len().min(8)]);
 }
 
+/// Failure: a test's own copy of the app is left registered with Launch Services after it's dropped, a second RectoPDF in Open With
+/// (`no_copy_but_the_one_install_is_left_registered` on CI, run 43101058944, found `app/build.noindex/own-34946-0/RectoPDF.app`). The system
+/// registers a copy it launches as that launch goes on, so a copy forgotten while it was still starting, or before its run had quit, was
+/// registered again after. Here a copy is opened and dropped straight away, and the system no longer has it.
+#[test]
+fn a_copy_opened_and_dropped_at_once_is_forgotten() {
+    let Some(copy) = OwnCopy::new() else { return };
+    let bundle = copy.bundle.clone();
+    let state = super::common::State::new();
+    let opened = std::process::Command::new("/usr/bin/open")
+        .arg("-g")
+        .arg("--env")
+        .arg(format!("{}={}", recto_control::state::STATE_ENV, state.root.display()))
+        .arg(&bundle)
+        .args(["--args", "--qa"])
+        .output()
+        .unwrap();
+    assert!(opened.status.success(), "{opened:?}");
+    drop(copy);
+    assert!(!bundle.exists(), "the copy is still there");
+    let left: Vec<_> = recto_platform::registry::registered()
+        .into_iter()
+        .filter(|copy| copy.path.starts_with(&bundle))
+        .collect();
+    assert!(left.is_empty(), "still registered after the copy was dropped: {left:#?}");
+}
+
 /// Waits for a run's process to be gone, and fails with what it was waiting for.
 fn ends(pid: u32, why: &str) {
     let began = std::time::Instant::now();
