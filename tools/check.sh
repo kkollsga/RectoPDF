@@ -275,6 +275,10 @@ run() {
   if [ "$mode" = "--full" ]; then
     stage app-build
     app/build.sh
+    # The bundle just built, as it ships: its notices are this tree's, and nothing in it has an extended attribute, which a zip carries as a file the
+    # signature doesn't cover. They ran only with RECTO_SKIP_APP above, so no run held a built app to them (icon worker, 2026-11-11). Seconds.
+    stage app-bundle
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md).
