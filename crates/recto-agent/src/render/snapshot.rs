@@ -348,7 +348,7 @@ pub(crate) fn text(doc: &mut DocRenderer, page: u32, rect: [f32; 4]) -> Result<B
             })
             .collect();
         let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
-        own.chrome_spans(&borrowed)
+        own.chrome_spans(page, &borrowed)
     };
     let [x, y, width, height] = rect;
     Ok(own.text_in_box(Rect { x, y, width, height }, &chrome, MAX_TEXT_BYTES))

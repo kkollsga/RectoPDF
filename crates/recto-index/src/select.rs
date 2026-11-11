@@ -401,11 +401,12 @@ impl PageText {
                 if edges.len() + members.len() > chrome::MAX_EDGE_LINES {
                     break;
                 }
-                let row_key = chrome::key(
+                let row_text = || {
                     members
                         .iter()
-                        .flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' '))),
-                );
+                        .flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' ')))
+                };
+                let (row_key, row_numbers) = (chrome::key(row_text()), chrome::numbers(row_text()));
                 let count = members.len();
                 for (at, piece) in members.into_iter().enumerate() {
                     let place = chrome::InRow {
@@ -413,7 +414,7 @@ impl PageText {
                         alone: count == 1,
                         last: at + 1 == count,
                     };
-                    edges.push(self.edge_line(top, piece, usual, row_key, true, place));
+                    edges.push(self.edge_line(top, piece, usual, (row_key, row_numbers), true, place));
                     taken.push(piece.start);
                 }
                 row_id += 1;
@@ -429,12 +430,12 @@ impl PageText {
                     }
                     let text: String = self.visible_chars(piece.start, piece.end).collect();
                     if chrome::page_number(&text).is_some() {
-                        let key = chrome::key(text.chars());
+                        let row = (chrome::key(text.chars()), chrome::numbers(text.chars()));
                         edges.push(self.edge_line(
                             top,
                             piece,
                             usual,
-                            key,
+                            row,
                             false,
                             chrome::InRow {
                                 row: row_id,
@@ -452,7 +453,7 @@ impl PageText {
     }
 
     /// One candidate, as a copy compares it.
-    fn edge_line(&self, top: bool, piece: &Piece, usual: f32, row_key: u64, isolated: bool, place: chrome::InRow) -> EdgeLine {
+    fn edge_line(&self, top: bool, piece: &Piece, usual: f32, (row_key, row_numbers): (u64, [u32; 2]), isolated: bool, place: chrome::InRow) -> EdgeLine {
         let (start, end, size) = (piece.start, piece.end, piece.size);
         let from_edge = if top { piece.top } else { self.height - piece.bottom };
         let text: String = self.visible_chars(start, end).collect();
@@ -469,6 +470,7 @@ impl PageText {
             size,
             key: chrome::key(text.chars()),
             row_key,
+            row_numbers,
             start,
             end,
             number: chrome::page_number(&text),
@@ -499,9 +501,9 @@ impl PageText {
         &self.edges
     }
 
-    /// What a copy of this page leaves out as chrome, given its neighbours' edge lines with how many pages away each is. See [`crate::chrome`].
-    pub fn chrome_spans(&self, neighbours: &[(i64, &[EdgeLine])]) -> Vec<(u32, u32)> {
-        chrome::chrome_spans(&self.edges, neighbours)
+    /// What a copy of this page leaves out as chrome, given its place in its file, counted from 0, and its neighbours' edge lines with how many pages away each is. See [`crate::chrome`].
+    pub fn chrome_spans(&self, page: u32, neighbours: &[(i64, &[EdgeLine])]) -> Vec<(u32, u32)> {
+        chrome::chrome_spans(page, &self.edges, neighbours)
     }
 
     /// Whether this stretch runs up or down the page as it's shown: further that way than across, between the middles of its characters.
@@ -1140,7 +1142,7 @@ pub fn chrome_for<'a>(page: u32, text: &PageText, pages: u32, edges_of: impl Fn(
     let neighbours: Vec<(i64, &[EdgeLine])> = neighbour_pages(page, pages)
         .filter_map(|other| Some((i64::from(other) - i64::from(page), edges_of(other)?)))
         .collect();
-    text.chrome_spans(&neighbours)
+    text.chrome_spans(page, &neighbours)
 }
 
 /// The pages whose edge lines a copy of `page` compares with, in a document of `pages`.

@@ -207,6 +207,35 @@ fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
     assert_eq!(text(&only), "Annual report 2024");
 }
 
+/// A legal text's pages, drawn: an article's heading at the top of some, two lines of body, and a footer whose number counts with the pages.
+fn articles() -> Vec<u8> {
+    let list: Vec<Page> = [Some(12), Some(13), None, Some(14)]
+        .iter()
+        .enumerate()
+        .map(|(at, article)| {
+            let page = at + 1;
+            let heading = article.map_or(String::new(), |number| format!("BT /F1 11 Tf 72 760 Td (Article {number}) Tj ET\n"));
+            Page::new(
+                format!("{heading}BT /F1 11 Tf 14 TL 72 700 Td (Body of page {page}, first line.) Tj T* (Body of page {page}, second line.) Tj ET\nBT /F1 9 Tf 72 30 Td (Official Journal of the Union L 119/{page}) Tj ET\n")
+                    .into_bytes(),
+            )
+        })
+        .collect();
+    pages(&list)
+}
+
+/// Failure: numbered headings at the top of pages, "Article 12" on one and "Article 13" on the next, are the same line once their digits are masked, so a copy leaves real headings out as a running head; or the footer whose number counts with the pages stays.
+#[test]
+fn numbered_headings_at_the_top_of_pages_stay_in_a_copy() {
+    let file = TempPdf::new("articles.pdf", &articles());
+    let all = data(&file, &["copy", "--all"]);
+    let copied = text(&all);
+    for heading in ["Article 12", "Article 13", "Article 14"] {
+        assert!(copied.contains(heading), "{heading}: {copied:?}");
+    }
+    assert!(!copied.contains("Official Journal"), "{copied:?}");
+}
+
 /// Failure: `--at` means something else from what `rects` said, so a word found at a point isn't the one drawn there.
 #[test]
 fn a_click_takes_the_word_or_the_line_it_lands_on() {

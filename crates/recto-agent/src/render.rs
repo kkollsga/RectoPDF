@@ -628,7 +628,7 @@ fn chrome_of(doc: &mut DocRenderer, page: u32, characters: &recto_render_service
         })
         .collect();
     let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
-    let mut spans = own.chrome_spans(&borrowed);
+    let mut spans = own.chrome_spans(page, &borrowed);
     spans.sort_unstable();
     spans
 }
