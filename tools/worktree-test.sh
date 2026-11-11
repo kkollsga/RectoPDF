@@ -2,10 +2,11 @@
 # worktree-test: tools/worktree.sh's seeding, on a throwaway repository. Run it after any change to tools/worktree.sh.
 #
 # Failure it catches: `worktree.sh seed` on a worktree checked out before the main checkout's last build leaves the worktree's sources
-# older than the cloned build, so cargo takes the main checkout's crates as this worktree's and the build links the wrong code.
+# older than the cloned build, so cargo takes the main checkout's crates as this worktree's and the build links the wrong code. And
+# `worktree.sh remove` deleting a worktree whose app copies stay registered with Launch Services, each a RectoPDF in Open With.
 set -euo pipefail
 tool="$(cd "$(dirname "$0")" && pwd)/worktree.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/worktree-test.XXXXXX")
+work=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/worktree-test.XXXXXX")" && pwd)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 git init -q -b main repo
@@ -32,4 +33,18 @@ if [ "$source" -lt "$seeded" ]; then
   echo "worktree-test: FAIL: after seed, the worktree's sources ($source) are older than the seeded build ($seeded), so cargo would reuse the main checkout's crates"
   exit 1
 fi
+# Removing a worktree forgets every app bundle in it, nested ones included, before the folder goes.
+mkdir -p "$work/behind/app/build.noindex/RectoPDF.app/Contents/Helpers/RectoRender.app"
+cat > "$work/lsregister" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$work/forgot"
+STUB
+chmod +x "$work/lsregister"
+WORKTREE_LSREGISTER="$work/lsregister" "$tool" remove "$work/behind" >/dev/null 2>&1
+for bundle in app/build.noindex/RectoPDF.app app/build.noindex/RectoPDF.app/Contents/Helpers/RectoRender.app; do
+  if ! grep -qxF -- "-u $work/behind/$bundle" "$work/forgot" 2>/dev/null; then
+    echo "worktree-test: FAIL: remove didn't forget $bundle before deleting the worktree"
+    exit 1
+  fi
+done
 echo "worktree-test: pass"

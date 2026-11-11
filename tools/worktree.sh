@@ -91,6 +91,13 @@ case "$1" in
   remove)
     [ $# -eq 2 ] || usage
     path=$(cd "$2" && pwd)
+    # Launch Services keeps every app copy that was ever opened, and a deleted folder's copies stay in Open With as more RectoPDFs
+    # (2026-11-11: three left by removed worktrees). Forget each bundle in the worktree, nested ones too, before it goes.
+    lsregister=${WORKTREE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
+    if [ -x "$lsregister" ]; then
+      find "$path" -path "$path/target" -prune -o -path "$path/.git" -prune -o -type d -name '*.app' -print 2>/dev/null |
+        while IFS= read -r bundle; do "$lsregister" -u "$bundle" >/dev/null 2>&1 || true; done
+    fi
     rm -rf "$path/target"
     git worktree remove "$path"
     ;;
