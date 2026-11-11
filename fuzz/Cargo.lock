@@ -510,6 +510,7 @@ dependencies = [
 name = "recto-fuzz"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "recto-agent",
  "recto-control",
  "recto-core",

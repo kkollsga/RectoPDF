@@ -51,6 +51,9 @@ mod opening;
 #[path = "app/icon.rs"]
 mod icon;
 
+#[path = "app/accessibility.rs"]
+mod accessibility;
+
 /// Failure: a QA run takes the screen, the focus or the Dock from the person using this Mac, or shows anything on a display. Every claim a quiet run makes, as the app itself reports it.
 #[test]
 fn a_quiet_run_stays_out_of_the_way() {
@@ -1686,7 +1689,7 @@ fn menu_item(state: &Value, id: &str) -> Value {
         .clone()
 }
 
-/// Failure: a drag in the real app selects something other than `recto select` says, draws into a page's tiles instead of a layer of its own, or copies in the wrong order. The whole path: window coordinates, the document's, Rust, the layer, Edit > Copy, the clipboard. And the real clipboard isn't the one a quiet run uses.
+/// Failure: a drag in the real app selects something other than `recto select` says, draws into a page's tiles instead of a layer of its own, or copies in the wrong order. The whole path: window coordinates, the document's, Rust, the layer, Edit > Copy, the clipboard. And the real clipboard isn't the one a quiet run uses, and what the copy kept the UI thread is reported.
 #[test]
 fn a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app() {
     let Some(run) = Run::start() else { return };
@@ -1706,9 +1709,16 @@ fn a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app() {
     assert_eq!(state["reader"]["counts"]["drawn"], tiles_before, "selecting draws no tile: {state}");
     copy_now(&run);
     assert_eq!(copied(&run), "First left two\nFirst left three\nFirst right one\nFirst right two");
+    let clipboard = run.ok(&["qa", "copied"]);
     assert!(
-        run.ok(&["qa", "copied"])["clipboard"].as_str().unwrap().starts_with("com.rectopdf.qa."),
+        clipboard["clipboard"].as_str().unwrap().starts_with("com.rectopdf.qa."),
         "a quiet run never touches the real clipboard"
+    );
+    // What the copy cost the UI thread can be read back, as the 16 MiB measurement in `docs/PLAN.md` was.
+    let write = &clipboard["write"];
+    assert!(
+        write["bytes"].as_u64() == Some(copied(&run).len() as u64) && write["total_ms"].as_f64().is_some_and(|ms| ms >= write["set_ms"].as_f64().unwrap()),
+        "{clipboard}"
     );
     assert_eq!(run.report()["hangs"]["over_2s"], 0);
     // What the Services menu is given is that same text, there and then, since it can't wait.

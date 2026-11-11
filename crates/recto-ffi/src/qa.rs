@@ -393,7 +393,7 @@ impl QaBridge {
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
             | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
             | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise"
-            | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.palette_open()) {
@@ -706,6 +706,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
             "lower-right:out",
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
+        "accessibility" => crate::sidebar_access::is_qa_value(value),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),

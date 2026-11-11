@@ -617,18 +617,18 @@ fn chrome_of(doc: &mut DocRenderer, page: u32, characters: &recto_render_service
     }
     let pages = doc.page_count().unwrap_or(page + 1);
     let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages)
-        .filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?)))
-        .map(|(away, read)| {
-            (
-                away,
+        // A page that can't be read is one with nothing to compare, as a copy has it, so `recto text` and `recto copy` agree.
+        .map(|other| {
+            let lines = doc.page_characters(other, true, false).ok().map(|read| {
                 PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted)
                     .edge_lines()
-                    .to_vec(),
-            )
+                    .to_vec()
+            });
+            (i64::from(other) - i64::from(page), lines.unwrap_or_default())
         })
         .collect();
     let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
-    let mut spans = own.chrome_spans(&borrowed);
+    let mut spans = own.chrome_spans(page, &borrowed);
     spans.sort_unstable();
     spans
 }

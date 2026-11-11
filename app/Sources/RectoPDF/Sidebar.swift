@@ -34,6 +34,10 @@ class SidebarCell: NSView {
 
     /// What goes beside a name when something's wrong with its file. Rust's.
     var noticeMark = ""
+    /// The words for a contents row's fold action, Rust's, or nothing for a row with none.
+    @MainActor static var foldActionName: ((SidebarRow) -> String?)?
+    /// What the fold action does: what a click on the fold does.
+    var foldPressed: (() -> Void)?
 
     func show(row: SidebarRow, foldedActive: Bool, hovered: Bool) {
         self.row = row
@@ -41,6 +45,22 @@ class SidebarCell: NSView {
         self.hovered = hovered
         needsLayout = true
         applyLook()
+        if row.kind == .contents { describeContents(row) }
+    }
+
+    /// A contents row to VoiceOver: its name, whether its sections show, and its fold as an action, since the fold itself shows only under the pointer.
+    private func describeContents(_ row: SidebarRow) {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.row)
+        setAccessibilityLabel(row.text)
+        let name = MainActor.assumeIsolated { Self.foldActionName?(row) }
+        setAccessibilityExpanded(row.expandable && row.expanded)
+        setAccessibilityCustomActions(name.map { name in
+            [NSAccessibilityCustomAction(name: name) { [weak self] in
+                self?.foldPressed?()
+                return self?.foldPressed != nil
+            }]
+        } ?? [])
     }
 
     /// What it's showing, so QA can hold it to the model.
@@ -341,6 +361,18 @@ final class PanelView: FlippedView {
 /// The tabs' table. A control-click on a Mac is a right-click unless something takes it, and AppKit can turn it into one before the table's action: here it's the owner's way to compare (2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"), so it's taken first and said by row.
 final class TabTable: NSTableView {
     var controlClicked: ((Int) -> Void)?
+    /// ← or →, with nothing held, with this list holding the keyboard: says whether it was taken.
+    var arrowPressed: ((String) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        let key: String? = switch event.specialKey {
+        case .leftArrow?: "left"
+        case .rightArrow?: "right"
+        default: nil
+        }
+        if let key, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty, arrowPressed?(key) == true { return }
+        super.keyDown(with: event)
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control), let controlClicked {
@@ -418,7 +450,11 @@ final class TabTable: NSTableView {
             MainActor.assumeIsolated { self?.frame(dt) ?? false }
         }
         view.wantsLayer = true
-        ThumbView.look = core.scrollThumb()
+        ThumbView.configure(core)
+        SidebarCell.foldActionName = { core.foldActionName(row: $0) }
+        contentsThumb.list = "contents"
+        tabsThumb.list = "tabs"
+        table.arrowPressed = { [weak self] key in MainActor.assumeIsolated { self?.foldKey(key) ?? false } }
         for (scrollView, list) in [(scroll, table), (contentsScroll as NSScrollView, contentsTable)] {
             scrollView.documentView = list
             scrollView.automaticallyAdjustsContentInsets = false
@@ -564,6 +600,7 @@ final class TabTable: NSTableView {
             "scroller": contentsScroll.hasVerticalScroller,
             "thumb": contentsThumb.report,
             "tabs_thumb": tabsThumb.report,
+            "accessibility": contentsAccessibility(),
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,
@@ -819,6 +856,26 @@ final class TabTable: NSTableView {
         core.toggleContentsSection(first: UInt32(inContents))
     }
 
+    /// ← folds the section being read and → opens it, with the sidebar's list holding the keyboard: what its key calls, and `recto qa accessibility key:left`. Rust says which section, and whether it took the key.
+    func foldKey(_ key: String) -> Bool {
+        core.contentsFoldKey(key: key)
+    }
+
+    /// A contents row's fold action, as VoiceOver calls it, and what `recto qa accessibility fold:N` calls: the action the row's cell offers, if it offers one.
+    func performFoldAction(_ inContents: Int) -> Bool {
+        guard inContents >= 0, inContents < contentsTable.numberOfRows, let cell = contentsTable.view(atColumn: 0, row: inContents, makeIfNecessary: false) as? SidebarCell, let action = cell.accessibilityCustomActions()?.first else { return false }
+        return action.handler?() ?? false
+    }
+
+    /// The contents rows on screen as VoiceOver has them, for QA.
+    func contentsAccessibility() -> [[String: Any]] {
+        let visible = contentsTable.rows(in: contentsTable.visibleRect)
+        return (visible.location..<(visible.location + visible.length)).prefix(12).compactMap { row in
+            guard let cell = contentsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell else { return nil }
+            return ["row": row, "role": cell.accessibilityRole()?.rawValue ?? "", "label": cell.accessibilityLabel() ?? "", "expanded": cell.isAccessibilityExpanded(), "actions": (cell.accessibilityCustomActions() ?? []).map(\.name)] as [String: Any]
+        }
+    }
+
     /// The same, with rows counted down the sidebar as a person sees them.
     func clickFold(_ row: Int) {
         guard model.tocOpen, let active = activeIndex, row > active, row - active - 1 < Int(model.contentsCount) else { return }
@@ -1061,6 +1118,16 @@ final class TabTable: NSTableView {
         let made = SidebarCell(frame: .zero)
         made.identifier = id
         made.noticeMark = noticeMark
+        if tableView === contentsTable {
+            // Where the row is now, as cells are reused: the fold of what it shows.
+            made.foldPressed = { [weak self, weak made] in
+                MainActor.assumeIsolated {
+                    guard let self, let made else { return }
+                    let row = self.contentsTable.row(for: made)
+                    if row >= 0 { self.core.foldAction(first: UInt32(row)) }
+                }
+            }
+        }
         return made
     }
 
@@ -1071,7 +1138,26 @@ final class TabTable: NSTableView {
 /// The sidebar's scroll thumb: slim, quiet, always shown while there's something to scroll, with no track behind it, over the list's right margin rather than beside it, whatever the system's "show scroll bars" setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"). A view of its own over the scroll view, as AppKit's overlay scroller fades by itself and isn't drawn into a QA shot. Its widths and colours are Rust's, `recto_session::SCROLL_THUMB`, the same as the page area's. It takes the pointer across a strip wider than it looks, and widens a little under the pointer or while dragged, as the system's does. Dragging it, or clicking above or below it, scrolls as the scroll view would.
 final class ThumbView: NSView {
     @MainActor static var look: ScrollThumbLook?
-    private weak var scrollView: NSScrollView?
+    /// Its opacity with Increase Contrast on, and what VoiceOver hears of it: Rust's.
+    @MainActor static var contrast: ThumbContrast?
+    @MainActor static var access: ((String, Double) -> ThumbAccess)?
+    /// As the system says, or what QA set.
+    @MainActor static var increaseContrast: Bool? {
+        didSet { NotificationCenter.default.post(name: contrastChanged, object: nil) }
+    }
+    static let contrastChanged = Notification.Name("RectoThumbContrastChanged")
+    @MainActor static var contrastOn: Bool { increaseContrast ?? NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+
+    /// What every thumb takes from Rust, once.
+    @MainActor static func configure(_ core: AppCore) {
+        if look == nil { look = core.scrollThumb() }
+        if contrast == nil { contrast = core.thumbContrast() }
+        if access == nil { access = { core.thumbAccess(list: $0, fraction: $1) } }
+    }
+
+    /// Which list it scrolls, by Rust's name for it: `contents`, `tabs`, `find` or `pages`.
+    var list = "list"
+    private(set) weak var scrollView: NSScrollView?
     private var hovering = false
     private var dragging: (start: CGFloat, origin: CGFloat)?
     private var area: NSTrackingArea?
@@ -1102,10 +1188,13 @@ final class ThumbView: NSView {
         for (name, object) in watched {
             NotificationCenter.default.addObserver(self, selector: #selector(moved), name: name, object: object)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(contrastMoved), name: Self.contrastChanged, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(contrastMoved), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         refresh()
     }
 
     @objc private func moved() { refresh() }
+    @objc private func contrastMoved() { needsDisplay = true }
 
     /// The document grew or shrank, or the view moved or was resized: look again. A scroll view lays out its own parts and not others', so the strip is put along its edge here.
     func refresh() {
@@ -1119,7 +1208,7 @@ final class ThumbView: NSView {
     }
 
     /// Where the thumb is, in this view, or nothing with nothing to scroll.
-    private func knob() -> NSRect? {
+    func knob() -> NSRect? {
         guard let scrollView, let document = scrollView.documentView, let look = Self.look else { return nil }
         let visible = scrollView.contentView.bounds.height
         // A table's frame can stay taller than its rows after the area it's in has shrunk, so its rows are what count.
@@ -1139,11 +1228,17 @@ final class ThumbView: NSView {
             if scrollView != nil { DispatchQueue.main.async { [weak self] in self?.refresh() } }
             return
         }
-        let dark = Theme.dark
-        let strong = hovering || dragging != nil
-        let alpha = dark ? (strong ? look.darkHoverAlpha : look.darkAlpha) : (strong ? look.lightHoverAlpha : look.lightAlpha)
-        Theme.rgb(dark ? look.darkRgb : look.lightRgb).withAlphaComponent(CGFloat(alpha)).setFill()
+        Theme.rgb(Theme.dark ? look.darkRgb : look.lightRgb).withAlphaComponent(CGFloat(alpha(look))).setFill()
         NSBezierPath(roundedRect: place, xRadius: place.width / 2, yRadius: place.width / 2).fill()
+    }
+
+    /// How strong it's drawn now: by light or dark, the pointer, and Increase Contrast.
+    private func alpha(_ look: ScrollThumbLook) -> Double {
+        let (dark, strong) = (Theme.dark, hovering || dragging != nil)
+        if Self.contrastOn, let contrast = Self.contrast {
+            return dark ? (strong ? contrast.darkHoverAlpha : contrast.darkAlpha) : (strong ? contrast.lightHoverAlpha : contrast.lightAlpha)
+        }
+        return dark ? (strong ? look.darkHoverAlpha : look.darkAlpha) : (strong ? look.lightHoverAlpha : look.lightAlpha)
     }
 
     override func updateTrackingAreas() {
@@ -1176,8 +1271,7 @@ final class ThumbView: NSView {
             dragging = (point.y, scrollView.contentView.bounds.minY)
         } else {
             // Above or below the thumb: a page that way, as a scroller's track does.
-            let page = scrollView.contentView.bounds.height * 0.9
-            scroll(to: scrollView.contentView.bounds.minY + (point.y < place.minY ? -page : page))
+            step(point.y < place.minY ? -1 : 1)
         }
         needsDisplay = true
     }
@@ -1211,6 +1305,9 @@ final class ThumbView: NSView {
     var report: [String: Any] {
         refresh()
         let place = knob()
-        return ["shown": !isHidden && place != nil, "hit_width": frame.width, "thumb_width": place?.width ?? 0, "thumb_length": place?.height ?? 0, "thumb_top": place?.minY ?? 0, "right_gap": place.map { bounds.maxX - $0.maxX } ?? 0]
+        let said = spoken()
+        return ["shown": !isHidden && place != nil, "hit_width": frame.width, "thumb_width": place?.width ?? 0, "thumb_length": place?.height ?? 0, "thumb_top": place?.minY ?? 0, "right_gap": place.map { bounds.maxX - $0.maxX } ?? 0,
+                "increase_contrast": MainActor.assumeIsolated { Self.contrastOn }, "alpha": MainActor.assumeIsolated { Self.look.map(alpha) ?? 0 },
+                "accessibility": ["role": accessibilityRole()?.rawValue ?? "", "orientation": accessibilityOrientation() == .vertical ? "vertical" : "other", "label": said?.label ?? "", "value": said?.value ?? 0, "value_text": said?.valueText ?? ""] as [String: Any]]
     }
 }

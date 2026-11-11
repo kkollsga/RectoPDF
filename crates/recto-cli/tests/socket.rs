@@ -7,7 +7,7 @@ use recto_agent::{Level, exit};
 use recto_control::state::STATE_ENV;
 use recto_testpdf::{Page, TempPdf, busy_page, pages, text_lines};
 use serde_json::{Value, json};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::process::Stdio;
@@ -805,7 +805,7 @@ fn lines_of(mut child: std::process::Child) -> (Vec<Value>, i32) {
     (text.lines().map(|line| serde_json::from_str(line).unwrap()).collect(), code)
 }
 
-/// Failure: `watch` misses events, shows groups it wasn't asked for, or doesn't end when its count or time is up. And it must carry no page text.
+/// Failure: `watch` misses events, shows groups it wasn't asked for, or doesn't end when its count or time is up. And it must carry no page text. The client is poked only once it says it's listening, as a fixed wait lost the race under load.
 #[test]
 fn watch_streams_events_and_ends_when_told() {
     let state = State::at(Level::Control);
@@ -826,12 +826,17 @@ fn watch_streams_events_and_ends_when_told() {
         .collect();
     assert_eq!(names, ["tab_opened", "page_changed"], "edits weren't asked for");
     assert_eq!(raw.read().unwrap()["data"]["reason"], "count reached");
-    // Through the real client: JSON lines, a clean end, and exit 7 only when a count wasn't met.
-    let child = watch_process(&state, &["watch", "--count", "1", "--timeout", "30s", "--json"]);
+    // Through the real client: JSON lines, a clean end, and exit 7 only when a count wasn't met. Its welcome line says it's listening, so the move comes after that and can't be missed, however loaded the machine (a fixed 100 ms wait missed it under load 19).
+    let mut child = watch_process(&state, &["watch", "--count", "1", "--timeout", "30s", "--json"]);
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut welcome = String::new();
+    out.read_line(&mut welcome).unwrap();
     let mut poke = Raw::connect(&state);
-    std::thread::sleep(Duration::from_millis(100));
     assert_eq!(poke.call(&json!({ "cmd": "goto", "page": 1 }))["ok"], true);
-    let (lines, code) = lines_of(child);
+    let mut rest = String::new();
+    out.read_to_string(&mut rest).unwrap();
+    let code = child.wait().unwrap().code().unwrap();
+    let lines: Vec<Value> = welcome.lines().chain(rest.lines()).map(|line| serde_json::from_str(line).unwrap()).collect();
     assert_eq!(code, 0, "{lines:?}");
     assert_eq!(lines[0]["data"]["watching"], true);
     assert_eq!(lines[1]["data"]["event"], "page_changed");

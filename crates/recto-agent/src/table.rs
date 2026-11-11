@@ -2387,6 +2387,29 @@ pub static TABLE: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa accessibility",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Control),
+        summary: "Does what the system does to the app's own views for VoiceOver and its display settings, by the same methods, with nothing posted: Increase Contrast on or off for this app alone, a scroll thumb's increment or decrement, a contents row's fold action, or an arrow key with the sidebar's list holding the keyboard.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Text,
+            required: true,
+            help: "`contrast:on`, `contrast:off`, `thumb:LIST:increment` or `thumb:LIST:decrement` with LIST `contents`, `tabs`, `find` or `pages`, `fold:N` for contents row N counted from 0, or `key:left` or `key:right`.",
+        }],
+        fixed: &[("verb", "accessibility")],
+        data: "`qa state`'s `app`: the palette's and the sidebar's `accessibility`, and each thumb's.",
+        examples: &[
+            "recto qa accessibility contrast:on",
+            "recto qa accessibility fold:0",
+            "recto qa accessibility thumb:contents:increment",
+        ],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa reveal",
         tag: "qa_drive",
         group: GROUP_QA,

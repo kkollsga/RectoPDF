@@ -102,6 +102,7 @@ final class FindRowCell: NSView {
         list.target = self
         list.action = #selector(rowClicked)
         view.addSubview(listScroll)
+        thumb.list = "find"
         thumb.attach(to: listScroll)
     }
 

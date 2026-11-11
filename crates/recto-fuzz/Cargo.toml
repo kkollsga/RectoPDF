@@ -11,6 +11,7 @@ workspace = true
 
 # Test-only, as recto-testpdf is: nothing that ships depends on this crate. No crates of its own, and libFuzzer stays in `fuzz/`, outside the workspace.
 [dependencies]
+crc32fast.workspace = true
 recto-agent.workspace = true
 recto-control.workspace = true
 recto-core.workspace = true

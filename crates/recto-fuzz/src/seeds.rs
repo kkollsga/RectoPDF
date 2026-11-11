@@ -351,6 +351,21 @@ fn generated_seeds() -> Vec<Vec<u8>> {
     vec![kept, answer, br#"{"state":"refused","code":"couldnt_read"}"#.to_vec(), (0..=255u8).collect()]
 }
 
+/// Damage to a corpus, as `corpus` reads it: the first byte says whether checksums are put right after, then each step is what, which file and how. Nothing, a record pointed past the pack, a table cut short, a mark replaced, a page's text overwritten, a link, and a file others can write.
+fn corpus_seeds() -> Vec<Vec<u8>> {
+    vec![
+        Vec::new(),
+        vec![0],
+        vec![1, 6, 0, 0, 0xff, 0xff, 0xff, 0x7f, 1],
+        vec![0, 1, 5, 30, 0],
+        [&[1u8, 3, 4][..], br#"{"format":"v3"}"#].concat(),
+        vec![1, 0, 6, 0, 0, 8, b'X', b'Y', b'Z', 0xff, 0xfe, 0, 1, 2],
+        vec![0, 8, 3, 6],
+        vec![0, 9, 1],
+        vec![1, 6, 0, 0, 255, 255, 255, 255, 2, 0, 9, 0, 0],
+    ]
+}
+
 pub fn for_target(name: &str) -> Vec<Vec<u8>> {
     match name {
         "pdf_bytes" => {
@@ -367,6 +382,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "edits" => sequence_seeds(),
         "record" => record_seeds(),
         "generated" => generated_seeds(),
+        "corpus" => corpus_seeds(),
         "update" => update_seeds(),
         _ => Vec::new(),
     }
@@ -405,6 +421,7 @@ pub const TARGET_NAMES: &[&str] = &[
     "record",
     "update",
     "generated",
+    "corpus",
 ];
 
 /// The check a target runs, by name.
@@ -421,6 +438,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "edits" => targets::edits::check,
         "record" => targets::record::check,
         "generated" => targets::generated::check,
+        "corpus" => targets::corpus::check,
         "update" => targets::update::check,
         _ => return None,
     })

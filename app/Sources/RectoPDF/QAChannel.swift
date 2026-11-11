@@ -92,7 +92,7 @@ import QuartzCore
                 let data = delegate.pasteboard.data(forType: type) ?? Data()
                 return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
             }
-            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "types": types, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
+            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "types": types, "write": delegate.lastCopyWrite, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
             return
         case "services":
             // By the selector AppKit sends, to a clipboard nothing else can see.
@@ -308,6 +308,8 @@ import QuartzCore
         case "scroller_style":
             scrollerStyle = value == "legacy" ? .legacy : .overlay
             controller?.layout()
+        case "accessibility":
+            if let problem = controller.map({ $0.qaAccessibility(value) }) ?? "The window is closed." { return fail(id, problem) }
         case "reduce_motion":
             controller?.sidebar.reduceMotion = value == "on"
         case "reveal":

@@ -94,6 +94,12 @@ fn generated_contents_are_read_as_hostile() {
     smoke("generated", seed(), rounds(1500), 16 * 1024);
 }
 
+/// Failure: a page-text corpus damaged on disk, or forged with its checksums right, panics, bombs, makes an agent's folder past its cap, or leaves something a cleared rebuild doesn't read back as written. Each round builds and lays out a corpus, so this is short.
+#[test]
+fn damaged_corpora_do_no_harm() {
+    smoke("corpus", seed(), rounds(12), 4 * 1024);
+}
+
 /// Failure: a hostile `latest.json` or zip panics, or writes past what it said. The seeded run of what `tools/fuzz.sh` runs at length.
 #[test]
 fn update_holds() {

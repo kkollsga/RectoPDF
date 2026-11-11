@@ -484,10 +484,11 @@ final class Bridge: AppListener, @unchecked Sendable {
         clipboardOffer = offer.promised.isEmpty ? nil : offer.serial
         clipboardPromised = Set(offer.promised)
         pasteboard.declareTypes(offer.types.map { NSPasteboard.PasteboardType($0) }, owner: offer.promised.isEmpty ? nil : self)
-        for type in offer.types where !offer.promised.contains(type) {
-            if let bytes = core.clipboardData(serial: offer.serial, uti: type) { pasteboard.setData(bytes, forType: NSPasteboard.PasteboardType(type)) }
-        }
+        lastCopyWrite = ClipboardWrite.timed(offer, core: core, to: pasteboard)
     }
+
+    /// How long the last copy kept this thread, and in what, for `qa copied`: bringing the bytes over from Rust, and handing them to the clipboard.
+    private(set) var lastCopyWrite: [String: Any] = [:]
 
     // Services: the selection as text, to anything that takes it. It has to answer now, and it can if the text's all here, as it is for a selection that's on screen.
     @objc(validRequestorForSendType:returnType:) func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
