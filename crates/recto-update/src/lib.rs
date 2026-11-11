@@ -45,7 +45,7 @@ pub const APP_EXECUTABLE: &str = "Contents/MacOS/RectoPDF";
 pub const HELPER: &str = "Contents/MacOS/recto-updater";
 
 /// Whether this was built as a release: `RECTO_RELEASE` is set when the crate is compiled, by `app/release-zip.sh`, and it can't be turned on later. Nothing at run time can make a release build look elsewhere.
-pub const RELEASE_BUILD: bool = option_env!("RECTO_RELEASE").is_some();
+pub const RELEASE_BUILD: bool = recto_platform::RELEASE_BUILD;
 
 /// A test's broken release, said by a file in its bundle's `Resources`: how the real app is made to misbehave as a new version might after its first frame, so going back can be tested on it. Never in a release build, whatever's in the bundle.
 #[must_use]

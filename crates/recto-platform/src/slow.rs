@@ -19,7 +19,7 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 /// Compiled as a release by `app/release-zip.sh`. A release build is never slow, whatever's in its environment.
-pub const RELEASE: bool = option_env!("RECTO_RELEASE").is_some();
+pub const RELEASE: bool = crate::RELEASE_BUILD;
 /// The switch: see the module's notes.
 pub const SWITCH: &str = "RECTO_QA_SLOW";
 /// The state read's own switch, from before [`SWITCH`].
