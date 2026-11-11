@@ -530,7 +530,7 @@ impl PageText {
             }
             if let Some(before) = last
                 && spans.len() < room
-                && Self::leaves_the_line(&self.boxes[before], &self.boxes[at], sideways)
+                && Self::leaves_the_line(&self.boxes[before], &self.boxes[at], sideways, self.text[before] == '-')
             {
                 spans.push((from as u32, at as u32));
                 from = at;
@@ -540,7 +540,8 @@ impl PageText {
         spans.push((from as u32, end as u32));
     }
 
-    fn leaves_the_line(before: &[f32; 4], here: &[f32; 4], sideways: bool) -> bool {
+    /// `after_hyphen`: the character before is a hyphen. A line-end hyphen stands where the line's break was, so whatever comes next well off its line is on another, forward or back: part B p197's page number, drawn after the last line's `neces-` and below it, read as `neces-197` and stayed in a copy.
+    fn leaves_the_line(before: &[f32; 4], here: &[f32; 4], sideways: bool, after_hyphen: bool) -> bool {
         if sideways {
             // Glyphs are as thick as a line here, whatever their width, so this is how far they've stepped across.
             let thick = (before[2] - before[0]).max(here[2] - here[0]);
@@ -549,7 +550,7 @@ impl PageText {
         let height = (before[3] - before[1]).max(here[3] - here[1]);
         // Letters share a baseline at one edge of their boxes, which is the other edge on a page turned upside down, and letters on another line share neither.
         let off = (here[3] - before[3]).abs().min((here[1] - before[1]).abs());
-        (here[0] < before[0] - STEP_BACK * height && off > SAME_LINE * height) || (off > OFF_THE_LINE * height && here[0] < before[2])
+        (here[0] < before[0] - STEP_BACK * height && off > SAME_LINE * height) || (off > OFF_THE_LINE * height && (here[0] < before[2] || after_hyphen))
     }
 
     fn measure(&self, (start, end): (u32, u32), usual: f32, upside_down: bool) -> Line {
@@ -1465,6 +1466,41 @@ mod tests {
                 copied.text
             );
         }
+    }
+
+    /// Failure: a page number drawn after a page's last line and below it, with only a line-end hyphen between, is read as one line with it, `neces-197` on part B p197, and stays in a copy, glued to the word.
+    #[test]
+    fn a_page_number_after_a_line_end_hyphen_is_left_out() {
+        let page = |page: u32| {
+            let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+            for line in 0..36 {
+                add_line(&mut chars, &mut boxes, &format!("Body line {line} of page {page}"), 72.0, 600.0 - line as f32 * 15.0);
+            }
+            let last = "the approach will be neces";
+            for (index, ch) in last.chars().enumerate() {
+                let left = 72.0 + index as f32 * 6.0;
+                chars.push(CharRecord::new(ch as u32, 0));
+                boxes.push(if ch == ' ' { [left, 60.0, left + 6.0, 60.0] } else { [left, 60.0, left + 5.0, 70.0] });
+            }
+            // PDFium's marker in place of the line's break, a thin bar at the line's middle, and the number straight after it, below and just to the right, as at the end of a full line.
+            let end = 72.0 + last.len() as f32 * 6.0;
+            chars.push(CharRecord::new(2, CharRecord::HYPHEN));
+            boxes.push([end, 64.5, end + 3.0, 65.1]);
+            for (index, ch) in format!("{}", page + 1).chars().enumerate() {
+                let left = end + 6.0 + index as f32 * 6.0;
+                chars.push(CharRecord::new(ch as u32, 0));
+                boxes.push([left, 30.0, left + 5.0, 40.0]);
+            }
+            PageText::build(&chars, &boxes, FRAME, true, false)
+        };
+        let pages: Vec<PageText> = (0..4).map(page).collect();
+        let copied = copy_of(&pages, Range::pages(1, 2));
+        assert!(
+            copied.text.contains("neces-\nBody line 0 of page 2") && copied.text.ends_with("neces-"),
+            "{:?}",
+            copied.text
+        );
+        assert!(!copied.text.lines().any(|line| line.ends_with(|ch: char| ch.is_ascii_digit()) && line.contains("neces")), "{:?}", copied.text);
     }
 
     /// A page of lines at their own sizes: each `(text, x, y, size)`, a character 0.6 of the size wide and the size tall.
