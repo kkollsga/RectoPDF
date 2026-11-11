@@ -124,7 +124,9 @@ impl Run<'_> {
         if let Some(test) = test
             && test.direct
         {
-            return local::spawn_detached(&self.plan.executable(), &test.args, &test.env, &self.files.log).is_ok();
+            let mut args = test.args.clone();
+            args.extend(self.plan.open.iter().map(|path| path.display().to_string()));
+            return local::spawn_detached(&self.plan.executable(), &args, &test.env, &self.files.log).is_ok();
         }
         let args = open_arguments(self.plan, test);
         let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -273,7 +275,12 @@ pub fn open_arguments(plan: &Plan, test: Option<&crate::plan::TestLaunch>) -> Ve
             args.push(format!("{name}={value}"));
         }
     }
+    // With documents, they're what's opened, and with this app: `open APP FILE` would open each file with whatever usually opens it.
+    if !plan.open.is_empty() {
+        args.push("-a".to_owned());
+    }
     args.push(plan.app.display().to_string());
+    args.extend(plan.open.iter().map(|path| path.display().to_string()));
     if let Some(test) = test
         && !test.args.is_empty()
     {
@@ -307,6 +314,7 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the plan isn't this one's any more, so this one stands down");
         return Ended::NotInstalled;
     }
+    crate::plan::move_to_new_names(&plan.beside);
     let _ = std::fs::write(files.helper_pid(), std::process::id().to_string());
     run.say(&format!(
         "installer: {} to {}, waiting for process {}, to reopen {}",
@@ -422,6 +430,7 @@ pub fn run_back(plan: &Plan) -> Ended {
     if !run.plan_is_mine() {
         return Ended::NotInstalled;
     }
+    crate::plan::move_to_new_names(&plan.beside);
     let _ = std::fs::write(run.files.helper_pid(), std::process::id().to_string());
     run.say(&format!("installer: {} keeps failing, going back to {}", plan.to, plan.from));
     if run.wait_for_old_app() != OldApp::Gone {
@@ -557,12 +566,13 @@ mod tests {
             quit_limit_ms: 1,
             start_limit_ms: 1,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: None,
         }
     }
 
-    /// Failure: an app in the background comes back taking the focus from whatever the user's doing, or a frontmost one comes back behind it. The owner's rule: "an app in the background reopens without taking focus". And a path with spaces and quotes stays one argument.
+    /// Failure: an app in the background comes back taking the focus from whatever the user's doing, or a frontmost one comes back behind it. The owner's rule: "an app in the background reopens without taking focus". And a path with spaces and quotes stays one argument, and documents passed on are opened with this app and no other.
     #[test]
     fn the_app_comes_back_as_it_was_frontmost_or_not() {
         assert_eq!(open_arguments(&plan(), None), vec!["/Apps/a b/RectoPDF.app".to_string()], "frontmost");
@@ -581,6 +591,15 @@ mod tests {
             ["-g", "--env", "A=b c", "/Apps/a b/RectoPDF.app", "--args", "--qa"]
                 .map(str::to_string)
                 .to_vec()
+        );
+        // Going back from a launch someone asked to open documents: they're opened by this app, as `open APP FILE` would hand each to whatever usually opens it.
+        let asked = Plan {
+            open: vec!["/d/a b.pdf".into()],
+            ..plan()
+        };
+        assert_eq!(
+            open_arguments(&asked, None),
+            ["-a", "/Apps/a b/RectoPDF.app", "/d/a b.pdf"].map(str::to_string).to_vec()
         );
     }
 

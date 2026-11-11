@@ -147,6 +147,8 @@ enum Broken {
     EndsAfterFirstFrame,
     /// The real app, which starts empty, as if it couldn't make sense of the record, and comes up.
     MisreadsTheRecord,
+    /// As [`Broken::EndsAfterFirstFrame`], and as it ends it leaves the record so the version before can't read it.
+    EndsAndDamagesTheRecord,
 }
 
 /// All a real update needs, in temp folders that go with it.
@@ -200,13 +202,16 @@ impl Bed {
                 );
                 sign(&app);
             }
-            Broken::EndsAfterFirstFrame | Broken::MisreadsTheRecord => {
-                let what = if broken == Broken::EndsAfterFirstFrame {
-                    recto_update::TestBreakage::EndsAfterFirstFrame
-                } else {
-                    recto_update::TestBreakage::MisreadsTheRecord
+            Broken::EndsAfterFirstFrame | Broken::MisreadsTheRecord | Broken::EndsAndDamagesTheRecord => {
+                use recto_update::TestBreakage as B;
+                let what: &[B] = match broken {
+                    Broken::EndsAfterFirstFrame => &[B::EndsAfterFirstFrame],
+                    Broken::MisreadsTheRecord => &[B::MisreadsTheRecord],
+                    _ => &[B::EndsAfterFirstFrame, B::DamagesTheRecordAsItEnds],
                 };
-                std::fs::write(app.join("Contents/Resources").join(what.file()), "").unwrap();
+                for what in what {
+                    std::fs::write(app.join("Contents/Resources").join(what.file()), "").unwrap();
+                }
                 sign(&app);
             }
         }
@@ -772,6 +777,37 @@ fn a_minimised_window_and_a_hidden_app_stay_so_across_an_update() {
 #[test]
 fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     let Some(bed) = Bed::new() else { return };
+    let (run, before) = keeps_ending(&bed, Broken::EndsAfterFirstFrame);
+    // The one difference, on purpose: it's still on offer, as by hand it can always be tried again.
+    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
+    let log = bed.log();
+    assert!(log.contains("ended early") && log.contains("went back to"), "{log}");
+    run.quit();
+}
+
+/// Failure (review 1): going back from a version that kept ending deleted the record from before the update, the only good copy when what that version left can't be read by the one before. **The real app, with a release that kept ending and left the record damaged:** the version before can't read it, puts back the record from before, and says so.
+#[test]
+fn coming_back_to_a_record_it_cant_read_takes_the_one_from_before() {
+    let Some(bed) = Bed::new() else { return };
+    let (run, before) = keeps_ending(&bed, Broken::EndsAndDamagesTheRecord);
+    let noticed = crate::common::app::wait_for(&run, |state| {
+        state["app"]["copy_notice"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("from before the update"))
+    });
+    assert_eq!(noticed["session"]["tabs"].as_array().unwrap().len(), 1, "{}", noticed["session"]);
+    assert_same_but(
+        &before,
+        &run.report(),
+        &[],
+        &["app.settings.status", "app.menu_bar[0].items[1].title", "app.note", "session.app.notice"],
+    );
+    assert!(bed.log().contains("record from before the update was put back"), "{}", bed.log());
+    run.quit();
+}
+
+/// An update to a release that ends after its first frame, then launches until it's gone back. Gives back the version before, answering, and the state as it was before the update.
+fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     let run = bed.start();
     let file = long_document("alpha", 30);
     run.ok(&["open", file.0.to_str().unwrap()]);
@@ -783,7 +819,7 @@ fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     run.settled();
     run.ok(&["session", "save"]);
     let before = run.report();
-    bed.release_of(NEW, Broken::EndsAfterFirstFrame);
+    bed.release_of(NEW, broken);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let mut arrived = bed.wait_for_new_app_of(run, NEW);
@@ -815,11 +851,7 @@ fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     let status = bed.wait_status(&run, "went_back");
     assert_eq!(status["version"], OLD);
     assert_eq!(status["failed_versions"], json!([NEW]), "not tried by itself again");
-    // The one difference, on purpose: it's still on offer, as by hand it can always be tried again.
-    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
-    let log = bed.log();
-    assert!(log.contains("ended early") && log.contains("went back to"), "{log}");
-    run.quit();
+    (run, before)
 }
 
 /// Failure: a new version that misreads the record and starts empty counts as having come up, as its first frame and its own page were fine, and stays, with the user's tabs gone and its empty record written over theirs. **The real app, with a release that starts empty:** it comes up with fewer tabs than were handed off, and the installer goes back with the record as it was, and says why.
@@ -833,6 +865,8 @@ fn a_new_version_that_misreads_the_record_goes_back() {
     run.ok(&["goto", "9"]);
     run.settled();
     run.ok(&["qa", "frontmost", "off"]);
+    // Hidden it stays, coming back from an update that didn't work as from one that did (review 1).
+    run.ok(&["qa", "hide", "on"]);
     run.settled();
     run.ok(&["session", "save"]);
     let before = run.report();
@@ -848,6 +882,7 @@ fn a_new_version_that_misreads_the_record_goes_back() {
     let notice = crate::common::app::wait_for(&run, |state| state["app"]["copy_notice"]["text"].is_string());
     let words = notice["app"]["copy_notice"]["text"].as_str().unwrap();
     assert!(words.contains("didn't read your last session"), "{words}");
+    assert_eq!(notice["app"]["hidden"], true, "still hidden");
     assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
     assert!(bed.log().contains("fewer tabs"), "{}", bed.log());
     run.quit();
@@ -874,12 +909,58 @@ fn a_check_from_the_menu_with_no_window_says_so_in_an_alert() {
     run.ok(&["qa", "sheet-answer", "first"]);
     let answered = run.report();
     assert!(answered["app"]["sheet"].get("kind").is_none(), "{answered}");
-    // With the window open, the margin says it, and nothing's put over the page.
+    // In the Dock, the window can't say it either (review 1).
     run.ok(&["qa", "window", "open"]);
     run.settled();
+    run.ok(&["qa", "minimise", "on"]);
+    run.ok(&["qa", "menu", "app.update"]);
+    let shown = crate::common::app::wait_for(&run, |state| state["app"]["sheet"]["kind"] == "update_alert");
+    assert_eq!(shown["app"]["window"]["minimised"], true);
+    run.ok(&["qa", "sheet-answer", "first"]);
+    // With the window open, the margin says it, and nothing's put over the page.
+    run.ok(&["qa", "minimise", "off"]);
     run.ok(&["qa", "menu", "app.update"]);
     let noticed = crate::common::app::wait_for(&run, |state| state["app"]["copy_notice"]["text"].is_string());
     assert!(noticed["app"]["sheet"].get("kind").is_none(), "{noticed}");
+    run.quit();
+}
+
+/// Failure (review 1): a version being watched after an update counts a quit someone asked for, or a logout's or `killall`'s SIGTERM, as a run that ended early, so three ordinary quits in its first minutes send a good version back. A real `quit_requested`, from the menu or a SIGTERM, isn't counted; a kill is.
+#[test]
+fn a_quit_isnt_an_early_end_and_a_kill_is() {
+    let Some(bed) = Bed::new() else { return };
+    let files = recto_update::plan::Files::in_state(&bed.state.root);
+    bed.state.paths.prepare().unwrap();
+    recto_update::saved::Saved {
+        proven: Some(OLD.to_owned()),
+        probation: Some(recto_update::saved::Probation {
+            version: OLD.to_owned(),
+            since_ms: wall_ms(),
+            running_since_ms: None,
+            early_ends: 0,
+        }),
+        ..recto_update::saved::Saved::default()
+    }
+    .write(&files.saved);
+    let probation = || recto_update::saved::Saved::read(&files.saved).probation.unwrap();
+    let run = bed.start();
+    assert!(probation().running_since_ms.is_some(), "this run's watched");
+    run.quit();
+    assert_eq!(probation().running_since_ms, None, "the menu's quit isn't an early end");
+    let mut run = bed.start();
+    assert!(Command::new("/bin/kill").args(["-TERM", &run.pid.to_string()]).status().unwrap().success());
+    let began = Instant::now();
+    while local::process_counters(run.pid).is_some() {
+        assert!(began.elapsed() < Duration::from_secs(20), "a SIGTERM quits");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    run.ended();
+    assert_eq!(probation().running_since_ms, None, "nor is a SIGTERM's");
+    let run = bed.start();
+    assert_eq!(probation().early_ends, 0);
+    run.kill();
+    let run = bed.start();
+    assert_eq!(probation().early_ends, 1, "a kill is");
     run.quit();
 }
 

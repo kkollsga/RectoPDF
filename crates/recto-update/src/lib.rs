@@ -50,6 +50,8 @@ pub enum TestBreakage {
     MisreadsTheRecord,
     /// Ends a moment after its first frame, every launch.
     EndsAfterFirstFrame,
+    /// As it ends, leaves the record so the version before can't read it.
+    DamagesTheRecordAsItEnds,
 }
 
 impl TestBreakage {
@@ -58,6 +60,7 @@ impl TestBreakage {
         match self {
             Self::MisreadsTheRecord => "test-misreads-the-record",
             Self::EndsAfterFirstFrame => "test-ends-after-first-frame",
+            Self::DamagesTheRecordAsItEnds => "test-damages-the-record-as-it-ends",
         }
     }
 }

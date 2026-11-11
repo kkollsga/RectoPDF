@@ -44,7 +44,7 @@ pub trait Host: Send + Sync {
     /// What's in flight, in words for the user, and how long since they touched the app. Cheap.
     fn look(&self) -> Look;
     /// Writes and reads back the state, freezing the app. Blocks on the disk.
-    fn hand_off(&self, limit: Duration) -> Result<(), HandOffRefused>;
+    fn hand_off(&self, limit: Duration) -> Result<HandedOff, HandOffRefused>;
     /// Quits, after a good hand-off.
     fn quit_now(&self) -> bool;
     /// The hand-off isn't going ahead: the app must take what the user does again.
@@ -63,13 +63,13 @@ pub trait Host: Send + Sync {
     fn can_draw(&self) -> bool {
         true
     }
-    /// How many tabs are being handed off, asked once the hand-off's frozen the app. What a new version that comes up with fewer has misread.
-    fn tabs_handed_off(&self) -> Option<u32> {
-        None
-    }
-    /// How many tabs this launch restored, or nothing if it hasn't read the record yet.
+    /// How many tabs the record held as this launch read it, or nothing if it hasn't read it yet. Counted in the record, not the session: entries a restore leaves out on purpose, as a second tab on the same file, aren't a misread, and nor is a tab closed since.
     fn tabs_restored(&self) -> Option<u32> {
         None
+    }
+    /// What this launch was asked to open, by its arguments or the system, before it read the state. What a launch that goes back passes on to the version it goes back to.
+    fn documents_asked_for(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
     /// Starts the installer. A test stands in for this.
     fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
@@ -82,6 +82,13 @@ pub trait Host: Send + Sync {
 pub struct Look {
     pub busy: Vec<String>,
     pub since_input_ms: u64,
+}
+
+/// What a good hand-off wrote and read back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HandedOff {
+    /// The tabs in the record as written and read back: what a new version that reads fewer has misread.
+    pub tabs: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,8 +204,10 @@ struct St {
     install_look_at: Option<u64>,
     /// What this launch came from, if it's an update that's still to reach its first frame.
     arrived: Option<Plan>,
-    /// This launch is an update arriving. It stays so after the first frame.
-    arrived_by_update: bool,
+    /// This launch was opened by an update: arriving, or the version before back after one that didn't work or wasn't installed. It stays so after the first frame.
+    reopened_by_update: bool,
+    /// The record from before the update, to take if what the version that didn't work left can't be read here. Only at the launch that comes back.
+    fall_back: Option<PathBuf>,
     first_frame_done: bool,
     /// The first frame came before what's remembered had been read, off a slow disk. It's dealt with as soon as it has.
     first_frame_early: Option<u64>,
@@ -227,6 +236,9 @@ struct Settled {
     status: Option<Status>,
     notice: Option<Notice>,
     arrived: Option<Plan>,
+    /// The installer opened this launch, as it went back or didn't install.
+    reopened: bool,
+    fall_back: Option<PathBuf>,
     changed: bool,
     plan_gone: bool,
 }
@@ -278,7 +290,8 @@ impl Updater {
             notice: None,
             install_look_at: None,
             arrived: None,
-            arrived_by_update: false,
+            reopened_by_update: false,
+            fall_back: None,
             first_frame_done: false,
             first_frame_early: None,
             from_menu: false,
@@ -385,6 +398,13 @@ impl Updater {
         let app = facts.app.clone();
         // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
         let second_copy = !self.host.keeps_the_record();
+        // Kept or staged by a build before these had names of their own, and not while that build's installer may still be looking for them by the old ones.
+        if !second_copy
+            && !helper_alive(&self.files)
+            && let Some(beside) = beside_app(&facts.app)
+        {
+            crate::plan::move_to_new_names(&beside);
+        }
         let settled = if second_copy {
             Settled::default()
         } else {
@@ -425,7 +445,8 @@ impl Updater {
             st.second_copy = second_copy;
             st.status = status;
             st.notice = settled.notice;
-            st.arrived_by_update = settled.arrived.is_some();
+            st.reopened_by_update = settled.arrived.is_some() || settled.reopened;
+            st.fall_back = settled.fall_back;
             st.arrived = settled.arrived;
             if may_replace && offered.is_some() {
                 st.install_look_at = Some(now.saturating_add(rules::MIN_GAP_MS));
@@ -477,16 +498,41 @@ impl Updater {
         }
     }
 
+    /// The state's record folder.
+    #[must_use]
+    pub fn session_folder(&self) -> PathBuf {
+        self.files.session()
+    }
+
     /// This copy's bundle, once the host's said.
     #[must_use]
     pub fn app(&self) -> Option<PathBuf> {
         lock(&self.st).facts.as_ref().map(|facts| facts.app.clone())
     }
 
-    /// Whether this launch is an update arriving, so what comes back is exactly what was left, down to a window that was closed. Any other launch opens a window, as an app does.
+    /// Whether this launch was opened by an update, so what comes back is exactly what was left, down to a window that was closed, in the Dock or hidden: an update arriving, or the version before back after one that didn't work, or that wasn't installed and the installer reopened this one. Any other launch was asked for by someone, and shows a window, as an app does.
     #[must_use]
-    pub fn arrived_by_update(&self) -> bool {
-        lock(&self.st).arrived_by_update
+    pub fn reopened_by_update(&self) -> bool {
+        lock(&self.st).reopened_by_update
+    }
+
+    /// The record from before the update, if this launch is the version before coming back from one that kept ending, and it's there: for when what that one left can't be read here. Taken once.
+    #[must_use]
+    pub fn take_record_to_fall_back_on(&self) -> Option<PathBuf> {
+        lock(&self.st).fall_back.take()
+    }
+
+    /// The record from before the update was put back, as what the version that didn't work left couldn't be read: the notice says so.
+    pub fn fell_back(&self) {
+        let mut st = lock(&self.st);
+        if let Status::WentBack { version, back_on } = &st.status {
+            let text = format!(
+                "{APP_NAME} {version} kept quitting unexpectedly, and what it left couldn't be read, so {back_on} came back with your session from before the update."
+            );
+            st.notice = Some(Notice { text, fades: true });
+        }
+        drop(st);
+        self.log("what the version that didn't work left couldn't be read, so the record from before the update was put back");
     }
 
     /// What the last install left behind. The installer tidies up when it finishes: this is for when it didn't get to.
@@ -497,10 +543,18 @@ impl Updater {
             let _ = std::fs::remove_file(self.files.outcome());
             let _ = std::fs::remove_file(self.files.plan());
             let _ = std::fs::remove_file(self.files.helper_pid());
-            // Gone back, the copy's been put back and is for nothing. Stuck on a version that didn't come up, it's the state before it, and stays.
-            if outcome.kind != OutcomeKind::CouldntGoBack {
+            // Gone back with it put back, the copy's for nothing. Stuck on a version that didn't come up, it's the state before it, and stays. Gone back with the record as it was, it's what to fall back on if the previous version can't read that, and it goes after its week as ever.
+            let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
+            if kept_ending {
+                settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
+            } else if outcome.kind != OutcomeKind::CouldntGoBack {
                 let _ = std::fs::remove_dir_all(self.files.before());
             }
+            settled.reopened = match outcome.kind {
+                OutcomeKind::WentBack => true,
+                OutcomeKind::NotInstalled => installer_reopened(&outcome.why),
+                OutcomeKind::CouldntGoBack => false,
+            };
             settled.changed = true;
             settled.plan_gone = true;
             match outcome.kind {
@@ -685,6 +739,25 @@ impl Updater {
         }
     }
 
+    /// The quit didn't go ahead after all, as someone chose to stay: this run's watched again.
+    pub fn quit_not_taken(&self) {
+        let now = self.now_ms();
+        let changed = {
+            let mut st = lock(&self.st);
+            let current = st.facts.as_ref().map(|facts| facts.version.clone());
+            match st.saved.probation.as_mut() {
+                Some(probation) if Some(&probation.version) == current.as_ref() && probation.running_since_ms.is_none() => {
+                    probation.running_since_ms = Some(now);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.save();
+        }
+    }
+
     /// This version keeps failing, before its first frame or after it, and an older one's kept: starts the installer to go back to it.
     fn start_going_back(&self, saved: &mut Saved, current: &str, app: &Path, now: u64, why: Back) -> bool {
         let Some(beside) = beside_app(app) else { return false };
@@ -702,10 +775,12 @@ impl Updater {
             beside,
             root: self.files.root.clone(),
             quit_at_ms: now,
-            background: true,
+            // Someone launched this one, or the system did for them: what comes back comes forward, with what they asked it to open.
+            background: false,
             quit_limit_ms: crate::plan::QUIT_LIMIT_MS,
             start_limit_ms: crate::plan::START_LIMIT_MS,
             handed_off_tabs: None,
+            open: self.host.documents_asked_for(),
             keep_record: why == Back::KeptEnding,
             test: test_launch(&self.source, self.host.relaunch()),
         };
@@ -763,6 +838,7 @@ impl Updater {
             }
             return;
         }
+        let mut watched = false;
         let changed = {
             let mut st = lock(&self.st);
             let mut changed = st.saved.unstarted != 0;
@@ -772,6 +848,7 @@ impl Updater {
                 changed = true;
                 // Come up for the first time, with the version before it kept: watched now for runs that end early, starting with this one.
                 if kept {
+                    watched = true;
                     st.saved.probation = Some(Probation {
                         version: version.clone(),
                         since_ms: shown_at_ms,
@@ -804,6 +881,10 @@ impl Updater {
         }
         if changed {
             self.save();
+        }
+        // The timer comes for when this first run's lasted, which the host arms once it's told.
+        if watched {
+            self.host.changed();
         }
     }
 
@@ -1201,8 +1282,8 @@ impl Updater {
             }
             if look.busy.is_empty() {
                 match self.host.hand_off(HAND_OFF_LIMIT) {
-                    Ok(()) => {
-                        self.quit_after_hand_off(asked, version, facts, cdhash);
+                    Ok(handed) => {
+                        self.quit_after_hand_off(asked, version, facts, cdhash, handed);
                         return;
                     }
                     Err(HandOffRefused::NotSaved(why)) => {
@@ -1244,7 +1325,7 @@ impl Updater {
     }
 
     /// Past a good hand-off the app's frozen, so every way out from here has to free it.
-    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str) {
+    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str, handed: HandedOff) {
         let give_up = |why: &str| {
             let _ = std::fs::remove_file(self.files.plan());
             self.host.cancelled();
@@ -1287,7 +1368,8 @@ impl Updater {
             background: !self.host.frontmost(),
             quit_limit_ms: crate::plan::QUIT_LIMIT_MS,
             start_limit_ms,
-            handed_off_tabs: self.host.tabs_handed_off(),
+            handed_off_tabs: handed.tabs,
+            open: Vec::new(),
             keep_record: false,
             test: test_launch(&self.source, self.host.relaunch()),
         };
@@ -1403,10 +1485,17 @@ impl Updater {
 /// What's said once a version that didn't work has gone back, by why.
 fn went_back_words(why: &str, version: &str, current: &str) -> String {
     match why {
-        "kept_ending" => format!("{APP_NAME} {version} kept quitting unexpectedly, so {current} came back, with everything as you left it."),
+        "kept_ending" => {
+            format!("{APP_NAME} {version} kept quitting unexpectedly, so {current} came back, with your tabs and edits as {version} last had them.")
+        }
         "misread" => format!("{APP_NAME} {version} didn't read your last session properly, so {current} came back, just as you left it."),
         _ => format!("{APP_NAME} {version} didn't start, so {current} came back, just as you left it."),
     }
+}
+
+/// Whether the installer opened the app again after not installing, for this reason. For the others the old app was never quit, or someone else opened it.
+fn installer_reopened(code: &str) -> bool {
+    matches!(code, "swap_failed" | "changed_since_checked" | "new_app_missing")
 }
 
 /// What each of the installer's reasons comes to, and whether it's the sort of thing that'll be the same tomorrow.
@@ -1485,11 +1574,11 @@ mod tests {
                 since_input_ms: scripted.unwrap_or(*lock(&self.since_input_ms)),
             }
         }
-        fn hand_off(&self, _limit: Duration) -> Result<(), HandOffRefused> {
+        fn hand_off(&self, _limit: Duration) -> Result<HandedOff, HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
             match lock(&self.refuse_with).clone() {
                 Some(refused) => Err(refused),
-                None => Ok(()),
+                None => Ok(HandedOff { tabs: Some(2) }),
             }
         }
         fn quit_now(&self) -> bool {
@@ -2035,6 +2124,7 @@ mod tests {
             quit_limit_ms: 1,
             start_limit_ms: 1,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: None,
         };
@@ -2093,6 +2183,7 @@ mod tests {
                 quit_limit_ms: 1,
                 start_limit_ms: 1,
                 handed_off_tabs: None,
+                open: Vec::new(),
                 keep_record: false,
                 test: None,
             }
@@ -2158,6 +2249,135 @@ mod tests {
         saved.write(&files.saved);
         let (updater, _) = launch();
         assert_eq!(early_ends(&updater), None);
+    }
+
+    /// Failure (review 1): going back from a version that kept ending deletes the record from before the update, the only good copy if what that version left can't be read by the one before. It's kept, offered once to fall back on, and goes after its week as ever; going back for any other reason, with it already put back, still clears it. And what comes back after a version that didn't work, or that the installer reopened without installing, is what was left, out of sight included, as an update's arrival is; a launch after the old app never quit isn't one of those.
+    #[test]
+    fn coming_back_from_a_version_that_kept_ending_keeps_the_record_from_before() {
+        let bed = Bed::new("back-kept");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        local::ensure_private_dir(&files.work).unwrap();
+        let come_back = |why: &str, kind: OutcomeKind| {
+            std::fs::create_dir_all(files.before()).unwrap();
+            std::fs::write(files.before().join(".whole"), "").unwrap();
+            Outcome {
+                kind,
+                from: "0.1.0".into(),
+                to: "0.2.0".into(),
+                why: why.into(),
+            }
+            .write(&files.outcome())
+            .unwrap();
+            let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            updater.launched(Facts {
+                version: "0.1.0".into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
+            updater
+        };
+        let updater = come_back("kept_ending", OutcomeKind::WentBack);
+        assert!(files.before().join(".whole").exists(), "kept");
+        assert_eq!(updater.take_record_to_fall_back_on(), Some(files.before()), "to fall back on");
+        assert_eq!(updater.take_record_to_fall_back_on(), None, "once");
+        assert!(updater.reopened_by_update());
+        let notice = updater.notice().unwrap().text;
+        assert!(
+            notice.contains("as RectoPDF 0.2.0 last had them") || notice.contains("as 0.2.0 last had them"),
+            "{notice}"
+        );
+        updater.fell_back();
+        assert!(updater.notice().unwrap().text.contains("from before the update"));
+
+        let updater = come_back("didnt_start", OutcomeKind::WentBack);
+        assert!(!files.before().exists(), "put back already, so it's for nothing");
+        assert_eq!(updater.take_record_to_fall_back_on(), None);
+        assert!(updater.reopened_by_update(), "the installer opened it");
+        assert!(
+            come_back("swap_failed", OutcomeKind::NotInstalled).reopened_by_update(),
+            "reopened without installing"
+        );
+        assert!(
+            !come_back("old_app_stayed", OutcomeKind::NotInstalled).reopened_by_update(),
+            "the old app never went, so this is someone's own launch"
+        );
+    }
+
+    /// Failure (review 1): the first update from a build that kept its copies as `RectoPDF.app` can't go back, as this one looks for `RectoPDF.kept`. A launch moves them to the new names, unless something's already there, and not while an installer of that build may be looking for the old ones.
+    #[test]
+    fn copies_under_the_old_names_are_moved_to_the_new() {
+        let bed = Bed::new("names");
+        let beside = beside_app(&bed.app).unwrap();
+        let old_kept = beside.join("previous").join(crate::APP_BUNDLE);
+        let old_staged = beside.join("new").join(crate::APP_BUNDLE);
+        fake_app_at(&old_kept, "0.0.9");
+        fake_app_at(&old_staged, "0.2.0");
+        crate::plan::move_to_new_names(&beside);
+        assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.9"));
+        assert_eq!(stage::app_version(&new_app_in(&beside)).as_deref(), Some("0.2.0"));
+        assert!(!old_kept.exists() && !old_staged.exists());
+        // Something under the new name stays as it is, and so does what's under the old.
+        fake_app_at(&old_kept, "0.0.8");
+        crate::plan::move_to_new_names(&beside);
+        assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.9"));
+        assert!(old_kept.exists());
+        // And at a launch.
+        std::fs::remove_dir_all(previous_app_in(&beside)).unwrap();
+        let root = bed.dir.join("state");
+        let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
+        assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.8"), "moved at a launch");
+    }
+
+    /// Failure (review 1): the first run of a version being watched never gets its minute's timer, as nothing told the host the time had changed, so a run that lasted is counted as an early end. And a quit someone chose not to go ahead with leaves the run unwatched.
+    #[test]
+    fn a_watched_run_has_its_timer_and_a_quit_not_taken_is_watched_again() {
+        let bed = Bed::new("watched-timer");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        let beside = beside_app(&bed.app).unwrap();
+        fake_app_at(&previous_app_in(&beside), "0.1.0");
+        local::ensure_private_dir(&files.work).unwrap();
+        Plan {
+            id: "1-1".into(),
+            cdhash: "a".repeat(40),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 1,
+            app: bed.app.clone(),
+            beside: beside.clone(),
+            root: root.clone(),
+            quit_at_ms: 5,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            handed_off_tabs: None,
+            open: Vec::new(),
+            keep_record: false,
+            test: None,
+        }
+        .write(&files.plan())
+        .unwrap();
+        let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        updater.launched(Facts {
+            version: "0.2.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
+        let before = bed.fake.changes.load(Ordering::SeqCst);
+        updater.first_frame(updater.now_ms());
+        assert!(bed.fake.changes.load(Ordering::SeqCst) > before, "the host's told, and arms the timer");
+        assert!(updater.next_wake().unwrap() <= updater.now_ms() + EARLY_END_MS);
+        updater.quitting_as_asked();
+        assert_eq!(Saved::read(&files.saved).probation.unwrap().running_since_ms, None);
+        updater.quit_not_taken();
+        assert!(Saved::read(&files.saved).probation.unwrap().running_since_ms.is_some(), "watched again");
     }
 
     /// Failure: a second copy of the app downloads a release it can't install, as its hand-off will be refused, or takes away what the first has staged. It reads, and says, and leaves it all alone, and it wakes for nothing.
@@ -2261,6 +2481,7 @@ mod tests {
             quit_limit_ms: 1,
             start_limit_ms: 1,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: None,
         };
@@ -2378,6 +2599,7 @@ mod tests {
             quit_limit_ms: 1,
             start_limit_ms: 1,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: None,
         };

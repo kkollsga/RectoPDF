@@ -142,7 +142,19 @@ final class Bridge: AppListener, @unchecked Sendable {
         if isQuiet { quietGuard.install() }
     }
 
+    /// A SIGTERM, from a logout, a shutdown, `killall` or launchd, is a quit asked for: everything's written, as for the menu's Quit, and nothing's counted as ending early.
+    private var terminationSource: DispatchSourceSignal?
+
+    private func quitOnTerminate() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        terminationSource = source
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quitOnTerminate()
         watchMainThread()
         watchMemoryPressure()
         installMenu()
@@ -272,7 +284,9 @@ final class Bridge: AppListener, @unchecked Sendable {
         alert.informativeText = answer.message
         alert.addButton(withTitle: answer.stayButton)
         alert.addButton(withTitle: answer.quitButton)
-        NSApp.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
+        let quitting = alert.runModal() == .alertSecondButtonReturn
+        if !quitting { core.quitStayed() }
+        NSApp.reply(toApplicationShouldTerminate: quitting)
     }
 
     func handOffQuit() {

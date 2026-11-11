@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 /// How long a quiet run lasts at most, if it isn't told.
 pub(crate) const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
 
+/// A test's slow disk: how long a quiet run waits before it reads the state, from `RECTO_QA_RESTORE_DELAY_MS`, so a restore can come after the window's gone up without it. Nothing outside a quiet run.
+pub(crate) fn restore_delay(quiet: bool) -> Option<Duration> {
+    if !quiet {
+        return None;
+    }
+    let ms: u64 = std::env::var("RECTO_QA_RESTORE_DELAY_MS").ok()?.parse().ok()?;
+    Some(Duration::from_millis(ms.min(30_000)))
+}
+
 /// The process this quiet run ends with, if it was told one: what a relaunch by an update passes on.
 static OWNER: OnceLock<u32> = OnceLock::new();
 

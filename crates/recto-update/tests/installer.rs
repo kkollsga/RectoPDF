@@ -6,7 +6,7 @@ use recto_update::install::DIE_AT_ENV;
 use recto_update::plan::{Files, Outcome, OutcomeKind, Plan, TestLaunch, beside_app, new_app_in, previous_app_in};
 use recto_update::source::resolve;
 use recto_update::stage::app_version;
-use recto_update::updater::{AtLaunch, Facts, HandOffRefused, Host, Look, Status, Updater};
+use recto_update::updater::{AtLaunch, Facts, HandOffRefused, HandedOff, Host, Look, Status, Updater};
 use recto_update::{APP_BUNDLE, BUNDLE_ID};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -107,6 +107,7 @@ impl Bed {
             quit_limit_ms: 30_000,
             start_limit_ms: 60_000,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: Some(test),
         };
@@ -201,8 +202,8 @@ impl Host for NoHost {
     fn look(&self) -> Look {
         Look::default()
     }
-    fn hand_off(&self, _limit: Duration) -> Result<(), HandOffRefused> {
-        Ok(())
+    fn hand_off(&self, _limit: Duration) -> Result<HandedOff, HandOffRefused> {
+        Ok(HandedOff::default())
     }
     fn quit_now(&self) -> bool {
         false

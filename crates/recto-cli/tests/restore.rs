@@ -2163,6 +2163,41 @@ fn it_writes_only_what_happened() {
     run.quit();
 }
 
+/// Failure (review 1): with the state read late, after the window's gone up without it, the restore writes the saved "hidden" and "in the Dock" back into the record while the app's on the screen, so the next update hides an app the user's looking at. Once the host has shown it, that's how things are, in the record too.
+#[test]
+fn a_restore_after_the_window_is_up_keeps_what_the_host_did() {
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let file = long_document("alpha", 10);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "minimise", "on"]);
+    run.ok(&["qa", "hide", "on"]);
+    let saved = run.report();
+    assert_eq!(
+        (&saved["session"]["app"]["app_hidden"], &saved["session"]["app"]["window"]["minimised"]),
+        (&json!(true), &json!(true))
+    );
+    run.quit();
+    // A slow disk: the state comes 2.5 s after the launch, past the window's patience.
+    let app = app_path().unwrap();
+    let output = state
+        .command()
+        .env("RECTO_QA_RESTORE_DELAY_MS", "2500")
+        .args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "2m", "--json"])
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let run = Run::attach(&state, reply["data"]["pid"].as_u64().unwrap() as u32);
+    let restored = common::app::wait_for_long(&run, |report| report["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
+    assert_eq!(restored["app"]["hidden"], false, "the host showed it");
+    assert_eq!(restored["app"]["window"]["minimised"], false);
+    assert_eq!(restored["session"]["app"]["app_hidden"], false, "and the record says so");
+    assert_eq!(restored["session"]["app"]["window"]["minimised"], false);
+    run.quit();
+}
+
 /// Failure: a session with no window has its save land on the app's record, losing the owner's tabs, or the commands don't exist without an app. It has a folder of its own, and comes back.
 #[test]
 fn a_session_with_no_window_has_its_own_record() {

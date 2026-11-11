@@ -95,6 +95,17 @@ check_built() {
         *"\"mode\":\"release\""*"\"repo\":\"$REPO_URL\""*"\"release_build\":true"*"\"trust\":\"developer_id\""*"\"takes_test_hooks\":false"*) echo "    $answer" ;;
         *) echo "this build would use an override: $answer" >&2; exit 1 ;;
     esac
+    # The app's own library too, not only the installer's: it's what reads a test's broken-release files.
+    answer="$("$APP/Contents/MacOS/RectoPDF" --build-kind)"
+    case "$answer" in
+        *"\"release_build\":true"*"\"takes_test_hooks\":false"*) echo "    app: $answer" ;;
+        *) echo "the app's library isn't a release build: $answer" >&2; exit 1 ;;
+    esac
+    # A test's broken-release file never ships, whatever a release build makes of it.
+    if ls "$APP/Contents/Resources/" | grep -q '^test-'; then
+        echo "a test's file is in the app's Resources: $(ls "$APP/Contents/Resources/" | grep '^test-' | tr '\n' ' ')" >&2
+        exit 1
+    fi
 }
 # The real bundle in a quiet run, which is the only thing that shows a renderer loading under the hardened runtime. It's
 # what every copy would move to: a first frame on its own isn't enough. With the overrides set, the app has to say it's

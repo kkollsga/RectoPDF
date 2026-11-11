@@ -452,6 +452,18 @@ impl RecordStore {
         }
     }
 
+    /// The folder the record's in, as this version keeps it.
+    #[must_use]
+    pub fn main_folder(&self) -> PathBuf {
+        self.fold_root()
+    }
+
+    /// This version's own folder beside a newer app's record, which it reads instead of that one.
+    #[must_use]
+    pub fn own_folder(&self) -> PathBuf {
+        self.version_folder(&self.fold_root(), self.version)
+    }
+
     fn fold_root(&self) -> PathBuf {
         let locked = self.lock_path.file_stem().map_or(String::new(), |name| name.to_string_lossy().into_owned());
         self.root.join(locked)

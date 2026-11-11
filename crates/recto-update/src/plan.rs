@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const MAX_PLAN_BYTES: u64 = 64 * 1024;
+/// Documents a plan passes on, at most. A launch asked to open more opens the rest by hand.
+pub const MAX_OPEN: usize = 64;
 const MAX_LOG_BYTES: u64 = 256 * 1024;
 
 /// How long the installer waits for the old app to end. It's been told to quit with nothing to ask.
@@ -123,6 +125,9 @@ pub struct Plan {
     /// How many tabs the old app handed off. A new version that comes up with fewer has misread the record, as no tab is dropped by a restore, and goes back with the record from before it.
     #[serde(default)]
     pub handed_off_tabs: Option<u32>,
+    /// What the app's to open as it's opened: what the user asked a launch that went back to open.
+    #[serde(default)]
+    pub open: Vec<PathBuf>,
     /// Going back leaves the record as it is: a version that's been in use since it came up and then kept ending has the user's latest work in it, which the previous version reads, or leaves alone if it's of a newer kind.
     #[serde(default)]
     pub keep_record: bool,
@@ -167,7 +172,9 @@ impl Plan {
             && parse_version(&plan.to).is_some()
             && plan.app.is_absolute()
             && plan.beside.is_absolute()
-            && plan.root.is_absolute())
+            && plan.root.is_absolute()
+            && plan.open.len() <= MAX_OPEN
+            && plan.open.iter().all(|path| path.is_absolute()))
         .then_some(plan)
     }
 
@@ -208,6 +215,18 @@ pub fn beside_app(app: &Path) -> Option<PathBuf> {
 pub const STAGED_BUNDLE: &str = "RectoPDF.staged";
 /// What the previous app is called while it's kept: see [`STAGED_BUNDLE`].
 pub const KEPT_BUNDLE: &str = "RectoPDF.kept";
+
+/// A staged or kept copy under the name a build before [`STAGED_BUNDLE`] gave it is moved to its new one, so the first update from such a build can still go back. Only where there's nothing under the new name, and never while that build's installer may still be at work. Two looks at names, and nothing else, at a normal launch.
+pub fn move_to_new_names(beside: &Path) {
+    for (old, new) in [
+        (beside.join("new").join(crate::APP_BUNDLE), new_app_in(beside)),
+        (beside.join("previous").join(crate::APP_BUNDLE), previous_app_in(beside)),
+    ] {
+        if std::fs::symlink_metadata(&old).is_ok_and(|meta| meta.is_dir()) && std::fs::symlink_metadata(&new).is_err() {
+            let _ = std::fs::rename(&old, &new);
+        }
+    }
+}
 
 #[must_use]
 pub fn new_app_in(beside: &Path) -> PathBuf {
@@ -304,6 +323,7 @@ mod tests {
             quit_limit_ms: 1,
             start_limit_ms: 1,
             handed_off_tabs: None,
+            open: Vec::new(),
             keep_record: false,
             test: None,
         };
