@@ -78,7 +78,15 @@ case "$1" in
     ;;
   seed)
     [ $# -eq 2 ] || usage
-    seed "$(cd "$2" && pwd)"
+    path=$(cd "$2" && pwd)
+    had_target=""
+    [ ! -e "$path/target" ] || had_target=1
+    seed "$path"
+    # An existing worktree was checked out before the main checkout's last build, so its sources are older than the clone, and cargo
+    # would take the seed's workspace crates as built from them: a worktree behind main then links main's newer crates and fails to
+    # compile (2026-11-11, recto-ffi against a recto-update with a method it didn't have). Bringing the tracked files' times forward
+    # makes the workspace rebuild, as in a new worktree.
+    if [ -z "$had_target" ] && [ -d "$path/target" ]; then (cd "$path" && git ls-files -z | xargs -0 touch -c); fi
     ;;
   remove)
     [ $# -eq 2 ] || usage
