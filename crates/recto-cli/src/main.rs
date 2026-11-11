@@ -481,21 +481,19 @@ fn budget_tabs(invocation: &Invocation) -> Result<Value, AgentError> {
     let file = file
         .canonicalize()
         .map_err(|_| AgentError::new("not_found", "That file couldn't be found.", exit::NOT_FOUND))?;
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("recto-budget-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
+    // A folder of this run's own, never one a run killed partway left behind, and gone when this ends, by a panic too.
+    let base = std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir());
+    let fresh = recto_platform::fresh::FreshDir::new_in(&base, "recto-budget-", "")
+        .map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
+    let dir = fresh.path();
     let paths = paths()?;
     let file =
-        recto_platform::local::clone_source_in(&file, &dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a file to clone.", exit::FAILED))?;
-    let result = if invocation.fields.contains_key("in_process") {
-        measure_in_process(&paths, &file, &dir, count)
+        recto_platform::local::clone_source_in(&file, dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a file to clone.", exit::FAILED))?;
+    if invocation.fields.contains_key("in_process") {
+        measure_in_process(&paths, &file, dir, count)
     } else {
-        measure_through_session(&paths, &file, &dir, count)
-    };
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+        measure_through_session(&paths, &file, dir, count)
+    }
 }
 
 /// What's a search without an index if nothing's named. A word nothing has, so every page is read; a common word, so the limit is reached; and a phrase.
@@ -521,7 +519,10 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
     // In the OS's temp folder, which it cleans for itself, since a run killed partway leaves a document's text here and nothing else would ever look at it.
     let temp =
         recto_platform::local::system_temp_dir().ok_or_else(|| AgentError::new("write_failed", "This Mac's temp folder couldn't be found.", exit::FAILED))?;
-    let root = temp.join(format!("recto-budget-{}.noindex", std::process::id()));
+    // A folder of this run's own, never one a run killed partway left behind, and gone when this ends, by a panic too.
+    let fresh = recto_platform::fresh::FreshDir::new_in(&temp, "recto-budget-", ".noindex")
+        .map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
+    let root = fresh.path().to_path_buf();
     let result = (|| {
         let build = recto_control::indexing::build_now(
             &file,
@@ -590,7 +591,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
             "this_process_peak_bytes": recto_platform::isolate::process_memory(std::process::id()).map(|memory| memory.peak_footprint_bytes),
         }))
     })();
-    let _ = std::fs::remove_dir_all(&root);
+    drop(fresh);
     result
 }
 
