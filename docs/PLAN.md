@@ -336,6 +336,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] On CI's virtual machines the app reads about 80 wake-ups a second for up to 6 s after settling ([132, 123, 42, 7], [176, 165, 94, 9], [117, 1, 0, 0], [157, 163, 4, 7]), while a sample of every thread in that window shows none working. This Mac reads 0 to 4. Not explained. Look at the CPU the test now reports, and check on the MacBook
 - [x] `qa budget`'s idle window starts 1 s after settling, so the tail of settling reads as up to 1.35 wake-ups a second: start it later. Done in `b25ec1f`, from 5 s; the final budget report read 0.4 and 0.25 a second
 - [ ] Commit `184f5a7` doesn't compile alone: it uses `JobPlan` from the next commit. The tip is fine, and a bisect has to skip it
+- [ ] `check.sh --full` stamps the commit it started on even when tracked files changed during the run (process review 2026-11-11: a test edited mid-run passed unrecorded on a dirty tree). Refuse to stamp when the tree's fingerprint at the end differs from the start, with a `check-test.sh` case
+- [ ] Build speed follow-ups (`docs/reports/build-performance-2026-11-11.md`): nextest threads per queue slot (a shared-queue change, so `heavy-test.sh`); test consolidation into fewer binaries, deferred to phase R; an sccache opt-out for this repo if the owner wants it
 
 **Done when:** you approve the signed draft. Nothing is published without your go-ahead.
 

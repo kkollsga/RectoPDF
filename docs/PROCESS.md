@@ -159,3 +159,21 @@ The fifth was a whole-state restore test that hadn't been told about new fields,
 - A worker's new tests are run by name on CI-like timing before the hand-back where possible (a busy queue is a fair stand-in).
 
 **Check next time.** Hours main was red, and whether each red period had a single cause.
+
+## 2026-11-11, after five merges (reader fixes, Save safety, build speed, soak growth, update gaps)
+
+**Numbers.** Five merges since the last review, one past the every-fourth rule. CI on `main` green on all three pushes today (`11276a3`, `41f5ec3`, `b76531b`); the last red was the macOS 15 retirement test before `41f5ec3`, fixed in the test (`82678b3`) as a crossing after the last page has nothing to answer it. Full runs: `main` 3, no failure; branches 1 or 2 each, none needing `--why`. Save safety used 5 queue suites with 2 failed, the most of the five. Queue: 204 jobs, median wait 0 s, p90 51 s, longest 444 s; peak 3 jobs, lowest free memory 51%. A full check now takes 270 to 370 s under load.
+
+**Structure (code-review graph and git).** Hub files touched per merge (the FFI lib, the session, command tables, QA tables, menus, MainWindow, bridge): 0, 2, 0, 1, 2, against 7 to 11 per feature before the quick fixes. The quick fixes worked for where features live. But the hubs themselves still grow: `Session` 180 to 193 methods, `Command` 59 to 67 variants. The largest files are unchanged: `recto-session/src/lib.rs` 7,012 lines, `recto-reader/src/tiles.rs` 5,489, `recto-ffi/src/lib.rs` 5,410, `recto-agent/src/table.rs` 5,298. Phase R is still needed and stays first after release. Merge conflicts today: only update gaps against dev updates, expected and handed to the worker.
+
+**Waste and misses.**
+- **I edited a test in the main checkout while a full check ran there.** The run passed on a dirty tree and stamped a commit without that edit. Harmless this time: product code was the same, and CI ran the committed code. But a pass should only ever describe what it ran. Fixes go in a worktree, or wait for the run to end.
+- **Waiting builds.** The icon worker waited for the owner's choice, at no cost. The dev-updates and update-gaps branches touched the same updater files in parallel; one merge cleans up after both. Two branches on one module at once is the cost of finishing started work before release, and it was named in both briefs.
+
+**What worked.** Merging two reviewed branches under one full check saved a run with nothing lost. Every worker hand-back used one full run, last, as the brief said. The worktree seed made first builds cheap enough that nobody skipped a worktree.
+
+**Changing.**
+- While a full check runs in a checkout, nothing in that checkout is edited. `check.sh` could refuse to stamp when the tree changed during the run; added to PLAN as a follow-up, with a `check-test.sh` case.
+- Process reviews keep the hub-touches-per-merge count, and add hub growth (methods and variants) as a second number.
+
+**Check next time.** Hub growth since today's numbers; whether phase R's first steps start right after the release tag; CI red hours.
