@@ -308,6 +308,8 @@ import QuartzCore
         case "scroller_style":
             scrollerStyle = value == "legacy" ? .legacy : .overlay
             controller?.layout()
+        case "accessibility":
+            if let problem = controller.map({ $0.qaAccessibility(value) }) ?? "The window is closed." { return fail(id, problem) }
         case "reduce_motion":
             controller?.sidebar.reduceMotion = value == "on"
         case "reveal":

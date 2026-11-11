@@ -225,6 +225,11 @@ pub struct ScrollThumb {
     pub light_hover: (u32, f64),
     pub dark: (u32, f64),
     pub dark_hover: (u32, f64),
+    /// The same, with the system's Increase Contrast on: about twice as strong, so the thumb stands out against the sidebar and the page as that setting asks of every control, and still clear of the text under it.
+    pub light_contrast: (u32, f64),
+    pub light_contrast_hover: (u32, f64),
+    pub dark_contrast: (u32, f64),
+    pub dark_contrast_hover: (u32, f64),
 }
 
 /// The one scroll thumb.
@@ -238,6 +243,10 @@ pub const SCROLL_THUMB: ScrollThumb = ScrollThumb {
     light_hover: (0x000000, 0.42),
     dark: (0xFFFFFF, 0.24),
     dark_hover: (0xFFFFFF, 0.45),
+    light_contrast: (0x000000, 0.55),
+    light_contrast_hover: (0x000000, 0.75),
+    dark_contrast: (0xFFFFFF, 0.6),
+    dark_contrast_hover: (0xFFFFFF, 0.8),
 };
 
 /// How much of the sidebar's list goes where, in points.

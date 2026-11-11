@@ -183,7 +183,8 @@ final class CenteringClipView: NSClipView {
         documentView.wantsLayer = true
         documentView.layerContentsRedrawPolicy = .never
         clip.postsBoundsChangedNotifications = true
-        if ThumbView.look == nil { ThumbView.look = core.scrollThumb() }
+        ThumbView.configure(core)
+        thumb.list = "pages"
         thumb.room = { [weak clip] in clip?.room ?? (0, 0) }
         thumb.scrollTo = { [weak self] y in self?.thumbMoved(to: y) }
         thumb.attach(to: scrollView)
