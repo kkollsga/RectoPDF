@@ -35,6 +35,9 @@ CSV = os.path.join(DIR, "samples.csv")
 LOG = os.path.join(DIR, "driver.log")
 RUN = os.path.join(DIR, "run.json")
 SAMPLE_EVERY = float(os.environ.get("SOAK_SAMPLE_S", "60"))
+# How much faster than a person the drive goes: the rest between rounds is divided by it. 4 for the release's 2-hour fast soak
+# (owner, 2026-11-11: "24 hour memory soak? We don't have time for that"), 1 for the 24-hour soak.
+PACE = max(1.0, float(os.environ.get("SOAK_PACE", "1")))
 # The app's own limit is at most 24 h (recto's longest wait): the drive stops a few minutes before it.
 APP_LIMIT_H = 24
 DRIVE_S = min(HOURS * 3600, APP_LIMIT_H * 3600 - 300)
@@ -421,7 +424,7 @@ class Soak:
                 self.recto("qa", "mouse-down", "1:5,5")
                 self.recto("qa", "mouse-up")
             self.phase = "rest"
-            time.sleep(rng.uniform(5, 40))
+            time.sleep(rng.uniform(5, 40) / PACE)
         self.phase = "ending"
         self.log(f"drive done: rounds {self.rounds}, actions {self.actions}, errors {self.errors}, timeouts {self.timeouts}, saves {self.saves}, "
                  f"runs {self.run_id}, kinds {json.dumps(self.err_kinds, sort_keys=True)}")
@@ -452,7 +455,7 @@ def main():
 
     signal.signal(signal.SIGTERM, on_term)
     s.write_run()
-    s.log(f"soak starting: {HOURS} h, bundle {BUNDLE}, corpus {CORPUS}")
+    s.log(f"soak starting: {HOURS} h at pace {PACE}, bundle {BUNDLE}, corpus {CORPUS}")
     t = threading.Thread(target=s.sampler, daemon=True)
     t.start()
     try:
