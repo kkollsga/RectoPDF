@@ -2314,12 +2314,24 @@ impl Reader {
         keys
     }
 
+    /// Whether any pixel of a page is in view at the tiles' scale. The view can reach into a page by less than the part of a pixel its tiles leave off at its foot or its right edge, as
+    /// [`recto_proto::device_size`] rounds those to whole pixels: then no tile is in view, so [`Self::refresh`] takes what was on the page off it, and nothing of it can be seen. A page whose
+    /// size or scale isn't known yet counts as showing.
+    fn shows_a_pixel(&self, doc: &DocView, page: u32) -> bool {
+        let scale = doc.tile_scale;
+        if scale <= 0.0 || !doc.layout.is_known(page) {
+            return true;
+        }
+        !matches!(self.visible_cells(doc, page, scale), Ok(cells) if cells.is_empty())
+    }
+
+    /// Counts a step that left a page in view bare: one that shows a pixel, by the same cells drawing goes by, so a sliver of 0.004 points isn't a blank page.
     fn count_blanks(&mut self) {
         let Some(doc) = self.doc() else { return };
         let (mut blank, mut blank_seen) = (false, false);
         for page in self.visible_pages(doc) {
             let has_something = self.attached.get(&page).is_some_and(|ids| !ids.is_empty());
-            if !has_something && !doc.issues.contains_key(&page) {
+            if !has_something && !doc.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
                 blank = true;
                 blank_seen |= doc.seen.contains(&page);
             }
@@ -3385,13 +3397,18 @@ mod tests {
 
     /// Runs the job queue with a pretend renderer until there's nothing left to do, and applies what the host would.
     fn settle(reader: &mut Reader) -> Vec<Job> {
+        settle_all_sized(reader, letter())
+    }
+
+    /// [`settle`], with every page this size.
+    fn settle_all_sized(reader: &mut Reader, size: PageBox) -> Vec<Job> {
         let mut drawn = Vec::new();
         for _ in 0..10_000 {
             reader.take_ops();
             reader.applied();
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
-                JobKind::Size => Outcome::Size(letter()),
+                JobKind::Size => Outcome::Size(size),
                 JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
@@ -3548,6 +3565,72 @@ mod tests {
         assert_eq!(reader.counts().blank_seen_steps, 0);
         settle(&mut reader);
         assert_eq!(reader.counts().drawn, before, "nothing needed drawing again");
+    }
+
+    /// Failure: a sweep over pages already drawn has a step with a page in view and nothing on it. Measured by `qa sweep 6` on `rfc9110` from page 64: 1 blank step on a seen page in 2 of 6 sweeps (2026-11-08), then in 2 of 21 here, each time a page whose foot was in view by 0.004 points, inside the last part of a pixel that a page's tiles leave off (`device_size` rounds a page's edge to whole pixels). No tile reaches there, so refreshing took everything off the page, and the count called it bare though nothing of it could be seen. Pages are sized so their foot is such a part of a pixel, the view lands there on each page, and it sweeps at 6 pages a second over the seen pages, three times.
+    #[test]
+    fn a_sweep_over_seen_pages_has_no_blank_step() {
+        // A page height whose foot, at the tiles' scale, falls in the first half of a pixel, which rounding leaves without a tile.
+        let scale = {
+            let mut reader = reader_on(2);
+            settle(&mut reader);
+            f64::from(reader.doc().unwrap().tile_scale)
+        };
+        let height = (0..400u16)
+            .map(|step| 780.0 + f32::from(step) * 0.1)
+            .find(|height| {
+                let fraction = (f64::from(*height) * scale).fract();
+                fraction > 0.1 && fraction < 0.4
+            })
+            .unwrap();
+        let size = PageBox { width: 612.0, height };
+        let mut reader = reader_on(40);
+        settle_all_sized(&mut reader, size);
+        let (step, bottoms) = {
+            let doc = reader.doc().unwrap();
+            let bottoms: Vec<f64> = (0..30).map(|page| doc.layout.rect(page).y + doc.layout.rect(page).height).collect();
+            (doc.layout.rect(1).height * 6.0 / 120.0, bottoms)
+        };
+        // Down once, drawing every page passed, so every one is seen.
+        let mut y = 0.0;
+        while y < bottoms[25] {
+            reader.set_viewport(view(y));
+            settle_all_sized(&mut reader, size);
+            y += step;
+        }
+        let blank_before = reader.counts().blank_seen_steps;
+        for round in 0..3 {
+            // Back up at the sweep's pace, applying as a host does and drawing nothing new.
+            let mut y = bottoms[25];
+            while y > 0.0 {
+                reader.set_viewport(view(y));
+                reader.applied();
+                y -= step;
+            }
+            // Down again, the view's top a sliver above each page's foot, short of a pixel, and then a step on.
+            for &bottom in &bottoms[..25] {
+                reader.set_viewport(view(bottom - 0.004));
+                reader.applied();
+                reader.set_viewport(view(bottom - 0.004 + step / 2.0));
+                reader.applied();
+            }
+            assert_eq!(reader.counts().blank_seen_steps, blank_before, "round {round}: {}", reader.report().0);
+        }
+        // Every page in view with a pixel of it showing has something on it, so the count is about what can be seen.
+        for &bottom in &bottoms[..25] {
+            for into in [0.004, 0.2, 1.0, 3.0] {
+                reader.set_viewport(view(bottom - into));
+                reader.applied();
+                let doc = reader.doc().unwrap();
+                for page in reader.visible_pages(doc) {
+                    let shows = !matches!(reader.visible_cells(doc, page, doc.tile_scale), Ok(cells) if cells.is_empty());
+                    assert!(
+                        !shows || reader.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
+                        "page {page} is bare, {into} points in view"
+                    );
+                }
+            }
+        }
     }
 
     /// Failure: coming back to two pages at once, the first takes the whole turn's attachments, and the second is blank until the next turn. Measured on `qa sweep`: 32 such steps in 5 s at 40 pages a second.
