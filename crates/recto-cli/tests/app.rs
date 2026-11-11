@@ -126,7 +126,13 @@ fn a_search_in_the_app_gets_its_index() {
     let Some(run) = Run::start() else { return };
     let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
-    let done = run.ok(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+    let (waited, code) = run.state.json(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+    // CI once timed out here (build/ci-deaths, run 43062878803), not seen here with every waiting point slow or the app at background priority: where the index stood says whether its helper was starved or a word it was done never came.
+    if code != 0 {
+        let (stands, _) = run.state.json(&["index", "--tab", "active"]);
+        panic!("{waited}\nthe index: {stands}");
+    }
+    let done = &waited["data"];
     assert_eq!(done["state"], "ready", "{done}");
     let found = run.ok(&["search", "number"]);
     assert_eq!(found["route"], "index", "{found}");
