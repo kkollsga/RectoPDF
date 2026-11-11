@@ -966,7 +966,7 @@ final class TabTable: NSTableView {
         }
     }
 
-    /// Rows opened or closed as the reader moved. Rust's rule says whether the scroll takes it up, in the same transaction so that what stays still does. If not, they slide, and with Reduce Motion they don't. Whatever else moves the scroll, as a shorter list clamps it, counts the same.
+    /// Rows opened or closed as the reader moved. Rust's rule says whether the scroll takes it up, in the same transaction so that what stays still does. If not, they fade over, and with Reduce Motion they don't. Whatever else moves the scroll, as a shorter list clamps it, counts the same.
     private func applyRowChange(_ new: SidebarView) {
         let from = Int(new.contentsChangedFrom)
         let (removed, inserted) = (Int(new.contentsRemoved), Int(new.contentsInserted))
@@ -985,12 +985,17 @@ final class TabTable: NSTableView {
                 setContentsY(before + by)
                 return
             }
-            let motion: NSTableView.AnimationOptions = shouldReduceMotion ? [] : [.effectFade, .slideUp]
-            // The table animates by the current context's duration, so that's how long the rows are moving.
-            if !motion.isEmpty, removed + inserted > 0 { rowsUntil = CACurrentMediaTime() + NSAnimationContext.current.duration }
+            // They fade over, a layer the size of the view for a moment, and not by the table's own row animations: on macOS 27 a row view animated out, or in, is kept for good with its cell, by an observer AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`), so a day of sections opening and closing grew without end (`comparisons_leave_no_views_behind`). With Reduce Motion they just change.
+            if !shouldReduceMotion, removed + inserted > 0 {
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = NSAnimationContext.current.duration
+                contentsScroll.layer?.add(fade, forKey: "rows")
+                rowsUntil = CACurrentMediaTime() + fade.duration
+            }
             contentsTable.beginUpdates()
-            if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: motion) }
-            if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: motion) }
+            if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: []) }
+            if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: []) }
             contentsTable.endUpdates()
             // The rail and which row is the place are about every row, and they're drawn from Rust's model.
             reloadContentsCells()
