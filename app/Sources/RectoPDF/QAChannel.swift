@@ -150,6 +150,7 @@ import QuartzCore
             switch value {
             case "open": delegate.showSettings()
             case "close": delegate.settings?.window.close()
+            case "privacy": delegate.settings?.privacyLink.performClick(nil)
             default:
                 guard let toggle = delegate.settings?.switches[value] else { return fail(id, "That switch isn't showing.") }
                 toggle.performClick(nil)
@@ -385,6 +386,7 @@ import QuartzCore
             "chrome": controller.chrome.report,
             "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !overPages(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0)), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.paneAreas[controller.paneAreas.count - 1].scrollView.scrollerInsets.top] as [String: Any],
             "home": !controller.home.isHidden,
+            "home_note": controller.homeNote.text.isEmpty ? NSNull() as Any : ["text": controller.homeNote.text, "frame": [controller.homeNote.frame.minX, controller.homeNote.frame.minY, controller.homeNote.frame.width, controller.homeNote.frame.height], "in_home": controller.home.bounds.contains(controller.homeNote.frame)] as [String: Any],
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
             "focus_view": delegate.core.focusView(),

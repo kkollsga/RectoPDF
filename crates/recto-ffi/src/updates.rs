@@ -42,6 +42,9 @@ pub struct SettingsModel {
     pub rows: Vec<SettingRow>,
     /// How updates stand now.
     pub status: String,
+    /// A link to the privacy statement: its words, and where it opens.
+    pub privacy_title: String,
+    pub privacy_url: String,
 }
 
 /// What an update chosen from the menu came to, for an app-modal alert. Rust's words.
@@ -432,11 +435,16 @@ impl Inner {
         } else {
             "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it."
         };
+        let hint = if self.updates.source().checks_by_itself() {
+            format!("{hint} {}", crate::privacy::CHECK_EITHER_WAY)
+        } else {
+            hint.to_owned()
+        };
         let mut rows = vec![
                 SettingRow {
                     id: AUTO_UPDATE_ROW.to_owned(),
                     title: "Update automatically".to_owned(),
-                    hint: hint.to_owned(),
+                    hint,
                     on: self.updates.switch_on(),
                     enabled: !development,
                 },
@@ -454,6 +462,8 @@ impl Inner {
             title: "Settings".to_owned(),
             rows,
             status: self.updates.status_line(),
+            privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
+            privacy_url: crate::privacy::statement_url(),
         }
     }
 
