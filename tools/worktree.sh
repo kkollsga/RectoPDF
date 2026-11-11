@@ -7,7 +7,7 @@
 #   tools/worktree.sh remove <path>                   Removes the worktree and its target/ (the branch stays)
 #
 # The seed is an APFS clone (`cp -c`): near-instant, and no disk is used until one side writes a file. Without APFS it seeds nothing,
-# rather than copying tens of gigabytes. What it takes: every registry and git dependency already built (debug, release, the Windows
+# rather than copying tens of gigabytes. What it takes: every registry and git dependency already built (debug, release, dev-release, the Windows
 # check), the build scripts' output and PDFium. What it leaves: the workspace's own object files and incremental caches, which the
 # worktree rebuilds anyway, as its sources are newer than anything in the seed. That is what keeps a seed correct: the clone keeps the
 # main checkout's times, and the worktree's files are checked out after them, so cargo sees every workspace crate as changed and only
@@ -49,7 +49,7 @@ seed() {
   fi
   rm -rf "$to/.probe"
   started=$(date +%s)
-  for profile in "$from"/debug "$from"/release "$from"/*/debug "$from"/*/release; do
+  for profile in "$from"/debug "$from"/release "$from"/dev-release "$from"/*/debug "$from"/*/release; do
     [ -d "$profile" ] || continue
     local rel=${profile#"$from"/}
     case "$rel" in tmp/* | dev*/*) continue ;; esac

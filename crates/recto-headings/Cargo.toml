@@ -39,6 +39,12 @@ codegen-units = 1
 panic = "unwind"
 debug = "line-tables-only"
 
+# The same as the app's workspace: `app/build.sh --dev-release` builds this helper with it.
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [dev-dependencies]
 # To make a decompression bomb for `tests/images.rs`. Already in this lockfile through distillPDF, so it adds no crate.
 flate2 = "1"
