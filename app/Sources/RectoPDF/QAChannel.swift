@@ -43,12 +43,12 @@ import QuartzCore
             delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), cpuMicros: cpu / 1000, contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
-            layOutNow()
+            readyToBeLookedAt()
             answer(id, state())
             return
         case "animations":
             // Cheap, as `qa wait-settled` asks it until there's nothing.
-            layOutNow()
+            readyToBeLookedAt()
             answer(id, controller?.runningAnimations() ?? [])
             return
         case "entry_points":
@@ -351,7 +351,10 @@ import QuartzCore
     }
 
     /// What the window's display cycle would do before anything's seen. A quiet run's window is never on screen, so AppKit has no display cycle for it, and its views are laid out only when something asks: a report or `qa wait-settled` that came before that saw a table with no rows made and a pane with no height (CI, 2026-11-11, on a slower machine where the order differed). A person's window is laid out before it's drawn, so this only makes a quiet run the same.
-    private func layOutNow() {
+    ///
+    /// And the run's activation policy as its guard holds it: something outside the app can change it, and the guard hears of that a turn of the run loop or more later, so a report in between said `accessory` (a full check, 2026-11-11). The guard puts it back here first, so a look sees the rule kept, and says in the run's messages that it had to.
+    private func readyToBeLookedAt() {
+        if delegate.isQuiet { QuietRunGuard.keepProhibited() }
         for window in NSApp.windows where window.contentView != nil {
             window.layoutIfNeeded()
         }

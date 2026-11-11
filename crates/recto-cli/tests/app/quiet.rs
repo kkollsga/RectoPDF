@@ -199,3 +199,24 @@ fn a_quiet_run_ends_with_what_started_it() {
     assert_ne!(code, 0);
     assert_eq!(reply["error"]["code"], "owner_gone", "{reply}");
 }
+
+/// Failure: something outside the app changes a quiet run's activation policy, and a report or a settle look taken before the guard hears of it says `accessory`, failing a test that compares states (`an_installer_killed_after_the_swap_loses_nothing`, in a full check, 2026-11-11), with the run off its rules until the guard catches up. Here the run turns itself `accessory` every 15 ms, as that change would, and every look says `prohibited`.
+#[test]
+fn a_quiet_run_is_prohibited_whenever_its_looked_at() {
+    let state = super::common::State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_POLICY_NUDGE_MS", "15".as_ref())]) else {
+        return;
+    };
+    let mut said = std::collections::BTreeMap::<String, usize>::new();
+    for look in 0..200 {
+        if look % 10 == 0 {
+            run.settled();
+        }
+        let activation = run.report()["app"]["activation"].as_str().unwrap_or("none").to_string();
+        *said.entry(activation).or_default() += 1;
+    }
+    assert_eq!(said.keys().collect::<Vec<_>>(), ["prohibited"], "what 200 reports said: {said:?}");
+    // It was changed, and put back: not a run the nudge never reached.
+    let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(messages.contains("changed to accessory from outside, and put back"), "{messages}");
+}
