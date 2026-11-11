@@ -3630,8 +3630,11 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::RestorePatienceOver => {
                 if !inner.restored.load(Ordering::SeqCst) {
-                    // The state hasn't come. The window goes up without it, and when it does come it's taken in.
-                    inner.listener.restore_ready();
+                    match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.started.elapsed()) {
+                        // The state hasn't come. The window goes up without it, and when it does come it's taken in.
+                        updates::Patience::ShowNow => inner.listener.restore_ready(),
+                        updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
+                    }
                 }
                 // A tab's file not answering: on to what's on the record. The page says it isn't answering.
                 if lock(&inner.holding_tab).take().is_some() {

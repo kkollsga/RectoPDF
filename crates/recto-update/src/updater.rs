@@ -516,6 +516,18 @@ impl Updater {
         lock(&self.st).reopened_by_update
     }
 
+    /// Whether this launch may be one an update opened, before the state's been read: what it was found to be once the launch has been looked at, and until then, whether an install left its plan or what became of it. A stat or two, for the window's patience to go by.
+    #[must_use]
+    pub fn may_be_reopened_by_update(&self) -> bool {
+        {
+            let st = lock(&self.st);
+            if st.facts.is_some() {
+                return st.reopened_by_update;
+            }
+        }
+        self.files.plan().exists() || self.files.outcome().exists()
+    }
+
     /// The record from before the update, if this launch is the version before coming back from one that kept ending, and it's there: for when what that one left can't be read here. Taken once.
     #[must_use]
     pub fn take_record_to_fall_back_on(&self) -> Option<PathBuf> {
@@ -2378,6 +2390,39 @@ mod tests {
         assert_eq!(Saved::read(&files.saved).probation.unwrap().running_since_ms, None);
         updater.quit_not_taken();
         assert!(Saved::read(&files.saved).probation.unwrap().running_since_ms.is_some(), "watched again");
+    }
+
+    /// Failure (full check under load, 2026-11-11): the window's patience can't tell a launch an update opened before the launch has been looked at, so it went up without the state and a closed window opened. Before then, an install's plan or outcome says it may be; after, what the launch was found to be.
+    #[test]
+    fn whether_an_update_opened_this_launch_is_known_before_it_is_looked_at() {
+        let dir = temp_dir("maybe-reopened");
+        let root = dir.join("state");
+        local::ensure_private_dir(&root).unwrap();
+        let files = Files::in_state(&root);
+        let fresh = || {
+            Updater::new(
+                &root,
+                crate::source::resolve(false, true, None, None),
+                Arc::new(Fake::default()) as Arc<dyn Host>,
+            )
+        };
+        assert!(!fresh().may_be_reopened_by_update(), "nothing of an install about");
+        local::ensure_private_dir(&files.work).unwrap();
+        std::fs::write(files.plan(), "{}").unwrap();
+        assert!(fresh().may_be_reopened_by_update(), "a plan left");
+        std::fs::remove_file(files.plan()).unwrap();
+        std::fs::write(files.outcome(), "{}").unwrap();
+        assert!(fresh().may_be_reopened_by_update(), "an outcome left");
+        std::fs::remove_file(files.outcome()).unwrap();
+        let updater = fresh();
+        let app = fake_app(&dir.join("install"), "0.1.0");
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app,
+            system: "15.0".into(),
+        });
+        assert!(!updater.may_be_reopened_by_update(), "looked at, and it isn't");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Failure: a second copy of the app downloads a release it can't install, as its hand-off will be refused, or takes away what the first has staged. It reads, and says, and leaves it all alone, and it wakes for nothing.
