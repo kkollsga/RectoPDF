@@ -259,8 +259,6 @@ final class BookMark: NSView {
     private var problemShowing: SaveProblem?
     /// The password sheet showing, and its secure field, which QA types into as a person would.
     private var passwordShowing: PasswordPrompt?
-    /// The password sheet ended because its window is going for one made from the state: its ending isn't an answer.
-    private var passwordLetGo: PasswordPrompt?
     let passwordField = NSSecureTextField(string: "")
     /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
     let zoomButton = NSButton(title: "", target: nil, action: nil)
@@ -809,11 +807,14 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "link_prompt", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle], "address": prompt.address]
-        delegate.sheets.present(alert, over: window) { [weak self] response in
+        let delegate = self.delegate
+        delegate.sheets.present(alert, over: window) { response in
             core.sheetChanged(open: false)
-            self?.delegate.sheetShowing = nil
+            delegate.sheetShowing = nil
+            // Its window went: Rust still has the prompt, and the next window asks.
+            guard response != SheetPresenter.windowGone else { return }
             guard let address = core.linkPromptAnswered(id: prompt.id, open: response == .alertFirstButtonReturn) else { return }
-            self?.delegate.openAddress(address)
+            delegate.openAddress(address)
         }
     }
 
@@ -944,11 +945,14 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "save_problem", "message": problem.title, "informative": problem.message, "buttons": [problem.okTitle] + (problem.saveAsTitle.map { [$0] } ?? [])]
-        delegate.sheets.present(alert, over: window) { [weak self] response in
+        let delegate = self.delegate
+        delegate.sheets.present(alert, over: window) { response in
             core.sheetChanged(open: false)
-            self?.delegate.sheetShowing = nil
+            delegate.sheetShowing = nil
+            // Its window went: Rust still has the problem, and the next window says it.
+            guard response != SheetPresenter.windowGone else { return }
             let action = core.saveProblemAnswered(saveAs: response == .alertSecondButtonReturn)
-            if action == .showSavePanel { self?.delegate.showSavePanel() }
+            if action == .showSavePanel { delegate.showSavePanel() }
         }
     }
 
@@ -982,20 +986,11 @@ final class BookMark: NSView {
             let typed = response == .alertFirstButtonReturn ? self.passwordField.stringValue : nil
             self.passwordField.stringValue = ""
             self.passwordShowing = nil
-            if self.passwordLetGo == prompt {
-                self.passwordLetGo = nil
-                return
-            }
+            // Its window went: Rust still has the prompt, and the next window asks.
+            if response == SheetPresenter.windowGone { return }
             // With the id of the prompt it answers, so it goes to that file whatever's waiting by now.
             core.passwordAnswered(id: prompt.id, password: typed)
         }
-    }
-
-    /// **The window's going, for another made from the state that came in late** (slow mode, 2026-11-11): the password sheet over it ends without answering, and the new window asks again, as Rust still has the prompt. Held in a quiet run, Cancel on it went to this window's ending after the window had gone, so it was never answered and came straight back, and the sheet stayed counted open.
-    func letGoOfPasswordSheet() {
-        guard let prompt = passwordShowing else { return }
-        passwordLetGo = prompt
-        _ = delegate.sheets.answer(.abort, over: window)
     }
 
     private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -1210,6 +1205,8 @@ final class BookMark: NSView {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Closed, or going for one made from a state read late: what's over it ends without being an answer.
+        delegate.sheets.letGo(over: window)
         firstResponderWatch = nil
         for area in paneAreas { area.windowClosing() }
         delegate.windowDidClose()

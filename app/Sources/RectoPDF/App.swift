@@ -223,7 +223,6 @@ final class Bridge: AppListener, @unchecked Sendable {
         applyAppearanceChoice()
         if let old = windowController {
             replacingWindow = true
-            old.letGoOfPasswordSheet()
             old.window.close()
             replacingWindow = false
             windowController = nil

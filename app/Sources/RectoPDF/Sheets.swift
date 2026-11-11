@@ -5,8 +5,11 @@ import AppKit
 /// A quiet run never begins one. To hang a sheet on a window AppKit orders the window in, and a window that's off every screen is slid onto the nearest one first: the owner saw a quiet run's window flash up in the lower left of the screen (2026-11-08), sampled at 1440 x 900 sliding in from -40 000 and back each time the print panel or a close prompt came and went. So in a quiet run the sheet is made and held here, never shown, and `qa sheet-answer` ends it through the same completion a click on its button runs. A shot draws it from its own window, where it would hang.
 @MainActor final class SheetPresenter {
     private let quiet: Bool
-    /// The sheet a quiet run holds instead of showing: its window, if it has one of ours to draw, and what its ending does.
-    private var held: (window: NSWindow?, finish: (NSApplication.ModalResponse) -> Void)?
+    /// The sheet a quiet run holds instead of showing: its window, if it has one of ours to draw, the window it's over, if it's over one, and what its ending does.
+    private var held: (window: NSWindow?, over: NSWindow?, finish: (NSApplication.ModalResponse) -> Void)?
+
+    /// What a sheet's ending is told when the window it's over goes, closed or made again from a state read late: not an answer. Every ending gives back its count; one of Rust's own prompts doesn't answer it, so Rust still has it, and the next window asks.
+    static let windowGone: NSApplication.ModalResponse = .abort
 
     init(quiet: Bool) {
         self.quiet = quiet
@@ -29,25 +32,25 @@ import AppKit
         // What shows in its rounded corners is what's behind it, as the window server would composite it, not the window's square background.
         alert.window.isOpaque = false
         alert.window.backgroundColor = .clear
-        held = (alert.window, completion)
+        held = (alert.window, window, completion)
     }
 
     /// Save As's sheet. The file browser is drawn by another process, so a quiet run has no window of it to draw.
     func present(_ panel: NSSavePanel, over window: NSWindow, completion: @escaping (NSApplication.ModalResponse) -> Void) {
         guard quiet else { return panel.beginSheetModal(for: window, completionHandler: completion) }
-        held = (nil, completion)
+        held = (nil, window, completion)
     }
 
     /// The print panel. In a quiet run the first answer is Print and anything else Cancel.
     func present(_ panel: NSPrintPanel, info: NSPrintInfo, over window: NSWindow, completion: @escaping (NSPrintPanel.Result) -> Void) {
         guard quiet else { return panel.beginSheet(using: info, on: window, completionHandler: completion) }
-        held = (nil, { completion($0 == .alertFirstButtonReturn || $0 == .OK ? .printed : .cancelled) })
+        held = (nil, window, { completion($0 == .alertFirstButtonReturn || $0 == .OK ? .printed : .cancelled) })
     }
 
     /// The Open panel, which is a window of its own rather than a sheet.
     func present(_ panel: NSOpenPanel, completion: @escaping (NSApplication.ModalResponse) -> Void) {
         guard quiet else { return panel.begin(completionHandler: completion) }
-        held = (nil, completion)
+        held = (nil, nil, completion)
     }
 
     /// An alert of the app's own, with no window to hang it on, as when the window's closed. App-modal, after this call rather than in it.
@@ -65,7 +68,7 @@ import AppKit
         alert.layout()
         alert.window.isOpaque = false
         alert.window.backgroundColor = .clear
-        held = (alert.window, completion)
+        held = (alert.window, nil, completion)
     }
 
     /// Whether one of the app's own alerts is up, shown or held.
@@ -84,6 +87,16 @@ import AppKit
         guard let window, let sheet = window.attachedSheet else { return false }
         window.endSheet(sheet, returnCode: response)
         return true
+    }
+
+    /// **Lets go of whatever's up over a window that's going** (review 1 of the slow mode: a sheet over a window made again from a late state ended in the old window's ending after it had gone, so it was never answered, and stayed counted open, which held up every hand-off). Its ending is told `windowGone`. One that isn't over this window, as the app's own alert or the Open panel, stays.
+    func letGo(over window: NSWindow) {
+        if let held, held.over === window {
+            self.held = nil
+            held.finish(Self.windowGone)
+        } else if let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: Self.windowGone)
+        }
     }
 
     /// Where the sheet's top left sits in the window, from the window's bottom left: hung from just under the title bar, in the middle, as AppKit hangs one.
