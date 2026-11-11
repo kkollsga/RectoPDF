@@ -1534,3 +1534,32 @@ fn a_record_stays_small() {
     assert_eq!(disk_size(0), 4096);
     assert_eq!(disk_size(4097), 8192);
 }
+
+/// Failure: an agent folder whose `manifest.json` is a link, to another file or to nothing, counts as finished as long as what it points at is a file, so the agent reads that as the folder's index, or finds no manifest at all once it's gone; and `agent_folder_bytes` says it's made. Found by the `corpus` fuzz target, with the manifest made a link to a note that eviction then took away.
+#[test]
+fn a_link_in_the_manifests_place_is_replaced_not_followed() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let pages = [Fake::Text("One page"), Fake::Text("And another")];
+    build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let elsewhere = temp.file("elsewhere.json", b"{\"not\":\"the manifest\"}");
+    for target in [elsewhere.clone(), temp.0.join("nothing-here")] {
+        fs::remove_file(&paths.manifest).unwrap();
+        std::os::unix::fs::symlink(&target, &paths.manifest).unwrap();
+        assert_eq!(agent_folder_bytes(&root, key), None, "a link isn't a finished folder");
+        ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+        let meta = fs::symlink_metadata(&paths.manifest).unwrap();
+        assert!(meta.is_file(), "the manifest is a file of its own again");
+        let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
+        assert_eq!(manifest["state"], "ready");
+        assert!(agent_folder_bytes(&root, key).is_some());
+    }
+    assert_eq!(
+        fs::read(&elsewhere).unwrap(),
+        b"{\"not\":\"the manifest\"}",
+        "what the link pointed at is untouched"
+    );
+}
