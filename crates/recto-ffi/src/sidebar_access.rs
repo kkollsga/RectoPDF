@@ -66,22 +66,28 @@ struct FoldRow {
 }
 
 /// The row a key folds or opens, given the row being read and the section folded last: ← folds the row being read if it's an open section, or else the section it's in; → opens it if it's a folded section, or, with no row being read as it's folded away, the section folded last if that's still folded. Nothing past either end, as an outline's arrows do nothing there. A walk back of at most the rows above, once a key.
-fn fold_target(rows: &[FoldRow], current: Option<usize>, last: Option<(u32, u32)>, key: FoldKey) -> Option<usize> {
-    let Some(at) = current.filter(|at| *at < rows.len()) else {
+/// The rows are read where they're kept, by `row`, with `count` of them: a key copies none of an outline of 100,000.
+fn fold_target(count: usize, row: impl Fn(usize) -> FoldRow, current: Option<usize>, last: Option<(u32, u32)>, key: FoldKey) -> Option<usize> {
+    let Some(at) = current.filter(|at| *at < count) else {
         return match key {
-            FoldKey::Unfold => last.and_then(|last| rows.iter().position(|row| (row.tab, row.entry) == last && row.expandable && !row.expanded)),
+            FoldKey::Unfold => last.and_then(|last| {
+                (0..count).find(|at| {
+                    let row = row(*at);
+                    (row.tab, row.entry) == last && row.expandable && !row.expanded
+                })
+            }),
             FoldKey::Fold => None,
         };
     };
-    let row = rows[at];
+    let here = row(at);
     match key {
-        FoldKey::Unfold => (row.expandable && !row.expanded).then_some(at),
-        FoldKey::Fold if row.expandable && row.expanded => Some(at),
+        FoldKey::Unfold => (here.expandable && !here.expanded).then_some(at),
+        FoldKey::Fold if here.expandable && here.expanded => Some(at),
         // The section it's in is the nearest row above that's less deep, which is open, as this one shows.
-        FoldKey::Fold => rows[..at]
-            .iter()
-            .rposition(|above| above.depth < row.depth)
-            .filter(|parent| rows[*parent].expandable),
+        FoldKey::Fold => (0..at)
+            .rev()
+            .find(|above| row(*above).depth < here.depth)
+            .filter(|parent| row(*parent).expandable),
     }
 }
 
@@ -98,12 +104,51 @@ fn thumb_label(list: &str) -> &'static str {
 
 /// What `recto qa accessibility` takes, each calling what the system calls on the app's own views: `contrast:on` or `off`, as though Increase Contrast were; `thumb:LIST:increment` or `decrement`, a thumb's action; `fold:N`, contents row N's fold action; `key:left` or `right`, the arrows with the sidebar's list holding the keyboard.
 pub(crate) fn is_qa_value(value: &str) -> bool {
-    matches!(value, "contrast:on" | "contrast:off" | "key:left" | "key:right")
-        || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok())
-        || value
-            .strip_prefix("thumb:")
-            .and_then(|rest| rest.split_once(':'))
-            .is_some_and(|(list, step)| matches!(list, "contents" | "tabs" | "find" | "pages") && matches!(step, "increment" | "decrement"))
+    qa_step(value).is_some()
+}
+
+/// One of `recto qa accessibility`'s steps, read by Rust, for the host to call what the system would.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AccessibilityStep {
+    /// As though Increase Contrast were on or off, for this app alone.
+    Contrast { on: bool },
+    /// The arrows with the sidebar's list holding the keyboard: `left` or `right`.
+    FoldKey { key: String },
+    /// Contents row `row`'s fold action.
+    FoldAction { row: u32 },
+    /// A thumb's increment or decrement: `list` is `contents`, `tabs`, `find` or `pages`.
+    Thumb { list: String, increment: bool },
+}
+
+fn qa_step(value: &str) -> Option<AccessibilityStep> {
+    let (kind, rest) = value.split_once(':')?;
+    Some(match (kind, rest) {
+        ("contrast", "on" | "off") => AccessibilityStep::Contrast { on: rest == "on" },
+        ("key", "left" | "right") => AccessibilityStep::FoldKey { key: rest.to_string() },
+        ("fold", row) => AccessibilityStep::FoldAction { row: row.parse().ok()? },
+        ("thumb", rest) => {
+            let (list, step) = rest.split_once(':')?;
+            if !matches!(list, "contents" | "tabs" | "find" | "pages") || !matches!(step, "increment" | "decrement") {
+                return None;
+            }
+            AccessibilityStep::Thumb {
+                list: list.to_string(),
+                increment: step == "increment",
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// What's said when a step did nothing, by what it was.
+fn refusal(step: Option<&AccessibilityStep>) -> &'static str {
+    match step {
+        Some(AccessibilityStep::Contrast { .. }) => "The window is closed.",
+        Some(AccessibilityStep::FoldKey { .. }) => "Nothing to fold or open there.",
+        Some(AccessibilityStep::FoldAction { .. }) => "That row has no fold, or isn't on screen.",
+        Some(AccessibilityStep::Thumb { .. }) => "That thumb has nothing to scroll.",
+        None => "That isn't something `qa accessibility` takes.",
+    }
 }
 
 fn thumb_access_for(list: &str, fraction: f64) -> ThumbAccess {
@@ -121,6 +166,16 @@ impl AppCore {
     /// A scroll thumb as VoiceOver has it: `list` is `contents`, `tabs`, `find` or `pages`, and `fraction` how far down the list is, 0 to 1.
     pub fn thumb_access(&self, list: String, fraction: f64) -> ThumbAccess {
         thumb_access_for(&list, fraction)
+    }
+
+    /// `recto qa accessibility`'s value, read: nothing if it isn't one.
+    pub fn qa_accessibility_step(&self, value: String) -> Option<AccessibilityStep> {
+        qa_step(&value)
+    }
+
+    /// What's said when `recto qa accessibility`'s step did nothing.
+    pub fn qa_accessibility_refusal(&self, value: String) -> String {
+        refusal(qa_step(&value).as_ref()).to_string()
     }
 
     /// The thumb's opacity with Increase Contrast on.
@@ -160,22 +215,23 @@ impl AppCore {
         }
         let (contents, current) = (std::sync::Arc::clone(&published.contents), published.sidebar.contents_current);
         drop(published);
-        let rows: Vec<FoldRow> = contents
-            .iter()
-            .map(|entry| FoldRow {
+        let row = |at: usize| {
+            let entry = &contents[at];
+            FoldRow {
                 tab: entry.tab,
                 entry: entry.entry,
                 depth: entry.depth,
                 expandable: entry.expandable,
                 expanded: entry.expanded,
-            })
-            .collect();
+            }
+        };
         let mut last = lock(&self.inner.folds.last);
-        let Some(target) = fold_target(&rows, current.map(|at| at as usize), *last, key) else {
+        let Some(target) = fold_target(contents.len(), &row, current.map(|at| at as usize), *last, key) else {
             return false;
         };
         if key == FoldKey::Fold {
-            *last = Some((rows[target].tab, rows[target].entry));
+            let folded = row(target);
+            *last = Some((folded.tab, folded.entry));
         }
         drop(last);
         self.toggle_contents_section(u32::try_from(target).unwrap_or(u32::MAX));
@@ -198,7 +254,7 @@ mod tests {
     }
 
     fn target(rows: &[FoldRow], current: Option<usize>, key: FoldKey) -> Option<usize> {
-        fold_target(rows, current, None, key)
+        fold_target(rows.len(), |at| rows[at], current, None, key)
     }
 
     /// Failure: ← and → with the sidebar's list holding the keyboard fold the wrong section, or one the reader isn't in, or open what's open, or do something past either end, so a section can't be folded without a pointer, or is folded by surprise.
@@ -232,9 +288,13 @@ mod tests {
                 ..row(*depth, *expandable, *expanded)
             })
             .collect();
-        assert_eq!(fold_target(&rows, None, Some((1, 2)), FoldKey::Unfold), Some(1));
-        assert_eq!(fold_target(&rows, None, Some((2, 2)), FoldKey::Unfold), None, "another tab's");
-        assert_eq!(fold_target(&rows, None, Some((1, 2)), FoldKey::Fold), None);
+        assert_eq!(fold_target(rows.len(), |at| rows[at], None, Some((1, 2)), FoldKey::Unfold), Some(1));
+        assert_eq!(
+            fold_target(rows.len(), |at| rows[at], None, Some((2, 2)), FoldKey::Unfold),
+            None,
+            "another tab's"
+        );
+        assert_eq!(fold_target(rows.len(), |at| rows[at], None, Some((1, 2)), FoldKey::Fold), None);
     }
 
     /// Failure: VoiceOver hears a thumb's place outside 0 to 100%, or as nonsense for a list with nothing to scroll, or an increment moves it by other than a click beside it does.
@@ -290,5 +350,14 @@ mod tests {
         ] {
             assert!(!is_qa_value(wrong), "{wrong}");
         }
+        assert_eq!(qa_step("fold:3"), Some(AccessibilityStep::FoldAction { row: 3 }));
+        assert_eq!(
+            qa_step("thumb:pages:decrement"),
+            Some(AccessibilityStep::Thumb {
+                list: "pages".into(),
+                increment: false
+            })
+        );
+        assert_ne!(refusal(qa_step("key:left").as_ref()), refusal(None), "each says what it was");
     }
 }

@@ -439,24 +439,11 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// A copy has come back from the thread that read it: one offer from Rust, a snapshot's or a selection's text, in the types and order Rust gave. What's made now goes on the clipboard a type at a time; what's promised is declared, and made only when a paste asks for it.
     func copyReady() {
-        let began = CACurrentMediaTime()
-        var (bytes, fetching, setting) = (0, 0.0, 0.0)
-        defer { lastCopyWrite = ["total_ms": (CACurrentMediaTime() - began) * 1000, "fetch_ms": fetching * 1000, "set_ms": setting * 1000, "bytes": bytes] }
         guard let offer = core.takeClipboard(), !offer.types.isEmpty else { return }
         clipboardOffer = offer.promised.isEmpty ? nil : offer.serial
         clipboardPromised = Set(offer.promised)
         pasteboard.declareTypes(offer.types.map { NSPasteboard.PasteboardType($0) }, owner: offer.promised.isEmpty ? nil : self)
-        for type in offer.types where !offer.promised.contains(type) {
-            let fetched = CACurrentMediaTime()
-            let data = core.clipboardData(serial: offer.serial, uti: type)
-            let set = CACurrentMediaTime()
-            fetching += set - fetched
-            if let data {
-                bytes += data.count
-                pasteboard.setData(data, forType: NSPasteboard.PasteboardType(type))
-            }
-            setting += CACurrentMediaTime() - set
-        }
+        lastCopyWrite = ClipboardWrite.timed(offer, core: core, to: pasteboard)
     }
 
     /// How long the last copy kept this thread, and in what, for `qa copied`: bringing the bytes over from Rust, and handing them to the clipboard.

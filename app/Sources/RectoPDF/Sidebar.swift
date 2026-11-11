@@ -1157,7 +1157,7 @@ final class ThumbView: NSView {
 
     /// Which list it scrolls, by Rust's name for it: `contents`, `tabs`, `find` or `pages`.
     var list = "list"
-    private weak var scrollView: NSScrollView?
+    private(set) weak var scrollView: NSScrollView?
     private var hovering = false
     private var dragging: (start: CGFloat, origin: CGFloat)?
     private var area: NSTrackingArea?
@@ -1196,37 +1196,6 @@ final class ThumbView: NSView {
     @objc private func moved() { refresh() }
     @objc private func contrastMoved() { needsDisplay = true }
 
-    /// How far down its list is, 0 to 1.
-    private func fraction() -> Double {
-        guard let scrollView, let document = scrollView.documentView else { return 0 }
-        let visible = scrollView.contentView.bounds.height
-        let extra = room()
-        let total = ((document as? NSTableView).map { table in table.numberOfRows > 0 ? table.rect(ofRow: table.numberOfRows - 1).maxY : 0 } ?? document.frame.height) + extra.top + extra.bottom
-        guard total > visible else { return 0 }
-        return Double(min(max((scrollView.contentView.bounds.minY + extra.top) / (total - visible), 0), 1))
-    }
-
-    private func spoken() -> ThumbAccess? { MainActor.assumeIsolated { Self.access?(list, fraction()) } }
-
-    // A scroll bar to VoiceOver, with its place as its value, and a page either way as its increment and decrement, as a click beside it.
-    override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .scrollBar }
-    override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
-    override func accessibilityLabel() -> String? { spoken()?.label }
-    override func accessibilityValue() -> Any? { spoken().map { NSNumber(value: $0.value) } }
-    override func accessibilityValueDescription() -> String? { spoken()?.valueText }
-    override func accessibilityPerformIncrement() -> Bool { step(1) }
-    override func accessibilityPerformDecrement() -> Bool { step(-1) }
-
-    /// A page down or up, as a click below or above it: what its increment and decrement do.
-    @discardableResult
-    func step(_ way: CGFloat) -> Bool {
-        guard let scrollView, knob() != nil else { return false }
-        let page = scrollView.contentView.bounds.height * CGFloat(spoken()?.pageShare ?? 0.9)
-        scroll(to: scrollView.contentView.bounds.minY + way * page)
-        return true
-    }
-
     /// The document grew or shrank, or the view moved or was resized: look again. A scroll view lays out its own parts and not others', so the strip is put along its edge here.
     func refresh() {
         if let scrollView {
@@ -1239,7 +1208,7 @@ final class ThumbView: NSView {
     }
 
     /// Where the thumb is, in this view, or nothing with nothing to scroll.
-    private func knob() -> NSRect? {
+    func knob() -> NSRect? {
         guard let scrollView, let document = scrollView.documentView, let look = Self.look else { return nil }
         let visible = scrollView.contentView.bounds.height
         // A table's frame can stay taller than its rows after the area it's in has shrunk, so its rows are what count.
