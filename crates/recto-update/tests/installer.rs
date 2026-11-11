@@ -32,6 +32,11 @@ fn bundle_at(app: &Path, version: &str) -> PathBuf {
     app
 }
 
+/// The installer inside an app, which is the one a plan for that app has to be run by.
+fn installer_in(app: &Path) -> PathBuf {
+    app.join("Contents/MacOS/recto-updater")
+}
+
 fn sign(app: &Path) {
     let output = Command::new("/usr/bin/codesign")
         .args(["--force", "--deep", "--sign", "-"])
@@ -125,7 +130,7 @@ impl Bed {
     fn start(&mut self, old: u32, die_at: Option<&str>) -> Child {
         self.plan.pid = old;
         self.plan.write(&self.files.plan()).unwrap();
-        let mut command = Command::new(HELPER);
+        let mut command = Command::new(installer_in(&self.app));
         command.arg("install").arg(self.files.plan());
         if let Some(step) = die_at {
             command.env(DIE_AT_ENV, step);
@@ -177,7 +182,7 @@ impl Bed {
         gone.wait().unwrap();
         self.plan.pid = gone.id();
         self.plan.write(&self.files.plan()).unwrap();
-        let mut command = Command::new(HELPER);
+        let mut command = Command::new(installer_in(&self.app));
         command.arg("install").arg(self.files.plan());
         for (name, value) in env {
             command.env(name, value);
@@ -417,7 +422,7 @@ fn killed_while_putting_the_record_back_it_can_still_finish() {
     plan.id = "second".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER)
+    let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
         .stdout(std::process::Stdio::null())
@@ -441,7 +446,7 @@ fn two_installers_on_one_plan_do_it_once() {
         let mut bed = Bed::new(&format!("two-{attempt}"), "ok");
         let mut old = bed.old_process();
         let mut first = bed.start(old.id(), None);
-        let mut second = Command::new(HELPER)
+        let mut second = Command::new(installer_in(&bed.app))
             .arg("install")
             .arg(bed.files.plan())
             .stdout(std::process::Stdio::null())
@@ -520,7 +525,7 @@ fn an_installer_whose_plan_was_replaced_stands_down() {
     assert!(!first.wait().unwrap().success());
     assert_eq!(bed.installed(), "0.1.0", "and it touched nothing");
     assert_eq!(bed.record(), "the state");
-    let mut second = Command::new(HELPER)
+    let mut second = Command::new(installer_in(&bed.app))
         .arg("install")
         .arg(bed.files.plan())
         .stdout(std::process::Stdio::null())
@@ -639,6 +644,41 @@ fn a_forged_build_plan_swaps_in_nothing() {
     );
 }
 
+/// Failure (review round 2): an ad-hoc signature can claim any identifier (`codesign -s - -i io.github.kkollsga.RectoPDF`), so a same-user process can make a bundle that passes as "the" dev build, and a copy signed by the team takes it, crossing from a release into a state only as safe as the user account. A copy signed by the team never takes an ad-hoc build, switch or not; the same bundle over an ad-hoc copy goes in.
+#[test]
+fn a_team_signed_copy_never_takes_an_ad_hoc_build() {
+    let mut release = Bed::new("over-a-release", "ok");
+    release.as_a_build("0.1.0.1", BUNDLE_ID);
+    release.switch(Some(true));
+    assert!(!release.run_with(&[(recto_update::install::TEAM_OF_APP_ENV, "6GND8Z2C7Z")]).success());
+    assert_eq!(release.installed(), "0.1.0", "the release stays");
+    assert!(!release.ran("0.1.0.1"), "none of the build ran");
+    let mut adhoc = Bed::new("over-a-build", "ok");
+    adhoc.as_a_build("0.1.0.1", BUNDLE_ID);
+    adhoc.switch(Some(true));
+    assert!(adhoc.run_with(&[]).success());
+    assert_eq!(adhoc.installed(), "0.1.0.1", "over an ad-hoc copy, it goes in");
+}
+
+/// Failure (review round 2): a plan names an app or a folder beside it that isn't the installer's own, and the installer acts on it: run from another place, or pointing at another folder, nothing's touched.
+#[test]
+fn an_installer_acts_only_on_its_own_app() {
+    let elsewhere = Bed::new("not-its-app", "ok");
+    elsewhere.plan.write(&elsewhere.files.plan()).unwrap();
+    // The installer as built, in no app at all.
+    assert!(!Command::new(HELPER).arg("install").arg(elsewhere.files.plan()).status().unwrap().success());
+    assert_eq!(elsewhere.installed(), "0.1.0");
+    assert!(Outcome::read(&elsewhere.files.outcome()).is_none(), "nothing written");
+    assert!(new_app_in(&elsewhere.plan.beside).exists(), "nothing moved");
+    let mut beside = Bed::new("not-its-folder", "ok");
+    let other = beside.dir.join("other-beside");
+    std::fs::create_dir_all(&other).unwrap();
+    beside.plan.beside = other;
+    assert!(!beside.run_with(&[]).success());
+    assert_eq!(beside.installed(), "0.1.0");
+    assert!(new_app_in(&beside_app(&beside.app).unwrap()).exists(), "nothing moved");
+}
+
 /// Failure: the first update in place of an app in /Applications is refused by macOS's App Management (EPERM at the swap) and the app's left gone, or says only that it "couldn't be replaced", which tells the owner nothing they can do. It's put back as it was, reopened, and says where to allow it, and isn't held against the version.
 #[test]
 fn a_swap_macos_refuses_says_where_to_allow_it() {
@@ -675,7 +715,7 @@ fn going_back_by_itself_takes_only_a_copy_it_may() {
         plan.pid = gone.id();
         plan.team_required = true;
         plan.write(&bed.files.plan()).unwrap();
-        let _ = Command::new(HELPER)
+        let _ = Command::new(installer_in(&bed.app))
             .arg("back")
             .arg(bed.files.plan())
             .stdout(std::process::Stdio::null())
@@ -701,7 +741,7 @@ fn the_last_look_is_the_last_thing_before_the_swap() {
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(HELPER)
+    let mut installer = Command::new(installer_in(&bed.app))
         .arg("install")
         .arg(bed.files.plan())
         .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
@@ -825,7 +865,7 @@ fn with_nothing_to_go_back_to_it_says_so() {
     plan.id = "back".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER)
+    let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
         .stdout(std::process::Stdio::null())
@@ -889,7 +929,7 @@ fn going_back_after_it_came_up_keeps_the_record_as_it_is() {
         ..bed.plan.clone()
     };
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER)
+    let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
         .stdout(std::process::Stdio::null())
@@ -997,7 +1037,7 @@ fn going_back_with_no_install_before_it_works() {
     plan.id = "guard".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER)
+    let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
         .stdout(std::process::Stdio::null())
@@ -1072,7 +1112,7 @@ fn an_app_opened_again_in_the_gap_is_left_alone() {
 fn a_damaged_plan_moves_nothing() {
     let bed = Bed::new("damaged", "ok");
     local::write_private_file(&bed.files.plan(), b"{\"from\":\"nonsense\"").unwrap();
-    let ended = Command::new(HELPER)
+    let ended = Command::new(installer_in(&bed.app))
         .arg("install")
         .arg(bed.files.plan())
         .stderr(std::process::Stdio::null())
@@ -1090,6 +1130,13 @@ fn a_damaged_plan_moves_nothing() {
     };
     backwards.pid = 1;
     backwards.write(&bed.files.plan()).unwrap();
-    assert!(!Command::new(HELPER).arg("install").arg(bed.files.plan()).status().unwrap().success());
+    assert!(
+        !Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .status()
+            .unwrap()
+            .success()
+    );
     assert_eq!(bed.installed(), "0.1.0");
 }

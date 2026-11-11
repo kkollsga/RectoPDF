@@ -113,3 +113,61 @@ fn the_first_install_ends_only_the_old_dev_copy() {
 fn the_installers_state_folder_is_the_apps() {
     assert_eq!(recto_update::real_state_root(), recto_control::state::default_root().ok());
 }
+
+/// Runs `--place` on a zip into a folder standing for /Applications, with nothing of the owner's ever matched: its old dev copy is named somewhere that isn't.
+fn place(applications: &Path, zip: &Path, extra: &[&str], team: Option<&str>) -> std::process::Output {
+    let mut command = Command::new(tool());
+    command
+        .arg("--place")
+        .arg(zip)
+        .args(extra)
+        .env("RECTO_DEV_APPLICATIONS", applications)
+        .env("RECTO_DEV_OLD_COPY", applications.join("no-such-old-copy.app"))
+        .env("RECTO_DEV_NO_REOPEN", "1");
+    match team {
+        Some(team) => command.env("RECTO_DEV_TEAM_OF", team),
+        None => command.env_remove("RECTO_DEV_TEAM_OF"),
+    };
+    command.output().unwrap()
+}
+
+/// Failure (review round 2): the first dev build goes over a release signed by the team without being told to, or over a dev build already there, or a release it replaces is lost. Only `--replace-release` puts one over a team-signed release, and that release is kept aside where the updater keeps the way back, not as an app.
+#[test]
+fn the_first_install_replaces_a_release_only_when_told_and_keeps_it() {
+    let dir = temp("place");
+    let build = dir.join("built");
+    installed_as(&build.join("RectoPDF.app"), Some(&format!("{}.3", release())));
+    let zip = dir.join(format!("RectoPDF-{}.3.zip", release()));
+    assert!(
+        Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(build.join("RectoPDF.app"))
+            .arg(&zip)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let applications = dir.join("Applications");
+    std::fs::create_dir_all(&applications).unwrap();
+    let target = applications.join("RectoPDF.app");
+    assert!(
+        !place(&applications, &zip, &["--replace-release"], None).status.success(),
+        "nothing there to replace"
+    );
+    assert!(place(&applications, &zip, &[], None).status.success(), "the first, where there's none");
+    assert!(target.join("Contents/Info.plist").is_file());
+    let again = place(&applications, &zip, &[], None);
+    assert!(!again.status.success(), "a dev build's already there");
+    assert!(String::from_utf8_lossy(&again.stderr).contains("recto update install"));
+    // A release signed by the team, standing in: never replaced unasked, and kept when it is.
+    std::fs::write(target.join("release"), "the release").unwrap();
+    let unasked = place(&applications, &zip, &[], Some("6GND8Z2C7Z"));
+    assert!(!unasked.status.success());
+    assert!(String::from_utf8_lossy(&unasked.stderr).contains("--replace-release"));
+    assert!(target.join("release").exists(), "untouched");
+    assert!(place(&applications, &zip, &["--replace-release"], Some("6GND8Z2C7Z")).status.success());
+    let kept = applications.join(".RectoPDF-update/previous/RectoPDF.kept");
+    assert_eq!(std::fs::read_to_string(kept.join("release")).unwrap(), "the release", "kept aside");
+    assert!(!target.join("release").exists(), "and the build in its place");
+    let _ = std::fs::remove_dir_all(&dir);
+}

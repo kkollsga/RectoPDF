@@ -146,6 +146,15 @@ impl Host for Hooks {
         self.inner().is_some_and(|inner| inner.saver.store.wait_for_lock())
     }
 
+    /// A build goes in only while agent access is Full, as it was when an agent handed it over: read from the level's file now.
+    fn may_take_a_build(&self) -> bool {
+        let Some(inner) = self.inner() else { return false };
+        inner
+            .paths
+            .as_ref()
+            .is_some_and(|paths| recto_control::levels::current(paths) == recto_agent::Level::Full)
+    }
+
     fn can_draw(&self) -> bool {
         let Some(inner) = self.inner() else { return false };
         let Some(paths) = inner.paths.as_ref() else { return false };
@@ -529,6 +538,12 @@ fn refused_words(refused: &InstallRefused) -> AgentError {
         InstallRefused::SameVersion => {
             AgentError::new("same_version", "That's the version that's running.", exit::FAILED).then("`tools/dev-build.sh` numbers the next one.")
         }
+        InstallRefused::TeamSignedCopy => AgentError::new(
+            "release_copy",
+            "This copy is a release signed by RectoPDF's developer, and never takes a development build, which is signed ad hoc.",
+            exit::FAILED,
+        )
+        .then("The coordinator puts the first one in with `tools/dev-build.sh --first-install --replace-release`, which keeps this copy aside."),
         InstallRefused::Refused { code, why } => {
             AgentError::new(code, format!("That build wasn't installed: {why}."), exit::FAILED).then("`recto update status` has the log's path.")
         }

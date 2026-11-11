@@ -47,6 +47,12 @@ pub fn version_of_zip(name: &str) -> Option<String> {
     version::is_development(inner).then(|| inner.to_owned())
 }
 
+/// Whether a copy signed by this team, or by none, takes a development build: only one signed ad hoc, as every development build is. An ad-hoc signature can claim any identifier, so a copy signed by the team that took one would be only as safe as the user's account.
+#[must_use]
+pub fn takes_builds_over(team: Option<&str>) -> bool {
+    team.is_none()
+}
+
 impl Updater {
     /// Whether *Allow development builds* is on. Off until it's chosen.
     #[must_use]
@@ -141,11 +147,21 @@ impl Updater {
             if facts.version == version {
                 return Err(InstallRefused::SameVersion);
             }
+            facts
+        };
+        // Asked of the copy itself, off the lock: a release signed by the team never crosses into a state only as safe as the user's account by itself.
+        if !takes_builds_over(stage::team_of(&facts.app).as_deref()) {
+            return Err(InstallRefused::TeamSignedCopy);
+        }
+        {
+            let mut st = lock(&self.st);
+            if st.status.is_under_way() {
+                return Err(InstallRefused::Underway);
+            }
             st.build = None;
             st.install_look_at = None;
             st.status = Status::Preparing(version.clone());
-            facts
-        };
+        }
         self.stopping.store(false, Ordering::SeqCst);
         self.host.changed();
         self.ready_folder();
@@ -297,6 +313,8 @@ mod tests {
         busy: Mutex<Vec<String>>,
         hand_offs: AtomicU32,
         plan_at_quit: Mutex<Option<Plan>>,
+        /// Agent access has dropped below Full.
+        below_full: std::sync::atomic::AtomicBool,
     }
 
     impl Host for Fake {
@@ -320,6 +338,9 @@ mod tests {
         }
         fn relaunch(&self) -> TestLaunch {
             TestLaunch::default()
+        }
+        fn may_take_a_build(&self) -> bool {
+            !self.below_full.load(Ordering::SeqCst)
         }
         fn start_installer(&self, _helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
             *lock(&self.plan_at_quit) = Plan::read(plan);
@@ -614,6 +635,40 @@ mod tests {
         assert!(!release.updater.shows_dev_builds_switch());
         let build = Bed::new("shows-build", "0.1.0.2");
         assert!(build.updater.shows_dev_builds_switch(), "a development build, on or off");
+    }
+
+    /// Failure (review round 2): a build an agent handed over at Full goes in after agent access has dropped below Full, with nobody at that level there to ask for it. It's dropped when it comes to go, by itself or by hand.
+    #[test]
+    fn a_build_waiting_when_access_drops_below_full_is_dropped() {
+        let bed = Bed::new("below-full", "0.1.0");
+        bed.updater.choose_dev_builds(true);
+        bed.idle_for(0);
+        let zip = bed.zip("0.1.0.1", "0.1.0.1", crate::BUNDLE_ID);
+        assert_eq!(bed.updater.install_build(&zip, false), Ok("0.1.0.1".to_owned()));
+        bed.fake.below_full.store(true, Ordering::SeqCst);
+        bed.idle_for(rules::IDLE_BEFORE_BUILD_MS);
+        bed.updater.set_test_clock(i64::try_from(rules::IDLE_BEFORE_BUILD_MS).unwrap());
+        bed.updater.timer_fired();
+        bed.wait_for("it to be dropped", |bed| matches!(bed.status(), Status::Failed { .. }));
+        assert!(bed.updater.status_line().contains("Full"), "{}", bed.updater.status_line());
+        assert!(lock(&bed.updater.st).build.is_none());
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "no hand-off");
+        // And by hand, at once, the same.
+        let now = Bed::new("below-full-now", "0.1.0");
+        now.updater.choose_dev_builds(true);
+        now.fake.below_full.store(true, Ordering::SeqCst);
+        let zip = now.zip("0.1.0.2", "0.1.0.2", crate::BUNDLE_ID);
+        now.updater.install_build(&zip, true).unwrap();
+        now.wait_for("it to be dropped", |bed| matches!(bed.status(), Status::Failed { .. }));
+        assert_eq!(now.fake.hand_offs.load(Ordering::SeqCst), 0);
+    }
+
+    /// Failure (review round 2): a copy signed by the team takes a build signed ad hoc, which can claim any identifier: only an ad-hoc copy does.
+    #[test]
+    fn only_an_ad_hoc_copy_takes_a_build() {
+        assert!(takes_builds_over(None));
+        assert!(!takes_builds_over(Some(crate::TEAM_ID)));
+        assert!(!takes_builds_over(Some("SOMEONEELSE")));
     }
 
     /// Failure: development builds are turned off while a build's being checked, and it goes in anyway, as what was asked before the slow part is all that was looked at.

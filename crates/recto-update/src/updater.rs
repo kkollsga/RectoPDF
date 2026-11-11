@@ -61,6 +61,10 @@ pub trait Host: Send + Sync {
     fn keeps_the_record(&self) -> bool {
         true
     }
+    /// Whether a development build an agent handed over may still go in: agent access is still Full, as it was when the build was handed over. Read now, as the level can drop with no word to anyone. Cheap: one small file.
+    fn may_take_a_build(&self) -> bool {
+        true
+    }
     /// Whether this version can draw a page at all: our own tiny PDF, through the real renderer. Blocks for as long as a worker takes to start, so only ever on a thread of its own, and only when a new version's to be proven.
     fn can_draw(&self) -> bool {
         true
@@ -201,6 +205,8 @@ pub enum InstallRefused {
     NotABuild,
     /// It's the version that's running.
     SameVersion,
+    /// This copy is signed by the team, and takes no build signed ad hoc: the first goes in by `tools/dev-build.sh --first-install --replace-release`.
+    TeamSignedCopy,
     /// It was checked, and it isn't one to install: the code and our own words.
     Refused {
         code: &'static str,
@@ -1347,6 +1353,16 @@ impl Updater {
             // The user's quitting by other means, and this doesn't turn that into a reopening.
             if self.stopping.load(Ordering::SeqCst) {
                 self.back_on_offer(version, None);
+                return;
+            }
+            // A build was handed over at Full: if access has dropped since, it doesn't go in, as no one at the level that asked for it is there to.
+            if to.development_build && !self.host.may_take_a_build() {
+                self.failed(
+                    asked,
+                    version,
+                    "agent access isn't Full any more, and a development build is installed only at Full",
+                    false,
+                );
                 return;
             }
             let look = self.host.look();

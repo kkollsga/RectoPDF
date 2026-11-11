@@ -8,6 +8,9 @@
 #   tools/dev-build.sh --package <RectoPDF.app> [--out <folder>] [--version X.Y.Z.N]
 #                                                               Only the last part, on an app already built: numbers, signs, checks and zips a copy. Seconds.
 #   tools/sysguard/heavy.sh tools/dev-build.sh --first-install  Once, to start: builds, and puts it in /Applications as the owner's one RectoPDF (below).
+#   … --first-install --replace-release                          The same where /Applications holds a release signed by the team, which never takes a dev
+#                                                               build by itself: it's kept aside as .RectoPDF-update/previous/RectoPDF.kept.
+#   tools/dev-build.sh --place <zip> [--replace-release]        Only --first-install's last part, on a zip already made.
 #   tools/dev-build.sh --next-version                           The number the next build would have. --old-copy-pids: what --first-install would end. Both change nothing.
 #
 # Installing one needs Settings › Allow development builds on in the app, and agent access Full, as anyone can sign a build ad hoc:
@@ -24,7 +27,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ID=io.github.kkollsga.RectoPDF
 OUT="$REPO/app/build.noindex/dev"
 
-usage() { sed -n '2,12p' "$0"; exit 2; }
+usage() { sed -n '2,15p' "$0"; exit 2; }
 fail() { echo "dev-build: $*" >&2; exit 1; }
 
 release_version() { sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1; }
@@ -67,8 +70,10 @@ COMMON="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)"
 OLD_COPY="${RECTO_DEV_OLD_COPY:-$(dirname "$COMMON")/target/dev/RectoPDF.app}"
 INSTALLED="${RECTO_DEV_INSTALLED:-/Applications/RectoPDF.app}"
 COUNTER="${RECTO_DEV_COUNTER:-$COMMON/recto-dev-counter}"
-old_copy_running() {
-  local pid command exe="$OLD_COPY/Contents/MacOS/RectoPDF"
+APPLICATIONS="${RECTO_DEV_APPLICATIONS:-/Applications}"
+# The processes running exactly this program, and not as a quiet run.
+running_as() {
+  local pid command exe="$1"
   for pid in $(pgrep -x RectoPDF || true); do
     # -ww: without it, ps cuts a long command at 80 columns when it isn't writing to a terminal.
     command="$(ps -ww -o command= -p "$pid" || true)"
@@ -76,6 +81,26 @@ old_copy_running() {
     [ "$command" = "$exe" ] || [ "${command#"$exe "}" != "$command" ] || continue
     echo "$pid"
   done
+}
+# The team that signed an app, or nothing for ad hoc. codesign -dv reads the signature only: no keychain. RECTO_DEV_TEAM_OF stands in for a team in a test.
+app_team() {
+  if [ -n "${RECTO_DEV_TEAM_OF:-}" ]; then echo "$RECTO_DEV_TEAM_OF"; return; fi
+  codesign -dv "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p' | grep -v '^not set$' || true
+}
+# What --first-install may do where it's going: put the first in, or replace a release signed by the team when told to. Anything else is refused.
+install_target() {
+  local replace=$1 target="$APPLICATIONS/RectoPDF.app" team
+  if [ ! -e "$target" ]; then
+    [ "$replace" = 1 ] && fail "there's no release in $APPLICATIONS to replace: leave out --replace-release"
+    echo fresh; return
+  fi
+  team="$(app_team "$target")"
+  if [ -z "$team" ]; then fail "$target is a development build already. From here on: tools/dev-build.sh, then recto update install <zip>."; fi
+  [ "$replace" = 1 ] || fail "$target is a release signed by team $team, which never takes a development build by itself. To put one in its place, add --replace-release: it's kept aside."
+  echo replace
+}
+old_copy_running() {
+  running_as "$OLD_COPY/Contents/MacOS/RectoPDF"
 }
 
 # The next development number for this version: one after the larger of what's installed and what's been counted, so worktrees never hand out the same one.
@@ -88,13 +113,15 @@ next_dev() {
   echo "$version.$((counted + 1))"
 }
 
-mode=build built="" out="$OUT" dev=""
+mode=build built="" out="$OUT" dev="" replace=0 zip=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --package) mode=package; built="${2:?--package needs the built app}"; shift ;;
     --out) out="${2:?--out needs a folder}"; shift ;;
     --version) dev="${2:?--version needs X.Y.Z.N}"; shift ;;
     --first-install) mode=first ;;
+    --replace-release) replace=1 ;;
+    --place) mode=place; zip="${2:?--place needs a zip}"; shift ;;
     --next-version) echo "$(next_dev "$(release_version)")"; exit 0 ;;
     --old-copy-pids) old_copy_running; exit 0 ;;
     -h|--help) usage ;;
@@ -109,8 +136,48 @@ if [ "$mode" = package ]; then
   exit 0
 fi
 
-if [ "$mode" = first ] && [ -e /Applications/RectoPDF.app ]; then
-  fail "RectoPDF is already in /Applications. From here on: tools/dev-build.sh, then recto update install <zip>."
+# place <zip> <fresh|replace>: the first dev build into Applications. A copy running is swapped only after 5 minutes with no use of the Mac (owner, 2026-11-11),
+# then told to end with SIGTERM: the old dev copy in the main checkout's target/dev, and with --replace-release the release being replaced, and nothing else.
+# A copy built from `build/update-gaps` on takes SIGTERM as a quit, writing everything as any quit does. An older one, such as the owner's copy at 11276a3,
+# just ends, and the 5 idle minutes are what cover it: by then everything's on disk, edits within 5 s and the place within a minute (SPEC decision 25).
+place() {
+  local zip=$1 how=$2 target="$APPLICATIONS/RectoPDF.app" was_running="" pid unpacked kept
+  for pid in $(old_copy_running) $([ "$how" = replace ] && running_as "$target/Contents/MacOS/RectoPDF"); do
+    was_running=1
+    while [ "$(hid_idle)" -lt 300 ]; do
+      echo "==> RectoPDF is in use (process $pid): waiting for 5 minutes with no use of this Mac"
+      sleep 30
+    done
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -0 "$pid" 2>/dev/null && fail "RectoPDF (process $pid) didn't end, so nothing was installed"
+  done
+  unpacked="$(mktemp -d "${TMPDIR:-/tmp}/recto-first-install.XXXXXX")"
+  ditto -x -k "$zip" "$unpacked"
+  if [ "$how" = replace ]; then
+    # Kept where the updater keeps the way back, private, and not as an app, so nothing registers it.
+    kept="$APPLICATIONS/.RectoPDF-update/previous/RectoPDF.kept"
+    mkdir -p "$(dirname "$kept")"
+    chmod 700 "$APPLICATIONS/.RectoPDF-update"
+    rm -rf "$kept"
+    mv "$target" "$kept"
+    echo "==> the release is kept aside at $kept"
+  fi
+  ditto "$unpacked/RectoPDF.app" "$target"
+  rm -rf "$unpacked"
+  echo "==> $target is $(/usr/libexec/PlistBuddy -c 'Print :RectoDevVersion' "$target/Contents/Info.plist"), the one install. The old dev copy is left where it was, for the coordinator to retire."
+  # It was running, so it comes back, behind whatever's in front.
+  [ -z "$was_running" ] || [ -n "${RECTO_DEV_NO_REOPEN:-}" ] || open -g "$target"
+}
+
+if [ "$mode" = place ]; then
+  how="$(install_target "$replace")"
+  place "$zip" "$how"
+  exit 0
+fi
+if [ "$mode" = first ]; then
+  # Before the build: a build nothing would take isn't worth making.
+  how="$(install_target "$replace")"
 fi
 
 VERSION="$(release_version)"
@@ -129,27 +196,7 @@ ZIP="$(package "$OUT/app/RectoPDF.app" "$OUT" "$DEV")"
 echo "$VERSION ${DEV##*.}" > "$COUNTER"
 
 if [ "$mode" = first ]; then
-  # The one-time move from the old dev copy to /Applications. It's swapped while running only after 5 minutes with no use of the Mac (owner, 2026-11-11), and then
-  # told to end with SIGTERM. A copy built from `build/update-gaps` on takes SIGTERM as a quit, writing everything as any quit does. An older one, such as the owner's
-  # copy at 11276a3, just ends, and the 5 idle minutes are what cover it: by then everything's on disk, edits within 5 s and the place within a minute (SPEC decision 25).
-  was_running=""
-  for pid in $(old_copy_running); do
-    was_running=1
-    while [ "$(hid_idle)" -lt 300 ]; do
-      echo "==> RectoPDF is in use (process $pid): waiting for 5 minutes with no use of this Mac"
-      sleep 30
-    done
-    kill -TERM "$pid" 2>/dev/null || true
-    for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-    kill -0 "$pid" 2>/dev/null && fail "RectoPDF (process $pid) didn't end, so nothing was installed"
-  done
-  unpacked="$(mktemp -d "${TMPDIR:-/tmp}/recto-first-install.XXXXXX")"
-  ditto -x -k "$ZIP" "$unpacked"
-  ditto "$unpacked/RectoPDF.app" /Applications/RectoPDF.app
-  rm -rf "$unpacked"
-  echo "==> /Applications/RectoPDF.app is RectoPDF $DEV, the one install. The old dev copy is left where it was, for the coordinator to retire."
-  # It was running, so it comes back, behind whatever's in front.
-  [ -z "$was_running" ] || open -g /Applications/RectoPDF.app
+  place "$ZIP" "$how"
   exit 0
 fi
 echo "$ZIP"
