@@ -164,6 +164,25 @@ check "and the guard doesn't get it" "no-stamp" "$([ -s "$CHECKED" ] && echo has
 case "$(last_ledger_field 3)" in *+dirty) r=dirty ;; *) r=clean ;; esac
 check "and the ledger says so" "dirty" "$r"
 
+# Failure (process review, 2026-11-11): a tracked file edited during a run and put back before it ends, as a test tried mid-run is, leaves the tree as it
+# started, so the run's pass was stamped on a commit whose code wasn't all of what ran.
+fresh_ledger
+commit_code put-back-base
+out=$(STUB_DURING='cp crates/alpha/src/lib.rs "$CALLS.keep"; echo during >> crates/alpha/src/lib.rs; cp "$CALLS.keep" crates/alpha/src/lib.rs' full); rc=$?
+: > "$CALLS"
+check "a file changed and put back during the run: the run still passes" "0" "$rc"
+check "but isn't remembered" "no-passes" "$([ -s "$PASSES" ] && echo has-passes || echo no-passes)"
+check "nor given to the guard" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
+case "$(last_ledger_field 3)" in *+dirty) r=dirty ;; *) r=clean ;; esac
+check "and the ledger says it was dirty" "dirty" "$r"
+has "and it says why" "changed while it ran" "$out"
+has "naming the file" "crates/alpha/src/lib.rs" "$out"
+# And a run nothing touched is still stamped, so the check never refuses everything.
+commit_code untouched-base
+full > /dev/null
+: > "$CALLS"
+check "a run nothing touched is stamped" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED" 2>/dev/null)"
+
 # Failure: a commit of documents only, made while a run is under way, throws the pass away, so the push guard refuses code that passed (2026-11-08).
 fresh_ledger
 commit_code docs-during-base

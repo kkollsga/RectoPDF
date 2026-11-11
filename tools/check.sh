@@ -57,9 +57,10 @@ BUDGET=2
 # What decides a result. The tracked files, by content, except documents: this filter is the one in tools/hooks/pre-push. Then what isn't tracked and can
 # change a result on the same code: the tools, whether the Windows compile check can run at all, and the settings that change what the tests do.
 # Not covered: the real PDFs some tests read if they're there, in another repository. docs/agent-instructions/worker-testing.md lists them.
+tracked_code() { git ls-files -s | awk -F'\t' '$2 !~ /^docs\/|\.md$/'; }
 code_fingerprint() {
   {
-    git ls-files -s | awk -F'\t' '$2 !~ /^docs\/|\.md$/'
+    tracked_code
     cargo nextest --version 2>/dev/null || true
     swift --version 2>/dev/null || true
     sw_vers -productVersion 2>/dev/null || true
@@ -211,6 +212,13 @@ case "$mode" in
 esac
 # HEAD and everything uncommitted, to tell whether the code under test stayed what it was.
 code_state() { { git rev-parse HEAD; git status --porcelain --untracked-files=no; untracked_that_counts; } | shasum | cut -d' ' -f1; }
+# Every tracked file but documents, as the index has it and as it is on disk: modification time to the nanosecond, size and inode. A file edited during a
+# run and put back before it ends is the same in `code_state`, but not here (process review, 2026-11-11: a test edited mid-run). Documents are left out,
+# as a commit of them during a run is allowed. A line a file, so the end can say which changed.
+tracked_tree() {
+  tracked_code
+  git -c core.quotePath=false ls-files | grep -vE '^docs/|\.md$' | tr '\n' '\0' | xargs -0 stat -f '%Fm %z %i %N' 2>/dev/null || true
+}
 # What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/ENGINEERING.md, "Slow mode"): whole-state comparisons across a quit and
 # updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
 # copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
@@ -232,6 +240,7 @@ run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
+  tracked_tree > "$check_mark.tree"
   # One layout, so two branches that each add a field to a struct literal merge without a conflict (guide §2.8). Seconds, and nothing builds.
   # `cargo fmt --all` fixes it.
   stage fmt
@@ -289,8 +298,8 @@ run() {
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -f "$check_mark"' EXIT
-export -f run stage code_state untracked_that_counts
+trap 'rm -f "$check_mark" "$check_mark.tree"' EXIT
+export -f run stage code_state untracked_that_counts tracked_code tracked_tree
 export check_mark mode tests_first
 export tests_joined="${tests[*]-}"
 status=0
@@ -308,8 +317,22 @@ esac
 # coordinator writing up while a check runs) doesn't undo that: the code tested is still the started commit's, and that's the commit stamped.
 ledger_commit="$started_commit+dirty"
 started_clean=$(printf '%s\n' "$started_commit" | shasum | cut -d' ' -f1)
+touched=""
+if [ -f "$check_mark.tree" ]; then
+  touched=$(tracked_tree | diff "$check_mark.tree" - | sed -n 's/^[<>] //p' | awk -F'\t' 'NF > 1 { print $2; next } { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' | sort -u || true)
+fi
 if [ -n "$started_state" ] && tree_is_clean && { [ "$started_state" = "$(code_state)" ] || { [ "$started_state" = "$started_clean" ] && docs_only_since "$started_commit"; }; }; then
-  ledger_commit=$started_commit
+  if [ -n "$touched" ]; then
+    {
+      echo "check: not recorded. Tracked files changed while it ran, so what it tested may not be commit $(printf '%s' "$started_commit" | cut -c1-12), even though they're back as they were:"
+      printf '%s\n' "$touched" | head -10 | sed 's/^/  /'
+      echo "Leave the tree alone while a full run is under way, or run it again: nothing was stamped for the push guard."
+    } >&2
+  else
+    ledger_commit=$started_commit
+  fi
+fi
+if [ "$ledger_commit" = "$started_commit" ]; then
   if [ "$result" = pass ]; then
     printf '%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" >> "$passes"
     stamp_checked "$started_commit"
