@@ -157,6 +157,8 @@ pub struct WindowPlacement {
     pub in_background: bool,
     /// And it was in full screen, which it goes back into when they come to it.
     pub full_screen_when_active: bool,
+    /// It goes into the Dock, as it was there when the update came. Shown, it's where the rest of this says.
+    pub minimised: bool,
 }
 
 /// How it stands for a hand-off.
@@ -1391,6 +1393,12 @@ struct AppState {
     focus: FocusRecord,
     settings_window: Option<SettingsWindow>,
     window_closed: bool,
+    /// Hidden with ⌘H, as the record has it.
+    app_hidden: bool,
+    /// The host has asked whether the app comes back hidden, and done it: a restore after that keeps what it did.
+    hidden_decided: bool,
+    /// The same for the window in the Dock.
+    minimised_decided: bool,
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
@@ -1529,6 +1537,7 @@ impl Inner {
             notice,
             settings_window: app.settings_window,
             window_closed: app.window_closed,
+            app_hidden: app.app_hidden,
         }
     }
 
@@ -1768,6 +1777,8 @@ struct LaunchArgs {
     qa: bool,
     memory_limit_mib: Option<u64>,
     time_limit: Option<Duration>,
+    /// The process a quiet run ends with, as its test or script: see [`qa::end_with_starter`].
+    owner_pid: Option<u32>,
     open: Vec<PathBuf>,
 }
 
@@ -1790,6 +1801,15 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
                     words.next().and_then(|value| value.parse().ok()).ok_or("--qa-time-limit-ms takes a number.")?,
                 ))
             }
+            "--qa-owner-pid" => {
+                parsed.owner_pid = Some(
+                    words
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .filter(|pid| *pid > 1)
+                        .ok_or("--qa-owner-pid takes a process number.")?,
+                )
+            }
             // What macOS adds to a launch from elsewhere, and a file to open.
             other if other.starts_with("-psn_") || other.starts_with("-NS") || other.starts_with("-Apple") => {
                 let _ = words.next();
@@ -1798,7 +1818,7 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
             other => parsed.open.push(PathBuf::from(other)),
         }
     }
-    if !parsed.qa && (parsed.memory_limit_mib.is_some() || parsed.time_limit.is_some()) {
+    if !parsed.qa && (parsed.memory_limit_mib.is_some() || parsed.time_limit.is_some() || parsed.owner_pid.is_some()) {
         return Err("Those options are only for a QA run.".into());
     }
     Ok(parsed)
@@ -1808,6 +1828,12 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
 #[uniffi::export]
 pub fn launch_is_quiet(args: Vec<String>) -> bool {
     parse_args(&args).map_or(true, |parsed| parsed.qa)
+}
+
+/// What a launch answers and ends with, before AppKit does anything: `--build-kind`, which says whether this was built as a release and takes a test's hooks, for `app/release-zip.sh` to check the app's own library and not only the installer's. Nothing for any other launch.
+#[uniffi::export]
+pub fn launch_answers_at_once(args: Vec<String>) -> Option<String> {
+    (args == ["--build-kind"]).then(|| json!({ "release_build": recto_update::RELEASE_BUILD, "takes_test_hooks": !recto_update::RELEASE_BUILD }).to_string())
 }
 
 fn cleaned(text: &str) -> String {
@@ -1909,6 +1935,9 @@ impl AppCore {
                 focus: FocusRecord::default(),
                 settings_window: None,
                 window_closed: false,
+                app_hidden: false,
+                hidden_decided: false,
+                minimised_decided: false,
             }),
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
@@ -2012,17 +2041,17 @@ impl AppCore {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || session_thread(&session_side))
             .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
-        if let Some(limit) = args.time_limit.or(args.qa.then_some(Duration::from_secs(600))) {
-            // Every QA run has a limit, so a run nobody ended can't sit on the owner's Mac.
-            let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
-                std::thread::sleep(limit);
-                std::process::exit(124);
-            });
+        if args.qa {
+            let state = inner.paths.as_ref().map(|paths| paths.root.clone());
+            qa::end_with_starter(args.time_limit.unwrap_or(qa::QUIET_RUN_LIMIT), args.owner_pid, state);
         }
         Ok(Arc::new(Self {
             inner,
             qa_mode: args.qa,
-            start_with: args.open,
+            start_with: {
+                updates::note_asked_to_open(&args.open);
+                args.open
+            },
         }))
     }
 
@@ -2232,7 +2261,7 @@ impl AppCore {
         lock(&self.inner.contents_follow).view_changed();
     }
 
-    /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to slide.
+    /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to change in view, where the host fades them over.
     pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
         lock(&self.inner.contents_follow).row_change(
             ContentsRowChange {
@@ -2303,7 +2332,12 @@ impl AppCore {
     }
 
     pub fn open_file(&self, path: String) {
-        self.inner.core.push(CoreCall::Open(PathBuf::from(path)));
+        let path = PathBuf::from(path);
+        // Asked for before the state's read: what a launch that goes back passes on.
+        if !self.inner.restored.load(Ordering::SeqCst) {
+            updates::note_asked_to_open(std::slice::from_ref(&path));
+        }
+        self.inner.core.push(CoreCall::Open(path));
     }
 
     /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
@@ -2860,8 +2894,41 @@ impl AppCore {
         for engine in self.inner.panes.engines(&self.inner.engine) {
             engine.window_closed();
         }
-        lock(&self.inner.app).window_closed = true;
+        let mut app = lock(&self.inner.app);
+        app.window_closed = true;
+        // A window opened again isn't in the Dock.
+        if let Some(window) = app.window.as_mut() {
+            window.minimised = false;
+        }
+        drop(app);
         self.inner.saver.view_changed();
+    }
+
+    /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
+    pub fn window_minimised_changed(&self, minimised: bool) {
+        if let Some(window) = lock(&self.inner.app).window.as_mut() {
+            window.minimised = minimised;
+        }
+        self.inner.saver.view_changed();
+    }
+
+    /// The app was hidden or shown again, by the system's notices, or QA. Going out of sight writes what's changed, as going to the background does.
+    pub fn app_hidden_changed(&self, hidden: bool) {
+        lock(&self.inner.app).app_hidden = hidden;
+        if hidden {
+            self.inner.saver.write_soon();
+        } else {
+            self.inner.saver.view_changed();
+        }
+    }
+
+    /// Whether this launch hides the app as soon as it's up: an update arriving to an app that was hidden. Any other launch shows it, and the record's told so.
+    pub fn app_comes_back_hidden(&self) -> bool {
+        let mut app = lock(&self.inner.app);
+        let hidden = updates::stays_out_of_sight(app.app_hidden, self.inner.updates.reopened_by_update());
+        app.app_hidden = hidden;
+        app.hidden_decided = true;
+        hidden
     }
 
     pub fn window_opened(&self) {
@@ -2874,7 +2941,7 @@ impl AppCore {
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
-        !(lock(&self.inner.app).window_closed && self.inner.updates.arrived_by_update())
+        !(lock(&self.inner.app).window_closed && self.inner.updates.reopened_by_update())
     }
 
     /// There's no window to wait for, so this launch has come up as far as it goes.
@@ -2883,7 +2950,7 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates.first_frame(recto_update::wall_ms()));
+            .spawn(move || updates::first_frame_shown(&updates));
     }
 
     /// The UI thread has woken.
@@ -2915,12 +2982,19 @@ impl AppCore {
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
             // Before the record: a version that keeps failing goes back here, and not by reading on.
-            if let Some(facts) = lock(&inner.update_facts).take()
+            let facts = lock(&inner.update_facts).take();
+            let misreads = updates::misreads_the_record(facts.as_ref());
+            if let Some(facts) = facts
                 && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
             {
                 std::process::exit(0);
             }
-            let loaded = inner.saver.store.load();
+            if let Some(delay) = qa::restore_delay(inner.qa.is_some()) {
+                std::thread::sleep(delay);
+            }
+            let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
+            let loaded = updates::fall_back_if_unreadable(&inner, loaded);
+            updates::note_tabs_read(&loaded);
             inner.core.push(CoreCall::Restored(Box::new(loaded)));
         });
         if spawned.is_err() {
@@ -2962,15 +3036,25 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates.first_frame(recto_update::wall_ms()));
+            .spawn(move || updates::first_frame_shown(&updates));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
     pub fn window_placement(&self, screens: Vec<ScreenInfo>) -> WindowPlacement {
-        let app = lock(&self.inner.app).clone();
+        let app = {
+            let mut app = lock(&self.inner.app);
+            // In the Dock across an update, as it was. Any other launch shows it, and the record's told so.
+            let arrived = self.inner.updates.reopened_by_update();
+            if let Some(window) = app.window.as_mut() {
+                window.minimised = updates::stays_out_of_sight(window.minimised, arrived);
+            }
+            app.minimised_decided = true;
+            app.clone()
+        };
+        let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
         let activate = app.focus.app_frontmost;
         let focus_sidebar = app.focus.view == FocusView::Sidebar;
-        let in_background = updates::opens_in_background(self.inner.updates.arrived_by_update(), activate);
+        let in_background = updates::opens_in_background(self.inner.updates.reopened_by_update(), activate);
         let Some(saved) = app.window else {
             return WindowPlacement {
                 saved: false,
@@ -2983,6 +3067,7 @@ impl AppCore {
                 focus_sidebar,
                 in_background,
                 full_screen_when_active: false,
+                minimised: false,
             };
         };
         if self.qa_mode {
@@ -2997,6 +3082,7 @@ impl AppCore {
                 focus_sidebar,
                 in_background: false,
                 full_screen_when_active: false,
+                minimised,
             };
         }
         let now: Vec<ScreenNow> = screens
@@ -3031,6 +3117,7 @@ impl AppCore {
             focus_sidebar,
             in_background,
             full_screen_when_active,
+            minimised,
         }
     }
 
@@ -3046,6 +3133,7 @@ impl AppCore {
             },
             screen: None,
             full_screen: false,
+            minimised: false,
         });
         // Its frame in full screen isn't where leaving full screen takes it.
         if let Some([x, y, width, height]) = frame.as_deref() {
@@ -3197,6 +3285,16 @@ impl AppCore {
         self.inner.settings_model()
     }
 
+    /// What an update chosen from the menu came to, as an alert, when there's no window to say it in. Taken once: the host shows it, app-modal.
+    pub fn take_update_alert(&self) -> Option<updates::UpdateAlert> {
+        self.inner.take_update_alert()
+    }
+
+    /// The alert's been answered: what it said has been read.
+    pub fn update_alert_answered(&self) {
+        self.inner.updates.dismiss_notice();
+    }
+
     /// A switch in Settings was flipped.
     pub fn setting_chosen(&self, id: String, on: bool) {
         self.inner.setting_chosen(&id, on);
@@ -3219,7 +3317,7 @@ impl AppCore {
 
     /// Whether this launch comes up behind what the user's doing: see [`WindowPlacement::in_background`].
     pub fn opens_in_background(&self) -> bool {
-        updates::opens_in_background(self.inner.updates.arrived_by_update(), lock(&self.inner.app).focus.app_frontmost)
+        updates::opens_in_background(self.inner.updates.reopened_by_update(), lock(&self.inner.app).focus.app_frontmost)
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.
@@ -3239,6 +3337,8 @@ impl AppCore {
             let outcome = receiver.recv_timeout(QUIT_PATIENCE);
             let fine = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
             let unsaved = inner.host.session.unsaved_tabs();
+            // Asked for, Quit Anyway included, so this run of a version being watched didn't end early. Stay says otherwise.
+            inner.updates.quitting_as_asked();
             if !(fine || unsaved.is_empty()) {
                 inner.set_frozen(false);
                 inner.updates.stop_over();
@@ -3263,6 +3363,11 @@ impl AppCore {
         });
     }
 
+    /// The quit's question was answered with Stay: the app goes on, and isn't quitting after all.
+    pub fn quit_stayed(&self) {
+        self.inner.updates.quit_not_taken();
+    }
+
     /// Ends the socket, on the way out. Returns at once.
     pub fn shutdown(&self) {
         if let Some(stopper) = lock(&self.inner.stopper).take() {
@@ -3270,7 +3375,7 @@ impl AppCore {
         }
         // A quiet run's copy is a test's or a script's, and the system registered it when it was started: it's forgotten again, so the one install is the only RectoPDF in Open With.
         if self.inner.qa.is_some()
-            && let Some(app) = self.inner.updates.app_path()
+            && let Some(app) = self.inner.updates.app()
             && app != std::path::Path::new("/Applications/RectoPDF.app")
         {
             recto_platform::registry::forget_soon(&app);
@@ -3325,7 +3430,13 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     let mut app = lock(&inner.app);
                     app.settings_window = saved.settings_window;
                     app.window_closed = saved.window_closed;
+                    // Once the host's shown or hidden things without the state, what it did is how things are, and the record says that, not what was saved.
+                    app.app_hidden = updates::out_of_sight_when_restored(saved.app_hidden, app.hidden_decided.then_some(app.app_hidden));
+                    let minimised_now = app.minimised_decided.then(|| app.window.as_ref().is_some_and(|window| window.minimised));
                     app.window = saved.window.clone();
+                    if let Some(window) = app.window.as_mut() {
+                        window.minimised = updates::out_of_sight_when_restored(window.minimised, minimised_now);
+                    }
                     app.appearance = saved.appearance;
                     app.focus = saved.focus;
                     let active = restored.record.active.map(TabId);
@@ -5279,12 +5390,28 @@ mod tests {
         assert!(launch_is_quiet(words(&["--not-an-option"])), "it won't get as far as a window");
     }
 
+    /// Failure (review 1): a release's app library is built without `RECTO_RELEASE` while its installer is, and takes a test's hooks, and nothing checks it. `--build-kind` says which it is, and nothing else answers at once.
+    #[test]
+    fn the_build_kind_is_said_at_once_and_only_when_asked() {
+        let answer: Value = serde_json::from_str(&launch_answers_at_once(vec!["--build-kind".into()]).unwrap()).unwrap();
+        assert_eq!(answer["release_build"], recto_update::RELEASE_BUILD);
+        assert_eq!(answer["takes_test_hooks"], !recto_update::RELEASE_BUILD);
+        assert_eq!(launch_answers_at_once(vec![]), None);
+        assert_eq!(launch_answers_at_once(vec!["--qa".into(), "--build-kind".into()]), None);
+    }
+
     /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.
     #[test]
     fn qa_options_only_go_with_a_qa_run() {
         let words = |list: &[&str]| list.iter().map(|word| (*word).to_string()).collect::<Vec<_>>();
         assert!(parse_args(&words(&["--qa-memory-limit-mib", "64"])).is_err());
         assert!(parse_args(&words(&["--qa-time-limit-ms", "5"])).is_err());
+        assert!(parse_args(&words(&["--qa-owner-pid", "5"])).is_err());
+        assert_eq!(parse_args(&words(&["--qa", "--qa-owner-pid", "77"])).unwrap().owner_pid, Some(77));
+        assert!(
+            parse_args(&words(&["--qa", "--qa-owner-pid", "1"])).is_err(),
+            "launchd adopts orphans, so it'd be no owner"
+        );
         let parsed = parse_args(&words(&["--qa", "--qa-memory-limit-mib", "64", "/d/a.pdf"])).unwrap();
         assert!(parsed.qa);
         assert_eq!(parsed.memory_limit_mib, Some(64));

@@ -40,6 +40,21 @@ pub struct Saved {
     pub dev_builds: Option<bool>,
     /// Development builds were turned off while one was running, so the next release found goes in by itself, older or not, as the way back. Until a release is running, or they're turned on again.
     pub back_to_release: bool,
+    /// A new version that's come up, watched for a while in case it then keeps ending: see [`crate::updater::EARLY_END_MS`].
+    pub probation: Option<Probation>,
+}
+
+/// A version that's arrived by an update and come up, and is watched for runs that end early, for as long as the record from before it is kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Probation {
+    pub version: String,
+    /// When it first came up. Watched from then for [`crate::updater::KEEP_RECORD_COPY_MS`].
+    pub since_ms: u64,
+    /// When the run under way started, until it's been up long enough or quit as asked. Still set at a launch, the last run ended early: a crash, a kill, a hang someone ended.
+    pub running_since_ms: Option<u64>,
+    /// Runs in a row that ended early.
+    pub early_ends: u32,
 }
 
 /// How the last update went.
@@ -73,9 +88,10 @@ impl Saved {
             return unreadable;
         };
         saved.offered = saved.offered.filter(|version| parse_version(version).is_some());
-        // An offer is a release's. What ran, failed or was installed may be a development build's too.
+        // An offer is a release's. What ran, failed, was installed or is watched may be a development build's too.
         saved.proven = saved.proven.filter(|known| version::parse(known).is_some());
         saved.failed.retain(|known| version::parse(known).is_some());
+        saved.probation = saved.probation.filter(|probation| version::parse(&probation.version).is_some());
         saved.last_update = saved
             .last_update
             .filter(|update| version::parse(&update.from).is_some() && version::parse(&update.to).is_some());
@@ -119,7 +135,7 @@ mod tests {
         dir
     }
 
-    /// Failure: a damaged or tampered `updates.json` stops checks for good, or puts something other than a version into the menu's words.
+    /// Failure: a damaged or tampered `updates.json` stops checks for good, or puts something other than a version into the menu's words or the version being watched.
     #[test]
     fn a_damaged_file_is_as_good_as_none() {
         let dir = folder("damaged");
@@ -135,12 +151,13 @@ mod tests {
         assert_eq!(Saved::read(&file), saved);
         local::write_private_file(
             &file,
-            br#"{"offered":"Update to <evil>","failed":["x","0.1.1","0.1.0.2"],"proven":"$(rm)","last_check_ms":7}"#,
+            br#"{"offered":"Update to <evil>","failed":["x","0.1.1","0.1.0.2"],"proven":"$(rm)","last_check_ms":7,"probation":{"version":"$(rm)","early_ends":9}}"#,
         )
         .unwrap();
         let read = Saved::read(&file);
         assert_eq!(read.offered, None);
         assert_eq!(read.proven, None);
+        assert_eq!(read.probation, None, "nothing's watched that isn't a version");
         assert_eq!(
             read.failed,
             vec!["0.1.1".to_string(), "0.1.0.2".to_string()],

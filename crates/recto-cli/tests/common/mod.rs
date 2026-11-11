@@ -64,9 +64,13 @@ impl State {
         levels::store(&self.paths, level).unwrap();
     }
 
+    /// `recto` on this state. A quiet run it starts ends with this test's process, so a test that's killed leaves no app behind.
     pub fn command(&self) -> Command {
         let mut command = Command::new(bin());
-        command.env(STATE_ENV, &self.root).stdin(Stdio::null());
+        command
+            .env(STATE_ENV, &self.root)
+            .env("RECTO_QA_OWNER_PID", std::process::id().to_string())
+            .stdin(Stdio::null());
         command
     }
 

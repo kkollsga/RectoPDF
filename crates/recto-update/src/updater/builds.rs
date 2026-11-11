@@ -9,7 +9,7 @@ use crate::rules::{self, AutoStep};
 use crate::saved::Saved;
 use crate::stage::{self, StageError};
 use crate::version;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -84,7 +84,7 @@ impl Updater {
             }
         };
         let me = Arc::clone(self);
-        let app = self.app_path();
+        let app = self.app();
         let written = std::thread::Builder::new()
             .name("recto-update-save".into())
             .stack_size(128 * 1024)
@@ -235,17 +235,11 @@ impl Updater {
             self.failed(asked, &build.version, "no thread could be started", false);
         }
     }
-
-    /// This copy's bundle, once the host's said.
-    #[must_use]
-    pub fn app_path(&self) -> Option<PathBuf> {
-        lock(&self.st).facts.as_ref().map(|facts| facts.app.clone())
-    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::super::{AtLaunch, Facts, HandOffRefused, Host, Look};
+    use super::super::{AtLaunch, Facts, HandOffRefused, HandedOff, Host, Look};
     use super::*;
     use crate::TEAM_ID;
     use crate::fetch::tests::{Answer, Server};
@@ -253,6 +247,7 @@ mod tests {
     use crate::source::{Source, Trust, resolve};
     use crate::stage::tests::{fake_app, latest_json, temp_dir, zip_of};
     use recto_platform::local;
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU32;
@@ -273,9 +268,9 @@ mod tests {
                 since_input_ms: *lock(&self.since_input_ms),
             }
         }
-        fn hand_off(&self, _limit: Duration) -> Result<(), HandOffRefused> {
+        fn hand_off(&self, _limit: Duration) -> Result<HandedOff, HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(HandedOff::default())
         }
         fn quit_now(&self) -> bool {
             true
@@ -421,6 +416,14 @@ mod tests {
         bed.wait_for("the hand-off", |bed| bed.handed_off().is_some());
         let plan = bed.handed_off().unwrap();
         assert_eq!((plan.from.as_str(), plan.to.as_str(), plan.any_version), ("0.1.0", "0.1.0.1", true));
+        // Its arrival is an update's, as a release's is: what was out of sight stays so, and it comes back behind if it was.
+        let arrived = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        arrived.launched(Facts {
+            version: "0.1.0.1".into(),
+            app: bed.updater.app().unwrap(),
+            system: "15.0".into(),
+        });
+        assert!(arrived.reopened_by_update(), "a development build's arrival is reopened by an update");
         assert_eq!(stage::app_version(&plan.new_app()).as_deref(), Some("0.1.0.1"), "staged beside the app");
     }
 
@@ -494,7 +497,7 @@ mod tests {
             Err(InstallRefused::Refused { code: "zip_bad", .. })
         ));
         assert!(matches!(bed.status(), Status::Failed { .. }), "says how it went: {:?}", bed.status());
-        let beside = crate::plan::beside_app(&bed.updater.app_path().unwrap()).unwrap();
+        let beside = crate::plan::beside_app(&bed.updater.app().unwrap()).unwrap();
         assert!(!crate::plan::new_app_in(&beside).exists(), "nothing's left staged");
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
         // Not a build of this sort at all.
@@ -611,7 +614,7 @@ mod tests {
         let after = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
         after.launched(Facts {
             version: "0.1.0".into(),
-            app: bed.updater.app_path().unwrap(),
+            app: bed.updater.app().unwrap(),
             system: "15.0".into(),
         });
         assert_eq!(after.report()["back_to_release"], false);

@@ -50,7 +50,8 @@ fn no_copy_but_the_one_install_is_left_registered() {
     let checkout = checkout();
     let temp = std::env::temp_dir().canonicalize().unwrap();
     let old_dev_copy = main_checkout().map(|main| main.join("target/dev/RectoPDF.app"));
-    let mut allowed = vec![PathBuf::from("/Applications/RectoPDF.app")];
+    // The one install, and what its updater keeps beside it: `RectoPDF.kept` and `RectoPDF.staged` aren't apps to a scan, but the background-only renderer helper inside is found, and is never in Open With.
+    let mut allowed = vec![PathBuf::from("/Applications/RectoPDF.app"), PathBuf::from("/Applications/.RectoPDF-update")];
     allowed.extend(old_dev_copy);
     let allowed: Vec<&Path> = allowed.iter().map(PathBuf::as_path).collect();
     let strays = registry::strays(&registry::registered(), &allowed);

@@ -7,7 +7,7 @@
 //! 4. Swaps the new app and the running one's bundle in a single step. There's never a moment with no app or half of one.
 //! 5. Moves the old app to be kept.
 //! 6. Opens the new app, and waits for it to say it's come up: see [`crate::updater::Updater::first_frame`] for what that means.
-//! 7. If it doesn't, stops it, puts the record back, swaps the old app back, and opens that.
+//! 7. If it doesn't, or it comes up with fewer tabs than were handed off, having misread the record, stops it, puts the record back, swaps the old app back, and opens that.
 //!
 //! The installer quits nothing: quitting was the app's own hand-off. What's left if this is killed is put right at the next launch ([`crate::updater`]). It writes a log to the state folder, with words of its own.
 
@@ -124,7 +124,9 @@ impl Run<'_> {
         if let Some(test) = test
             && test.direct
         {
-            return local::spawn_detached(&self.plan.executable(), &test.args, &test.env, &self.files.log).is_ok();
+            let mut args = test.args.clone();
+            args.extend(self.plan.open.iter().map(|path| path.display().to_string()));
+            return local::spawn_detached(&self.plan.executable(), &args, &test.env, &self.files.log).is_ok();
         }
         let args = open_arguments(self.plan, test);
         let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -141,7 +143,15 @@ impl Run<'_> {
         let mut gone_since: Option<Instant> = None;
         let mut next_look = began;
         while began.elapsed() < limit {
-            if std::fs::read_to_string(self.files.launch_ok()).is_ok_and(|text| text.split_whitespace().next() == Some(self.plan.to.as_str())) {
+            if let Ok(text) = std::fs::read_to_string(self.files.launch_ok())
+                && let Some((version, tabs)) = crate::plan::read_launch_ok(&text)
+                && version == self.plan.to
+            {
+                // Up, and with fewer tabs than it was given: it's misread the record, and what it's showing isn't the user's.
+                if crate::plan::misread(self.plan.handed_off_tabs, tabs) {
+                    self.say("installer: the new app came up with fewer tabs than it was handed");
+                    return Err("misread");
+                }
                 return Ok(());
             }
             if self.files.launch_failed().exists() {
@@ -196,7 +206,9 @@ impl Run<'_> {
         self.step("going_back");
         self.stop_new_app();
         self.step("new_app_stopped");
-        restore_record(&self.files.before(), &self.files.session());
+        if !self.plan.keep_record {
+            restore_record(&self.files.before(), &self.files.session());
+        }
         self.step("record_restored");
         let Some(old) = self.old_app() else {
             self.say("installer: there's no earlier version to go back to");
@@ -263,7 +275,12 @@ pub fn open_arguments(plan: &Plan, test: Option<&crate::plan::TestLaunch>) -> Ve
             args.push(format!("{name}={value}"));
         }
     }
+    // With documents, they're what's opened, and with this app: `open APP FILE` would open each file with whatever usually opens it.
+    if !plan.open.is_empty() {
+        args.push("-a".to_owned());
+    }
     args.push(plan.app.display().to_string());
+    args.extend(plan.open.iter().map(|path| path.display().to_string()));
     if let Some(test) = test
         && !test.args.is_empty()
     {
@@ -297,6 +314,7 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the plan isn't this one's any more, so this one stands down");
         return Ended::NotInstalled;
     }
+    crate::plan::move_to_new_names(&plan.beside);
     let _ = std::fs::write(files.helper_pid(), std::process::id().to_string());
     run.say(&format!(
         "installer: {} to {}, waiting for process {}, to reopen {}",
@@ -418,7 +436,7 @@ fn new_app_holds_the_old_one(plan: &Plan) -> bool {
     crate::stage::app_version(&plan.new_app()).as_deref() == Some(plan.from.as_str())
 }
 
-/// Goes back to the kept app with no install before it: what a launch does when the new version keeps failing with no installer around to see it.
+/// Goes back to the kept app with no install before it: what a launch does when the new version keeps failing with no installer around to see it, before its first frame or, for a while, after it.
 #[must_use]
 pub fn run_back(plan: &Plan) -> Ended {
     let run = Run {
@@ -432,13 +450,15 @@ pub fn run_back(plan: &Plan) -> Ended {
     if !run.plan_is_mine() {
         return Ended::NotInstalled;
     }
+    crate::plan::move_to_new_names(&plan.beside);
     let _ = std::fs::write(run.files.helper_pid(), std::process::id().to_string());
     run.say(&format!("installer: {} keeps failing, going back to {}", plan.to, plan.from));
     if run.wait_for_old_app() != OldApp::Gone {
         run.finish_with(OutcomeKind::NotInstalled, "old_app_stayed");
         return Ended::NotInstalled;
     }
-    run.go_back("kept_failing")
+    // A version that came up and then kept ending leaves the record as it is: see [`Plan::keep_record`].
+    run.go_back(if plan.keep_record { "kept_ending" } else { "kept_failing" })
 }
 
 fn keep_old_app(plan: &Plan) -> std::io::Result<()> {
@@ -568,11 +588,14 @@ mod tests {
             background: false,
             quit_limit_ms: 1,
             start_limit_ms: 1,
+            handed_off_tabs: None,
+            open: Vec::new(),
+            keep_record: false,
             test: None,
         }
     }
 
-    /// Failure: an app in the background comes back taking the focus from whatever the user's doing, or a frontmost one comes back behind it. The owner's rule: "an app in the background reopens without taking focus". And a path with spaces and quotes stays one argument.
+    /// Failure: an app in the background comes back taking the focus from whatever the user's doing, or a frontmost one comes back behind it. The owner's rule: "an app in the background reopens without taking focus". And a path with spaces and quotes stays one argument, and documents passed on are opened with this app and no other.
     #[test]
     fn the_app_comes_back_as_it_was_frontmost_or_not() {
         assert_eq!(open_arguments(&plan(), None), vec!["/Apps/a b/RectoPDF.app".to_string()], "frontmost");
@@ -591,6 +614,15 @@ mod tests {
             ["-g", "--env", "A=b c", "/Apps/a b/RectoPDF.app", "--args", "--qa"]
                 .map(str::to_string)
                 .to_vec()
+        );
+        // Going back from a launch someone asked to open documents: they're opened by this app, as `open APP FILE` would hand each to whatever usually opens it.
+        let asked = Plan {
+            open: vec!["/d/a b.pdf".into()],
+            ..plan()
+        };
+        assert_eq!(
+            open_arguments(&asked, None),
+            ["-a", "/Apps/a b/RectoPDF.app", "/d/a b.pdf"].map(str::to_string).to_vec()
         );
     }
 

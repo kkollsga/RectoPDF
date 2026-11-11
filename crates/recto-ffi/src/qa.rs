@@ -12,6 +12,46 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+/// How long a quiet run lasts at most, if it isn't told.
+pub(crate) const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
+
+/// A test's slow disk: how long a quiet run waits before it reads the state, from `RECTO_QA_RESTORE_DELAY_MS`, so a restore can come after the window's gone up without it. Nothing outside a quiet run.
+pub(crate) fn restore_delay(quiet: bool) -> Option<Duration> {
+    if !quiet {
+        return None;
+    }
+    let ms: u64 = std::env::var("RECTO_QA_RESTORE_DELAY_MS").ok()?.parse().ok()?;
+    Some(Duration::from_millis(ms.min(30_000)))
+}
+
+/// The process this quiet run ends with, if it was told one: what a relaunch by an update passes on.
+static OWNER: OnceLock<u32> = OnceLock::new();
+
+/// What a quiet run's relaunch is given, so the new run ends with the same test.
+pub(crate) fn owner_args() -> Vec<String> {
+    OWNER.get().map(|pid| vec!["--qa-owner-pid".to_owned(), pid.to_string()]).unwrap_or_default()
+}
+
+/// **A quiet run ends with what started it** (PLAN: three ran on, orphaned, for up to their limit after their worktrees were gone). One thread, asleep in one `kevent` with no wake-ups, until the soonest of: the test or script it was started for ends (`--qa-owner-pid`, from `RECTO_QA_OWNER_PID` or `recto qa start --owner`), its temp state folder goes, its own program is deleted, as a worktree's removal or a rebuild does, or its time limit is up. A run started by hand with no owner, as an agent does one command at a time, lasts until one of the others.
+pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::path::PathBuf>) {
+    if let Some(pid) = owner {
+        let _ = OWNER.set(pid);
+    }
+    let program = std::env::current_exe().ok();
+    let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
+        let pids: Vec<u32> = owner.into_iter().collect();
+        let paths: Vec<&Path> = state.iter().chain(program.iter()).map(std::path::PathBuf::as_path).collect();
+        let gone = recto_platform::local::wait_until_gone(&pids, &paths, limit);
+        let why = match gone {
+            recto_platform::local::Gone::Process(_) => "its test or script ended",
+            recto_platform::local::Gone::Path(_) => "its state folder or its program went",
+            recto_platform::local::Gone::TimeUp => "its time limit was up",
+        };
+        eprintln!("recto: this quiet run ended, as {why}.");
+        std::process::exit(124);
+    });
+}
+
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
 const UI_ANSWER_WAIT: Duration = Duration::from_secs(30);
 /// How long a shot waits for the page view to settle before it's taken anyway, saying so.
@@ -342,8 +382,8 @@ impl QaBridge {
             }
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
             | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
-            | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus"
-            | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise"
+            | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.palette_open()) {
@@ -646,7 +686,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
         "scroller_style" => one_of(&["legacy", "overlay"]),
-        "full_screen" | "frontmost" => one_of(&["on", "off"]),
+        "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),
         "sheet" => one_of(&["open", "closed"]),
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),

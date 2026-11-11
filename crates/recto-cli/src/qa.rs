@@ -13,6 +13,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
+/// The process a quiet run ends with, when `--owner` doesn't say: a test or script sets it to its own, so a run it started can't outlive it.
+pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
 const DEFAULT_SCRIPT_LIMIT: Duration = Duration::from_secs(120);
 
 fn failed(code: &'static str, message: impl Into<String>) -> AgentError {
@@ -58,6 +60,7 @@ fn quiet_paths() -> Result<StatePaths, AgentError> {
 struct Launch {
     memory_limit_mib: Option<u64>,
     time_limit: Option<Duration>,
+    owner_pid: Option<u32>,
     open: Vec<PathBuf>,
 }
 
@@ -78,6 +81,9 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
     }
     if let Some(limit) = options.time_limit {
         command.arg("--qa-time-limit-ms").arg(limit.as_millis().to_string());
+    }
+    if let Some(pid) = options.owner_pid {
+        command.arg("--qa-owner-pid").arg(pid.to_string());
     }
     command.args(&options.open);
     command
@@ -144,10 +150,31 @@ pub fn start(invocation: &Invocation) -> Result<Value, AgentError> {
     let options = Launch {
         memory_limit_mib: invocation.fields.get("memory_limit_mib").and_then(Value::as_u64),
         time_limit: invocation.fields.get("time_limit_ms").and_then(Value::as_u64).map(Duration::from_millis),
+        owner_pid: owner(
+            invocation.fields.get("owner_pid").and_then(Value::as_u64),
+            std::env::var(OWNER_ENV).ok().as_deref(),
+        )?,
         open: Vec::new(),
     };
     let (_child, ready) = launch(&app, &paths, &options)?;
-    Ok(json!({ "running": true, "pid": ready["pid"], "socket": ready["socket"], "state": paths.root, "quiet": true }))
+    Ok(json!({ "running": true, "pid": ready["pid"], "socket": ready["socket"], "state": paths.root, "quiet": true, "owner": options.owner_pid }))
+}
+
+/// The process a run's to end with: `--owner`, or else the environment's. One that isn't running would end the run as it starts, so it's refused here, with the words.
+fn owner(given: Option<u64>, from_env: Option<&str>) -> Result<Option<u32>, AgentError> {
+    let pid = match (given, from_env.map(str::trim).filter(|text| !text.is_empty())) {
+        (Some(pid), _) => u32::try_from(pid).ok(),
+        (None, Some(text)) => Some(
+            text.parse::<u32>()
+                .map_err(|_| AgentError::new("usage", format!("{OWNER_ENV} is a process number."), exit::USAGE))?,
+        ),
+        (None, None) => return Ok(None),
+    };
+    match pid {
+        Some(pid) if pid > 1 && recto_platform::local::process_exists(pid) => Ok(Some(pid)),
+        _ => Err(failed("owner_gone", "The process the run's to end with isn't running.")
+            .then(format!("Leave out --owner and {OWNER_ENV}, or name one that's running."))),
+    }
 }
 
 /// Splits a line of a script as a shell would for the simple cases there are: spaces, double quotes, and `$NAME` from the environment.
@@ -322,7 +349,13 @@ impl Measured {
             .ok_or_else(|| failed("no_temp", "There's no temp folder."))?
             .join(format!("rqb{}-{number}", std::process::id()));
         let paths = StatePaths::overridden(&root)?;
-        let (child, ready) = launch(app, &paths, options)?;
+        // This command waits on the run it measures, so it's what the run ends with.
+        let options = Launch {
+            owner_pid: Some(std::process::id()),
+            open: options.open.clone(),
+            ..*options
+        };
+        let (child, ready) = launch(app, &paths, &options)?;
         let pid = ready["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).unwrap_or_else(|| child.id());
         Ok(Self { child, paths, root, pid })
     }
@@ -862,6 +895,20 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: a quiet run told to end with a process that isn't running ends as it starts, with a message about the app instead of the owner; or the environment's owner wins over `--owner`, or a word there is taken for nothing. `--owner` first, the environment next, and a process that's gone, or launchd, is refused.
+    #[test]
+    fn a_runs_owner_is_one_thats_running() {
+        let me = std::process::id();
+        assert_eq!(owner(None, None).unwrap(), None, "a run by hand ends at its limit");
+        assert_eq!(owner(Some(u64::from(me)), Some("1")).unwrap(), Some(me));
+        assert_eq!(owner(None, Some(&me.to_string())).unwrap(), Some(me));
+        assert_eq!(owner(None, Some(" ")).unwrap(), None);
+        assert_eq!(owner(None, Some("abc")).unwrap_err().code, "usage");
+        assert_eq!(owner(None, Some("1")).unwrap_err().code, "owner_gone");
+        assert_eq!(owner(Some(999_999), None).unwrap_err().code, "owner_gone");
+        assert_eq!(owner(Some(u64::MAX), None).unwrap_err().code, "owner_gone");
+    }
 
     /// Failure: a script's line is split differently from how a person reads it, so a path with spaces becomes two words, or an unset name quietly becomes nothing.
     #[test]

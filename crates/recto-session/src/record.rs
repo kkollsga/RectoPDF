@@ -80,6 +80,9 @@ pub struct WindowRecord {
     pub screen: Option<ScreenRecord>,
     #[serde(default)]
     pub full_screen: bool,
+    /// In the Dock. It stays there across an update, and any other launch shows it.
+    #[serde(default)]
+    pub minimised: bool,
 }
 
 fn yes() -> bool {
@@ -245,6 +248,9 @@ pub struct AppRecord {
     /// The window was closed, with the app still running. It stays closed across an update, and any other launch opens one.
     #[serde(default)]
     pub window_closed: bool,
+    /// The app was hidden (⌘H). It stays hidden across an update, and any other launch shows it.
+    #[serde(default)]
+    pub app_hidden: bool,
 }
 
 impl Default for AppRecord {
@@ -259,6 +265,7 @@ impl Default for AppRecord {
             notice: None,
             settings_window: None,
             window_closed: false,
+            app_hidden: false,
         }
     }
 }
@@ -1864,6 +1871,7 @@ mod tests {
                     },
                     screen: None,
                     full_screen: false,
+                    minimised: false,
                 })
             }),
         ];
@@ -2064,6 +2072,7 @@ mod tests {
             frame,
             screen,
             full_screen: false,
+            minimised: false,
         };
         let was_side = ScreenRecord {
             id: 2,
@@ -2112,6 +2121,7 @@ mod tests {
             place_window(
                 &WindowRecord {
                     full_screen: true,
+                    minimised: false,
                     ..window(None, on_side)
                 },
                 std::slice::from_ref(&main)
@@ -2267,6 +2277,7 @@ mod tests {
             },
             screen: None,
             full_screen: false,
+            minimised: false,
         };
         let placed = place_window(&saved, std::slice::from_ref(&screen)).frame;
         assert!(placed.width <= 1512.0, "{placed:?}");

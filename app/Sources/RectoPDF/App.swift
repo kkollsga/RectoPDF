@@ -96,6 +96,9 @@ final class Bridge: AppListener, @unchecked Sendable {
     private var mainObserver: CFRunLoopObserver?
     private var inputMonitor: Any?
     private var handingOff = false
+    /// What hiding the app does in a quiet run, for QA: it's never on the screen to hide.
+    private var quietHidden = false
+    var isAppHidden: Bool { isQuiet ? quietHidden : NSApp.isHidden }
 
     init(arguments: [String]) {
         let bridge = Bridge()
@@ -139,7 +142,19 @@ final class Bridge: AppListener, @unchecked Sendable {
         if isQuiet { quietGuard.install() }
     }
 
+    /// A SIGTERM, from a logout, a shutdown, `killall` or launchd, is a quit asked for: everything's written, as for the menu's Quit, and nothing's counted as ending early.
+    private var terminationSource: DispatchSourceSignal?
+
+    private func quitOnTerminate() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        terminationSource = source
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quitOnTerminate()
         watchMainThread()
         watchMemoryPressure()
         installMenu()
@@ -171,6 +186,10 @@ final class Bridge: AppListener, @unchecked Sendable {
         }
         // It's part of what comes back.
         if core.settingsWindowWasOpen() { showSettings(takingKey: false) }
+        // Hidden across an update, as it was: Rust says. What's been put up is hidden with it, and comes back with it.
+        if core.appComesBackHidden() {
+            if isQuiet { quietHidden = true } else { NSApp.hide(nil) }
+        }
         core.ready()
     }
 
@@ -218,6 +237,8 @@ final class Bridge: AppListener, @unchecked Sendable {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(hiddenChanged), name: NSApplication.didHideNotification, object: nil)
+        center.addObserver(self, selector: #selector(hiddenChanged), name: NSApplication.didUnhideNotification, object: nil)
         let core = self.core
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.actions.union(Self.nearby)) { event in
             if Self.actions.contains(NSEvent.EventTypeMask(type: event.type)) { core.noteUserInput() } else { core.noteUserNearby() }
@@ -229,6 +250,17 @@ final class Bridge: AppListener, @unchecked Sendable {
     nonisolated static let actions: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]
     /// What shows someone's there. Owner, 2026-11-07: "hasn't touched", so a silent update errs towards never interrupting. Comes in only while there's someone moving something, so nothing at rest.
     nonisolated static let nearby: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp, .flagsChanged, .rotate, .swipe, .smartMagnify, .gesture, .beginGesture, .endGesture, .pressure, .tabletPoint]
+
+    @objc private func hiddenChanged() {
+        guard !isQuiet else { return }
+        core.appHiddenChanged(hidden: NSApp.isHidden)
+    }
+
+    /// What hiding the app does, for QA, by what AppKit's notice would say.
+    func setQuietHidden(_ on: Bool) {
+        quietHidden = on
+        core.appHiddenChanged(hidden: on)
+    }
 
     @objc private func activityChanged() {
         guard !isQuiet else { return }
@@ -253,7 +285,9 @@ final class Bridge: AppListener, @unchecked Sendable {
         alert.informativeText = answer.message
         alert.addButton(withTitle: answer.stayButton)
         alert.addButton(withTitle: answer.quitButton)
-        NSApp.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
+        let quitting = alert.runModal() == .alertSecondButtonReturn
+        if !quitting { core.quitStayed() }
+        NSApp.reply(toApplicationShouldTerminate: quitting)
     }
 
     func handOffQuit() {
@@ -291,6 +325,7 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func modelChanged() {
+        if !sheets.appModalShowing, let alert = core.takeUpdateAlert() { showUpdateAlert(alert) }
         windowController?.refreshModel()
         if core.reader().printReady { runReadyPrint() }
         settings?.refresh()
@@ -488,6 +523,21 @@ final class Bridge: AppListener, @unchecked Sendable {
             guard response == .OK, let url = panel.url else { return }
             // For the tab it opened for. Whether a file's there to replace, which the sheet has asked, is Rust's to look at, off this thread.
             core.saveAs(tab: model.tab, path: url.path)
+        }
+    }
+
+    /// What an update chosen from the menu came to, with no window to say it in: Rust's words, app-modal.
+    func showUpdateAlert(_ model: UpdateAlert) {
+        let alert = NSAlert()
+        alert.messageText = model.message
+        alert.addButton(withTitle: model.button)
+        let core = self.core
+        core.sheetChanged(open: true)
+        sheetShowing = ["kind": "update_alert", "message": model.message, "buttons": [model.button]]
+        sheets.presentAppModal(alert) { [weak self] _ in
+            core.sheetChanged(open: false)
+            self?.sheetShowing = nil
+            core.updateAlertAnswered()
         }
     }
 

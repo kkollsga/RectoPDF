@@ -111,8 +111,9 @@ ZIP="$(package "$OUT/app/RectoPDF.app" "$OUT" "$DEV")"
 echo "$VERSION $((n + 1))" > "$OUT/counter"
 
 if [ "$mode" = first ]; then
-  # The one-time move from the old dev copy to /Applications. It's swapped while running only after 5 minutes with no use of the Mac (owner, 2026-11-11), and by then
-  # everything's on disk: edits within 5 s, the place within a minute (SPEC decision 25). So it's told to end, and loses nothing.
+  # The one-time move from the old dev copy to /Applications. It's swapped while running only after 5 minutes with no use of the Mac (owner, 2026-11-11), and then
+  # told to end with SIGTERM. A copy built from `build/update-gaps` on takes SIGTERM as a quit, writing everything as any quit does. An older one, such as the owner's
+  # copy at 11276a3, just ends, and the 5 idle minutes are what cover it: by then everything's on disk, edits within 5 s and the place within a minute (SPEC decision 25).
   was_running=""
   for pid in $(running_elsewhere); do
     was_running=1
