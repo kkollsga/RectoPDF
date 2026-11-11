@@ -63,7 +63,9 @@ fn look_with(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Opti
         Some(Ok(view)) => view,
         // lopdf needs a password: a save refuses an encrypted file itself. They differ only if PDFium opened it without one.
         Some(Err(OpenError::PasswordNeeded)) => return doc.page_count().is_ok().then_some(Disagreement::Encryption),
-        // A read that failed may be the disk's, not the file's: never taken as agreement, and looked at again by the next save (review round 1).
+        // lopdf can't read the very descriptor the renderer opened: that's the file's answer, kept (review round 2).
+        Some(Err(OpenError::NotPdf | OpenError::TooComplex)) => return Some(Disagreement::StructureUnreadable),
+        // Any other failed read may be the disk's, not the file's: never taken as agreement, and looked at again by the next save (review round 1).
         Some(Err(_)) | None => return Some(Disagreement::Unchecked),
     };
     let page_count = match doc.page_count() {
@@ -114,10 +116,14 @@ fn renderer_view(doc: &mut DocRenderer, page_count: u32, deadline: Instant) -> R
     Ok(View { page_count, repaired, sizes })
 }
 
-/// The files a save of `tab` would write from, each with the version the session has: the tab's own and every PDF its pages were added from.
+/// The files a save of `tab` would write from, each with the version the session has: the tab's own and every PDF its pages were added from. None
+/// for a tab only the renderer could read, which `begin_save` refuses as such: no worker is started for an answer that's already known (review round 2).
 fn files_of<A: SessionAccess>(access: &A, tab: &str) -> Result<Vec<(PathBuf, Option<FileStamp>, bool)>, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
+        if s.tab(id).is_some_and(|tab| tab.renderer_only) {
+            return Ok(Vec::new());
+        }
         let mut files: Vec<(PathBuf, Option<FileStamp>, bool)> = s.path_of(id).map(|path| (path, s.own_stamp(id), false)).into_iter().collect();
         if let Some(edits) = s.page_edits(id) {
             files.extend(edits.added_sources().iter().map(|added| (added.path.to_path_buf(), added.stamp, true)));
@@ -143,9 +149,14 @@ pub fn save_refusal(snapshot: &recto_session::SaveSnapshot) -> Option<AgentError
 
 fn refusal_among<'a>(files: impl Iterator<Item = (&'a Path, Option<FileStamp>, bool)>) -> Option<AgentError> {
     files.into_iter().find_map(|(path, stamp, added)| {
-        // A file with no stamp, or that isn't the version the session has, is refused by the save itself: no look is spent on it.
-        let stamp = stamp.filter(|stamp| recto_platform::file_stamp(path).ok() == Some(*stamp))?;
-        let disagreement = check(path, stamp)?;
+        // A file with no stamp, or that's another version than the session has, is refused by the save itself: no look is spent on it. One that
+        // can't be looked at just now isn't skipped: it can't be checked (review round 2).
+        let stamp = stamp?;
+        let disagreement = match recto_platform::file_stamp(path) {
+            Ok(now) if now != stamp => return None,
+            Ok(_) => check(path, stamp)?,
+            Err(_) => Disagreement::Unchecked,
+        };
         let message = if added {
             format!(
                 "Pages were added from “{}”, which RectoPDF couldn't check or whose two readers see it differently: {}. So nothing was saved, as what's written might not be what you see. Nothing was written, and the edits are still here.",
@@ -219,6 +230,8 @@ impl Drop for LookEnds {
 
 /// Runs a look for `stamp` and keeps its answer, whatever it is, for that stamp: so the window, told it's done, finds it and doesn't ask again.
 fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>) -> Option<Disagreement> {
+    #[cfg(test)]
+    LOOKS_RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut ends = LookEnds { stamp, answer: None, done };
     let answer = looker(path, stamp, Instant::now() + LOOK_DEADLINE);
     ends.answer = Some(answer.clone());
@@ -256,16 +269,29 @@ fn check_by(path: &Path, stamp: FileStamp, looker: Box<Looker>) -> Option<Disagr
 /// **What the window asks:** the answer for this version if it's known, whatever it is; if not, `None`, and the look starts on a thread of its own,
 /// calling `done` once it's known. One look per version, and at most [`LOOKS_AT_ONCE`] at once: past that, `None` until one ends.
 pub fn known_or_start(path: &Path, stamp: FileStamp, done: impl FnOnce() + Send + 'static) -> Option<Option<Disagreement>> {
-    known_or_start_by(path, stamp, Box::new(look_at), Box::new(done))
+    match known_or_start_by(path, stamp, Box::new(look_at), Box::new(done)) {
+        Ask::Known(answer) => Some(answer),
+        Ask::Started | Ask::Busy => None,
+    }
 }
 
-fn known_or_start_by(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Box<dyn FnOnce() + Send>) -> Option<Option<Disagreement>> {
+/// What asking the window's way did.
+#[derive(Debug, PartialEq)]
+enum Ask {
+    Known(Option<Disagreement>),
+    /// A look started, and will call back.
+    Started,
+    /// None started: one's under way for this version, or the cap's reached.
+    Busy,
+}
+
+fn known_or_start_by(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Box<dyn FnOnce() + Send>) -> Ask {
     let mut held = looks();
     if let Some(answer) = known_in(&held, stamp) {
-        return Some(answer);
+        return Ask::Known(answer);
     }
     if held.looking.contains(&stamp) || held.looking.len() >= LOOKS_AT_ONCE {
-        return None;
+        return Ask::Busy;
     }
     held.looking.push(stamp);
     drop(held);
@@ -279,9 +305,23 @@ fn known_or_start_by(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: B
         });
     if spawned.is_err() {
         looks().looking.retain(|looking| *looking != stamp);
+        // A save waiting on this look would otherwise wait out its deadline.
+        LOOKED.notify_all();
+        return Ask::Busy;
     }
-    None
+    Ask::Started
 }
+
+/// Held by each test that uses the process-wide [`LOOKS`], so `cargo test`, which runs a binary's tests on threads of one process, doesn't race them.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many looks have run in this process, for a test that none did.
+#[cfg(test)]
+pub(crate) static LOOKS_RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 mod tests {
@@ -309,6 +349,7 @@ mod tests {
     /// look that panics ends, counting as one that couldn't check.
     #[test]
     fn a_version_is_looked_at_once_and_a_look_ends_however_it_ends() {
+        let _lock = test_lock();
         let file = recto_testpdf::TempPdf::new("once.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
         let stamp = stamp_of(&file.0);
         assert_eq!(check_by(&file.0, stamp, Box::new(|_, _, _| None)), None);
@@ -316,7 +357,7 @@ mod tests {
         let other = FileStamp { size: stamp.size + 1, ..stamp };
         assert_eq!(
             known_or_start_by(&file.0, other, Box::new(|_, _, _| panic!("a hostile file")), Box::new(|| {})),
-            None
+            Ask::Started
         );
         wait_for("the look to end", || looks().looking.is_empty());
         assert_eq!(
@@ -326,7 +367,7 @@ mod tests {
         );
         assert_eq!(
             known_or_start_by(&file.0, stamp, Box::new(|_, _, _| unreachable!("known already")), Box::new(|| {})),
-            Some(None),
+            Ask::Known(None),
             "and the first version is still known"
         );
     }
@@ -335,6 +376,7 @@ mod tests {
     /// asks again, and every ask spawns a thread: a hot loop. The answer is kept for the version asked, so the next ask starts nothing.
     #[test]
     fn a_look_at_a_file_thats_changed_or_gone_is_kept_and_not_started_again() {
+        let _lock = test_lock();
         let gone = std::path::Path::new("/nowhere/at/all.pdf");
         let stamp = FileStamp {
             size: 1,
@@ -356,7 +398,7 @@ mod tests {
                 Box::new(|_, _, _| unreachable!("asked again")),
                 Box::new(|| unreachable!("told again"))
             ),
-            Some(Some(Disagreement::Unchecked)),
+            Ask::Known(Some(Disagreement::Unchecked)),
             "kept, and nothing starts"
         );
     }
@@ -365,6 +407,7 @@ mod tests {
     /// comparison. It's `Unchecked`, which refuses the save, and a save looks again rather than take it as the file's answer; the window keeps it.
     #[test]
     fn a_look_that_couldnt_check_refuses_and_a_save_looks_again() {
+        let _lock = test_lock();
         let file = recto_testpdf::TempPdf::new("transient.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
         let stamp = stamp_of(&file.0);
         assert_eq!(
@@ -373,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             known_or_start_by(&file.0, stamp, Box::new(|_, _, _| unreachable!("the window keeps it")), Box::new(|| {})),
-            Some(Some(Disagreement::Unchecked))
+            Ask::Known(Some(Disagreement::Unchecked))
         );
         assert_eq!(
             check_by(&file.0, stamp, Box::new(|_, _, _| None)),
@@ -387,6 +430,7 @@ mod tests {
     /// cap. It waits for that look and takes its answer; and a save's own look counts toward the cap while it runs.
     #[test]
     fn a_save_joins_a_look_under_way_and_its_own_counts_toward_the_cap() {
+        let _lock = test_lock();
         let file = recto_testpdf::TempPdf::new("joined.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
         let stamp = stamp_of(&file.0);
         let (go, wait) = mpsc::channel::<()>();
@@ -394,7 +438,7 @@ mod tests {
             let _ = wait.recv();
             Some(Disagreement::PageSize { page: 0 })
         });
-        assert_eq!(known_or_start_by(&file.0, stamp, slow, Box::new(|| {})), None);
+        assert_eq!(known_or_start_by(&file.0, stamp, slow, Box::new(|| {})), Ask::Started);
         let saving = std::thread::spawn({
             let path = file.0.clone();
             move || check_by(&path, stamp, Box::new(|_, _, _| unreachable!("joined the window's look")))
@@ -424,9 +468,11 @@ mod tests {
     }
 
     /// Failure: one slow disk holds every look, or looks pile up a worker each past any cap. At most [`LOOKS_AT_ONCE`] at once, one per version, and
-    /// the window is told when each is known.
+    /// the window is told when each is known. Each ask says whether it started a look or found one busy (review round 2), and the tests on the
+    /// process-wide looks hold one lock, so `cargo test`'s threads don't race them.
     #[test]
     fn looks_are_capped_and_say_when_they_are_done() {
+        let _lock = test_lock();
         let file = recto_testpdf::TempPdf::new("capped.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
         let base = stamp_of(&file.0);
         let stamp = |n: u64| FileStamp {
@@ -443,15 +489,20 @@ mod tests {
                 let _ = wait.recv();
                 Some(Disagreement::PageSize { page: 0 })
             });
-            assert_eq!(known_or_start_by(&file.0, stamp(n), look, Box::new(move || told.send(n).unwrap())), None);
+            assert_eq!(
+                known_or_start_by(&file.0, stamp(n), look, Box::new(move || told.send(n).unwrap())),
+                Ask::Started
+            );
         }
         assert_eq!(
             known_or_start_by(&file.0, stamp(99), Box::new(|_, _, _| unreachable!("past the cap")), Box::new(|| {})),
-            None
+            Ask::Busy,
+            "past the cap, busy"
         );
         assert_eq!(
             known_or_start_by(&file.0, stamp(0), Box::new(|_, _, _| unreachable!("under way")), Box::new(|| {})),
-            None
+            Ask::Busy,
+            "under way for that version, busy"
         );
         drop(release);
         for _ in 0..LOOKS_AT_ONCE {
@@ -461,10 +512,66 @@ mod tests {
         assert_eq!(known(stamp(0)), Some(Some(Disagreement::PageSize { page: 0 })), "kept for the version asked");
     }
 
+    /// Failure (review round 2, blocking): Save As of a tab only the renderer could read runs the gate before `begin_save`'s own refusal, starting
+    /// a worker and PDFium's whole read, and answers "couldn't check, try again", which an agent retries for ever. It's refused as renderer-only,
+    /// and no look runs.
+    #[test]
+    fn save_as_of_a_renderer_only_tab_says_so_and_starts_no_look() {
+        let _lock = test_lock();
+        let mut bytes = recto_testpdf::pages(&[recto_testpdf::Page::new("")]);
+        // A trailer naming an `/Encrypt` that isn't there: lopdf refuses the file, PDFium reads it.
+        let at = bytes.windows(7).rposition(|window| window == b"trailer").unwrap() + "trailer\n<< ".len();
+        bytes.splice(at..at, b"/Encrypt 99 0 R ".iter().copied());
+        let file = recto_testpdf::TempPdf::new("renderer-only.pdf", &bytes);
+        let access = Mutex::new(recto_session::Session::new(crate::loader::DrawableLoader));
+        let tab = access.lock().unwrap().open(&file.0).expect("PDFium reads it");
+        assert!(access.lock().unwrap().tab(tab).unwrap().renderer_only);
+        let out = file.0.with_file_name("copy.pdf");
+        let before = LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst);
+        let refused = crate::saving::save(
+            &access,
+            crate::Level::Full,
+            &format!("#{}", tab.0),
+            &crate::saving::SaveTo::As {
+                out: out.clone(),
+                replace: false,
+            },
+            &mut Vec::new(),
+        )
+        .expect_err("refused");
+        assert_eq!(refused.code, "renderer_only", "{}", refused.message);
+        assert_eq!(LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst), before, "no look, so no worker");
+        assert!(!out.exists());
+    }
+
+    /// Failure (review round 2): a file that can't be looked at just now (a failed stat) skips the gate, and is saved unchecked; and so does an
+    /// added PDF. It can't be checked, so the save is refused, saying to try again; a file that's simply another version is left to the save's own
+    /// refusal, with no look spent on it.
+    #[test]
+    fn a_file_that_cant_be_looked_at_isnt_saved_unchecked() {
+        let _lock = test_lock();
+        let file = recto_testpdf::TempPdf::new("there.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let gone = std::path::Path::new("/nowhere/at/all.pdf");
+        let before = LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst);
+        for added in [false, true] {
+            let refused = refusal_among([(gone, Some(stamp), added)].into_iter()).expect("refused");
+            assert_eq!(refused.code, "parsers_disagree", "{}", refused.message);
+            assert!(refused.next.contains("again"), "{}", refused.next);
+        }
+        let other = FileStamp { size: stamp.size + 1, ..stamp };
+        assert!(
+            refusal_among([(file.0.as_path(), Some(other), false)].into_iter()).is_none(),
+            "another version: the save's to refuse"
+        );
+        assert_eq!(LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst), before, "and no look was spent on either");
+    }
+
     /// Failure (review round 1): a look has no overall deadline, so a slow disk or a worker that answers slowly holds a save for as long as it
     /// takes. Past the deadline it fails closed, as `Unchecked`, on a real file and the real renderer.
     #[test]
     fn a_look_past_its_deadline_fails_closed() {
+        let _lock = test_lock();
         let pages: Vec<recto_testpdf::Page> = (0..50).map(|_| recto_testpdf::Page::new("")).collect();
         let file = recto_testpdf::TempPdf::new("deadline.pdf", &recto_testpdf::pages(&pages));
         let stamp = stamp_of(&file.0);

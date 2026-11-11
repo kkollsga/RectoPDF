@@ -143,8 +143,9 @@ fn a_file_only_one_reader_needs_a_password_for_is_a_disagreement() {
     assert_eq!(look(&file.0), Some(Disagreement::Encryption));
 }
 
-/// Failure (review round 1): a structure read that fails, which may be the disk's, is kept as agreement. Here lopdf refuses a file PDFium reads
-/// (a trailer naming an `/Encrypt` that isn't there): unchecked, never agreement.
+/// Failure (review rounds 1 and 2): a structure read that fails is kept as agreement; or, when lopdf refuses the very descriptor PDFium opened,
+/// it's taken as a moment's failure and looked at again by every save. Here lopdf refuses a file PDFium reads (a trailer naming an `/Encrypt`
+/// that isn't there): the file's own answer, never agreement. A read the disk fails is `Unchecked`, held by the unit tests with a look that says so.
 #[test]
 fn a_structure_read_that_fails_is_never_agreement() {
     let file = TempPdf::new("dangling-encrypt.pdf", &{
@@ -159,7 +160,7 @@ fn a_structure_read_that_fails_is_never_agreement() {
         bytes
     });
     assert!(recto_core::inspect(&file.0).is_err(), "lopdf refuses it");
-    assert_eq!(look(&file.0), Some(Disagreement::Unchecked));
+    assert_eq!(look(&file.0), Some(Disagreement::StructureUnreadable));
 }
 
 /// Failure: the look is slow enough on a long document to matter (each page's size is a round trip to the worker). Measures a 2,000-page file and

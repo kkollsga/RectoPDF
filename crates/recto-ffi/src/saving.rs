@@ -132,6 +132,13 @@ pub(crate) fn replace_answered(out: &std::path::Path, answered: std::time::Syste
 /// The decided words for signed copies (SPEC decision 27).
 pub(crate) const UNSIGNED_COPY: &str = recto_agent::saving::UNSIGNED_COPY;
 
+/// **Whether what the gate found greys Save and Save As in the window** (the coordinator's decision, review round 2): only a real disagreement.
+/// One it couldn't check just now (`Unchecked`) leaves them on, and the close prompt offers Save: the save makes its own look, which is the
+/// retry, once per click, and says why if it still can't. Greying it would lock that version out of saving for the rest of the run.
+pub(crate) fn greys_save(disagreement: &recto_core::agreement::Disagreement) -> bool {
+    !disagreement.is_transient()
+}
+
 /// What the Save icon says when it's off for a signed document.
 const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
 
@@ -223,7 +230,7 @@ impl SaveUi {
         let why = file
             .and_then(|(path, stamp)| recto_agent::agreement::known_or_start(path, stamp, done))
             .flatten()
-            .map(|disagreement| disagreement.message());
+            .and_then(|disagreement| greys_save(&disagreement).then(|| disagreement.message()));
         crate::lock(&self.disagreement).clone_from(&why);
         why
     }
@@ -499,6 +506,24 @@ mod tests {
         );
         assert!(off.informative.contains("Save As makes a new copy"), "{}", off.informative);
         assert_eq!(close_prompt(1, "plain.pdf", true, false, false, None).buttons[0].choice, CloseChoice::Save);
+    }
+
+    /// Failure (review round 2, blocking): a look that couldn't check the file just now greys Save and Save As and takes Save out of the close
+    /// prompt for the rest of the run, though its words say to try again. Only a real disagreement greys; `Unchecked` leaves Save to make its own look.
+    #[test]
+    fn a_look_that_couldnt_check_doesnt_grey_save() {
+        use recto_core::agreement::Disagreement;
+        assert!(!greys_save(&Disagreement::Unchecked), "unchecked: Save stays, and its own look is the retry");
+        for real in [
+            Disagreement::PageCount { structure: 1, renderer: 2 },
+            Disagreement::PageSize { page: 0 },
+            Disagreement::Repaired { by_renderer: true },
+            Disagreement::RendererFailed,
+            Disagreement::Encryption,
+            Disagreement::StructureUnreadable,
+        ] {
+            assert!(greys_save(&real), "{real:?}");
+        }
     }
 
     /// Failure (the agreement gate): closing a file whose two readers disagree offers Save or Save As, each of which is refused, so the person is

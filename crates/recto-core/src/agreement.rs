@@ -59,6 +59,8 @@ pub enum Disagreement {
     Repaired { by_renderer: bool },
     /// The renderer couldn't read the file at all, so what's shown can't be checked against what would be saved.
     RendererFailed,
+    /// The structure reader can't read the file, which the renderer opened: the file's own answer, as a read of the same descriptor gave it.
+    StructureUnreadable,
     /// One of them needs a password for the file and the other read it without one, as when only an older revision's trailer names `/Encrypt`.
     Encryption,
     /// It couldn't be checked just now: the file wasn't the version asked about, a read failed, a worker couldn't start, or the look ran out of
@@ -74,6 +76,7 @@ impl Disagreement {
             Self::PageSize { .. } => "page_size",
             Self::Repaired { .. } => "repaired",
             Self::RendererFailed => "renderer_failed",
+            Self::StructureUnreadable => "structure_unreadable",
             Self::Encryption => "encryption",
             Self::Unchecked => "unchecked",
         }
@@ -94,6 +97,7 @@ impl Disagreement {
             Self::Repaired { by_renderer: true } => "its index of where things are is broken, and the pages shown come from a repaired copy of it".into(),
             Self::Repaired { by_renderer: false } => "its index of where things are is broken, and its structure was read from a repaired copy of it".into(),
             Self::RendererFailed => "its pages couldn't be read to check them".into(),
+            Self::StructureUnreadable => "its pages can be read, but its structure, which a save writes from, can't".into(),
             Self::Encryption => "one of them needs a password for it and the other doesn't".into(),
             Self::Unchecked => "it couldn't be read just now to check it".into(),
         }
@@ -261,6 +265,7 @@ mod tests {
             Disagreement::Repaired { by_renderer: false },
             Disagreement::RendererFailed,
             Disagreement::Encryption,
+            Disagreement::StructureUnreadable,
             Disagreement::Unchecked,
         ] {
             let message = disagreement.message();
