@@ -100,3 +100,10 @@ path = "fuzz_targets/generated.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "corpus"
+path = "fuzz_targets/corpus.rs"
+test = false
+doc = false
+bench = false

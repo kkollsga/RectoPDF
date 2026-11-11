@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod control;
+pub mod corpus;
 pub mod edits;
 pub mod generated;
 pub mod index;
