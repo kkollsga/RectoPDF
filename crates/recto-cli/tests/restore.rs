@@ -2422,6 +2422,32 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     );
 }
 
+/// Failure (CI, build/privacy, run 43062872948: `field_has_focus: true then false` across an update): the session thread told the host the state was in and went on without bringing Find's field up to date, which every other call does as it ends. The window made then had Find closed for all it knew, so its field didn't take the keyboard it had had, though the focus was said to be on it; on a machine where nothing else came first, as a starved one, every time. The session thread 1.5 s late after the state comes in, and the field has the keyboard again.
+#[test]
+fn finds_field_has_the_keyboard_again_when_the_session_is_late_after_the_state() {
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let file = long_document("alpha", 5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["field_has_focus"], true);
+    run.quit();
+    let run = Run::on_with_env(&state, &[("RECTO_QA_SLOW", std::ffi::OsStr::new("session=1500"))]).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["app"]["find"]["open"], true, "{}", after["app"]["find"]);
+    assert_eq!(after["app"]["focus_view"], "find");
+    assert_eq!(
+        after["app"]["find"]["field_has_focus"], true,
+        "the field has the keyboard: {}",
+        after["app"]["find"]
+    );
+    run.quit();
+}
+
 /// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {

@@ -3737,6 +3737,9 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Restored(loaded) => {
                 let first_time = !inner.restored.load(Ordering::SeqCst);
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
+                // What every other call does as it ends, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
+                generated_contents::look_if_chosen(inner);
+                find::keep_up(inner);
                 reconcile(inner, &mut synced, &mut events);
                 if first_time {
                     // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
