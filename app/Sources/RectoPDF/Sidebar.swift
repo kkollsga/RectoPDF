@@ -870,8 +870,9 @@ final class TabTable: NSTableView {
     /// The contents rows on screen as VoiceOver has them, for QA.
     func contentsAccessibility() -> [[String: Any]] {
         let visible = contentsTable.rows(in: contentsTable.visibleRect)
+        // Made if the table hasn't made them yet, as VoiceOver's asking would: a report shouldn't depend on whether a layout pass has come round (CI, 2026-11-11: none after a restart, on a slow machine).
         return (visible.location..<(visible.location + visible.length)).prefix(12).compactMap { row in
-            guard let cell = contentsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell else { return nil }
+            guard let cell = contentsTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? SidebarCell else { return nil }
             return ["row": row, "role": cell.accessibilityRole()?.rawValue ?? "", "label": cell.accessibilityLabel() ?? "", "expanded": cell.isAccessibilityExpanded(), "actions": (cell.accessibilityCustomActions() ?? []).map(\.name)] as [String: Any]
         }
     }
