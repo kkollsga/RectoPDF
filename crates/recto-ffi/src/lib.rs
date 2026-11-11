@@ -1260,8 +1260,12 @@ struct EngineHooks {
 
 impl EngineEvents for EngineHooks {
     fn ops_ready(&self) {
-        let listener = Arc::clone(&self.listener);
-        recto_platform::slow::later(recto_platform::slow::Seam::Draw, move || listener.ops_ready());
+        if recto_platform::slow::is_on() {
+            let listener = Arc::clone(&self.listener);
+            recto_platform::slow::later(recto_platform::slow::Seam::Draw, move || listener.ops_ready());
+        } else {
+            self.listener.ops_ready();
+        }
     }
 
     fn note_changed(&self) {
