@@ -312,6 +312,11 @@ impl Bed {
         std::fs::read_to_string(self.state.root.join("update.log")).unwrap_or_default()
     }
 
+    /// What the state folder's run said, the update log among it, and what the system recorded, for a failure message where nothing answered.
+    fn said(&self) -> String {
+        crate::common::app::what_became_of(&self.state, None)
+    }
+
     fn version(&self) -> String {
         recto_update::stage::app_version(&self.app).unwrap()
     }
@@ -332,7 +337,7 @@ impl Bed {
             if status["status"] == wanted {
                 return status;
             }
-            assert!(began.elapsed() < Duration::from_secs(60), "waited for {wanted}: {status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(60), "waited for {wanted}: {status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -355,7 +360,7 @@ impl Bed {
                     assert_ne!(status["data"]["status"], "failed", "{status}\n{}", self.log());
                 }
             }
-            assert!(began.elapsed() < Duration::from_secs(90), "no new app: {reply}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(90), "no new app: {reply}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -372,7 +377,7 @@ impl Bed {
             {
                 return Run::attach(&self.state, pid["data"]["pid"].as_u64().unwrap() as u32);
             }
-            assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -444,7 +449,7 @@ impl Bed {
             if code == 0 && status["ok"] == true {
                 return Run::attach(&self.state, status["data"]["pid"].as_u64().unwrap() as u32);
             }
-            assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
