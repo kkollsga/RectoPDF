@@ -976,6 +976,7 @@ impl PageEdits {
         if page_count == 0 {
             return Ok(());
         }
+        let (sources_before, noted_before) = (self.added.len(), self.journal.as_ref().map(|outbox| (outbox.seq, outbox.ops.len())));
         let source = self.source_for(path, page_count, stamp, protected)?;
         let slots: Box<[PageSlot]> = (0..page_count)
             .map(|page| PageSlot {
@@ -984,7 +985,16 @@ impl PageEdits {
                 quarter_turns: 0,
             })
             .collect();
-        self.commit(Step::Restore { start: at, slots })
+        let committed = self.commit(Step::Restore { start: at, slots });
+        // A refused insert leaves nothing behind: the file it would have added isn't one of the list's, nor in its journal, so it neither counts towards the limit on files nor takes a number the next one should have.
+        if committed.is_err() && self.added.len() > sources_before {
+            self.added.truncate(sources_before);
+            if let (Some(outbox), Some((seq, len))) = (&mut self.journal, noted_before) {
+                outbox.seq = seq;
+                outbox.ops.truncate(len);
+            }
+        }
+        committed
     }
 
     /// [`Self::undo`], or says it would push the owner's steps out of the history. An undo can hold more than the step did: undoing an insert holds its pages.
@@ -1743,6 +1753,28 @@ mod tests {
         // One that fits goes in.
         let ops = [&ops[..2], &[JournalOp::Insert(3, 1, 1, agent)]].concat();
         assert_eq!(PageEdits::replay(3, None, &ops).unwrap().1, 3);
+    }
+
+    /// Failure: an agent's insert is refused, as it would push the owner's steps out of the history, and the file it would have added stays on the list anyway, unused: it counts towards the limit on files, it's in the journal, and the next file added gets the number after it. Found by the `edits` fuzz target, whose model numbers files as they're first taken.
+    #[test]
+    fn a_refused_insert_leaves_no_file_behind() {
+        let mut edits = PageEdits::new(2);
+        edits.journal = Some(Outbox::default());
+        for _ in 0..MAX_UNDO {
+            edits.rotate(0, 1, 1).unwrap();
+        }
+        let journaled = edits.journal.as_ref().map(|outbox| (outbox.seq, outbox.ops.len()));
+        edits.acting = Author::Agent;
+        assert_eq!(edits.insert_pdf(0, Path::new("/d/a.pdf"), 1), Err(EditError::HistoryFull));
+        assert!(edits.added.is_empty(), "the refused file stayed on the list");
+        assert_eq!(
+            edits.journal.as_ref().map(|outbox| (outbox.seq, outbox.ops.len())),
+            journaled,
+            "and in the journal"
+        );
+        edits.acting = Author::Owner;
+        edits.insert_pdf(0, Path::new("/d/b.pdf"), 1).unwrap();
+        assert_eq!(edits.slots()[0].source, 1, "the next file is the first");
     }
 
     /// Failure: the place can't be followed to the right copy of a page added twice.
