@@ -399,7 +399,7 @@ impl QaBridge {
             }
             "settings" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                if !matches!(value, "open" | "close") && !inner.has_setting(value) {
+                if !matches!(value, "open" | "close" | "privacy") && !inner.has_setting(value) {
                     return Err(bad(format!("`{}` isn't something `settings` takes.", cleaned(value))));
                 }
                 self.ask(verb, value)?;
