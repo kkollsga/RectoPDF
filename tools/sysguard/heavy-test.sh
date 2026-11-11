@@ -181,6 +181,24 @@ fails_with_env SLOWISH_A=2 EXACTLY=x
 check "and so does a setting listed by its name" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
 fails_with_env SLOWISH_A=2 EXACTLY=x UNLISTED=y
 check "one that isn't listed doesn't count" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x RUN_ID="$$-$RANDOM"
+fails_with_env SLOWISH_A=2 EXACTLY=x RUN_ID="$$-$RANDOM"
+check "and one that's new on every run, as a process id or a temp folder is, doesn't undo the refusal" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+# Failure (review, 2026-11-11): the checkout this script came from lists a prefix that takes in a per-run variable (RECTO_* had RECTO_QA_OWNER_PID,
+# RECTO_STATE_DIR and RECTO_FUZZ_STATE, set fresh by scripts on every run), so a failure there was never remembered. Its own list, against those.
+own_inputs="$(git -C "$(dirname "$HEAVY")" rev-parse --show-toplevel 2>/dev/null)/.heavy-inputs"
+if [ -f "$own_inputs" ]; then
+  grep -E '^env ' "$own_inputs" > .heavy-inputs
+  git add .heavy-inputs && git -c user.name=t -c user.email=t@t commit -q -m own-env-inputs
+  : > "$X/ran5"
+  per_run() { env "$@" bash "$HEAVY" bash -c "echo run >> '$X/ran5'; exit 4" >/dev/null 2>&1; }
+  for name in RECTO_QA_OWNER_PID RECTO_STATE_DIR RECTO_FUZZ_STATE NEXTEST_RUN_ID NEXTEST_EXECUTION_MODE TMPDIR; do
+    per_run "$name=a-$RANDOM"
+  done
+  check "this checkout's own list counts no per-run variable" "1" "$(wc -l < "$X/ran5" | tr -d ' ')"
+  per_run RECTO_QA_SLOW=ci
+  check "and does count what changes what a test does" "2" "$(wc -l < "$X/ran5" | tr -d ' ')"
+fi
 
 # Failure: a job stopped from outside held against the code.
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1
