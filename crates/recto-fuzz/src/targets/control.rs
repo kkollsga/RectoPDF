@@ -171,8 +171,15 @@ fn talk(running: &Running, data: &[u8]) {
     let waits = asks_to_wait(bytes);
     if waits {
         // A moment is enough to see what it says. Then this client leaves, which ends a wait, and the check goes on to the next client.
-        stream.set_read_timeout(Some(Duration::from_millis(20))).expect("a read timeout");
-        stream.set_write_timeout(Some(Duration::from_secs(1))).expect("a write timeout");
+        // On macOS that's `EINVAL` once the server has closed this connection, which is its right: then nothing waits anyway.
+        for set in [
+            stream.set_read_timeout(Some(Duration::from_millis(20))),
+            stream.set_write_timeout(Some(Duration::from_secs(1))),
+        ] {
+            if let Err(error) = set {
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "a timeout: {error}");
+            }
+        }
     }
     let writer = stream.try_clone().expect("a descriptor for the writer");
     std::thread::scope(|scope| {
