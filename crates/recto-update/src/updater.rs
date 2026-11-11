@@ -798,6 +798,11 @@ impl Updater {
         else {
             return false;
         };
+        // Nobody's there to say: only a release of the team's, or a build the owner allowed, is put back by itself.
+        if !self.may_go_back_to(&previous_app_in(&beside), saved, app) {
+            self.log(&format!("{current} keeps failing, and the kept {previous} isn't one to go back to by itself"));
+            return false;
+        }
         let plan = Plan {
             id: crate::plan::new_id(),
             cdhash: String::new(),
@@ -1588,13 +1593,18 @@ fn went_back_words(why: &str, version: &str, current: &str) -> String {
 
 /// Whether the installer opened the app again after not installing, for this reason. For the others the old app was never quit, or someone else opened it.
 fn installer_reopened(code: &str) -> bool {
-    matches!(code, "swap_failed" | "changed_since_checked" | "new_app_missing")
+    matches!(code, "swap_failed" | "not_permitted" | "changed_since_checked" | "new_app_missing")
 }
 
 /// What each of the installer's reasons comes to, and whether it's the sort of thing that'll be the same tomorrow.
 fn why_not_installed(code: &str) -> (&'static str, bool) {
     match code {
         "swap_failed" => ("the app couldn't be replaced where it is", true),
+        // Not lasting: once it's allowed, it works.
+        "not_permitted" => (
+            "macOS didn't allow RectoPDF to change itself. Allow it in System Settings › Privacy & Security › App Management, then update again",
+            false,
+        ),
         "changed_since_checked" => ("what was downloaded changed after it was checked", true),
         "old_app_stayed" => ("the old app didn't quit in time", false),
         "app_reopened" => ("the app was opened again while it was going", false),

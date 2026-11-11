@@ -302,11 +302,6 @@ impl Inner {
         Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
     }
 
-    /// The owner's standing consent: with *Allow development builds* on, a development build's install is taken from anyone on this Mac who can reach the socket, which is only this user, at any agent level, Off included. Only that one command, and only what passes the signature check goes in (SPEC decision 24, a coordinator's default awaiting the owner).
-    pub(crate) fn consents_to(&self, command: &Command) -> bool {
-        matches!(command, Command::UpdateInstall { zip: Some(_), .. }) && self.updates.takes_builds()
-    }
-
     fn set_dev_builds(&self, on: bool) {
         self.updates.choose_dev_builds(on);
         self.core.push(CoreCall::Reconcile);
@@ -342,6 +337,15 @@ impl Inner {
         self.core.push(CoreCall::Reconcile);
     }
 
+    /// On the way out: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process.
+    pub(crate) fn forget_a_quiet_copy(&self) {
+        if let Some(app) = self.updates.app()
+            && forgets_on_quit(self.qa.is_some(), &app)
+        {
+            recto_platform::registry::forget_soon(&app);
+        }
+    }
+
     pub(crate) fn update_report(&self) -> Value {
         self.updates.report()
     }
@@ -373,9 +377,7 @@ impl Inner {
         } else {
             "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it."
         };
-        SettingsModel {
-            title: "Settings".to_owned(),
-            rows: vec![
+        let mut rows = vec![
                 SettingRow {
                     id: AUTO_UPDATE_ROW.to_owned(),
                     title: "Update automatically".to_owned(),
@@ -390,7 +392,12 @@ impl Inner {
                     on: self.updates.dev_builds_on(),
                     enabled: !development,
                 },
-            ],
+        ];
+        // Rust's rule: only on a development build, or while it's on.
+        rows.retain(|row| row.id != DEV_BUILDS_ROW || self.updates.shows_dev_builds_switch());
+        SettingsModel {
+            title: "Settings".to_owned(),
+            rows,
             status: self.updates.status_line(),
         }
     }
@@ -487,6 +494,14 @@ pub(crate) fn draws_a_page(folder: &Path) -> bool {
     })();
     let _ = std::fs::remove_file(&file);
     drew == Some(true)
+}
+
+/// The one install, which nothing forgets.
+const THE_ONE_INSTALL: &str = "/Applications/RectoPDF.app";
+
+/// Whether a copy forgets itself with Launch Services when it quits: a quiet run's, and never the one install.
+pub(crate) fn forgets_on_quit(quiet: bool, app: &Path) -> bool {
+    quiet && app != Path::new(THE_ONE_INSTALL)
 }
 
 /// What a refusal to install comes to, for an agent: a code that doesn't change, our words, and what to do next.
@@ -644,6 +659,14 @@ mod tests {
         let table = text.rfind("xref\n0 5").unwrap();
         assert!(text.contains(&format!("startxref\n{table}\n")));
         assert!(text.contains("1 0 0 rg 0 0 64 64 re f"));
+    }
+
+    /// Failure: the owner's own app forgets itself with Launch Services at a quit, and drops out of Open With, or a quiet run's copy stays registered.
+    #[test]
+    fn only_a_quiet_copy_forgets_itself() {
+        assert!(forgets_on_quit(true, Path::new("/w/tree/app/build.noindex/RectoPDF.app")));
+        assert!(!forgets_on_quit(false, Path::new("/w/tree/app/build.noindex/RectoPDF.app")), "a normal run");
+        assert!(!forgets_on_quit(true, Path::new(THE_ONE_INSTALL)), "never the one install");
     }
 
     /// Failure: a time that's passed arms a timer that fires at once and again and again, or a time far off comes out as anything but itself. At rest it's one timer a day.

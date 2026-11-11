@@ -557,7 +557,7 @@ impl<H: Host> Loop<H> {
             }
         };
         let needed = command.access();
-        if !allowed(level, needed) && !self.host.consents_to(&command) {
+        if !allowed(level, needed) {
             let error = refusal(table::display_name(command.tag()), level, needed);
             self.log.record(command.tag(), level, error.code, &command.log_details());
             self.answer(index, command.tag(), &Err(error));
@@ -1449,8 +1449,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             };
             let mut events = Vec::new();
             let result = catch_unwind(AssertUnwindSafe(|| {
-                // The owner's standing consent is asked again too: the switch may have gone off while this waited.
-                if !allowed(level, command.access()) && !host.consents_to(&command) {
+                if !allowed(level, command.access()) {
                     return Err(refusal(table::display_name(tag), level, command.access()));
                 }
                 if matches!(command, Command::Stop {}) {

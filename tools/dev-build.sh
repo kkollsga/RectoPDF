@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # dev-build: a development build of the app, for the owner's one RectoPDF in /Applications (SPEC decision 24, "Development builds"; Seedwell's tools/dev-build.sh is the
 # model). Built as a release is (RECTO_RELEASE=1: no override is read, and it takes releases by itself), numbered X.Y.Z.N: Cargo.toml's version and the next development
-# number, counted in app/build.noindex/dev/counter from 1 for each version. A release never has a fourth part.
+# number from 1 for each version, one count for every worktree: the next after the larger of what's installed (/Applications/RectoPDF.app's RectoDevVersion)
+# and the count kept beside the repository's own git folder (`git rev-parse --git-common-dir`). A release never has a fourth part.
 #
 #   tools/sysguard/heavy.sh tools/dev-build.sh                  Builds, and makes app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip. Prints its path and how to install it.
 #   tools/dev-build.sh --package <RectoPDF.app> [--out <folder>] [--version X.Y.Z.N]
 #                                                               Only the last part, on an app already built: numbers, signs, checks and zips a copy. Seconds.
 #   tools/sysguard/heavy.sh tools/dev-build.sh --first-install  Once, to start: builds, and puts it in /Applications as the owner's one RectoPDF (below).
+#   tools/dev-build.sh --next-version                           The number the next build would have. --old-copy-pids: what --first-install would end. Both change nothing.
 #
-# Installing one needs Settings › Allow development builds on in the app (the owner's switch, which is also their consent to this one command at any agent level):
+# Installing one needs Settings › Allow development builds on in the app, and agent access Full, as anyone can sign a build ad hoc:
 #   recto update install app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip          goes in once the app hasn't been used for 5 minutes
 #   recto update install app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip --now    at once
 #
@@ -22,7 +24,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ID=io.github.kkollsga.RectoPDF
 OUT="$REPO/app/build.noindex/dev"
 
-usage() { sed -n '2,10p' "$0"; exit 2; }
+usage() { sed -n '2,12p' "$0"; exit 2; }
 fail() { echo "dev-build: $*" >&2; exit 1; }
 
 release_version() { sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1; }
@@ -60,14 +62,30 @@ package() {
 # The Mac's own idle time, in seconds: how long since anyone touched a key or the pointer.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 
-# The owner's RectoPDF running from anywhere but /Applications: not a quiet run, which is a test's, on its own state.
-running_elsewhere() {
-  local pid command
+# The one old copy --first-install may end: the owner's dev copy in the main checkout's target/dev, and nothing else. Not a quiet run, which is a test's.
+COMMON="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)"
+OLD_COPY="${RECTO_DEV_OLD_COPY:-$(dirname "$COMMON")/target/dev/RectoPDF.app}"
+INSTALLED="${RECTO_DEV_INSTALLED:-/Applications/RectoPDF.app}"
+COUNTER="${RECTO_DEV_COUNTER:-$COMMON/recto-dev-counter}"
+old_copy_running() {
+  local pid command exe="$OLD_COPY/Contents/MacOS/RectoPDF"
   for pid in $(pgrep -x RectoPDF || true); do
-    command="$(ps -o command= -p "$pid" || true)"
-    case "$command" in /Applications/RectoPDF.app/*|*" --qa"*) continue ;; esac
+    # -ww: without it, ps cuts a long command at 80 columns when it isn't writing to a terminal.
+    command="$(ps -ww -o command= -p "$pid" || true)"
+    case "$command" in *" --qa"*) continue ;; esac
+    [ "$command" = "$exe" ] || [ "${command#"$exe "}" != "$command" ] || continue
     echo "$pid"
   done
+}
+
+# The next development number for this version: one after the larger of what's installed and what's been counted, so worktrees never hand out the same one.
+next_dev() {
+  local version=$1 counted=0 last="" n installed
+  { read -r last n < "$COUNTER"; } 2>/dev/null || true
+  [ "$last" = "$version" ] && counted=${n:-0}
+  installed="$(/usr/libexec/PlistBuddy -c 'Print :RectoDevVersion' "$INSTALLED/Contents/Info.plist" 2>/dev/null || true)"
+  if [ "${installed%.*}" = "$version" ] && [[ "${installed##*.}" =~ ^[0-9]+$ ]] && [ "${installed##*.}" -gt "$counted" ]; then counted=${installed##*.}; fi
+  echo "$version.$((counted + 1))"
 }
 
 mode=build built="" out="$OUT" dev=""
@@ -77,6 +95,8 @@ while [ $# -gt 0 ]; do
     --out) out="${2:?--out needs a folder}"; shift ;;
     --version) dev="${2:?--version needs X.Y.Z.N}"; shift ;;
     --first-install) mode=first ;;
+    --next-version) echo "$(next_dev "$(release_version)")"; exit 0 ;;
+    --old-copy-pids) old_copy_running; exit 0 ;;
     -h|--help) usage ;;
     *) echo "dev-build: unknown argument $1" >&2; usage ;;
   esac
@@ -95,9 +115,7 @@ fi
 
 VERSION="$(release_version)"
 mkdir -p "$OUT"
-read -r last n < "$OUT/counter" 2>/dev/null || { last=""; n=0; }
-[ "$last" = "$VERSION" ] || n=0
-DEV="$VERSION.$((n + 1))"
+DEV="$(next_dev "$VERSION")"
 COMMIT="$(git -C "$REPO" rev-parse --short HEAD)"
 [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ] || COMMIT="$COMMIT-dirty"
 echo "==> RectoPDF $DEV, a development build of $COMMIT"
@@ -108,14 +126,14 @@ grep -q -- '--dev-release)' "$REPO/app/build.sh" && profile=--dev-release
 (unset RECTO_SIGN_IDENTITY; RECTO_RELEASE=1 RECTO_APP_BUILD="$OUT/app" "$REPO/app/build.sh" "$profile")
 ZIP="$(package "$OUT/app/RectoPDF.app" "$OUT" "$DEV")"
 # Counted only once it's made: a failed build doesn't use up a number.
-echo "$VERSION $((n + 1))" > "$OUT/counter"
+echo "$VERSION ${DEV##*.}" > "$COUNTER"
 
 if [ "$mode" = first ]; then
   # The one-time move from the old dev copy to /Applications. It's swapped while running only after 5 minutes with no use of the Mac (owner, 2026-11-11), and then
   # told to end with SIGTERM. A copy built from `build/update-gaps` on takes SIGTERM as a quit, writing everything as any quit does. An older one, such as the owner's
   # copy at 11276a3, just ends, and the 5 idle minutes are what cover it: by then everything's on disk, edits within 5 s and the place within a minute (SPEC decision 25).
   was_running=""
-  for pid in $(running_elsewhere); do
+  for pid in $(old_copy_running); do
     was_running=1
     while [ "$(hid_idle)" -lt 300 ]; do
       echo "==> RectoPDF is in use (process $pid): waiting for 5 minutes with no use of this Mac"

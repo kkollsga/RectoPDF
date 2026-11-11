@@ -255,6 +255,24 @@ impl Bed {
             std::fs::read_to_string(&called).unwrap_or_default()
         );
         let zip = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().lines().last().unwrap());
+        // Ad hoc, the app and its helper, with no team: nothing of the keychain's was used.
+        let look = staging.join("signed");
+        assert!(
+            Command::new("/usr/bin/ditto")
+                .args(["-x", "-k"])
+                .arg(&zip)
+                .arg(&look)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for signed in [look.join("RectoPDF.app"), look.join("RectoPDF.app/Contents/Helpers/RectoRender.app")] {
+            let said = Command::new("/usr/bin/codesign").args(["-dv"]).arg(&signed).output().unwrap();
+            let said = String::from_utf8_lossy(&said.stderr).to_string();
+            assert!(said.lines().any(|line| line == "Signature=adhoc"), "{}: {said}", signed.display());
+            assert!(said.lines().any(|line| line == "TeamIdentifier=not set"), "no team: {said}");
+        }
+        let _ = std::fs::remove_dir_all(&look);
         assert_eq!(zip.file_name().unwrap().to_str().unwrap(), format!("RectoPDF-{version}.zip"));
         zip
     }
@@ -502,7 +520,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     run.quit();
 }
 
-/// Failure: a development build doesn't go in as a release does, or changes anything the user can see or has changed. **The owner's dev cycle, end to end:** `tools/dev-build.sh` makes the zip with no keychain, ad hoc with its identifier as its designated requirement; *Allow development builds* is switched on in Settings; the build's handed over with agent access Off, which the switch is the owner's consent for; and the same hand-off, swap and first frame as a release, with the whole of `qa state` compared before and after and the old app kept.
+/// Failure: a development build doesn't go in as a release does, changes anything the user can see or has changed, or is taken from an agent below Full. **The owner's dev cycle, end to end:** `tools/dev-build.sh` makes the zip with no keychain, ad hoc with its identifier as its designated requirement; *Allow development builds* is hidden in Settings on a release and turned on by the command; the build's refused at agent access Off and Control, as anyone can sign ad hoc, and goes in at Full, by the same hand-off, swap and first frame as a release, with the whole of `qa state` compared before and after and the old app kept. On the build, Settings shows the switch.
 #[test]
 fn a_development_build_goes_in_by_the_same_hand_off() {
     let Some(bed) = Bed::new() else { return };
@@ -532,18 +550,31 @@ fn a_development_build_goes_in_by_the_same_hand_off() {
             || String::from_utf8_lossy(&requirement.stdout).contains("designated => identifier \"io.github.kkollsga.RectoPDF.e2e\""),
         "every dev build is the same app to macOS: {requirement:?}"
     );
-    // Off until the owner turns it on, and then by the switch in Settings.
+    // Off until the owner turns it on, and on a release, not in Settings at all.
+    let rows = |run: &Run<'_>| -> Vec<String> {
+        run.ok(&["qa", "state"])["app"]["settings"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    run.ok(&["qa", "menu", "app.settings"]);
+    assert_eq!(rows(&run), ["update.automatic"], "a release shows no switch for builds");
     let (reply, _) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
     assert_eq!(reply["error"]["code"], "dev_builds_off", "{reply}");
-    run.ok(&["qa", "settings", "update.dev_builds"]);
-    assert_eq!(run.ok(&["update", "dev-builds"])["dev_builds"], true);
+    assert_eq!(run.ok(&["update", "dev-builds", "on"])["dev_builds"], true);
+    assert!(rows(&run).contains(&"update.dev_builds".to_owned()), "on, it's there to turn off");
+    run.ok(&["qa", "settings", "close"]);
     let before = run.report();
-    // The owner's app runs with agent access Off: the switch is their consent to this one command.
-    bed.state.set_level(recto_agent::Level::Off);
-    let (refused, _) = bed.state.json(&["where"]);
-    assert_eq!(refused["error"]["code"], "permission_denied", "nothing else gets through: {refused}");
-    let (answer, code) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
+    // The switch isn't consent below Full: anyone can sign a build ad hoc.
+    for level in [recto_agent::Level::Off, recto_agent::Level::Control] {
+        bed.state.set_level(level);
+        let (refused, _) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
+        assert_eq!(refused["error"]["code"], "permission_denied", "{level:?}: {refused}");
+    }
     bed.state.set_level(recto_agent::Level::Full);
+    let (answer, code) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
     assert_eq!((code, &answer["ok"]), (0, &json!(true)), "{answer}");
     assert_eq!(answer["data"]["version"], DEV);
     assert!(
@@ -560,6 +591,9 @@ fn a_development_build_goes_in_by_the_same_hand_off() {
     assert_same_but(&before, &after, &[], ACROSS_AN_UPDATE);
     let log = bed.log();
     assert!(log.contains(&format!("development build {DEV} checked, signed ad hoc")), "{log}");
+    run.ok(&["update", "dev-builds", "off"]);
+    run.ok(&["qa", "menu", "app.settings"]);
+    assert!(rows(&run).contains(&"update.dev_builds".to_owned()), "a development build shows it, on or off");
     run.quit();
 }
 

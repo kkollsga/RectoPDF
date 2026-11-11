@@ -3625,7 +3625,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_install",
         group: GROUP_APP,
         access: Access::At(Level::Full),
-        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way, once it's checked: this app's bundle id and the team's signature. Only with Allow development builds on, which is also the owner's consent to this one command at any agent level. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. Only in the app.",
+        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way, once it's checked: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. Only in the app.",
         args: &[
             Arg {
                 key: "zip",

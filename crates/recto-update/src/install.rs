@@ -361,15 +361,19 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the record couldn't be copied aside, so going back would bring back what's there");
     }
     run.step("record_copied");
-    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file. Except a development build, which is signed ad hoc and is held to an intact signature, and only with the owner's switch on, which is read here again rather than taken from the plan.
-    let team = if plan.development_build && builds_allowed(files) {
+    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file. Except a development build, which is signed ad hoc: then it's an X.Y.Z.N, the owner's switch is on in the real state folder, read here and never where the plan points, and its signature names this app and its helper, as an ad-hoc signature is anyone's.
+    let as_a_build = plan.development_build
+        && crate::version::is_development(&plan.to)
+        && builds_allowed(plan)
+        && crate::stage::has_identifiers(&plan.new_app(), &installed_identifier(plan), RELEASE_BUILD);
+    let team = if as_a_build {
         None
     } else if RELEASE_BUILD || plan.team_required {
         Some(TEAM_ID)
     } else {
         None
     };
-    if !crate::stage::still_what_was_verified(&plan.new_app(), &plan.cdhash, &plan.to, team) {
+    if (plan.development_build && !as_a_build) || !crate::stage::still_what_was_verified(&plan.new_app(), &plan.cdhash, &plan.to, team) {
         run.say("installer: what's waiting isn't what was verified, so nothing was replaced");
         run.finish_with(OutcomeKind::NotInstalled, "changed_since_checked");
         let _ = std::fs::remove_dir_all(files.before());
@@ -380,9 +384,15 @@ pub fn run(plan: &Plan) -> Ended {
     }
     let verified = crate::wall_ms();
     run.step("still_verified");
-    if local::swap_paths(&plan.new_app(), &plan.app).is_err() {
-        run.say("installer: the swap failed, so nothing was replaced");
-        run.finish_with(OutcomeKind::NotInstalled, "swap_failed");
+    if let Err(error) = swap_in(plan) {
+        // macOS's App Management can refuse a change to an app in /Applications the first time, until the owner allows it: that's said so, apart from a swap that can't work.
+        let why = if error.raw_os_error() == Some(libc_eperm()) {
+            "not_permitted"
+        } else {
+            "swap_failed"
+        };
+        run.say(&format!("installer: the swap failed ({why}), so nothing was replaced"));
+        run.finish_with(OutcomeKind::NotInstalled, why);
         let _ = run.open_app();
         return Ended::NotInstalled;
     }
@@ -417,9 +427,52 @@ pub fn run(plan: &Plan) -> Ended {
     Ended::Updated
 }
 
-/// *Allow development builds*, as the owner's switch says in the updater's own file.
-fn builds_allowed(files: &Files) -> bool {
-    crate::saved::Saved::read(&files.saved).dev_builds == Some(true)
+/// A test's way to have the swap refused as macOS's App Management refuses it, with EPERM. Only in a build that isn't a release.
+pub const SWAP_ERROR_ENV: &str = "RECTO_UPDATER_SWAP_ERROR";
+
+/// The swap itself, or a test's refusal of it.
+fn swap_in(plan: &Plan) -> std::io::Result<()> {
+    if !RELEASE_BUILD && std::env::var(SWAP_ERROR_ENV).is_ok_and(|value| value == "eperm") {
+        return Err(std::io::Error::from_raw_os_error(libc_eperm()));
+    }
+    local::swap_paths(&plan.new_app(), &plan.app)
+}
+
+/// `EPERM`, which is 1 on every Unix.
+const fn libc_eperm() -> i32 {
+    1
+}
+
+/// *Allow development builds*, as the owner's switch says in the updater's own file, in the folder [`switch_file`] names.
+fn builds_allowed(plan: &Plan) -> bool {
+    switch_file(plan, RELEASE_BUILD, crate::real_state_root().as_deref()).is_some_and(|file| crate::saved::Saved::read(&file).dev_builds == Some(true))
+}
+
+/// Where the owner's switch is read. A release build reads it only from the user's own state folder, which no plan can name: a plan pointing at a folder of its own with the switch on there would otherwise let anyone on the Mac swap in an app signed ad hoc. A test's build reads its own temp state, which is the plan's.
+#[must_use]
+pub fn switch_file(plan: &Plan, release_build: bool, real_root: Option<&Path>) -> Option<PathBuf> {
+    if release_build {
+        real_root.map(|root| Files::in_state(root).saved)
+    } else {
+        Some(Files::in_state(&plan.root).saved)
+    }
+}
+
+/// The identifier this app's signature carries: a release's own, or in a test's build, the installed app's, which is a test's own copy.
+fn installed_identifier(plan: &Plan) -> String {
+    if RELEASE_BUILD {
+        return crate::BUNDLE_ID.to_owned();
+    }
+    let plist = plan.app.join("Contents/Info.plist");
+    match tool(
+        "/usr/libexec/PlistBuddy",
+        &["-c", "Print :CFBundleIdentifier", &plist.to_string_lossy()],
+        Duration::from_secs(30),
+        4096,
+    ) {
+        Ok((true, out, _)) => String::from_utf8_lossy(&out).trim().to_owned(),
+        _ => crate::BUNDLE_ID.to_owned(),
+    }
 }
 
 /// Whether the plan's version may replace the one it came from: a newer one, or with [`Plan::any_version`] any other, but never itself.
@@ -453,8 +506,19 @@ pub fn run_back(plan: &Plan) -> Ended {
     crate::plan::move_to_new_names(&plan.beside);
     let _ = std::fs::write(run.files.helper_pid(), std::process::id().to_string());
     run.say(&format!("installer: {} keeps failing, going back to {}", plan.to, plan.from));
+    // Going back by itself, nobody's there to say: the kept copy has to be a release of the team's, or a build the owner allowed (`stage::may_go_back_to`).
+    let kept = previous_app_in(&plan.beside);
+    let team = (RELEASE_BUILD || plan.team_required).then_some(TEAM_ID);
+    let may = !kept.is_dir() || crate::stage::may_go_back_to(&kept, team, builds_allowed(plan), &installed_identifier(plan), RELEASE_BUILD);
     if run.wait_for_old_app() != OldApp::Gone {
         run.finish_with(OutcomeKind::NotInstalled, "old_app_stayed");
+        return Ended::NotInstalled;
+    }
+    if !may {
+        // The launch that started this has ended, so what's in place is opened again, as it is.
+        run.say("installer: the kept copy isn't one to go back to by itself, so what's in place stays");
+        run.finish_with(OutcomeKind::NotInstalled, "not_one_to_go_back_to");
+        let _ = run.open_app();
         return Ended::NotInstalled;
     }
     // A version that came up and then kept ending leaves the record as it is: see [`Plan::keep_record`].

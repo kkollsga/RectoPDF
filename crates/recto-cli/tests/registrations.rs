@@ -32,15 +32,44 @@ fn in_use(path: &Path, temp: &Path) -> bool {
         .is_some_and(recto_platform::local::process_exists)
 }
 
-/// Whether this tree's own tests would have made it: anything inside this checkout, such as its build folders, or a test's `.noindex` folder in temp whose test has ended. What older trees leave is forgotten too, and said, but it isn't this tree's to answer for.
-fn this_trees(copy: &Registered, checkout: &Path, temp: &Path) -> bool {
-    copy.path.starts_with(checkout)
-        || (copy.path.starts_with(temp)
-            && copy.path.components().any(|part| part.as_os_str().to_string_lossy().ends_with(".noindex"))
-            && !in_use(&copy.path, temp))
+/// Whose a registered copy is, for what's done with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Whose {
+    /// Inside this checkout, as its build folders are, and not another worktree's inside it.
+    ThisTree,
+    /// A test's, in a `recto-` folder of its own in temp, whichever tree's test made it.
+    ATest,
+    /// Anywhere else: `/Applications`, `~/Applications`, another volume, another worktree. Said, never changed.
+    Elsewhere,
 }
 
-/// Failure: a copy of the app that isn't the one install is left registered after the tests, so a second RectoPDF shows in Open With: a build folder (`app/build.noindex`, or a worktree's), a test's install in temp (`recto-update-e2e-*`), or a kept copy's renderer helper, which is how about 40 were found on 2026-11-11. Each found is forgotten here, so they don't pile up whichever tree left them.
+fn whose(copy: &Registered, checkout: &Path, temp: &Path) -> Whose {
+    if let Ok(rest) = copy.path.strip_prefix(checkout)
+        && rest.components().next().is_none_or(|first| first.as_os_str() != ".worktrees")
+    {
+        return Whose::ThisTree;
+    }
+    if let Ok(rest) = copy.path.strip_prefix(temp)
+        && rest
+            .components()
+            .next()
+            .is_some_and(|first| first.as_os_str().to_string_lossy().starts_with("recto-"))
+    {
+        return Whose::ATest;
+    }
+    Whose::Elsewhere
+}
+
+/// Whether this tree's own tests would have left it: anything of this checkout's, or a test's `.noindex` folder in temp whose test has ended. What older trees' tests left in temp is forgotten too, and said, but it isn't this tree's to answer for.
+fn this_trees(copy: &Registered, checkout: &Path, temp: &Path) -> bool {
+    match whose(copy, checkout, temp) {
+        Whose::ThisTree => true,
+        Whose::ATest => copy.path.components().any(|part| part.as_os_str().to_string_lossy().ends_with(".noindex")) && !in_use(&copy.path, temp),
+        Whose::Elsewhere => false,
+    }
+}
+
+/// Failure: a copy of the app that isn't the one install is left registered after the tests, so a second RectoPDF shows in Open With: this checkout's build folder (`app/build.noindex`), a test's install in temp (`recto-update-e2e-*`), or a kept copy's renderer helper, which is how about 40 were found on 2026-11-11. This tree's and the tests' are forgotten here; anything else is only said, as it's not this check's to change.
 #[test]
 fn no_copy_but_the_one_install_is_left_registered() {
     if std::env::var_os("RECTO_SKIP_APP").is_some() {
@@ -60,11 +89,16 @@ fn no_copy_but_the_one_install_is_left_registered() {
         if in_use(&copy.path, &temp) {
             continue;
         }
-        eprintln!("registered, and forgotten now: {} ({})", copy.path.display(), copy.identifier);
-        if this_trees(copy, &checkout, &temp) {
-            this_tree.push(copy.path.clone());
+        match whose(copy, &checkout, &temp) {
+            Whose::Elsewhere => eprintln!("registered, and not this check's to change: {} ({})", copy.path.display(), copy.identifier),
+            Whose::ThisTree | Whose::ATest => {
+                eprintln!("registered, and forgotten now: {} ({})", copy.path.display(), copy.identifier);
+                if this_trees(copy, &checkout, &temp) {
+                    this_tree.push(copy.path.clone());
+                }
+                registry::forget(&copy.path);
+            }
         }
-        registry::forget(&copy.path);
     }
     assert!(
         this_tree.is_empty(),
@@ -72,7 +106,7 @@ fn no_copy_but_the_one_install_is_left_registered() {
     );
 }
 
-/// Failure: what's this tree's to answer for is told wrongly: another worktree's running test is blamed, or this checkout's build folder isn't.
+/// Failure: what's this tree's to answer for, or this check's to change, is told wrongly: another worktree's running test or build folder is blamed or changed, a copy in Applications or on another volume is touched, or this checkout's build folder isn't caught.
 #[test]
 fn what_counts_as_this_trees() {
     let checkout = Path::new("/w/tree");
@@ -81,6 +115,23 @@ fn what_counts_as_this_trees() {
         path: PathBuf::from(path),
         identifier: "io.github.kkollsga.RectoPDF".into(),
     };
+    assert_eq!(whose(&copy("/w/tree/app/build.noindex/RectoPDF.app"), checkout, temp), Whose::ThisTree);
+    assert_eq!(
+        whose(&copy("/w/tree/.worktrees/other/app/build.noindex/RectoPDF.app"), checkout, temp),
+        Whose::Elsewhere,
+        "another worktree's, inside the main checkout"
+    );
+    for elsewhere in [
+        "/Applications/Old RectoPDF.app",
+        "/Users/me/Applications/RectoPDF.app",
+        "/Volumes/Backup/RectoPDF.app",
+        "/w/other/app/build/RectoPDF.app",
+        "/t/someone-else/RectoPDF.app",
+    ] {
+        assert_eq!(whose(&copy(elsewhere), checkout, temp), Whose::Elsewhere, "{elsewhere}");
+        assert!(!this_trees(&copy(elsewhere), checkout, temp), "{elsewhere}");
+    }
+    assert_eq!(whose(&copy("/t/recto-update-e2e-1-2/install/RectoPDF.app"), checkout, temp), Whose::ATest);
     assert!(this_trees(&copy("/w/tree/app/build.noindex/RectoPDF.app"), checkout, temp));
     assert!(this_trees(
         &copy("/t/recto-update-e2e-999999999-1.noindex/install/RectoPDF.app"),
@@ -93,5 +144,4 @@ fn what_counts_as_this_trees() {
         !this_trees(&copy("/t/recto-update-e2e-999999999-1/install/RectoPDF.app"), checkout, temp),
         "an older tree's"
     );
-    assert!(!this_trees(&copy("/w/other/app/build/RectoPDF.app"), checkout, temp), "another worktree's");
 }

@@ -1,6 +1,6 @@
 //! **Development builds** (SPEC decision 24's development builds, with Seedwell's §12A as the model). Owner, 2026-11-11: "We should only ever have one. We should enable dev updates (similar to the seedwell feature)."
 //!
-//! *Allow development builds* is off until the owner turns it on, and it's kept in `updates.json` with *Update automatically*. With it on, a development build (`X.Y.Z.N`, [`crate::version`]) handed over as a zip, `recto update install <zip>`, goes in through the same hand-off as a release, with the same exact state, the old app kept and the way back if it doesn't come up. It's checked first, as a release is: our own zip reader, this app's bundle id, its version, and the team's signature, though not Gatekeeper, as a build isn't notarized. Then it waits until the app hasn't been used for 5 minutes (owner, 2026-11-11: "for dev work, lets set the limit to 5 mins"), or goes at once with `--now`. With it off, only releases go in, and turning it off while a build runs makes the next release found the way back, older or not, by the 30-minute rule and whichever way *Update automatically* is set.
+//! *Allow development builds* is off until the owner turns it on, and it's kept in `updates.json` with *Update automatically*. With it on, a development build (`X.Y.Z.N`, [`crate::version`]) handed over as a zip, `recto update install <zip>`, goes in through the same hand-off as a release, with the same exact state, the old app kept and the way back if it doesn't come up. It's checked first: our own zip reader, an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app and its helper. Ad hoc, as dev builds never touch the keychain, so not the team's, and not Gatekeeper, as a build isn't notarized. It needs agent access Full, as anyone can sign ad hoc. Then it waits until the app hasn't been used for 5 minutes (owner, 2026-11-11: "for dev work, lets set the limit to 5 mins"), or goes at once with `--now`. With it off, only releases go in, and turning it off while a build runs makes the next release found the way back, older or not, by the 30-minute rule and whichever way *Update automatically* is set.
 //!
 //! What's waiting is held in memory: a quit before its moment drops it, and the next launch tidies what was staged.
 
@@ -40,11 +40,11 @@ pub(super) fn is_way_back(saved: &Saved, offered: &str, current: &str) -> bool {
     saved.back_to_release && version::is_development(current) && offered != current && rules::parse_version(offered).is_some()
 }
 
-/// The version a zip handed over is of, by its name, which `tools/dev-build.sh` and the release both write: `RectoPDF-<version>.zip`, for a release's version or a development build's. Nothing else is one.
+/// The version a zip handed over is of, by its name, as `tools/dev-build.sh` writes it: `RectoPDF-X.Y.Z.N.zip`, a development build's. A release's number isn't one: a release comes from the releases, held to the team and Gatekeeper, and never as a zip handed over and signed ad hoc.
 #[must_use]
 pub fn version_of_zip(name: &str) -> Option<String> {
     let inner = name.strip_prefix("RectoPDF-")?.strip_suffix(".zip")?;
-    version::parse(inner).map(|_| inner.to_owned())
+    version::is_development(inner).then(|| inner.to_owned())
 }
 
 impl Updater {
@@ -54,10 +54,17 @@ impl Updater {
         lock(&self.st).saved.dev_builds.unwrap_or(false)
     }
 
-    /// Whether this copy takes a development build at all: a build that replaces itself, with the switch on. **The owner's standing consent for `recto update install <zip>` at any agent level**, the one command it covers, as the signature check stops anything that isn't the team's being installed (SPEC, a coordinator's default awaiting the owner).
+    /// Whether this copy takes a development build at all: a build that replaces itself, with the switch on. Not consent for an agent: `recto update install <zip>` needs agent access Full whatever this says (SPEC decision 28), as anyone can sign a build ad hoc.
     #[must_use]
     pub fn takes_builds(&self) -> bool {
         self.source.may_replace_itself() && self.dev_builds_on()
+    }
+
+    /// Whether Settings shows *Allow development builds*: on a development build, and while it's on, so it can be turned off. A release that's never had one doesn't show it: the owner's app shows it from the first dev build on (`tools/dev-build.sh --first-install`), and `recto update dev-builds on` works at Full whatever's shown.
+    #[must_use]
+    pub fn shows_dev_builds_switch(&self) -> bool {
+        let st = lock(&self.st);
+        st.saved.dev_builds == Some(true) || st.facts.as_ref().is_some_and(|facts| version::is_development(&facts.version))
     }
 
     /// *Allow development builds* was flipped, in Settings or by `recto update dev-builds`. It holds at once. Off drops a build that's waiting, and on a development build starts the way back to the release: a check now, and the release it finds goes in by itself after 30 quiet minutes, older or not. On ends the way back. Written on a thread of its own, as this may be the UI thread.
@@ -106,6 +113,11 @@ impl Updater {
 
     /// A development build handed over: `recto update install <zip> [--now]`. Checks it here, which takes seconds, so never on the UI thread: a command's job thread is where it's meant to be. Then it waits for 5 minutes without use, or with `now` goes at once, by hand. Another build handed over while one waits takes its place.
     pub fn install_build(self: &Arc<Self>, zip: &Path, now: bool) -> Result<String, InstallRefused> {
+        self.install_build_then(zip, now, |_| {})
+    }
+
+    /// [`Self::install_build`], with what happens while it's checked, for a test of what's looked at again after.
+    fn install_build_then(self: &Arc<Self>, zip: &Path, now: bool, meanwhile: impl FnOnce(&Arc<Self>)) -> Result<String, InstallRefused> {
         if !self.source.may_replace_itself() {
             return Err(InstallRefused::NotInThisBuild);
         }
@@ -142,7 +154,18 @@ impl Updater {
         let staged = stage::prepare_build(zip, &version, &self.source, &facts.app, &mut |step| {
             crate::plan::log(&log_file, &format!("{version}: {step}"));
         });
+        meanwhile(self);
+        // The switch is asked again once the slow part's done: turned off meanwhile, the build goes, and nothing's left staged.
         let staged = match staged {
+            Ok(_) if !self.dev_builds_on() => {
+                stage::clear_staged(&facts.app);
+                lock(&self.st).status = Status::Idle;
+                self.log(&format!(
+                    "development build {version} dropped: development builds were turned off while it was checked"
+                ));
+                self.host.changed();
+                return Err(InstallRefused::DevBuildsOff);
+            }
             Ok(staged) => staged,
             Err(StageError { code, why, .. }) => {
                 stage::clear_staged(&facts.app);
@@ -176,6 +199,21 @@ impl Updater {
         }
         self.host.changed();
         Ok(version)
+    }
+
+    /// Whether a kept copy may be gone back to by itself ([`stage::may_go_back_to`]): where releases are held to the team, a copy signed ad hoc only with *Allow development builds* on, in this copy's own state.
+    pub(super) fn may_go_back_to(&self, kept: &Path, saved: &Saved, installed: &Path) -> bool {
+        let team = matches!(self.source.trust, crate::source::Trust::DeveloperId { .. }).then_some(crate::TEAM_ID);
+        let identifier = self.own_identifier(installed);
+        stage::may_go_back_to(kept, team, saved.dev_builds == Some(true), &identifier, crate::RELEASE_BUILD)
+    }
+
+    /// This app's identifier: a release's own, or in a test's run, the test's own copy's.
+    fn own_identifier(&self, installed: &Path) -> String {
+        if self.source.mode != crate::source::Mode::Test {
+            return crate::BUNDLE_ID.to_owned();
+        }
+        stage::bundle_id(installed).unwrap_or_else(|| crate::BUNDLE_ID.to_owned())
     }
 
     /// The 5-minute rule for the build that's waiting, now: it goes, or the timer's set for when it could.
@@ -439,10 +477,11 @@ mod tests {
         assert_eq!(bed.status().code(), "build_ready");
         assert!(bed.updater.status_line().contains("5 minutes"), "{}", bed.updater.status_line());
         let wake = bed.updater.report()["install_look_in_ms"].as_u64().unwrap();
-        assert_eq!(
-            bed.updater.next_wake().map(|at| at.saturating_sub(bed.updater.now_ms()) / 1000),
-            Some(wake / 1000),
-            "the one time to wake, and not a check that can't go"
+        // Within a second: the two are read a moment apart.
+        let next = bed.updater.next_wake().map(|at| at.saturating_sub(bed.updater.now_ms()));
+        assert!(
+            next.is_some_and(|next| next.abs_diff(wake) <= 1_000),
+            "the one time to wake, and not a check that can't go: {next:?} against {wake}"
         );
         assert!((200_000..=240_000).contains(&wake), "the four minutes still to go: {wake}");
         assert_eq!(bed.updater.menu_item().title, "Update to 0.1.0.2…", "the menu can take it at once");
@@ -504,9 +543,11 @@ mod tests {
         assert_eq!(version_of_zip("RectoPDF-0.1.0.0.zip"), None);
         assert_eq!(
             version_of_zip("RectoPDF-0.1.0.zip"),
-            Some("0.1.0".into()),
-            "a release's zip can be handed over too"
+            None,
+            "a release's number isn't a build's: a release comes from the releases"
         );
+        let release_numbered = bed.zip("0.1.1", "0.1.1", crate::BUNDLE_ID);
+        assert_eq!(bed.updater.install_build(&release_numbered, true), Err(InstallRefused::NotABuild));
         assert_eq!(version_of_zip("RectoPDF-../0.1.0.1.zip"), None);
     }
 
@@ -560,6 +601,76 @@ mod tests {
             }),
             "Updated to 0.1.0.2."
         );
+    }
+
+    /// Failure: a release shows *Allow development builds* in Settings, where the owner has no use for it, or a development build hides it, or one that's on can't be turned off from Settings.
+    #[test]
+    fn the_switch_shows_on_a_build_or_while_its_on() {
+        let release = Bed::new("shows-release", "0.1.0");
+        assert!(!release.updater.shows_dev_builds_switch());
+        release.updater.choose_dev_builds(true);
+        assert!(release.updater.shows_dev_builds_switch(), "on, so it can be turned off");
+        release.updater.choose_dev_builds(false);
+        assert!(!release.updater.shows_dev_builds_switch());
+        let build = Bed::new("shows-build", "0.1.0.2");
+        assert!(build.updater.shows_dev_builds_switch(), "a development build, on or off");
+    }
+
+    /// Failure: development builds are turned off while a build's being checked, and it goes in anyway, as what was asked before the slow part is all that was looked at.
+    #[test]
+    fn a_build_whose_switch_goes_off_while_its_checked_is_dropped() {
+        let bed = Bed::new("off-meanwhile", "0.1.0");
+        bed.updater.choose_dev_builds(true);
+        let zip = bed.zip("0.1.0.1", "0.1.0.1", crate::BUNDLE_ID);
+        let answer = bed.updater.install_build_then(&zip, true, |updater| updater.choose_dev_builds(false));
+        assert_eq!(answer, Err(InstallRefused::DevBuildsOff));
+        assert!(lock(&bed.updater.st).build.is_none());
+        let beside = crate::plan::beside_app(&bed.updater.app().unwrap()).unwrap();
+        assert!(!crate::plan::new_app_in(&beside).exists(), "nothing's left staged");
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
+    }
+
+    /// Failure: a release that keeps failing goes back by itself to a development build signed ad hoc that the owner no longer allows, as 0.1.0.3, then 0.1.0 by the way back, then 0.1.0 not coming up would. With the switch on it may; with it off, it stays on the release.
+    #[test]
+    fn going_back_lands_on_a_build_only_with_the_switch_on() {
+        for (switch, goes_back) in [(Some(false), false), (None, false), (Some(true), true)] {
+            let dir = temp_dir(&format!("b-back-{switch:?}"));
+            let root = dir.join("state");
+            local::ensure_private_dir(&root).unwrap();
+            let install = dir.join("install");
+            std::fs::create_dir_all(&install).unwrap();
+            let app = app_of(&install, "0.1.0", crate::BUNDLE_ID);
+            let kept_at = crate::plan::previous_app_in(&crate::plan::beside_app(&app).unwrap());
+            let built = dir.join("kept");
+            std::fs::create_dir_all(&built).unwrap();
+            std::fs::create_dir_all(kept_at.parent().unwrap()).unwrap();
+            std::fs::rename(app_of(&built, "0.1.0.3", crate::BUNDLE_ID), &kept_at).unwrap();
+            // The release has failed to come up three times.
+            Saved {
+                unstarted: 3,
+                dev_builds: switch,
+                ..Saved::default()
+            }
+            .write(&root.join("updates.json"));
+            let server = Server::start();
+            // Releases held to the team, as a real build's are.
+            let source = resolve(false, true, Some(server.source().repo), Some("developer-id".into()));
+            let updater = Updater::new(&root, source, Arc::new(Fake::default()) as Arc<dyn Host>);
+            let at = updater.launched(Facts {
+                version: "0.1.0".into(),
+                app: app.clone(),
+                system: "15.0".into(),
+            });
+            assert_eq!(at == AtLaunch::Exit, goes_back, "{switch:?}");
+            if !goes_back {
+                assert!(
+                    std::fs::read_to_string(root.join("update.log")).unwrap().contains("isn't one to go back to"),
+                    "it says why"
+                );
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Failure: a local build (`app/build.sh`, which never replaces itself) takes a build handed over, or says it does.

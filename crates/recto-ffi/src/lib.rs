@@ -823,11 +823,6 @@ impl Host for AppHost {
         self.session.acted_tab(command)
     }
 
-    /// The owner's switch for development builds: `updates::consents_to` has the rule.
-    fn consents_to(&self, command: &Command) -> bool {
-        self.saver.inner().is_some_and(|inner| inner.consents_to(command))
-    }
-
     fn attach(&self, notify: Notifier) {
         // The sidebar hears of generated contents as watchers do, and looks on the session thread.
         let core = Arc::clone(&self.core);
@@ -979,7 +974,7 @@ impl AppHost {
             Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. }
         ) {
             let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
-            if !recto_agent::allowed(level, command.access()) && !inner.consents_to(command) {
+            if !recto_agent::allowed(level, command.access()) {
                 return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
             }
             return inner.update_command(command);
@@ -3373,13 +3368,7 @@ impl AppCore {
         if let Some(stopper) = lock(&self.inner.stopper).take() {
             stopper.stop();
         }
-        // A quiet run's copy is a test's or a script's, and the system registered it when it was started: it's forgotten again, so the one install is the only RectoPDF in Open With.
-        if self.inner.qa.is_some()
-            && let Some(app) = self.inner.updates.app()
-            && app != std::path::Path::new("/Applications/RectoPDF.app")
-        {
-            recto_platform::registry::forget_soon(&app);
-        }
+        self.inner.forget_a_quiet_copy();
     }
 }
 

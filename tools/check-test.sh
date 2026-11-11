@@ -217,6 +217,23 @@ STUB_FAIL="fmt --all --check" STUB_EXIT=1 tools/check.sh --quick > /dev/null 2>&
 check "the quick check has it too" "1" "$?"
 : > "$CALLS"
 
+# Failure: the check that nothing of this tree's is left registered with Launch Services (owner, 2026-11-11: "We should only ever have one") is skipped by
+# a full run, runs where the app's tests can't have left anything, or fails without saying so.
+fresh_ledger
+commit_code registrations-fail
+out=$(STUB_FAIL="--test registrations" STUB_EXIT=100 full); rc=$?
+check "a stray registration fails the full run" "100" "$rc"
+check "and the ledger names the stage" "fail:registrations" "$(last_ledger_field 4)"
+: > "$CALLS"
+commit_code registrations-pass
+full > /dev/null
+check "it runs, last, in a full run that passes" "registrations" "$(grep -c -- '--test registrations' "$CALLS" | sed 's/^1$/registrations/')"
+check "and the run passes" "pass" "$(last_ledger_field 4)"
+: > "$CALLS"
+tools/check.sh --quick > /dev/null 2>&1
+check "the quick check skips it, as it builds no app" "0" "$(grep -c -- '--test registrations' "$CALLS")"
+: > "$CALLS"
+
 # Failure: a job stopped from outside held against the branch.
 fresh_ledger
 commit_code stopped-base

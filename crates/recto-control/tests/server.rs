@@ -29,8 +29,6 @@ struct Stand {
     looks_answer: std::sync::atomic::AtomicBool,
     stop_refused: std::sync::atomic::AtomicBool,
     told_off: AtomicUsize,
-    /// Stands for the owner's switch: a development build's install, from anyone.
-    consents: std::sync::atomic::AtomicBool,
 }
 
 impl Stand {
@@ -96,10 +94,6 @@ impl Host for Stand {
 
     fn access_is_off(&self) {
         self.told_off.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn consents_to(&self, command: &Command) -> bool {
-        self.consents.load(Ordering::SeqCst) && matches!(command, Command::UpdateInstall { zip: Some(_), .. })
     }
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
@@ -756,25 +750,6 @@ fn a_look_rechecks_the_level() {
     assert_eq!(read_line(&mut slow).unwrap()["data"]["released"], true);
     let answer = read_line(&mut waiter).unwrap();
     assert_eq!(answer["error"]["code"], "permission_denied", "{answer}");
-}
-
-/// Failure: the owner's standing consent to one command lets any other through at Off, or isn't asked, so a development build can't be handed to an app whose agent access is Off even with the owner's switch on.
-#[test]
-fn the_owners_consent_covers_its_one_command_at_off() {
-    let running = Running::start(Limits::default());
-    levels::store(&running.paths, Level::Off).unwrap();
-    let build = json!({ "cmd": "update_install", "zip": "/b/RectoPDF-0.1.0.1.zip" });
-    assert_eq!(running.call(&build)["error"]["code"], "permission_denied", "with the switch off");
-    running.host.consents.store(true, Ordering::SeqCst);
-    let answer = running.call(&build);
-    assert_eq!(answer["data"]["ran"], "update_install", "{answer}");
-    for other in [
-        json!({ "cmd": "update_install" }),
-        json!({ "cmd": "update_dev_builds", "set": "on" }),
-        json!({ "cmd": "text", "tab": "active", "page": 1 }),
-    ] {
-        assert_eq!(running.call(&other)["error"]["code"], "permission_denied", "{other}");
-    }
 }
 
 /// Failure: help says killing a watch is how to end it early, and the session goes on holding its slot, so a few killed watches shut out the next. Ending the process must free it at once.
