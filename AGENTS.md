@@ -122,6 +122,11 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The margin above first page, and below last page should be 50% of page height"
 - "When you are testing the app it flashes open in lower left corner. Is it possible to test the app in the background? Ie headless?" A quiet run must never show a window on the screen, not even for a moment (rule: quiet runs never take the screen).
 
+## Product rules from the owner: privacy (2026-11-11)
+- Asked to approve `PRIVACY.md`, the quiet line in the empty window about the daily check, and the Settings hint and link: "Approve as written".
+- Asked whether the daily update check should get a real off, as it runs with *Update automatically* off too: "Keep as is". One anonymous request a day, always; said in Settings and `PRIVACY.md`.
+- Asked whether an agent at Control may save edits into a PDF by appending (the coordinator's default until then): "Keep at Control".
+
 ## Product rules from the owner, before the first release (2026-11-08)
 - The contents helper (Generate contents, through distillPDF) reads untrusted PDFs outside the renderer's sandbox. Asked what 0.1.0 should do: "Turn its image decoding off". Headings come from text.
 - The ✦ agent icon does nothing until the agent sidebar ships. Asked what 0.1.0 should do with it: "Keep it as it is".
