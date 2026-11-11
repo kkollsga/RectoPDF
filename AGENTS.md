@@ -33,6 +33,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Never `git switch --orphan`. Never `git add -A` without checking `git status`. Check a commit's size before any push.
 - **Pushing `main` of `kkollsga/RectoPDF`:** owner, 2026-11-07: "Push automatically". The coordinator pushes `main` after each merge that passes its check. Workers don't push.
 - A pre-push hook enforces that (`tools/hooks/install.sh`): `main` only goes up if `tools/check.sh --full` passed on that commit, or only documents changed since. Never use `--no-verify`.
+- **Branches get CI before they merge.** Asked whether workers' branches should be pushed so CI runs on them first (main was red for three pushes on 2026-11-11 with failures only CI's slower machine showed), the owner chose "Yes, push build branches" (2026-11-11). The coordinator pushes each `build/*` branch, merges only once its CI is green, and deletes it from GitHub after the merge. Workers still don't push.
 - **Everything else needs the owner's go-ahead each time:** force-pushing, other branches, the lopdf fork, creating repos, tagging and publishing.
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 

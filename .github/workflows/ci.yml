@@ -1,9 +1,10 @@
 # A clean checkout on someone else's Mac: what passes here doesn't depend on this machine's folders.
-# Runs on main only, never on outside pull requests, skips docs, and a newer push cancels an older run.
+# Runs on main and on build/* branches before they merge (owner, 2026-11-11), never on outside pull requests, skips docs, and a newer
+# push to the same branch cancels an older run.
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, 'build/**']
     paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
 permissions:
