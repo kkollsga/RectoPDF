@@ -87,6 +87,22 @@ impl Level {
         }
     }
 
+    /// What this level allows, in words, in the one place: `recto permission show`, the skill's reference and `PRIVACY.md` all say this. Held to the command table by `each_level_says_what_its_commands_do`.
+    pub fn allows(self) -> &'static str {
+        match self {
+            Self::Off => {
+                "Status, help, and asking for more. It can see how many PDFs are open, and nothing from any of them: no names, no page text and no drawing."
+            }
+            Self::ReadOnly => "Read and search documents that are open, and watch what happens. Changes no document.",
+            Self::Control => {
+                "Open and close PDFs, move around, edit pages in memory, save edits by adding them to the end of a file or as a new file, check for updates, and throw away agents' own edits. Never the user's edits."
+            }
+            Self::Full => {
+                "Everything Control can, and write exports and pictures to disk, save over another file or rewrite one, throw away the user's edits too, install updates, change the update settings, and choose a worker's limits. Signing is never included."
+            }
+        }
+    }
+
     /// Reads a level's name. `read-only` and `read_only` are the same word.
     pub fn parse(text: &str) -> Option<Self> {
         match text.to_ascii_lowercase().replace('-', "_").as_str() {

@@ -49,20 +49,6 @@ pub(crate) fn now_ms() -> u64 {
         .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// What each level allows, in the one place.
-fn allows(level: Level) -> &'static str {
-    match level {
-        Level::Off => {
-            "Status, help, and asking for more. It can see how many PDFs are open, and nothing from any of them: no names, no page text and no drawing."
-        }
-        Level::ReadOnly => "Read and search documents that are open, and watch what happens. Changes nothing.",
-        Level::Control => {
-            "Open and close PDFs, move around, edit pages in memory, and throw away agents' own edits. Never the user's edits, and nothing reaches a file."
-        }
-        Level::Full => "Write new pictures to disk, throw away the user's edits too, and choose a worker's limits. Signing is never included.",
-    }
-}
-
 pub const HOW_TO_CHANGE: &str =
     "Only you can raise this, by running `recto permission set <level>` in your own terminal. Later, the app's settings take this over.";
 
@@ -72,7 +58,7 @@ pub fn show(paths: &StatePaths, pending: Option<Level>) -> Value {
     let level = stored.map_or(Level::Off, |stored| stored.level);
     let levels: Vec<Value> = [Level::Off, Level::ReadOnly, Level::Control, Level::Full]
         .iter()
-        .map(|level| json!({ "level": level.name(), "label": level.label(), "allows": allows(*level) }))
+        .map(|level| json!({ "level": level.name(), "label": level.label(), "allows": level.allows() }))
         .collect();
     json!({
         "level": level.name(),
@@ -93,7 +79,7 @@ pub fn request_answer(wanted: Level, have: Level) -> Value {
         "level": wanted.name(),
         "granted": false,
         "asked": true,
-        "tell_the_user": format!("An agent is asking for {} access to RectoPDF: {} To allow it, run this in your own terminal.", wanted.label(), allows(wanted)),
+        "tell_the_user": format!("An agent is asking for {} access to RectoPDF: {} To allow it, run this in your own terminal.", wanted.label(), wanted.allows()),
         "command": format!("recto permission set {}", wanted.name()),
         "what_to_do": "Nothing has changed yet. Tell the user the command above, and carry on with whatever doesn't need this access. Don't wait here for an answer: `recto status` shows the access once they've run it.",
     })
