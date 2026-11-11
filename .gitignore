@@ -11,3 +11,4 @@ tools/sysguard/local.env
 
 # Build output anywhere, as a helper with a workspace of its own builds beside itself.
 target/
+__pycache__/
