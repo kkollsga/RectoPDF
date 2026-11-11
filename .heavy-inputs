@@ -1,3 +1,32 @@
 # What git ignores and still changes a result on the same code, for the build queue's memory of failures (tools/sysguard/heavy.sh).
 # PDFium, which tools/pdfium.sh puts in target/.
 target/pdfium
+# Settings that change what a test does, each by name: a run with another is another run. Never a prefix: RECTO_QA_OWNER_PID, RECTO_STATE_DIR,
+# RECTO_FUZZ_STATE and nextest's own NEXTEST_* differ on every run, and would make every run new, so a failure would never be remembered.
+# The slow mode and its older switches.
+env RECTO_QA_SLOW
+env RECTO_QA_RESTORE_DELAY_MS
+env RECTO_QA_REMAKE_DELAY_MS
+# A test's outside change to a quiet run's activation policy.
+env RECTO_QA_POLICY_NUDGE_MS
+# Whether the app tests run, and whether a missing app fails them.
+env RECTO_REQUIRE_APP
+env RECTO_SKIP_APP
+# Which worker, library and helper the tests run against.
+env RECTO_TEST_WORKER
+env RECTO_RENDER_SERVICE
+env RECTO_PDFIUM_LIB
+# How much is run: every PDF indexed, fuzz rounds and seed, a long session's rounds.
+env RECTO_INDEX_ALL
+env RECTO_FUZZ_ROUNDS
+env RECTO_FUZZ_SEED
+env RECTO_LONG_SESSION_ROUNDS
+# Real files read by the optional tests.
+env RECTO_BENCH100
+env RECTO_MARKS_PAGES
+env RECTO_ENCRYPTED_PDF
+env RECTO_ENCRYPTED_PASSWORD
+env RECTO_CHROME
+# The build and the test runner's settings.
+env NEXTEST_PROFILE
+env RUSTFLAGS

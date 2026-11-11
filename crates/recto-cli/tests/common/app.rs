@@ -278,13 +278,19 @@ pub fn forget_the_built_app() {
 
 /// The same, for up to 20 s, for what waits on something slow on purpose.
 pub fn wait_for_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
+    wait_for_within(run, Duration::from_secs(20), holds)
+}
+
+/// The same, for up to `limit`: for what takes as long as the work it waits on, such as Find through hundreds of pages, each a worker's job.
+#[allow(dead_code)] // Not every test binary waits this long.
+pub fn wait_for_within(run: &Run<'_>, limit: Duration, holds: impl Fn(&Value) -> bool) -> Value {
     let began = Instant::now();
     loop {
         let last = run.report();
         if holds(&last) {
             return last;
         }
-        assert!(began.elapsed() < Duration::from_secs(20), "it never came to pass: {last}");
+        assert!(began.elapsed() < limit, "it never came to pass in {limit:?}: {last}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }

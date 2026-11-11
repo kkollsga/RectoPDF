@@ -74,6 +74,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("printing", include_str!("restore/exceptions/printing.txt")),
     ("reader", include_str!("restore/exceptions/reader.txt")),
     ("record", include_str!("restore/exceptions/record.txt")),
+    ("slow", include_str!("restore/exceptions/slow.txt")),
     ("snapshot", include_str!("restore/exceptions/snapshot.txt")),
     ("update", include_str!("restore/exceptions/update.txt")),
 ];
@@ -176,7 +177,14 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
             wrong.push(format!("{path}: nothing then {}", two[path]));
         }
     }
-    assert!(wrong.is_empty(), "these changed across the restart:\n{}", wrong.join("\n"));
+    // A place that moved is easier to tell apart from one said another way with where the view was, and how tall the document, on each side.
+    let view = |state: &Value| json!({ "scroll_y": state["reader"]["scroll_y"], "document_height": state["reader"]["document_height"], "places": state["session"]["tabs"].as_array().map(|tabs| tabs.iter().map(|tab| tab["place"].clone()).collect::<Vec<_>>()) });
+    let views = if wrong.iter().any(|line| line.contains(".place.")) {
+        format!("\nbefore: {}\nafter: {}", view(before), view(after))
+    } else {
+        String::new()
+    };
+    assert!(wrong.is_empty(), "these changed across the restart:\n{}{views}", wrong.join("\n"));
     if !known.is_empty() {
         let unknown: Vec<String> = one
             .keys()
@@ -371,6 +379,17 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2]) {
 /// Failure: Find doesn't come back as it was left (decision 23): its field, the hits of what was found, the hit gone to, and that hit selected on the page, after a quit and a launch. The hits are found again, as they're never kept, and the hit is chosen again by its place.
 #[test]
 fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
+    find_comes_back(&[]);
+}
+
+/// Failure (slow mode, 2026-11-11: with the control socket's first answer late, Find came back with its hits and not the hit gone to): the app heard of Find's hits only once the socket's server ran, so a search that finished before then was heard by nobody, and the hit was never chosen again. The same with the socket another session's, which a launch allows, for every search. The socket answering 2 s late on the launch after the quit, and the hit comes back.
+#[test]
+fn find_comes_back_when_the_socket_answers_late() {
+    find_comes_back(&[("RECTO_QA_SLOW", std::ffi::OsStr::new("socket=2000"))]);
+}
+
+/// Find left on its third hit, a quit, and a launch with this in its environment: all of it comes back.
+fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let file = long_document("findable", 30);
@@ -400,7 +419,7 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
         before["app"]["pages"]
     );
     run.quit();
-    let run = Run::on(&state).unwrap();
+    let run = Run::on_with_env(&state, second_launch).unwrap();
     run.settled();
     let after = run.report();
     for field in ["open", "rows", "status", "current_row", "untrusted", "list_height", "rows_on_screen"] {
@@ -1992,6 +2011,93 @@ fn quitting_twice_in_a_row_changes_nothing() {
     assert_same(&second, &third, &[]);
 }
 
+/// The sleep file of the tab on screen, by the name the state's journals folder gives it, if it's there.
+fn active_sleep_file(state: &State, report: &Value) -> Option<PathBuf> {
+    let session = &report["session"];
+    let tab = session["tabs"].as_array()?.iter().find(|tab| tab["id"] == session["active"])?;
+    let file = &tab["file"];
+    let stamp = recto_platform::FileStamp {
+        size: file["size"].as_u64()?,
+        mtime_ns: file["mtime_ns"].as_i64()?,
+        device: file["device"].as_u64()?,
+        inode: file["inode"].as_u64()?,
+    };
+    let name = recto_session::record::sleep_file_name(stamp, Path::new(tab["path"].as_str()?));
+    Some(state.root.join("session").join("journals").join(name)).filter(|path| path.is_file())
+}
+
+/// Failure (review 1 of the slow mode): a flush right after opening tabs, as a quit or an update has it, skipped the tab on screen's sleep file whenever another was being written, with no trace, and the next launch showed bare paper for its first frame. It waits for the others for what's left of the flush's time, and past that the skip is counted. With sleep files' writes 1.5 s late, a flush straight after opening tabs leaves the tab on screen's file there or says it skipped it; and once the others are done, the next one writes it.
+#[test]
+fn a_flush_writes_the_tab_on_screens_sleep_file_or_says_it_skipped_it() {
+    let state = State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_write=1500"))]) else {
+        return;
+    };
+    let folder = state.root.join("tabs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = long_document("many", 3);
+    for at in 0..8 {
+        let link = folder.join(format!("t{at}.pdf"));
+        recto_platform::local::clone_file(&file.0, &link).unwrap();
+        run.ok(&["open", link.to_str().unwrap()]);
+    }
+    run.settled();
+    run.ok(&["session", "save"]);
+    let saved = run.report();
+    let skipped = saved["record"]["sleep"]["writes_skipped_busy"].as_u64().unwrap();
+    assert!(
+        active_sleep_file(&state, &saved).is_some() || skipped >= 1,
+        "the tab on screen's sleep file is there, or its skip is counted: {}",
+        saved["record"]["sleep"]
+    );
+    // Given the time, it's written.
+    let began = Instant::now();
+    while active_sleep_file(&state, &run.report()).is_none() {
+        assert!(began.elapsed() < Duration::from_secs(60), "never written: {}", run.report()["record"]["sleep"]);
+        run.ok(&["session", "save"]);
+    }
+    run.quit();
+}
+
+/// Failure (slow mode, 2026-11-11: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits 5 s for the state, and goes without it when nothing's unsaved, and the state waited behind the tab on screen's sleep file, which waited behind every sleep file the tabs just opened had queued, one at a time. With sleep files slow to write, as on a busy or slow disk, a quit after opening tabs lost them all. Forty tabs, two of them across a quit first, opened one after another with each sleep file's read 150 ms and its write 2 s late, a quit, and every one comes back.
+#[test]
+fn tabs_just_opened_come_back_when_sleep_files_are_slow() {
+    const TABS: usize = 40;
+    let slow = [("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_read=150,sleep_write=2000"))];
+    let state = State::new();
+    let Some(run) = Run::on_with_env(&state, &slow) else { return };
+    let file = long_document("many", 3);
+    let folder = state.root.join("tabs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let link = |at: usize| folder.join(format!("t{at}.pdf"));
+    for at in 0..TABS {
+        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
+    }
+    // Two, and back from a quit with them, as each has its sleep file to wake from; then the rest, one after another.
+    run.ok(&["open", link(0).to_str().unwrap()]);
+    run.ok(&["open", link(1).to_str().unwrap()]);
+    run.settled();
+    run.quit();
+    let run = Run::on_with_env(&state, &slow).unwrap();
+    run.settled();
+    for at in 2..TABS {
+        run.ok(&["open", link(at).to_str().unwrap()]);
+    }
+    run.settled();
+    let opened = run.report();
+    assert_eq!(opened["session"]["tabs"].as_array().unwrap().len(), TABS);
+    assert!(
+        opened["slow"]["seams"]["sleep_write"]["times"].as_u64().unwrap() > 0,
+        "sleep files were being written: {}",
+        opened["slow"]
+    );
+    run.quit();
+    let run = Run::on(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["session"]["tabs"].as_array().unwrap().len(), TABS, "every tab came back");
+    run.quit();
+}
+
 /// Failure: a record of 1,000 tabs comes back slowly, or with a handle or a thread for each, or wakes them all. Only the active tab holds a document, and it has no more handles or threads than 2 tabs do, but for the one read of the active tab's file and the one look at the others, which may not have ended yet.
 #[test]
 fn a_thousand_tabs_come_back_cold() {
@@ -2364,9 +2470,49 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     );
 }
 
+/// Failure (CI, build/privacy, run 43062872948: `field_has_focus: true then false` across an update): the session thread told the host the state was in and went on without bringing Find's field up to date, which every other call does as it ends. The window made then had Find closed for all it knew, so its field didn't take the keyboard it had had, though the focus was said to be on it; on a machine where nothing else came first, as a starved one, every time. The session thread 1.5 s late after the state comes in, and the field has the keyboard again.
+#[test]
+fn finds_field_has_the_keyboard_again_when_the_session_is_late_after_the_state() {
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let file = long_document("alpha", 5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["field_has_focus"], true);
+    run.quit();
+    let run = Run::on_with_env(&state, &[("RECTO_QA_SLOW", std::ffi::OsStr::new("session=1500"))]).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["app"]["find"]["open"], true, "{}", after["app"]["find"]);
+    assert_eq!(after["app"]["focus_view"], "find");
+    assert_eq!(
+        after["app"]["find"]["field_has_focus"], true,
+        "the field has the keyboard: {}",
+        after["app"]["find"]
+    );
+    run.quit();
+}
+
 /// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {
+    protected_tab_asks_again(&[]);
+}
+
+/// Failure (slow mode, 2026-11-11): with the state read late, the password sheet went up on the window that was up without it, and that window went for one made from the state. Cancel on the sheet went to the old window's ending, after it had gone, so it was never answered: the sheet came straight back, and stayed counted open, so `session check` would say a sheet's in the way of every hand-off. The state read 1.5 s late and the window made again 300 ms after it: Cancel holds, and nothing's left counted.
+#[test]
+fn a_protected_tab_asks_again_when_the_state_is_read_late() {
+    protected_tab_asks_again(&[
+        ("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500")),
+        ("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("300")),
+    ]);
+}
+
+/// A protected tab, a quit, and a launch with this in its environment: asked again, and Cancel holds.
+fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
@@ -2390,7 +2536,7 @@ fn a_protected_tab_asks_again_after_a_quit() {
     });
     run.settled();
     run.quit();
-    let run = Run::on(&state).unwrap();
+    let run = Run::on_with_env(&state, second_launch).unwrap();
     let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
     run.ok(&["qa", "sheet-answer", "second"]);
@@ -2399,5 +2545,7 @@ fn a_protected_tab_asks_again_after_a_quit() {
         declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")),
         "{declined}"
     );
+    let check = run.ok(&["session", "check"]);
+    assert_eq!(check["safe"], true, "no sheet's left counted open: {check}");
     run.quit();
 }

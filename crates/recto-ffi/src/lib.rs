@@ -718,9 +718,29 @@ pub(crate) struct AppHost {
     handing_off: AtomicBool,
     /// What a read of the record told the reader, while they've not moved on.
     notice: Mutex<Option<String>>,
+    /// Who's watching over the socket, once it runs: the session's news goes on to them. See [`AppHost::listen`].
+    watchers: Mutex<Option<Notifier>>,
 }
 
 impl AppHost {
+    /// **The session's news reaches the app from the start, and watchers once the socket runs** (slow mode, 2026-11-11: with the socket's first answer late, Find came back with its hits and not the hit gone to). The app heard of Find's hits and of generated contents only once the socket's server ran and attached, so what finished before that, or all of it with the socket another session's, was heard by nobody. Given once, as the session takes it once.
+    fn listen(self: &Arc<Self>) {
+        let core = Arc::clone(&self.core);
+        let host = Arc::downgrade(self);
+        self.session.attach(Arc::new(move |events: Vec<Event>| {
+            if events.iter().any(|event| event.name == "contents_generated") {
+                core.push(CoreCall::GeneratedFinished);
+            }
+            // The Finder's news, for the sidebar's list and a step waiting for hits.
+            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
+                core.push(CoreCall::Find(find::FindCall::News));
+            }
+            if let Some(notify) = host.upgrade().and_then(|host| lock(&host.watchers).clone()) {
+                notify(events);
+            }
+        }));
+    }
+
     fn record_command(&self, level: Level, command: &Command) -> Result<Value, AgentError> {
         match command {
             Command::SessionShow {} => {
@@ -828,18 +848,8 @@ impl Host for AppHost {
     }
 
     fn attach(&self, notify: Notifier) {
-        // The sidebar hears of generated contents as watchers do, and looks on the session thread.
-        let core = Arc::clone(&self.core);
-        self.session.attach(Arc::new(move |events: Vec<Event>| {
-            if events.iter().any(|event| event.name == "contents_generated") {
-                core.push(CoreCall::GeneratedFinished);
-            }
-            // The Finder's news, for the sidebar's list and a step waiting for hits.
-            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
-                core.push(CoreCall::Find(find::FindCall::News));
-            }
-            notify(events);
-        }));
+        // The session's been told since the start, by `listen`: from now its news goes on to watchers too.
+        *lock(&self.watchers) = Some(notify);
     }
 
     fn shut_down(&self) {
@@ -1253,7 +1263,12 @@ struct EngineHooks {
 
 impl EngineEvents for EngineHooks {
     fn ops_ready(&self) {
-        self.listener.ops_ready();
+        if recto_platform::slow::is_on() {
+            let listener = Arc::clone(&self.listener);
+            recto_platform::slow::later(recto_platform::slow::Seam::Draw, move || listener.ops_ready());
+        } else {
+            self.listener.ops_ready();
+        }
     }
 
     fn note_changed(&self) {
@@ -1866,6 +1881,7 @@ impl AppCore {
     pub fn start(args: Vec<String>, listener: Arc<dyn AppListener>) -> Result<Arc<Self>, StartError> {
         let refused = |message: String| StartError::Refused { message };
         let args = parse_args(&args).map_err(refused)?;
+        recto_platform::slow::arm(args.qa).map_err(refused)?;
         let paths = state_for(args.qa).map_err(refused)?;
         let server = match Server::bind(&paths) {
             Ok(server) => Some(server),
@@ -1905,7 +1921,9 @@ impl AppCore {
             running: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
+            watchers: Mutex::new(None),
         });
+        host.listen();
         // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
         let find_keys = Arc::clone(&keys);
         host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
@@ -3080,9 +3098,7 @@ impl AppCore {
             {
                 std::process::exit(0);
             }
-            if let Some(delay) = qa::restore_delay(inner.qa.is_some()) {
-                std::thread::sleep(delay);
-            }
+            recto_platform::slow::pause(recto_platform::slow::Seam::State);
             let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
             let loaded = updates::fall_back_if_unreadable(&inner, loaded);
             updates::note_tabs_read(&loaded);
@@ -3648,6 +3664,7 @@ fn start_serving(inner: &Arc<Inner>) {
         }
         let Some(server) = server else { return };
         drop(inner);
+        recto_platform::slow::pause(recto_platform::slow::Seam::Socket);
         let _ = server.run(served, Limits::default());
         ending.session_ended();
     });
@@ -3728,20 +3745,18 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Restored(loaded) => {
                 let first_time = !inner.restored.load(Ordering::SeqCst);
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
-                reconcile(inner, &mut synced, &mut events);
+                // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
+                after_call(inner, &mut synced, &mut reads, events);
                 if first_time {
-                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it. Nothing outside a quiet run.
-                    match qa::remake_delay(inner.qa.is_some()).filter(|_| inner.shown_without_state.load(Ordering::SeqCst)) {
-                        Some(delay) => {
-                            let listener = Arc::clone(&inner.listener);
-                            let _ = std::thread::Builder::new().name("recto-qa-remake".into()).stack_size(64 * 1024).spawn(move || {
-                                std::thread::sleep(delay);
-                                listener.restore_ready();
-                            });
-                        }
-                        None => inner.listener.restore_ready(),
+                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
+                    let listener = Arc::clone(&inner.listener);
+                    if inner.shown_without_state.load(Ordering::SeqCst) {
+                        recto_platform::slow::later(recto_platform::slow::Seam::Remake, move || listener.restore_ready());
+                    } else {
+                        listener.restore_ready();
                     }
                 }
+                recto_platform::slow::pause(recto_platform::slow::Seam::Session);
                 continue;
             }
             CoreCall::RestorePatienceOver => {
@@ -3990,16 +4005,8 @@ fn session_thread(inner: &Arc<Inner>) {
                     events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
                 }
             }),
-            CoreCall::Flush(marker) => {
-                reconcile(inner, &mut synced, &mut events);
-                // What was asked before this includes any file being read for it.
-                if reads.running.is_empty() {
-                    marker.finished();
-                } else {
-                    reads.flushes.push(marker);
-                }
-                continue;
-            }
+            // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
+            CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
                 events.push(Event::new(
@@ -4013,19 +4020,24 @@ fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
         }
-        generated_contents::look_if_chosen(inner);
-        find::keep_up(inner);
-        reconcile(inner, &mut synced, &mut events);
-        if reads.running.is_empty() {
-            for marker in reads.flushes.drain(..) {
-                marker.finished();
-            }
+        after_call(inner, &mut synced, &mut reads, events);
+    }
+}
+
+/// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
+fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
+    generated_contents::look_if_chosen(inner);
+    find::keep_up(inner);
+    reconcile(inner, synced, &mut events);
+    if reads.running.is_empty() {
+        for marker in reads.flushes.drain(..) {
+            marker.finished();
         }
-        if !events.is_empty()
-            && let Some(announcer) = lock(&inner.announcer).as_ref()
-        {
-            announcer.announce(events);
-        }
+    }
+    if !events.is_empty()
+        && let Some(announcer) = lock(&inner.announcer).as_ref()
+    {
+        announcer.announce(events);
     }
 }
 
@@ -5466,6 +5478,34 @@ mod tests {
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
     }
 
+    /// Failure (review 1 of the slow mode): an arm of the session thread's loop left it early, with `continue`, and skipped what every call ends with. The state's coming in announced nothing it did and left Find's field behind for the window made from it (CI, run 43062872948), and a flush's own changes were never announced. Only these leave early, each for its reason: an open before the state's in, put off whole; a drawn page, which announces itself and makes no view; and the state's coming in, after its tail, before the host's told.
+    #[test]
+    fn every_call_on_the_session_thread_ends_with_what_every_call_ends_with() {
+        let source = include_str!("lib.rs");
+        let body = &source[source.find("fn session_thread(").unwrap()..source.find("fn after_call(").unwrap()];
+        let body = &body[body.find("match call {").unwrap()..];
+        let mut arm = "";
+        let mut early = Vec::new();
+        let mut tail_before = std::collections::HashSet::new();
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            if line.len() - trimmed.len() == 12 && trimmed.starts_with("CoreCall::") {
+                arm = trimmed.split(['(', ' ']).next().unwrap();
+            }
+            if trimmed.starts_with("after_call(") {
+                tail_before.insert(arm);
+            }
+            if trimmed == "continue;" {
+                early.push(arm);
+            }
+        }
+        assert_eq!(early, ["CoreCall::Restored", "CoreCall::Open", "CoreCall::Page"], "the arms that leave early");
+        assert!(
+            tail_before.contains("CoreCall::Restored"),
+            "the state's coming in ends with the tail before it goes"
+        );
+    }
+
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
     #[test]
     fn stop_is_refused_by_a_normal_app() {
@@ -5484,6 +5524,7 @@ mod tests {
             running: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
+            watchers: Mutex::new(None),
         };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
     }

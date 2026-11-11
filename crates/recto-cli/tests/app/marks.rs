@@ -57,15 +57,15 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
         (Some(true), Some(false), Some(1.0)),
         "{scrolled}"
     );
-    // A zoom brings the zoom level back.
+    // A zoom brings the zoom level back, at the change: looked at before the pages at the new zoom are drawn, which on a slow machine can take longer than the mark's 3 s (slow mode, 2026-11-11).
     run.ok(&["qa", "zoom", "1.5"]);
-    run.settled();
     let zoomed = marks(&run);
     assert_eq!(
         (zoomed["zoom_shown"].as_bool(), zoomed["zoom_alpha"].as_f64()),
         (Some(true), Some(1.0)),
         "{zoomed}"
     );
+    run.settled();
     // The pointer over the page number holds it, with no timer for it, and its 3 s start when it leaves.
     wait_marks(&run, |marks| marks["place_shown"] == false && marks["zoom_shown"] == false);
     run.ok(&["qa", "corner-pointer", "lower-right:in"]);

@@ -211,9 +211,13 @@ case "$mode" in
 esac
 # HEAD and everything uncommitted, to tell whether the code under test stayed what it was.
 code_state() { { git rev-parse HEAD; git status --porcelain --untracked-files=no; untracked_that_counts; } | shasum | cut -d' ' -f1; }
-# What the late-state stage runs: whole-state comparisons across a quit and an update, a selection and Find's hit coming back, and what acts on the window as soon as it's up.
-LATE_STATE_TESTS='test(=everything_comes_back_after_a_quit) | test(=quitting_twice_in_a_row_changes_nothing) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=update::an_update_in_the_middle_of_things_changes_nothing) | test(=update::a_closed_window_stays_closed_across_an_update) | test(=find_in_the_sidebar_lists_steps_and_keeps_to_its_room) | test(=recto_acts_on_the_running_app_and_sees_what_it_does) | test(=the_sidebar_folds_switches_and_goes_to_contents) | test(=contents_fold_reveal_at_once_and_keep_a_thumb) | test(=the_watchdog_catches_a_stall_and_it_fails_the_script) | test(=quiet::a_quiet_run_stays_quiet_when_the_system_opens_it_again)'
-export LATE_STATE_TESTS
+# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/ENGINEERING.md, "Slow mode"): whole-state comparisons across a quit and
+# updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
+# copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
+# that did (2026-11-11). Left out as covered here: quitting twice (every whole-state test here crosses a quit), a launch from a sleep file (the dormant
+# test wakes from one), the minimised update (its bug has a unit test, and two other updates are here).
+SLOW_TESTS='test(=everything_comes_back_after_a_quit) | test(=update::an_update_in_the_middle_of_things_changes_nothing) | test(=update::a_closed_window_stays_closed_across_an_update) | test(=update::a_new_version_that_keeps_ending_goes_back_by_itself) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=a_quit_during_a_stuck_read_still_writes) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=a_tab_left_alone_goes_dormant_and_wakes_from_its_file) | test(=tabs_just_opened_come_back_when_sleep_files_are_slow) | test(=find_in_the_sidebar_lists_steps_and_keeps_to_its_room) | test(=recto_acts_on_the_running_app_and_sees_what_it_does) | test(=the_sidebar_folds_switches_and_goes_to_contents) | test(=contents_fold_reveal_at_once_and_keep_a_thumb) | test(=a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app) | test(=a_search_in_the_app_gets_its_index) | test(=the_sidebar_offers_generated_contents_and_labels_them) | test(=the_watchdog_catches_a_stall_and_it_fails_the_script) | test(=quiet::a_quiet_run_stays_quiet_when_the_system_opens_it_again) | test(=slow::a_slow_run_waits_at_every_seam_it_passes) | test(=slow::a_quiet_run_with_no_switch_is_never_slow) | test(=slow::a_switch_that_cant_be_read_refuses_the_launch)'
+export SLOW_TESTS
 
 # Prints how long the last stage took, and leaves the name of the one now running where the caller can see it.
 stage() {
@@ -267,11 +271,15 @@ run() {
     # (docs/reports/build-performance-2026-11-11.md).
     stage app-tests
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4
-    # The same app with its state read late, past the window's second of patience, as a slow disk or a loaded machine has it: the window goes up without
-    # the state and is made again from it. Main went red on that path, unseen here, three pushes running (2026-11-11). Tests that come back across a quit
-    # or an update, and that act on the window as soon as it's up. The window's made again 300 ms after the state comes in, to widen that moment.
-    stage late-state
-    RECTO_QA_RESTORE_DELAY_MS=1500 RECTO_QA_REMAKE_DELAY_MS=300 RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$LATE_STATE_TESTS"
+    # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
+    # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
+    # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
+    # Not on CI, which is the slow machine already: the profile on top of it doubled up, and two tests waited past their bounds there for slowness
+    # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
+    if [ -z "${CI:-}" ]; then
+      stage slow
+      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$SLOW_TESTS"
+    fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     stage registrations
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations

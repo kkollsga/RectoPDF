@@ -273,10 +273,6 @@ impl Saver {
                 message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string(),
             });
         }
-        // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive. If nothing's changed, nothing's written.
-        if let Some(id) = inner.host.session.with_session(|session| session.active()) {
-            inner.write_sleep_for(id, true);
-        }
         let _gate = lock(&self.gate);
         self.first_edit.store(0, Ordering::SeqCst);
         self.view_changed.store(false, Ordering::Relaxed);
@@ -316,6 +312,10 @@ impl Saver {
             self.store.verify_with_asleep(&record, &lists, &asleep).map_err(|_| first)?;
         }
         let verify_us = micros(verified);
+        // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
+        if let Some(id) = inner.host.session.with_session(|session| session.active()) {
+            inner.write_sleep_for_until(id, began + limit);
+        }
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         *lock(&self.last_error) = None;

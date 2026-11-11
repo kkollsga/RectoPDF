@@ -68,7 +68,7 @@ pub mod bundle {
 
     /// Compiled as a release by `app/release-zip.sh`, which can't be changed afterwards. A release worker never runs without its walls, wherever it is, and a release host starts only
     /// the helper's worker and refuses one that says its walls aren't up.
-    pub const RELEASE: bool = option_env!("RECTO_RELEASE").is_some();
+    pub const RELEASE: bool = recto_platform::RELEASE_BUILD;
 
     /// The helper app, in the main app's `Contents/Helpers`. Its own `.app`, because the App Sandbox takes its identity from a bundle's `Info.plist`.
     pub const HELPER_APP: &str = "RectoRender.app";

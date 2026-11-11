@@ -9,7 +9,7 @@ X=$(mktemp -d "${TMPDIR:-/tmp}/check-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock" HEAVY_TESTING=1 MIN_FREE=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
-unset CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE
+unset CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE CI
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -28,6 +28,7 @@ case "$*" in
   metadata*) echo '{"name":"alpha"},{"name":"beta"}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
+[ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == *clippy* ]]; then bash -c "$STUB_DURING"; fi
 if [ -n "${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then exit "${STUB_EXIT:-100}"; fi
 STUB
@@ -76,10 +77,14 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/late-state/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests late-state registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
+# Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
+check "only the slow stage runs with every waiting point late" "1" "$(wc -l < "$CALLS.slow" | tr -d ' ')"
+has "with the ci profile, on its chosen tests" "ci nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E test(=" "$(cat "$CALLS.slow")"
+rm -f "$CALLS.slow"
 
 # Failure: no record of a real run, so a process review can't count them.
 check "a real run leaves one ledger line" "1" "$(runs_in_ledger)"
@@ -392,6 +397,19 @@ git checkout -q main
 # The real output of an empty ledger.
 fresh_ledger
 check "--runs with nothing recorded says so" "No full runs recorded yet." "$(tools/check.sh --runs)"
+
+# Failure (CI run 43080381613): the slow stage ran on CI, the slow machine already, and its profile on top of CI's own slowness took two tests past their
+# bounds. With CI set, every other stage runs and the slow one doesn't.
+git checkout -qb on-ci
+commit_code ci-run
+: > "$CALLS"
+rm -f "$CALLS.slow"
+CI=true full >/dev/null; rc=$?
+check "on CI a full run passes" "0" "$rc"
+check "with nothing run slow" "0" "$( [ -f "$CALLS.slow" ] && wc -l < "$CALLS.slow" | tr -d ' ' || echo 0)"
+has "and the app tests still run" "-p recto-cli --test app --test restore --test compare --test long_session" "$(cat "$CALLS")"
+: > "$CALLS"
+rm -f "$CALLS.slow"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

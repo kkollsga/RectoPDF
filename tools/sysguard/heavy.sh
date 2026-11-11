@@ -246,6 +246,8 @@ find "$FAILS" -type f -mmin +1440 -delete 2>/dev/null
 # Then what git ignores and can still change a result on the same code, such as a library a script downloads into
 # target/: a checkout lists those paths in its `.heavy-inputs`, one per line from its top, `#` for a comment, and their
 # contents count. Keep them small, as they're read for every job. A path that leaves the checkout is passed over.
+# A line `env NAME`, or `env PREFIX*`, makes those environment variables' values count too: a setting that changes
+# what a test does, such as a slow mode, is another run, not the same one again.
 fingerprint() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   {
@@ -262,7 +264,18 @@ extra_inputs() {
   top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
   [ -f "$top/.heavy-inputs" ] || return 0
   grep -vE '^[[:space:]]*(#|$)' "$top/.heavy-inputs" | while IFS= read -r input; do
-    case "$input" in /*|..|../*|*/..|*/../*) continue ;; esac
+    case "$input" in
+      "env "*)
+        local pattern=${input#env } name
+        printf 'env %s\n' "$pattern"
+        for name in $(compgen -e | LC_ALL=C sort); do
+          # shellcheck disable=SC2254 # The pattern is the line's own, a prefix and `*`.
+          case "$name" in $pattern) printf '%s=%s\n' "$name" "${!name}" ;; esac
+        done
+        continue
+        ;;
+      /*|..|../*|*/..|*/../*) continue ;;
+    esac
     printf 'input %s\n' "$input"
     [ -e "$top/$input" ] && find "$top/$input" -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum 2>/dev/null
   done

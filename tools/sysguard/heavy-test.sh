@@ -7,6 +7,9 @@ HEAVY="$(cd "$(dirname "${1:-$0}")" && pwd)/$(basename "${1:-heavy.sh}")"
 X=$(mktemp -d "${TMPDIR:-/tmp}/heavy-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock"
+# The Mac's own free memory isn't this test's: with other work running, its jobs waited for memory a fixed pause didn't allow for, and the order checks
+# below failed by that (three of them, under two other workers' builds, 2026-11-11: "needs more than 60%" at 50 % free). The memory check sets its own.
+export MIN_FREE=0
 # local.env sends other copies to the main checkout's script, which would test the wrong file.
 export HEAVY_TESTING=1
 unset CARGO_BUILD_JOBS HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS HEAVY_RETRY tests_joined
@@ -164,6 +167,41 @@ echo v2 > lib/lib.dylib
 needs_lib
 check "a changed input counts" "0 3" "$? $(wc -l < "$X/ran3" | tr -d ' ')"
 rm -rf lib ../outside
+
+# Failure (2026-11-11): the same test command run with another setting that changes what it does, a slow mode in its environment, refused as "this exact
+# command failed": the failure was another setting's. What `.heavy-inputs` names with `env`, by name or by a prefix and `*`, counts; nothing else in the
+# environment does, so a shell's own changes don't undo the refusal.
+printf 'env SLOWISH_*\nenv EXACTLY\n' >> .heavy-inputs
+git add .heavy-inputs && git -c user.name=t -c user.email=t@t commit -q -m env-inputs
+: > "$X/ran4"
+fails_with_env() { env "$@" bash "$HEAVY" bash -c "echo run >> '$X/ran4'; exit 4" >/dev/null 2>&1; }
+fails_with_env SLOWISH_A=1
+fails_with_env SLOWISH_A=1
+check "the same setting again is refused" "1" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2
+check "another value of a listed setting runs" "2" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x
+check "and so does a setting listed by its name" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x UNLISTED=y
+check "one that isn't listed doesn't count" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x RUN_ID="$$-$RANDOM"
+fails_with_env SLOWISH_A=2 EXACTLY=x RUN_ID="$$-$RANDOM"
+check "and one that's new on every run, as a process id or a temp folder is, doesn't undo the refusal" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+# Failure (review, 2026-11-11): the checkout this script came from lists a prefix that takes in a per-run variable (RECTO_* had RECTO_QA_OWNER_PID,
+# RECTO_STATE_DIR and RECTO_FUZZ_STATE, set fresh by scripts on every run), so a failure there was never remembered. Its own list, against those.
+own_inputs="$(git -C "$(dirname "$HEAVY")" rev-parse --show-toplevel 2>/dev/null)/.heavy-inputs"
+if [ -f "$own_inputs" ]; then
+  grep -E '^env ' "$own_inputs" > .heavy-inputs
+  git add .heavy-inputs && git -c user.name=t -c user.email=t@t commit -q -m own-env-inputs
+  : > "$X/ran5"
+  per_run() { env "$@" bash "$HEAVY" bash -c "echo run >> '$X/ran5'; exit 4" >/dev/null 2>&1; }
+  for name in RECTO_QA_OWNER_PID RECTO_STATE_DIR RECTO_FUZZ_STATE NEXTEST_RUN_ID NEXTEST_EXECUTION_MODE TMPDIR; do
+    per_run "$name=a-$RANDOM"
+  done
+  check "this checkout's own list counts no per-run variable" "1" "$(wc -l < "$X/ran5" | tr -d ' ')"
+  per_run RECTO_QA_SLOW=ci
+  check "and does count what changes what a test does" "2" "$(wc -l < "$X/ran5" | tr -d ' ')"
+fi
 
 # Failure: a job stopped from outside held against the code.
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1

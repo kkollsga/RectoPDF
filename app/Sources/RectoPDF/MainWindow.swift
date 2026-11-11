@@ -809,11 +809,14 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "link_prompt", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle], "address": prompt.address]
-        delegate.sheets.present(alert, over: window) { [weak self] response in
+        let delegate = self.delegate
+        delegate.sheets.present(alert, over: window) { response in
             core.sheetChanged(open: false)
-            self?.delegate.sheetShowing = nil
+            delegate.sheetShowing = nil
+            // Its window went: Rust still has the prompt, and the next window asks.
+            guard response != SheetPresenter.windowGone else { return }
             guard let address = core.linkPromptAnswered(id: prompt.id, open: response == .alertFirstButtonReturn) else { return }
-            self?.delegate.openAddress(address)
+            delegate.openAddress(address)
         }
     }
 
@@ -946,11 +949,14 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "save_problem", "message": problem.title, "informative": problem.message, "buttons": [problem.okTitle] + (problem.saveAsTitle.map { [$0] } ?? [])]
-        delegate.sheets.present(alert, over: window) { [weak self] response in
+        let delegate = self.delegate
+        delegate.sheets.present(alert, over: window) { response in
             core.sheetChanged(open: false)
-            self?.delegate.sheetShowing = nil
+            delegate.sheetShowing = nil
+            // Its window went: Rust still has the problem, and the next window says it.
+            guard response != SheetPresenter.windowGone else { return }
             let action = core.saveProblemAnswered(saveAs: response == .alertSecondButtonReturn)
-            if action == .showSavePanel { self?.delegate.showSavePanel() }
+            if action == .showSavePanel { delegate.showSavePanel() }
         }
     }
 
@@ -977,12 +983,15 @@ final class BookMark: NSView {
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "password", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle]]
         delegate.sheets.present(alert, over: window) { [weak self] response in
-            guard let self else { return }
+            // Taken back whatever became of the window, or a sheet would be counted open for good, and no hand-off could go.
             core.sheetChanged(open: false)
+            guard let self else { return }
             self.delegate.sheetShowing = nil
             let typed = response == .alertFirstButtonReturn ? self.passwordField.stringValue : nil
             self.passwordField.stringValue = ""
             self.passwordShowing = nil
+            // Its window went: Rust still has the prompt, and the next window asks.
+            if response == SheetPresenter.windowGone { return }
             // With the id of the prompt it answers, so it goes to that file whatever's waiting by now.
             core.passwordAnswered(id: prompt.id, password: typed)
         }
@@ -1201,6 +1210,8 @@ final class BookMark: NSView {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Closed, or going for one made from a state read late: what's over it ends without being an answer.
+        delegate.sheets.letGo(over: window)
         firstResponderWatch = nil
         for area in paneAreas { area.windowClosing() }
         delegate.windowDidClose()

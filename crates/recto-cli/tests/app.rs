@@ -57,6 +57,9 @@ mod accessibility;
 #[path = "app/privacy.rs"]
 mod privacy;
 
+#[path = "app/slow.rs"]
+mod slow;
+
 /// Failure: a QA run takes the screen, the focus or the Dock from the person using this Mac, or shows anything on a display. Every claim a quiet run makes, as the app itself reports it.
 #[test]
 fn a_quiet_run_stays_out_of_the_way() {
@@ -132,7 +135,13 @@ fn a_search_in_the_app_gets_its_index() {
     let Some(run) = Run::start() else { return };
     let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
-    let done = run.ok(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+    let (waited, code) = run.state.json(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+    // CI once timed out here (build/ci-deaths, run 43062878803), not seen here with every waiting point slow or the app at background priority: where the index stood says whether its helper was starved or a word it was done never came.
+    if code != 0 {
+        let (stands, _) = run.state.json(&["index", "--tab", "active"]);
+        panic!("{waited}\nthe index: {stands}");
+    }
+    let done = &waited["data"];
     assert_eq!(done["state"], "ready", "{done}");
     let found = run.ok(&["search", "number"]);
     assert_eq!(found["route"], "index", "{found}");
@@ -2913,7 +2922,9 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
         .unwrap_or(opened);
     assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
     run.ok(&["qa", "find-type", "words"]);
-    run.settled();
+    // Settled once Find has read all 200 pages, each a worker's job: as long as that takes, which with the worker's answers late (the slow stage) came to
+    // 29 s of this test's 30 s here, and past it with the profile doubled (2026-11-11). What's checked is that it settles, not how soon.
+    run.ok(&["qa", "wait-settled", "--timeout", "120s"]);
     let found = run.report();
     let find = &found["app"]["find"];
     assert_eq!(
@@ -3117,6 +3128,37 @@ fn hover(run: &Run, place: &str) -> Value {
         run.ok(&["qa", "pointer", place]);
         state["app"]["pages"]["cursor"] == "link"
     })
+}
+
+/// Failure (review 1 of the slow mode): a sheet over a window that went, closed or made again from a state read late, ended in the old window's ending after it had gone: never answered, and counted open for good, which holds up every hand-off and so every update. Whatever's over a window that goes ends without being an answer. A web link's prompt up, the window closed: nothing's counted open and nothing opens, and with the window back the prompt is asked again, as Rust still has it.
+#[test]
+fn a_sheet_over_a_window_that_goes_is_let_go_without_an_answer() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    hover(&run, &on_link(2));
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    run.ok(&["qa", "mouse-up"]);
+    wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt");
+    assert_eq!(run.ok(&["session", "check"])["safe"], false, "a sheet's up");
+    run.ok(&["qa", "window", "close"]);
+    let closed = run.report();
+    assert_eq!(closed["app"]["sheet"], json!({}), "{}", closed["app"]["sheet"]);
+    assert_eq!(closed["app"]["links"]["address_opened"], Value::Null, "nothing opened");
+    let check = run.ok(&["session", "check"]);
+    assert_eq!(check["safe"], true, "nothing's left counted open: {check}");
+    run.ok(&["qa", "window", "open"]);
+    let again = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt");
+    assert!(
+        again["app"]["sheet"]["informative"]
+            .as_str()
+            .unwrap()
+            .contains("https://example.com/report?id=7"),
+        "{again}"
+    );
+    run.ok(&["qa", "sheet-answer", "second"]);
+    assert_eq!(run.ok(&["session", "check"])["safe"], true);
 }
 
 /// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere, or its hint stays over the page it went to; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
@@ -3746,9 +3788,11 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     wait_for(&run, |state| state["app"]["find"]["open"] == false);
     // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
     run.ok(&["qa", "menu", "find.previous"]);
-    wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    // Find reads all 300 pages, each a worker's job, before the last hit is known: as long as that takes, which with the worker's answers 60 ms late (slow mode) is about 18 s, not the 4 s of `wait_for`. What's checked is that it gets there, not how soon.
+    let read_through = std::time::Duration::from_secs(90);
+    common::app::wait_for_within(&run, read_through, |state| state["app"]["place"] == "300 of 300");
     // The status is published on its own beat, so it can say a few pages less for a moment after the step has gone to the last hit (seen in a full run: "291 matches on 291 pages, searching…" with the place already at 300). Once the query's done, it says all of them, and the place is still the last hit.
-    let done = wait_for(&run, |state| state["app"]["find"]["running"] == false);
+    let done = common::app::wait_for_within(&run, read_through, |state| state["app"]["find"]["running"] == false);
     assert_eq!(done["app"]["place"], "300 of 300", "{}", done["app"]);
     assert_eq!(done["app"]["find"]["status"], "300 matches on 300 pages", "{}", done["app"]["find"]);
 }

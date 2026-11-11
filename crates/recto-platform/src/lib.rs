@@ -198,6 +198,12 @@ pub mod registry;
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};
 
+/// **Whether this was built as a release:** `RECTO_RELEASE` set when it's compiled, by `app/release-zip.sh`, and it can't be turned on later. The one place it's read: the updater, the renderer's host and the slow mode all go by this (review 1: three crates each read it, and nothing held them to agree).
+pub const RELEASE_BUILD: bool = option_env!("RECTO_RELEASE").is_some();
+
+/// A test's slow mode: every waiting point made late on purpose, in a quiet run of a build that isn't a release.
+pub mod slow;
+
 /// What the window server says is on screen, for tests that prove a quiet run shows nothing.
 #[cfg_attr(target_os = "macos", path = "screen_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "screen_stub.rs")]

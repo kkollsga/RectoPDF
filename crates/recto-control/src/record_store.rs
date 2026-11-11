@@ -978,6 +978,7 @@ impl RecordStore {
 
     /// **Writes a tab's sleep file,** in one step, as it goes dormant or the app goes away. It's only a way to be quick, so failing here costs nothing but that, and isn't said. Says how many bytes went.
     pub fn write_sleep(&self, path: &Path, sleep: &SleepFile) -> u64 {
+        recto_platform::slow::pause(recto_platform::slow::Seam::SleepWrite);
         if self.refuses_writes().is_some() {
             return 0;
         }
@@ -1006,6 +1007,7 @@ impl RecordStore {
 
     /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
     pub fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
+        recto_platform::slow::pause(recto_platform::slow::Seam::SleepRead);
         let file = self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path));
         let bytes = read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten()?;
         match decode_sleep(&bytes, CURRENT_VERSION) {

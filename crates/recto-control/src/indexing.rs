@@ -182,6 +182,7 @@ impl Shared {
                 })
             }))
             .unwrap_or_else(|_| json!({ "state": "failed", "code": "indexer_panicked" }));
+            recto_platform::slow::pause(recto_platform::slow::Seam::Index);
             let mut state = report["state"].as_str().unwrap_or("failed").to_string();
             {
                 let mut inner = self.lock();
