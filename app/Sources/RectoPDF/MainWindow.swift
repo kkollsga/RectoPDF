@@ -5,6 +5,22 @@ class ReaderWindow: NSWindow {
     /// What an item does, and whether it can be chosen, by its id: the app's `perform` and Rust's `menuItemEnabled`.
     var edit: ((String) -> Void)?
     var editEnabled: ((String) -> Bool)?
+    /// Whether what a person does reaches the window yet: Rust says, as one up without the state is made again once it's in.
+    var takesInput: (() -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if let takesInput, !takesInput(), ReaderWindow.isInput(event.type) { return }
+        super.sendEvent(event)
+    }
+
+    static func isInput(_ type: NSEvent.EventType) -> Bool {
+        switch type {
+        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .keyDown, .keyUp, .scrollWheel, .magnify, .rotate, .swipe, .smartMagnify, .gesture, .beginGesture, .endGesture, .pressure:
+            true
+        default:
+            false
+        }
+    }
 
     static func editId(_ action: Selector?) -> String? {
         switch action {
@@ -323,6 +339,7 @@ final class BookMark: NSView {
         if let reader = window as? ReaderWindow {
             reader.edit = { [weak delegate] id in delegate?.perform(id) }
             reader.editEnabled = { [weak delegate] id in delegate?.core.menuItemEnabled(id: id) ?? false }
+            reader.takesInput = { [weak delegate] in delegate?.core.windowInteractive() ?? true }
         }
         window.contentView = root
         root.wantsLayer = true
