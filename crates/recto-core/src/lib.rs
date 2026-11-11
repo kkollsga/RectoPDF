@@ -45,7 +45,8 @@ pub enum OpenError {
     PasswordNeeded,
     NotPdf,
     /// The structure reader stopped at one of its limits, as on a file with 100,000 revisions or a page tree hundreds deep: built to cost far more
-    /// than any real document, so nothing else is asked to read it either (PLAN: PDFium took 3.4 s on what the fork refused in 3 ms).
+    /// than any real document. The renderer is still asked, so it opens to be read with Save off; this is the answer when the renderer can't read
+    /// it either.
     TooComplex,
 }
 
@@ -68,7 +69,7 @@ impl OpenError {
             Self::NotAllowed => "RectoPDF isn't allowed to read this file.",
             Self::PasswordNeeded => "This PDF needs a password.",
             Self::NotPdf => "This file couldn't be read as a PDF.",
-            Self::TooComplex => "This file is built to go far past what any real PDF needs, as damaged and hostile files are, so it wasn't opened.",
+            Self::TooComplex => "This file goes far past what any real PDF needs, as damaged and hostile files do, and it couldn't be read.",
         }
     }
 }
@@ -206,31 +207,12 @@ pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderE
     // A file that needs a password the reader wasn't given, or was given wrongly, says so: it's a PDF, and only the person can open it.
     let reader = opened.map_err(|error| match error {
         lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => OpenError::PasswordNeeded,
-        other => refusal_of(&other),
+        other => agreement::refusal_of(&other),
     })?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
     Ok(reader)
-}
-
-/// **Why the structure reader refused a file:** one of its limits, which says the file is built to cost far more than any real one, is
-/// [`OpenError::TooComplex`], and the renderer isn't asked to try; anything else is [`OpenError::NotPdf`], which the renderer may still read.
-pub(crate) fn refusal_of(error: &lopdf::IndexedReaderError) -> OpenError {
-    use lopdf::IndexedReaderError as E;
-    match error {
-        E::StructureLimitExceeded { .. }
-        | E::EntryLimitExceeded { .. }
-        | E::RevisionLimitExceeded { .. }
-        | E::IndirectHeaderLimitExceeded { .. }
-        | E::ObjectLimitExceeded { .. }
-        | E::ScalarResourceLimit { .. }
-        | E::StreamLimitExceeded { .. }
-        | E::ResolutionDepthExceeded { .. }
-        | E::PageCountLimitExceeded { .. }
-        | E::PageTreeDepthLimitExceeded { .. } => OpenError::TooComplex,
-        _ => OpenError::NotPdf,
-    }
 }
 
 /// Opens bytes already in memory, the same way a file is opened.
@@ -270,7 +252,7 @@ pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
 }
 
 fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
-    let page_count = u32::try_from(reader.page_count().map_err(|error| refusal_of(&error))?).map_err(|_| OpenError::NotPdf)?;
+    let page_count = u32::try_from(reader.page_count().map_err(|error| agreement::refusal_of(&error))?).map_err(|_| OpenError::NotPdf)?;
     // A damaged outline shouldn't stop a readable PDF from opening, nor damaged labels.
     let mut toc = read_toc(reader).unwrap_or_default();
     toc.labels = nav::read_labels(reader, page_count);

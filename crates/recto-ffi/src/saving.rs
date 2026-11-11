@@ -132,6 +132,33 @@ pub(crate) fn replace_answered(out: &std::path::Path, answered: std::time::Syste
 /// The decided words for signed copies (SPEC decision 27).
 pub(crate) const UNSIGNED_COPY: &str = recto_agent::saving::UNSIGNED_COPY;
 
+/// What the Save icon says when it's off for a signed document.
+const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
+
+/// **Whether a Save over this file would be refused for its signature,** so Save is off and Save As's copy is unsigned (SPEC decision 27): a person's signature and a change that has to be written anew, or a certification or lock and any change. Usage rights alone don't. The same rule `recto_core::save::save` refuses by.
+pub(crate) fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool) -> bool {
+    facts.has_persons_signature() && (needs_rewrite || facts.certified || facts.field_locked)
+}
+
+/// What the window's Save shows for the tab showing, decided here: whether it's off, what Save As's sheet says, and the icon's tooltip.
+pub(crate) struct SaveState {
+    pub(crate) off: bool,
+    pub(crate) note: Option<String>,
+    pub(crate) tooltip: String,
+}
+
+/// **The agreement gate for `qa save-from`,** which is refused where Save would be: a file whose readers disagree, or that couldn't be checked.
+pub(crate) fn save_from_gate(path: &std::path::Path, known: Option<FileStamp>) -> Result<(), recto_agent::AgentError> {
+    match known.and_then(|stamp| recto_agent::agreement::check(path, stamp)) {
+        Some(disagreement) => Err(recto_agent::AgentError::new(
+            "parsers_disagree",
+            disagreement.message(),
+            recto_agent::exit::FAILED,
+        )),
+        None => Ok(()),
+    }
+}
+
 /// The app's side of saving that the window draws: how many saves are running, a problem waiting to be answered, and what's known of the tab showing's signatures.
 pub(crate) struct SaveUi {
     pub(crate) running: AtomicU32,
@@ -201,7 +228,31 @@ impl SaveUi {
         why
     }
 
-    /// What [`Self::disagreement`] last said, for the close prompt.
+    /// **What the window's Save is, for the tab showing:** off when a Save over the file would break a signature (Save As then makes an unsigned
+    /// copy, and the sheet says so) or when its two readers disagree (Save As is off too, and the tooltip says why, which comes first). `file` is
+    /// the tab's file with edits to save, or `None`.
+    pub(crate) fn save_state(
+        &self,
+        facts: recto_core::save::SignatureFacts,
+        needs_rewrite: bool,
+        file: Option<(&std::path::Path, FileStamp)>,
+        done: impl FnOnce() + Send + 'static,
+    ) -> SaveState {
+        let disagreement = self.disagreement(file, done);
+        let signed_off = save_needs_copy(facts, needs_rewrite);
+        let tooltip = match (&disagreement, signed_off) {
+            (Some(why), _) => why.clone(),
+            (None, true) => SAVE_OFF_TOOLTIP.to_string(),
+            (None, false) => self.tooltip(),
+        };
+        SaveState {
+            off: signed_off || disagreement.is_some(),
+            note: (signed_off && disagreement.is_none()).then(|| UNSIGNED_COPY.to_string()),
+            tooltip,
+        }
+    }
+
+    /// What [`Self::disagreement`] last said, for the close prompt and Save As's menu item.
     pub(crate) fn disagreement_now(&self) -> Option<String> {
         crate::lock(&self.disagreement).clone()
     }

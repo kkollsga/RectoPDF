@@ -21,7 +21,7 @@ fn walked_differently() -> TempPdf {
 
 /// Failure (SPEC section 3, the agreement gate): the window offers Save on a file its two readers see differently, so the person's turn is written
 /// onto another page than the one they saw, or the close prompt offers a Save that's refused. Once the look is done, the Save icon is off and says
-/// why, ⌘S is greyed, a click does nothing, the close prompt offers only Cancel and Don't Save, and the file isn't touched.
+/// why, ⌘S and Save As are greyed, a click does nothing, the close prompt offers only Cancel and Don't Save, and the file isn't touched.
 #[test]
 fn a_file_the_two_readers_see_differently_turns_save_off_in_the_window() {
     let Some(run) = Run::start() else { return };
@@ -36,6 +36,8 @@ fn a_file_the_two_readers_see_differently_turns_save_off_in_the_window() {
     let tooltip = off["app"]["save_button"]["tooltip"].as_str().unwrap();
     assert!(tooltip.contains("two readers see differently") && tooltip.contains("page 1"), "{tooltip}");
     assert_eq!(menu_item(&off, "file.save")["enabled"], false, "⌘S is off too");
+    assert_eq!(menu_item(&off, "file.save_as")["enabled"], false, "and Save As (review round 1)");
+    assert_eq!(menu_item(&off, "file.close")["enabled"], true, "Close isn't");
     let (refused, _) = run.state.json(&["qa", "button", "save"]);
     assert_eq!(refused["ok"], false, "a click on an icon that's off does nothing: {refused}");
     run.ok(&["qa", "menu", "file.close"]);

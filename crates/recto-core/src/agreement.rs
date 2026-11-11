@@ -59,6 +59,11 @@ pub enum Disagreement {
     Repaired { by_renderer: bool },
     /// The renderer couldn't read the file at all, so what's shown can't be checked against what would be saved.
     RendererFailed,
+    /// One of them needs a password for the file and the other read it without one, as when only an older revision's trailer names `/Encrypt`.
+    Encryption,
+    /// It couldn't be checked just now: the file wasn't the version asked about, a read failed, a worker couldn't start, or the look ran out of
+    /// time. Save is off as for any disagreement, but it's tried again at the next save rather than taken as the file's answer.
+    Unchecked,
 }
 
 impl Disagreement {
@@ -69,7 +74,14 @@ impl Disagreement {
             Self::PageSize { .. } => "page_size",
             Self::Repaired { .. } => "repaired",
             Self::RendererFailed => "renderer_failed",
+            Self::Encryption => "encryption",
+            Self::Unchecked => "unchecked",
         }
+    }
+
+    /// Whether it's about this moment rather than the file, so it's looked at again.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Unchecked)
     }
 
     /// What differs, in a person's words: the middle of [`Self::message`].
@@ -82,11 +94,16 @@ impl Disagreement {
             Self::Repaired { by_renderer: true } => "its index of where things are is broken, and the pages shown come from a repaired copy of it".into(),
             Self::Repaired { by_renderer: false } => "its index of where things are is broken, and its structure was read from a repaired copy of it".into(),
             Self::RendererFailed => "its pages couldn't be read to check them".into(),
+            Self::Encryption => "one of them needs a password for it and the other doesn't".into(),
+            Self::Unchecked => "it couldn't be read just now to check it".into(),
         }
     }
 
     /// **Why Save is off,** whole: what the Save icon's tooltip says, and what a refused save says.
     pub fn message(&self) -> String {
+        if self.is_transient() {
+            return "RectoPDF couldn't check this file just now against what's shown, so Save and Save As are off. It can still be read; try saving again in a moment.".into();
+        }
         format!(
             "This file is damaged in a way RectoPDF's two readers see differently: {}. It can still be read, but Save and Save As are off, as what's written might not be what you see.",
             self.detail()
@@ -95,7 +112,8 @@ impl Disagreement {
 }
 
 /// **The gate's rule:** the first difference between what the structure reader and the renderer make of one file, or `None` when they agree.
-/// Sizes are compared only for pages both could size, as one neither can draw nor read holds nothing a save could lose.
+/// A page one of them can size and the other can't is a difference too: lopdf would write a page PDFium can't show, or the other way round. Only
+/// a page neither can size isn't compared.
 pub fn compare(structure: &View, renderer: &View) -> Option<Disagreement> {
     if structure.page_count != renderer.page_count {
         return Some(Disagreement::PageCount {
@@ -114,6 +132,7 @@ pub fn compare(structure: &View, renderer: &View) -> Option<Disagreement> {
         .zip(structure.sizes.iter().zip(&renderer.sizes))
         .find_map(|(page, sizes)| match sizes {
             (Some(mine), Some(theirs)) if !same(*mine, *theirs) => Some(Disagreement::PageSize { page }),
+            (Some(_), None) | (None, Some(_)) => Some(Disagreement::PageSize { page }),
             _ => None,
         })
 }
@@ -149,6 +168,26 @@ fn view_of(reader: &IndexedReader) -> Result<View, OpenError> {
     })
 }
 
+/// **Why the structure reader refused a file:** one of its limits, which says the file is built to cost far more than any real one, is
+/// [`OpenError::TooComplex`](crate::OpenError::TooComplex); anything else is `NotPdf`. The renderer may still read either, as only the structure
+/// reader saves, so a file refused here opens to be read, with Save off: the two readers already disagree about it.
+pub(crate) fn refusal_of(error: &lopdf::IndexedReaderError) -> crate::OpenError {
+    use lopdf::IndexedReaderError as E;
+    match error {
+        E::StructureLimitExceeded { .. }
+        | E::EntryLimitExceeded { .. }
+        | E::RevisionLimitExceeded { .. }
+        | E::IndirectHeaderLimitExceeded { .. }
+        | E::ObjectLimitExceeded { .. }
+        | E::ScalarResourceLimit { .. }
+        | E::StreamLimitExceeded { .. }
+        | E::ResolutionDepthExceeded { .. }
+        | E::PageCountLimitExceeded { .. }
+        | E::PageTreeDepthLimitExceeded { .. } => crate::OpenError::TooComplex,
+        _ => crate::OpenError::NotPdf,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,8 +215,8 @@ mod tests {
         }
     }
 
-    /// Failure: the gate lets through a file the two readers count, order or index differently, or turns Save off over a rounding difference or a page
-    /// one of them couldn't size. The first difference is the one named.
+    /// Failure: the gate lets through a file the two readers count, order or index differently, or a page one of them can't size (review round 1),
+    /// or turns Save off over a rounding difference. The first difference is the one named.
     #[test]
     fn the_rule_names_the_first_difference() {
         let letter = (612.0, 792.0);
@@ -205,10 +244,11 @@ mod tests {
         let mut one_unread = view(2, &[letter, square]);
         one_unread.sizes[1] = None;
         assert_eq!(
-            compare(&view(2, &[letter, letter]), &one_unread),
-            None,
-            "a page one couldn't size isn't compared"
+            compare(&view(2, &[letter, square]), &one_unread),
+            Some(Disagreement::PageSize { page: 1 }),
+            "a page lopdf maps and PDFium can't size"
         );
+        assert_eq!(compare(&one_unread.clone(), &one_unread), None, "a page neither can size isn't compared");
     }
 
     /// Failure: Save is off with no reason a person can act on, or the reason names neither what differs nor that the file can still be read.
@@ -220,9 +260,11 @@ mod tests {
             Disagreement::Repaired { by_renderer: true },
             Disagreement::Repaired { by_renderer: false },
             Disagreement::RendererFailed,
+            Disagreement::Encryption,
+            Disagreement::Unchecked,
         ] {
             let message = disagreement.message();
-            assert!(message.contains(&disagreement.detail()), "{message}");
+            assert!(disagreement.is_transient() || message.contains(&disagreement.detail()), "{message}");
             assert!(
                 message.contains("can still be read") && message.contains("Save and Save As are off"),
                 "{message}"

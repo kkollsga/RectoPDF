@@ -211,6 +211,11 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         }
     }
     let to = &to;
+    // The agreement gate (SPEC section 3), before the tab's held, as a look can take seconds (review round 1); asked again below, from what this kept.
+    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.is_edited(id)))?;
+    if something && let Some(refusal) = crate::agreement::refusal_for(access, tab)? {
+        return Err(refusal);
+    }
     let (id, snapshot) = access.with(|s| {
         let id = select(s, tab)?;
         let snapshot = s.begin_save(id, matches!(to, SaveTo::As { .. }))?;
@@ -223,7 +228,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     if let Some(support) = access.saving() {
         support.before_writing(id);
     }
-    // The agreement gate (SPEC section 3): nothing is written from a reading of a file that isn't what the person sees.
+    // The agreement gate again, now the tab's held: anything added since is looked at, the rest is what was kept.
     if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
         drop(ending);
         return Err(refusal);

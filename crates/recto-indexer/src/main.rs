@@ -170,7 +170,7 @@ fn doc_meta(path: &Path) -> Result<DocMeta, OpenError> {
             })
         }
         // Whether it can be read is the worker's to say, in a moment.
-        Err(OpenError::NotPdf) => Ok(DocMeta {
+        Err(OpenError::NotPdf | OpenError::TooComplex) => Ok(DocMeta {
             renderer_only: true,
             file_bytes,
             ..DocMeta::default()

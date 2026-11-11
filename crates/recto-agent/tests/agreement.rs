@@ -93,13 +93,73 @@ fn a_broken_index_one_reader_repairs_is_a_disagreement() {
     assert_eq!(look(&file.0), Some(Disagreement::Repaired { by_renderer: true }));
 }
 
-/// Failure: a file the renderer can't read at all is saved, though what's shown can't be checked against it. Save is off for it.
+/// One page in two revisions, with `/Encrypt` naming `encrypt` only in the older trailer: lopdf reads the newest trailer and the file as plain, and
+/// PDFium honours the older one.
+fn encrypted_in_older_trailer(encrypt: &str) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (number, body) in [
+        (1, "<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>"),
+        (4, encrypt),
+    ] {
+        offsets.push(out.len());
+        out.extend(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    let first = out.len();
+    out.extend(b"xref\n0 5\n0000000000 65535 f \n");
+    for offset in offsets {
+        out.extend(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend(format!("trailer\n<< /Size 5 /Root 1 0 R /Encrypt 4 0 R /ID [<01> <01>] >>\nstartxref\n{first}\n%%EOF\n").as_bytes());
+    let page = out.len();
+    out.extend(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>\nendobj\n");
+    let second = out.len();
+    out.extend(
+        format!("xref\n3 1\n{page:010} 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R /Prev {first} /ID [<01> <01>] >>\nstartxref\n{second}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
+/// Failure (review round 1): a file lopdf reads but PDFium can't is saved, though what's shown can't be checked against it. An encryption
+/// dictionary with a filter nobody knows, named only by the older trailer: lopdf reads the file as plain, PDFium refuses it.
 #[test]
 fn a_file_the_renderer_cant_read_is_a_disagreement() {
-    let file = TempPdf::new("form-bomb.pdf", &recto_testpdf::form_bomb());
-    // The form bomb draws for ever, but sizing its page is cheap: it agrees. A file that isn't there can't be read by either.
-    assert_eq!(look(&file.0), None);
-    assert_eq!(look(std::path::Path::new("/nowhere/at/all.pdf")), Some(Disagreement::RendererFailed));
+    let bytes = encrypted_in_older_trailer("<< /Filter /Nonesuch >>");
+    assert!(recto_core::agreement::structure_view_bytes(bytes.clone().into()).is_ok(), "lopdf reads it");
+    let file = TempPdf::new("unreadable-to-pdfium.pdf", &bytes);
+    assert_eq!(look(&file.0), Some(Disagreement::RendererFailed));
+}
+
+/// Failure (review round 1, blocking): a file lopdf reads without a password while PDFium asks for one is taken as agreeing, so a save is
+/// written from a plain reading of a file the person sees as protected. It's a disagreement.
+#[test]
+fn a_file_only_one_reader_needs_a_password_for_is_a_disagreement() {
+    let bytes = encrypted_in_older_trailer("<< /Filter /Standard /V 2 /R 3 /Length 128 /P -4 /O <0011> /U <0022> >>");
+    let structure = recto_core::agreement::structure_view_bytes(bytes.clone().into()).unwrap();
+    assert_eq!(structure.page_count, 1, "lopdf reads it as plain");
+    let file = TempPdf::new("password-for-one.pdf", &bytes);
+    assert_eq!(look(&file.0), Some(Disagreement::Encryption));
+}
+
+/// Failure (review round 1): a structure read that fails, which may be the disk's, is kept as agreement. Here lopdf refuses a file PDFium reads
+/// (a trailer naming an `/Encrypt` that isn't there): unchecked, never agreement.
+#[test]
+fn a_structure_read_that_fails_is_never_agreement() {
+    let file = TempPdf::new("dangling-encrypt.pdf", &{
+        let mut bytes = build(&[
+            dict("<< /Type /Catalog /Pages 2 0 R >>"),
+            dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>"),
+        ]);
+        // Into the trailer's dictionary, just after its `<< `.
+        let at = bytes.windows(7).rposition(|window| window == b"trailer").unwrap() + "trailer\n<< ".len();
+        bytes.splice(at..at, b"/Encrypt 99 0 R ".iter().copied());
+        bytes
+    });
+    assert!(recto_core::inspect(&file.0).is_err(), "lopdf refuses it");
+    assert_eq!(look(&file.0), Some(Disagreement::Unchecked));
 }
 
 /// Failure: the look is slow enough on a long document to matter (each page's size is a round trip to the worker). Measures a 2,000-page file and

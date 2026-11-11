@@ -452,14 +452,6 @@ pub struct RecentFile {
     pub open: bool,
 }
 
-/// What the Save icon says when it's off for a signed document.
-const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
-
-/// **Whether a Save over this file would be refused for its signature,** so Save is off and Save As's copy is unsigned (SPEC decision 27): a person's signature and a change that has to be written anew, or a certification or lock and any change. Usage rights alone don't. The same rule `recto_core::save::save` refuses by.
-fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool) -> bool {
-    facts.has_persons_signature() && (needs_rewrite || facts.certified || facts.field_locked)
-}
-
 /// **`qa save-from`'s signature check,** on what was found of the file's signatures: a person's signature refuses it, and so does a file that couldn't be looked
 /// at, as the save itself refuses what it can't look through (review round 2).
 fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, recto_core::OpenError>) -> Result<(), AgentError> {
@@ -1687,9 +1679,7 @@ impl Inner {
             ));
         }
         save_from_signature_check(recto_core::save::signature_facts_of(&path))?;
-        if let Some(disagreement) = known.and_then(|stamp| recto_agent::agreement::check(&path, stamp)) {
-            return Err(AgentError::new("parsers_disagree", disagreement.message(), recto_agent::exit::FAILED));
-        }
+        saving::save_from_gate(&path, known)?;
         let (id, path, pages, needed) = self
             .host
             .session
@@ -2577,7 +2567,8 @@ impl AppCore {
             Enable::Update => self.inner.updates.menu_item().enabled,
             Enable::Save => self.can_save(),
             Enable::Print => reader(|reader| !reader.home && reader.shown_tab != 0) && !self.inner.printing.busy(),
-            Enable::SaveAsOrClose => reader(|reader| !reader.home && !reader.saving),
+            Enable::SaveAs => reader(|reader| !reader.home && !reader.saving) && self.inner.save_ui.disagreement_now().is_none(),
+            Enable::Close => reader(|reader| !reader.home && !reader.saving),
             Enable::ClearRecent => !lock(&self.inner.published).recent.is_empty(),
             Enable::Undo => reader(|reader| reader.can_undo),
             Enable::Redo => reader(|reader| reader.can_redo),
@@ -4609,15 +4600,13 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     } else {
         recto_core::save::SignatureFacts::default()
     };
-    // The agreement gate: a file its two readers see differently isn't saved, by Save or Save As (SPEC section 3).
     let core_queue = Arc::clone(&inner.core);
-    let disagreement = inner
-        .save_ui
-        .disagreement(file.as_ref().filter(|_| edited).map(|(_, path, stamp)| (path.as_path(), *stamp)), move || {
-            core_queue.push(CoreCall::Reconcile)
-        });
-    let save_off = save_needs_copy(facts, needs_rewrite) || disagreement.is_some();
-    let save_as_note = (save_off && disagreement.is_none()).then(|| saving::UNSIGNED_COPY.to_string());
+    let save = inner.save_ui.save_state(
+        facts,
+        needs_rewrite,
+        file.as_ref().filter(|_| edited).map(|(_, path, stamp)| (path.as_path(), *stamp)),
+        move || core_queue.push(CoreCall::Reconcile),
+    );
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
@@ -4787,18 +4776,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         highlight_lighten: highlight.lighten,
         selection_notice,
         saving: saving_now,
-        save_tooltip: match (disagreement, save_off) {
-            (Some(why), _) => why,
-            (None, true) => SAVE_OFF_TOOLTIP.to_string(),
-            (None, false) => inner.save_ui.tooltip(),
-        },
+        save_tooltip: save.tooltip,
         save_problem: inner.save_ui.problem(),
-        save_as_note,
+        save_as_note: save.note,
         shown_tab,
         document_name,
         document_folder,
         save_button: shown_tab != 0 && (edited || saving_now),
-        save_enabled: !save_off && !saving_now,
+        save_enabled: !save.off && !saving_now,
         print_ready: inner.printing.has_ready(),
         can_go_back,
         can_go_forward,
