@@ -3624,7 +3624,10 @@ mod tests {
                 let doc = reader.doc().unwrap();
                 for page in reader.visible_pages(doc) {
                     let shows = !matches!(reader.visible_cells(doc, page, doc.tile_scale), Ok(cells) if cells.is_empty());
-                    assert!(!shows || reader.attached.get(&page).is_some_and(|ids| !ids.is_empty()), "page {page} is bare, {into} points in view");
+                    assert!(
+                        !shows || reader.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
+                        "page {page} is bare, {into} points in view"
+                    );
                 }
             }
         }
