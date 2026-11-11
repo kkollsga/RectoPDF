@@ -275,7 +275,7 @@ fn damage(root: &Path, made: &Made, take: &mut Take<'_>) -> bool {
     first & 1 == 1
 }
 
-/// Puts every whole record's checksum right for what its text and what's beside it are now, as the format makes it: the page's number, the record with its offset and checksum as zeros, then the bytes. The pack is read as it stands.
+/// Puts every whole record's checksum right for what its text and what's beside it are now, as the reader checks it: the page's number, the record as decoded with its offset, its unread byte and its checksum as zeros, then the bytes. The pack is read as it stands.
 fn reseal(root: &Path) {
     let app = root.join(key().hex()).join(corpus::FORMAT).join("app");
     let (Ok(mut table), Ok(pack)) = (std::fs::read(app.join("pages.bin")), std::fs::read(app.join("text.pack"))) else {
@@ -288,8 +288,9 @@ fn reseal(root: &Path) {
         let Some(blob) = usize::try_from(offset).ok().and_then(|start| pack.get(start..start.checked_add(length)?)) else {
             continue;
         };
+        // As the reader hashes it: the fields it decodes, so the byte between them, which it never reads, as zero.
         let mut fields = [0u8; RECORD_LEN];
-        fields[8..24].copy_from_slice(&record[8..24]);
+        fields[8..23].copy_from_slice(&record[8..23]);
         let mut hash = crc32fast::Hasher::new();
         hash.update(&(page as u32).to_le_bytes());
         hash.update(&fields);
@@ -303,12 +304,22 @@ fn reseal(root: &Path) {
 fn read_back(root: &Path, made: &Made) {
     let _ = corpus::disk_state(root, key());
     if let Ok(Some(found)) = ReadyCorpus::open(root, key()) {
-        assert!(found.pages() <= corpus::MAX_PAGES);
+        // The table as it is on disk, to hold what's read to what its record said.
+        let table = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap_or_default();
         let mut buffer = Vec::new();
         for page in 0..found.pages().min(MAX_PAGES_READ) {
             // What's beside the text is believed only as numbers and words: the agent's folder, next, is what holds spans to the text.
             if let Ok(stored) = found.page(page, &mut buffer) {
                 let _ = (stored.also_spelled(), stored.hidden_spans());
+                let at = page as usize * RECORD_LEN;
+                if let Some(said) = table.get(at + 8..at + 12) {
+                    let said = u32::from_le_bytes([said[0], said[1], said[2], said[3]]);
+                    assert!(
+                        stored.text.len() as u64 <= u64::from(said),
+                        "page {page}: {} bytes of text read, where its record said {said}",
+                        stored.text.len()
+                    );
+                }
             }
         }
     }
@@ -350,7 +361,7 @@ pub fn check(data: &[u8]) {
 mod tests {
     use super::*;
 
-    /// Failure: putting checksums right no longer matches the format, so half of what the fuzzer sends stops at a checksum and the reader's later checks go untested. An untouched corpus, resealed, must read back the same.
+    /// Failure: putting checksums right no longer matches the reader's, so half of what the fuzzer sends stops at a checksum and the reader's later checks go untested. An untouched corpus, resealed, must read back the same, and so must one with only the byte the reader never reads damaged.
     #[test]
     fn resealing_an_untouched_corpus_changes_nothing() {
         let made = made();
@@ -361,6 +372,13 @@ mod tests {
         let after = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap();
         assert_eq!(before, after);
         assert_eq!(read_all(&root).as_ref(), Some(&made.texts));
+        // The byte the reader never reads, damaged, still passes once resealed, as the reader hashes it as zero.
+        let table = root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin");
+        let mut bytes = std::fs::read(&table).unwrap();
+        bytes[23] = 0xAB;
+        std::fs::write(&table, &bytes).unwrap();
+        reseal(&root);
+        assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "a damaged unread byte, resealed");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
