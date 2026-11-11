@@ -3747,6 +3747,7 @@ fn session_thread(inner: &Arc<Inner>) {
                         listener.restore_ready();
                     }
                 }
+                recto_platform::slow::pause(recto_platform::slow::Seam::Session);
                 continue;
             }
             CoreCall::RestorePatienceOver => {

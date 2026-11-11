@@ -48,10 +48,12 @@ pub enum Seam {
     SleepRead,
     /// A tab's sleep file, written as it goes dormant or the app goes.
     SleepWrite,
+    /// The session thread, once the state's been taken in and the host told: late for what it does next, as a starved machine has it while the UI thread makes the window.
+    Session,
 }
 
 impl Seam {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::State,
         Self::Remake,
         Self::Worker,
@@ -61,6 +63,7 @@ impl Seam {
         Self::Draw,
         Self::SleepRead,
         Self::SleepWrite,
+        Self::Session,
     ];
 
     /// Its name in the switch and the report.
@@ -75,6 +78,7 @@ impl Seam {
             Self::Draw => "draw",
             Self::SleepRead => "sleep_read",
             Self::SleepWrite => "sleep_write",
+            Self::Session => "session",
         }
     }
 
@@ -86,7 +90,7 @@ impl Seam {
         self as usize
     }
 
-    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it), the window remade 300 ms after it, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, and a sleep file read and written as by a disk that's busy.
+    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it), the window remade 300 ms after it, the session thread 300 ms late after it, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, and a sleep file read and written as by a disk that's busy.
     pub const fn ci_ms(self) -> u64 {
         match self {
             Self::State => 1500,
@@ -98,6 +102,7 @@ impl Seam {
             Self::Draw => 40,
             Self::SleepRead => 150,
             Self::SleepWrite => 300,
+            Self::Session => 300,
         }
     }
 
@@ -452,7 +457,7 @@ mod tests {
             assert!(error.contains(SWITCH), "{bad}: {error}");
         }
         assert!(
-            Profile::read(Some("wrker=5"), None, None).unwrap_err().contains("sleep_write"),
+            Profile::read(Some("wrker=5"), None, None).unwrap_err().contains("session"),
             "it lists the seams"
         );
         assert!(Profile::read(None, Some("soon"), None).unwrap_err().contains(STATE_SWITCH));

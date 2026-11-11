@@ -995,6 +995,7 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 | `socket` | the control thread, bound but not yet answering | the first answer's late | 700 ms |
 | `draw` | `EngineHooks::ops_ready`, layers to draw | `ops_ready` arrives late | 40 ms |
 | `sleep_read`, `sleep_write` | `RecordStore::read_sleep` and `write_sleep` | the reading or writing thread waits | 150, 300 ms |
+| `session` | the session thread, after the state's taken in and the host told | what it does next is late, as on a starved machine | 300 ms |
 
 **The switch.** `RECTO_QA_SLOW` is a comma list: a number of milliseconds for every seam, `ci` for the profile above, `<seam>=<ms>` for one, and `jitter=<seed>` for delays drawn from half to one and a half times each, repeatably. `RECTO_QA_RESTORE_DELAY_MS` and `RECTO_QA_REMAKE_DELAY_MS` still work, and win for their seam. A switch that can't be read refuses the launch, so a slow run can't pass as a fast one. Each seam is capped (30 s for the state, 10 s for the rest).
 
