@@ -15,7 +15,7 @@ umask 077
 tmp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 if [ "${1:-}" = "--remove" ]; then
   security delete-keychain "$2" 2>/dev/null || true
-  rm -f "$tmp/developer-id.p12" "$tmp/identity.pem" "$tmp/notary.p8"
+  rm -f "$tmp/developer-id.p12" "$tmp/identity.pem" "$tmp/repacked.p12" "$tmp/notary.p8"
   exit 0
 fi
 kc="${1:?usage: tools/release/keychain.sh <keychain path>}"
@@ -43,8 +43,15 @@ if ! { unpack openssl || unpack openssl -legacy || unpack /usr/bin/openssl; }; t
   exit 1
 fi
 rm -f "$tmp/developer-id.p12" "$tmp/openssl.err"
-security import "$tmp/identity.pem" -k "$kc" -t agg -f pemseq -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+# `security import` takes a PEM's certificate but not an unencrypted PKCS#8 key, which is what OpenSSL 3 writes: on GitHub's runner it
+# failed with "SecKeychainItemImport: Function or operation not implemented", and on a Mac it imported the certificate alone (2026-11-11).
+# So the identity goes in as a .p12 again, packed with the ciphers `security` reads, under a password made here for this moment.
+repack_pass=$(openssl rand -hex 24)
+openssl pkcs12 -export -in "$tmp/identity.pem" -out "$tmp/repacked.p12" -passout "pass:$repack_pass" \
+  -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
 rm -f "$tmp/identity.pem"
+security import "$tmp/repacked.p12" -k "$kc" -P "$repack_pass" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+rm -f "$tmp/repacked.p12"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" >/dev/null
 # Apple's Developer ID intermediate, in case the runner lacks it: the chain must verify.
 curl -fsSL -o "$tmp/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
