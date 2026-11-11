@@ -100,6 +100,31 @@ fn damaged_corpora_do_no_harm() {
     smoke("corpus", seed(), rounds(12), 4 * 1024);
 }
 
+/// Failure: positions and text from hostile pages, NaN and huge values, thousands of rows at the edges, or neighbours nothing like their page, panic chrome detection, take long, or leave out what isn't one of the page's own pieces.
+#[test]
+fn hostile_pages_chrome_does_no_harm() {
+    recto_fuzz::targets::chrome::MOST_CHARS.store(20_000, std::sync::atomic::Ordering::Relaxed);
+    smoke("chrome", seed(), rounds(300), 4 * 1024);
+}
+
+/// Failure: records a compromised worker sends panic the stream's rules, the SVG writer or the JPEG scan, write past the cap, or reach the SVG as markup, a script or a way out of it.
+#[test]
+fn hostile_records_write_a_safe_svg() {
+    smoke("svg", seed(), rounds(1500), 8 * 1024);
+}
+
+/// Failure: a kept file damaged on disk, or a journal naming it by another path or stamp, gets a file outside the journals' folder removed or changed, is undone from when it isn't what it was, or leaves a history that can't be undone and redone all the way. Each round makes a kept file with its syncs, so this is short.
+#[test]
+fn damaged_kept_files_do_no_harm() {
+    smoke("kept", seed(), rounds(30), 1024);
+}
+
+/// Failure: the `kept` target's own damage, a kept file replaced by a link to the PDF and then rewritten in place, writes through the link into the PDF, and the check blames the store for it. The input libFuzzer found: a closed history whose journal names the canary, then made old, made a link, and rewritten.
+#[test]
+fn damage_to_a_kept_file_never_goes_through_a_link() {
+    recto_fuzz::targets::kept::check(&[0x01, 0x01, 0x01, 0x00, 0x01, 0xf1, 0xff, 0x01, 0x82, 0x00, 0xb0, 0xff, 0xf7, 0xa0, 0x01, 0x00]);
+}
+
 /// Failure: a hostile `latest.json` or zip panics, or writes past what it said. The seeded run of what `tools/fuzz.sh` runs at length.
 #[test]
 fn update_holds() {

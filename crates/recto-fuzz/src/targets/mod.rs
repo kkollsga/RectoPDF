@@ -1,15 +1,18 @@
 //! One check per thing that takes hostile input. Each is a plain function on bytes, so libFuzzer, the seeded smoke run and a regression test all run the very same thing.
 
 pub mod agent;
+pub mod chrome;
 pub mod control;
 pub mod corpus;
 pub mod edits;
 pub mod generated;
 pub mod index;
+pub mod kept;
 pub mod pdf;
 pub mod proto;
 pub mod record;
 pub mod select;
+pub mod svg;
 pub mod update;
 
 use recto_core::{DocFacts, OpenError, Toc};

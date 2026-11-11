@@ -520,6 +520,7 @@ dependencies = [
  "recto-reader",
  "recto-render-service",
  "recto-session",
+ "recto-svg",
  "recto-testpdf",
  "recto-update",
  "serde_json",

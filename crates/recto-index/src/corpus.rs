@@ -1449,7 +1449,12 @@ fn make_agent_folder(paths: &CorpusPaths, limits: &BuildLimits) -> Result<AgentF
             pages_written += 1;
         }
     }
-    if pages_written > 0 || !paths.manifest.is_file() {
+    // The manifest is a file of its own, as each page's is: a link in its place, to anywhere, is taken away and never followed, or an agent would read whatever it points at as the folder's index.
+    let manifest_is_ours = fs::symlink_metadata(&paths.manifest).is_ok_and(|meta| meta.is_file());
+    if pages_written > 0 || !manifest_is_ours {
+        if !manifest_is_ours {
+            let _ = fs::remove_file(&paths.manifest);
+        }
         write_manifest(paths, &corpus, width).map_err(|_| AgentFolderError::Failed)?;
     }
     Ok(AgentFolder {
@@ -1524,7 +1529,9 @@ fn write_manifest(paths: &CorpusPaths, corpus: &ReadyCorpus, width: usize) -> io
 /// What an agent's folder takes up, if it's been made and finished.
 pub fn agent_folder_bytes(root: &Path, key: CorpusKey) -> Option<u64> {
     let paths = CorpusPaths::new(root, key);
-    paths.manifest.is_file().then(|| folder_bytes(&paths.agent))
+    fs::symlink_metadata(&paths.manifest)
+        .is_ok_and(|meta| meta.is_file())
+        .then(|| folder_bytes(&paths.agent))
 }
 
 fn clean_short(text: &str) -> String {

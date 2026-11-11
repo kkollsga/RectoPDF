@@ -44,14 +44,22 @@ pub struct PageEffects {
 
 /// What this page uses, or `None` if that can't be said. `page` is zero-based.
 pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
-    let reader = open_reader(path).ok()?;
+    effects_in(&open_reader(path).ok()?, page)
+}
+
+/// [`page_effects`] on bytes in memory: the same walk, for the fuzzer.
+pub fn page_effects_bytes(bytes: std::sync::Arc<[u8]>, page: u32) -> Option<PageEffects> {
+    effects_in(&crate::open_bytes(bytes).ok()?, page)
+}
+
+fn effects_in(reader: &IndexedReader, page: u32) -> Option<PageEffects> {
     let map = reader.page_map().ok()?;
     let entry = map.get(page as usize)?;
     let owner = entry.inherited().resources().unwrap_or(entry.id());
-    let page_dict = dict_at(&reader, owner)?;
+    let page_dict = dict_at(reader, owner)?;
     let resources = page_dict.get(b"Resources").ok()?;
     let mut walk = Walk {
-        reader: &reader,
+        reader,
         deadline: Instant::now() + MAX_TIME,
         visits: 0,
         effects: PageEffects::default(),
@@ -61,10 +69,10 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     };
     walk.read_layers()?;
     walk.resources(resources)?;
-    let mut drawings = page_contents(&reader, entry.id());
+    let mut drawings = page_contents(reader, entry.id());
     while let Some(id) = walk.waiting.pop() {
         walk.tick()?;
-        let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else {
+        let Some(inner) = stream_or_dict(reader, &Object::Reference(id)) else {
             continue;
         };
         if drawings.len() < MAX_VISITS && matches!(inner.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Form") {
@@ -77,7 +85,7 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
             walk.resources(next)?;
         }
     }
-    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(&reader, &drawings);
+    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(reader, &drawings);
     Some(walk.effects)
 }
 

@@ -1,4 +1,4 @@
-//! The normaliser, line-order repair and hidden-text report, on hostile characters and boxes. They run on the host's side, on what a compromised worker sent, so a NaN, an infinity or a million lines on one baseline has to do no harm.
+//! The normaliser, line-order repair, hidden-text report and search's ranking, on hostile characters and boxes. They run on the host's side, on what a compromised worker sent, so a NaN, an infinity or a million lines on one baseline has to do no harm.
 //!
 //! What must hold: repair adds or loses nothing but whitespace, every offset stays in bounds, and it takes bounded time however the page is shaped.
 
@@ -178,7 +178,47 @@ pub fn check(data: &[u8]) {
         check_reading(&chars, &[], true);
         check_normalize(&chars);
         check_hidden(&chars);
+        check_rank(&normalize(&chars, false).text);
     });
+}
+
+/// Search's ranking on a hostile page's text, with queries from the page itself and ones that have tripped text code. Catches: a word cut inside a character, a count out of step with its terms, or a score that isn't a number.
+fn check_rank(text: &str) {
+    use recto_index::rank::{Collection, MAX_TERMS, count_terms, each_word, first_term, score, terms_of};
+    let opening: String = text.chars().take(48).collect();
+    for query in [opening.as_str(), "the", "İstanbul ΟΔΟΣ", "数学 ﬁn", "a b c d e f g h i j k l m n o p q r s"] {
+        let terms = terms_of(query);
+        assert!(terms.terms.len() <= MAX_TERMS);
+        assert!(terms.terms.iter().all(|term| !term.is_empty()));
+        let mut counts = vec![0u32; terms.terms.len()];
+        let length = count_terms(text, &terms.terms, &mut counts);
+        assert!(counts.iter().all(|count| *count <= length), "{counts:?} of {length}");
+        if let Some(range) = first_term(text, &terms.terms) {
+            assert!(text.get(range.clone()).is_some(), "{range:?} isn't on a character's edge");
+            assert!(counts.iter().any(|count| *count > 0));
+        }
+        let pages_with: Vec<u32> = counts.iter().map(|count| u32::from(*count > 0)).collect();
+        for collection in [
+            Collection {
+                pages: 1,
+                words: u64::from(length),
+            },
+            Collection { pages: 0, words: 0 },
+            Collection {
+                pages: u64::MAX,
+                words: u64::MAX,
+            },
+        ] {
+            let said = score(collection, length, &counts, &pages_with);
+            assert!(said.is_finite(), "a score of {said}");
+        }
+    }
+    let mut words = 0u64;
+    each_word(text, |start, end| {
+        assert!(start < end && text.get(start..end).is_some(), "{start}..{end}");
+        words += 1;
+    });
+    assert!(words <= text.len() as u64);
 }
 
 fn check_repair(chars: &[CharRecord], boxes: &[CharBox]) {

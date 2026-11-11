@@ -667,6 +667,28 @@ pub(crate) fn write_svg<O: Output>(
     })
 }
 
+/// **An export's writing on records in memory, for the fuzzer:** a worker's contents, a frame's records at a time, each checked by the stream's rules as
+/// `read_contents` checks them, and each it lets through written as `export svg` writes it, JPEGs stripped or not and the drawing turned, into memory held to
+/// `cap` bytes. Gives the SVG, or the first rule it broke. No worker, no file.
+pub fn svg_in_memory(frames: &[&[u8]], strip: bool, quarter_turns: u8, cap: u64) -> Result<Vec<u8>, String> {
+    use recto_proto::contents::{IMAGES_ALL, Records, StreamCheck};
+    let out = RefCell::new(super::MemoryOut::new(usize::try_from(cap).unwrap_or(usize::MAX)));
+    let mut check = StreamCheck::for_images(IMAGES_ALL);
+    let mut tally = Tally::default();
+    let mut svg: Option<SvgWriter<Capped<'_, super::MemoryOut>>> = None;
+    for frame in frames {
+        let mut records = Records::new(frame);
+        while let Some(record) = records.next_record().map_err(|error| error.0.to_string())? {
+            check.accept(&record).map_err(|error| error.0.to_string())?;
+            write_record(&mut svg, &out, cap, Some("A title"), (strip, quarter_turns), &mut tally, &record).map_err(|error| error.to_string())?;
+        }
+    }
+    check.finish().map_err(|error| error.0.to_string())?;
+    let writer = svg.ok_or("no page")?;
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(out.into_inner().bytes)
+}
+
 fn rasterised_words(tally: &Tally) -> Vec<Value> {
     tally
         .rasterised

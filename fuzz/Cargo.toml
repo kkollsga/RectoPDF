@@ -107,3 +107,24 @@ path = "fuzz_targets/corpus.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "chrome"
+path = "fuzz_targets/chrome.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svg"
+path = "fuzz_targets/svg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kept"
+path = "fuzz_targets/kept.rs"
+test = false
+doc = false
+bench = false

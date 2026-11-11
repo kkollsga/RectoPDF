@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) targets+=("$1"); shift ;;
   esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus)
+[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus chrome svg kept)
 toolchain="${FUZZ_TOOLCHAIN:-nightly}"
 sanitizer="${FUZZ_SANITIZER:-none}"
 mkdir -p "$work"
@@ -39,15 +39,18 @@ export CARGO_TARGET_DIR="$work/target"
 max_len() {
   case "$1" in
     pdf_bytes) echo 1048576 ;;
-    pdf_tree) echo 16384 ;;
+    pdf_tree|save_copy) echo 16384 ;;
     proto) echo 262144 ;;
-    index) echo 65536 ;;
+    index|select) echo 65536 ;;
     agent) echo 65536 ;;
     control) echo 262144 ;;
     record) echo 262144 ;;
     edits) echo 8192 ;;
-    update) echo 65536 ;;
+    update|generated) echo 65536 ;;
     corpus) echo 4096 ;;
+    chrome) echo 16384 ;;
+    svg) echo 65536 ;;
+    kept) echo 1024 ;;
   esac
 }
 

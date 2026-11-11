@@ -1,4 +1,4 @@
-//! Generated contents as they're read back: the kept file in the user's caches, and the helper's two lines on stdout. Both came from a PDF through a process that may have been made to say anything, and the kept file sits in a folder something else may touch.
+//! Generated contents as they're read back: the kept file in the user's caches, and the helper's two lines on stdout. Both came from a PDF through a process that may have been made to say anything, and the kept file sits in a folder something else may touch. And the search indexer's report, the other helper's one line, read the same way.
 //!
 //! What must hold: no panic, bounded time and memory, and what's believed keeps every cap: entries, depth, pages in range, places on the page, titles cleaned, one line each, and never empty. Each input also goes in as a well-formed file with its numbers and titles taken from the bytes, or almost nothing would get past the format check.
 
@@ -91,6 +91,27 @@ pub fn check(data: &[u8]) {
         let shaped = shaped(data);
         if let Ok(generated) = Generated::decode(&shaped, key()) {
             holds(&generated);
+        }
+        // As the indexer's report: one of its states, a code that's a word, and counts, whatever it said.
+        for said in [String::from_utf8_lossy(data).into_owned(), String::from_utf8_lossy(&shaped).into_owned()] {
+            let report = recto_control::indexing::read_report(&said);
+            let fields = report.as_object().expect("a report is an object");
+            assert!(
+                matches!(report["state"].as_str(), Some("ready" | "refused" | "failed" | "changed" | "paused")),
+                "{report}"
+            );
+            assert!(
+                report["code"].is_null()
+                    || report["code"]
+                        .as_str()
+                        .is_some_and(|code| code.len() <= 48 && code.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')),
+                "{report}"
+            );
+            assert!(
+                fields.iter().all(|(key, value)| matches!(key.as_str(), "state" | "code") || value.is_u64()),
+                "{report}"
+            );
+            assert!(fields.len() <= 20, "{report}");
         }
         // As the helper's answer: a report line, then the contents.
         for answer in [data.to_vec(), [&b"{\"state\":\"ready\"}\n"[..], &shaped].concat()] {

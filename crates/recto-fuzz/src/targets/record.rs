@@ -1,4 +1,4 @@
-//! The state record and journals, as whatever's on disk: they're hostile, whoever seems to have written them. Each input goes in as it is, and again with its checksums made good, since otherwise nearly nothing gets past them.
+//! The state record and journals, and the activity logs `recto log` reads, as whatever's on disk: they're hostile, whoever seems to have written them. Each input goes in as it is, and again with its checksums made good, since otherwise nearly nothing gets past them.
 //!
 //! What must hold: no panic, no bomb, caps hold, and what's accepted can be used: a session restored from it, and every step of a list undone and redone, and written back the same.
 
@@ -189,6 +189,20 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
             store.next_write_whole();
             let _ = store.write_record(&saved, &PlaceDelta::default(), false);
             assert_eq!(store.verify(&saved, &lists), Ok(()), "what's written reads back");
+        }
+    }
+    // `recto log`, on activity logs that are whatever's on disk: as many entries as asked for, and every word of ours cleaned to one line.
+    let _ = local::write_private_file(&paths.log, log_bytes);
+    let _ = local::write_private_file(&paths.other_log, record_bytes);
+    for last in [None, Some(1), Some(u32::MAX)] {
+        let recent = recto_control::log::recent(&paths, last);
+        let entries = recent["entries"].as_array().expect("entries are a list");
+        assert!(entries.len() <= last.map_or(50, |last| last as usize));
+        for entry in entries {
+            for key in ["cmd", "level", "outcome"] {
+                let word = entry[key].as_str().expect("a word");
+                assert_eq!(recto_core::clean_line(word), word, "{key} isn't clean: {word:?}");
+            }
         }
     }
     let _ = std::fs::remove_dir_all(&root);

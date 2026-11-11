@@ -17,7 +17,7 @@ pub mod nav;
 pub mod save;
 mod signatures;
 pub mod verdict;
-pub use effects::{PageEffects, page_effects};
+pub use effects::{PageEffects, page_effects, page_effects_bytes};
 
 pub use signatures::{
     MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within,
@@ -274,6 +274,11 @@ const PERMISSION_COPY: i64 = 1 << 4;
 pub fn copy_restricted(path: &Path) -> Result<bool, OpenError> {
     let reader = open_reader(path)?;
     Ok(restricted_by(&reader))
+}
+
+/// [`copy_restricted`] on bytes in memory: the same read, for the fuzzer.
+pub fn copy_restricted_bytes(bytes: Arc<[u8]>) -> Result<bool, OpenError> {
+    Ok(restricted_by(&open_bytes(bytes)?))
 }
 
 fn restricted_by(reader: &IndexedReader) -> bool {

@@ -265,7 +265,14 @@ fn update_seeds() -> Vec<Vec<u8>> {
         "a".repeat(64)
     )
     .into_bytes();
-    vec![latest, update_seed_zip()]
+    let plan = br#"{"id":"a1","from":"0.1.0","to":"0.2.0","cdhash":"","pid":7,"app":"/Applications/RectoPDF.app","beside":"/Applications/.RectoPDF-update","root":"/tmp/state","quit_at_ms":1,"background":false,"quit_limit_ms":30000,"open":["/tmp/a.pdf"]}"#.to_vec();
+    let outcome = br#"{"kind":"went_back","from":"0.2.0","to":"0.1.0","why":"kept_ending"}"#.to_vec();
+    let saved =
+        br#"{"last_check_ms":1,"failures":0,"offered":"0.2.0","install_failures":0,"quits_for_nothing":0,"failed":["0.1.9"],"proven":"0.1.0","unstarted":0}"#
+            .to_vec();
+    let launched = b"0.2.0 tabs=3\n".to_vec();
+    let dump = b"--------\npath:   /Applications/RectoPDF.app (0x3b1f4)\nidentifier: io.github.kkollsga.RectoPDF\n--------\npath: /x.app\nidentifier: io.github.kkollsga.RectoPDFX\n".to_vec();
+    vec![latest, update_seed_zip(), plan, outcome, saved, launched, dump]
 }
 
 fn update_seed_zip() -> Vec<u8> {
@@ -348,7 +355,58 @@ fn generated_seeds() -> Vec<Vec<u8>> {
     let mut answer = br#"{"state":"ready","found":4,"kept":3,"elapsed_ms":120}"#.to_vec();
     answer.push(b'\n');
     answer.extend_from_slice(&kept);
-    vec![kept, answer, br#"{"state":"refused","code":"couldnt_read"}"#.to_vec(), (0..=255u8).collect()]
+    vec![
+        kept,
+        answer,
+        br#"{"state":"refused","code":"couldnt_read"}"#.to_vec(),
+        (0..=255u8).collect(),
+        br#"{"state":"ready","pages":12,"pages_built":3,"pages_resumed":9,"elapsed_ms":40,"corpus_bytes":900,"pack_bytes":300}"#.to_vec(),
+        br#"{"state":"paused","code":"too_busy"}"#.to_vec(),
+    ]
+}
+
+/// Each way into `chrome`: text alone, edge pieces made from the bytes, and pages of rows, a few of each, with a page of thousands of rows.
+fn chrome_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = vec![[&[0u8][..], "Page 12 of 40 · L 119/6 · xii · 3/14/2019".as_bytes()].concat()];
+    for salt in 0..4u8 {
+        let body: Vec<u8> = (0..400u32).map(|at| (at.wrapping_mul(u32::from(salt) * 2 + 7) >> 1) as u8).collect();
+        seeds.push([&[1u8][..], &body].concat());
+        seeds.push([&[2u8, salt, salt * 3, 4, salt][..], &body].concat());
+    }
+    seeds.push([&[2u8, 0, 1, 4, 0, 0xF0, 0x10, 0x00][..], &[3u8; 64]].concat());
+    seeds
+}
+
+/// Records as the bytes say, made records of every kind, and JPEGs to scan.
+fn svg_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = Vec::new();
+    for salt in 0..6u8 {
+        let body: Vec<u8> = (0..512u32)
+            .map(|at| (at.wrapping_mul(u32::from(salt) * 4 + 3).wrapping_add(at >> 3)) as u8)
+            .collect();
+        seeds.push([&[1u8, salt & 1, salt % 4][..], &body].concat());
+        seeds.push([&[3u8, 0, 0][..], &body].concat());
+    }
+    // Every kind of record in turn, then a frame break.
+    seeds.push(
+        [
+            &[2u8, 1, 0, 0, 0, 0, 0][..],
+            &(0..13u8).flat_map(|kind| [kind, 1, 2, 3, 4, 5, 6, 7]).collect::<Vec<u8>>(),
+        ]
+        .concat(),
+    );
+    seeds
+}
+
+/// An open history and a closed one, each with the kept file as it was, removed, replaced by a link, and made old.
+fn kept_seeds() -> Vec<Vec<u8>> {
+    vec![
+        vec![0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 7, 0],
+        vec![1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 7, 1, 0],
+        vec![0, 0, 2, 1, 0, 1, 0, 0, 0, 0, 0, 0, 7, 1, 4],
+        vec![1, 2, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 7, 9, 6],
+        vec![0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 2],
+    ]
 }
 
 /// Damage to a corpus, as `corpus` reads it: the first byte says whether checksums are put right after, then each step is what, which file and how. Nothing, a record pointed past the pack, a table cut short, a mark replaced, a page's text overwritten, a link, and a file others can write.
@@ -384,6 +442,9 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "generated" => generated_seeds(),
         "corpus" => corpus_seeds(),
         "update" => update_seeds(),
+        "chrome" => chrome_seeds(),
+        "svg" => svg_seeds(),
+        "kept" => kept_seeds(),
         _ => Vec::new(),
     }
 }
@@ -422,6 +483,9 @@ pub const TARGET_NAMES: &[&str] = &[
     "update",
     "generated",
     "corpus",
+    "chrome",
+    "svg",
+    "kept",
 ];
 
 /// The check a target runs, by name.
@@ -440,6 +504,9 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "generated" => targets::generated::check,
         "corpus" => targets::corpus::check,
         "update" => targets::update::check,
+        "chrome" => targets::chrome::check,
+        "svg" => targets::svg::check,
+        "kept" => targets::kept::check,
         _ => return None,
     })
 }
