@@ -278,6 +278,43 @@ fn everything_comes_back_after_a_quit() {
     comes_back_after_a_quit([&[], &[]]);
 }
 
+/// Failure (CI, main at faa9180: "⌘F gives the field the keyboard"): ⌘F and typing in the moment a window was up without the state, read late, were lost when the state came in and the window was made again from it, the new one with the page focused. **Acting within that gap,** the state read 1.5 s late and the window made again from it a second later: what's done waits for the window made from the state, and all of it is there after: Find open with what was typed, and its field with the keyboard.
+#[test]
+fn what_is_done_before_a_late_state_comes_in_isnt_lost() {
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "9"]);
+    run.settled();
+    run.quit();
+    // The state 1.5 s late, and the window made again from it a second after that: commands are taken once the state's in, so these come in that second, as on CI they did in a moment of it.
+    let run = Run::on_with_env(
+        &state,
+        &[
+            ("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500")),
+            ("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("1000")),
+        ],
+    )
+    .unwrap();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["session"]["tabs"].as_array().map(Vec::len), Some(1), "the state's come in");
+    assert_eq!(after["app"]["find"]["open"], true, "{}", after["app"]["find"]);
+    assert_eq!(
+        after["app"]["find"]["field_has_focus"], true,
+        "⌘F gave the field the keyboard: {}",
+        after["app"]["find"]
+    );
+    assert_eq!(after["app"]["focus_view"], "find");
+    assert_eq!(after["app"]["find"]["untrusted"]["field"], "words", "what was typed: {}", after["app"]["find"]);
+    assert_eq!(after["session"]["tabs"][0]["page"], 8, "and the place from the state");
+    run.quit();
+}
+
 /// Failure (CI, main at f4b4d22): on a slower machine the state was read after the window's second of patience, the window went up without it, and what came in later didn't bring everything back: the sidebar's contents with no height there, and here, with the disk slow on purpose, the window's size and full screen, the appearance, Settings, every pane's place and the contents' scroll. Just past the patience, the window that went up without the state also wrote its own default size over what had come in. **The whole of `qa state` across a quit, with the state read 1.05 s and 1.5 s late**, so it comes in after the window's up. Everything comes back as from an on-time read.
 #[test]
 fn everything_comes_back_when_the_state_is_read_late() {
@@ -1826,6 +1863,16 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
 /// Failure: what's selected is lost across a restart: SPEC decision 23 has it as part of what comes back. On the page it was on, the same characters, and highlighted again.
 #[test]
 fn a_selection_comes_back() {
+    selection_comes_back(&[]);
+}
+
+/// Failure (late-restore-2): with the state read late, the selection came back on the window that went up without it and went with that window when it was made again from the state, and so did Find's hit. Selected again on the new one.
+#[test]
+fn a_selection_comes_back_when_the_state_is_read_late() {
+    selection_comes_back(&[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))]);
+}
+
+fn selection_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let file = long_document("selected", 8);
@@ -1838,7 +1885,7 @@ fn a_selection_comes_back() {
     let before = run.report();
     assert_eq!(before["reader"]["selection"]["selected"], true, "{}", before["reader"]["selection"]);
     run.quit();
-    let run = Run::on(&state).unwrap();
+    let run = Run::on_with_env(&state, second_launch).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(after["reader"]["selection"]["selected"], true, "{}", after["reader"]["selection"]);

@@ -263,6 +263,19 @@ pub(crate) fn look_again_after(inner: &Inner, left: Duration) {
     }
 }
 
+/// How long a window up without the state waits for it before it takes input anyway. Past this, a state that comes in isn't made into the window, as the person may be using it.
+pub(crate) const INPUT_PATIENCE: Duration = Duration::from_secs(10);
+
+/// **A window that went up without the state takes no input until it's made from it** (CI, main at faa9180: ⌘F in the first second gave the field the keyboard on a window that the state, read late, then made again, and the new one came up with the page focused). Refusing what's done in that moment loses nothing; carrying it over would have to know every way a window can be changed, and lose what it didn't. Not for ever: past [`INPUT_PATIENCE`] it takes input, and a state that comes later isn't made into it.
+pub(crate) fn takes_input(shown_with_state: bool, since_launch: Duration) -> bool {
+    shown_with_state || since_launch >= INPUT_PATIENCE
+}
+
+/// Whether a menu item or key does anything now. What's the app's and not the window's, as Quit, Settings and the update, always does.
+pub(crate) fn takes_input_now(window_interactive: bool, id: &str) -> bool {
+    window_interactive || id.starts_with("app.") || matches!(id, "file.settings" | "file.open")
+}
+
 /// What a restore that comes after the host has decided keeps: what the host did, not what was saved. Before it has, what was saved, for it to decide on.
 pub(crate) fn out_of_sight_when_restored(saved: bool, decided: Option<bool>) -> bool {
     decided.unwrap_or(saved)
@@ -680,6 +693,18 @@ mod tests {
         assert_eq!(restore_patience(false, second), Patience::ShowNow, "someone's looking for it");
         assert_eq!(restore_patience(true, second), Patience::WaitFor(UPDATE_RESTORE_PATIENCE - second));
         assert_eq!(restore_patience(true, UPDATE_RESTORE_PATIENCE), Patience::ShowNow, "not for ever");
+    }
+
+    /// Failure (CI, main at faa9180): what was done to a window that went up without the state, ⌘F and its field taking the keyboard, was lost when the state came in and made the window again. Until it's made from the state it takes nothing but the app's own items, and not for ever.
+    #[test]
+    fn a_window_up_without_the_state_takes_no_input_until_it_is_made_from_it() {
+        let second = Duration::from_secs(1);
+        assert!(!takes_input(false, second));
+        assert!(takes_input(true, second));
+        assert!(takes_input(false, INPUT_PATIENCE), "not for ever");
+        assert!(!takes_input_now(false, "find.open"));
+        assert!(takes_input_now(false, "app.quit") && takes_input_now(false, "file.settings"), "the app's own");
+        assert!(takes_input_now(true, "find.open"));
     }
 
     /// Failure: Settings comes back where there's no screen any more, and can't be reached.

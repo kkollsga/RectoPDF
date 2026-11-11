@@ -1325,6 +1325,8 @@ struct Inner {
     restored: AtomicBool,
     /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
     shown_with_state: AtomicBool,
+    /// The window went up without the state, past its patience.
+    shown_without_state: AtomicBool,
     /// The control socket, ready to run once the session's as it was, so nothing asks about an empty one or opens over it.
     waiting_server: Mutex<Option<Server>>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
@@ -1402,6 +1404,8 @@ struct AppState {
     window_decided: bool,
     /// What the state said, as it was taken in after a window went up without it. That window can report its own size, focus and the rest before it's made again, which a full check on a slow machine saw, so the one made again goes by this: see [`AppCore::window_replaced`].
     from_state: Option<Box<AppState>>,
+    /// What each pane had selected as its window went for another made from the state, to be selected again on the new one.
+    selections_held: Vec<(usize, recto_index::select::Range)>,
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
@@ -1943,9 +1947,11 @@ impl AppCore {
                 minimised_decided: false,
                 window_decided: false,
                 from_state: None,
+                selections_held: Vec::new(),
             }),
             restored: AtomicBool::new(false),
             shown_with_state: AtomicBool::new(false),
+            shown_without_state: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
             holding_tab: Mutex::new(None),
             hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
@@ -2497,6 +2503,10 @@ impl AppCore {
         if self.inner.core.frozen.load(Ordering::SeqCst) {
             return HostAction::None;
         }
+        // A window up without the state is made again once it's in, and what was done to it would go with it.
+        if !updates::takes_input_now(self.window_interactive(), &id) {
+            return HostAction::None;
+        }
         // Features that answer ids of their own: the snapshot tool, and printing.
         if snapshot_tool::perform(&self.inner, &id) || printing::perform(&self.inner, &id) {
             return HostAction::None;
@@ -2604,6 +2614,9 @@ impl AppCore {
     pub fn menu_item_enabled(&self, id: String) -> bool {
         use menus::Enable;
         let Some(rule) = menus::enable_rule(&id) else { return false };
+        if !updates::takes_input_now(self.window_interactive(), &id) {
+            return false;
+        }
         let reader = |pick: fn(&ReaderView) -> bool| pick(&lock(&self.inner.published).reader);
         match rule {
             Enable::Always => true,
@@ -2913,7 +2926,14 @@ impl AppCore {
 
     /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
     pub fn window_replaced(&self) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
+        let engines = self.inner.panes.engines(&self.inner.engine);
+        // What's selected goes with the window's layers, and comes back on the new one (a selection and Find's hit, under a late state).
+        let held: Vec<(usize, recto_index::select::Range)> = engines
+            .iter()
+            .enumerate()
+            .filter_map(|(pane, engine)| Some((pane, engine.hot_selection()?.1?)))
+            .collect();
+        for engine in &engines {
             engine.window_closed();
         }
         // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
@@ -2930,6 +2950,7 @@ impl AppCore {
                 window.minimised = minimised;
             }
         }
+        app.selections_held = held;
     }
 
     /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
@@ -2960,8 +2981,15 @@ impl AppCore {
     }
 
     pub fn window_opened(&self) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
+        let engines = self.inner.panes.engines(&self.inner.engine);
+        for engine in &engines {
             engine.window_opened();
+        }
+        let held = std::mem::take(&mut lock(&self.inner.app).selections_held);
+        for (pane, range) in held {
+            if let Some(engine) = engines.get(pane) {
+                engine.restore_selection((range.start.page, range.start.at), (range.end.page, range.end.at));
+            }
         }
         // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
         let contents_y = lock(&self.inner.app).contents_y;
@@ -2991,6 +3019,16 @@ impl AppCore {
     /// What the host shows has been made from the state that was read.
     pub fn shown_with_state(&self) {
         self.inner.shown_with_state.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
+    pub fn window_interactive(&self) -> bool {
+        updates::takes_input(self.inner.shown_with_state.load(Ordering::SeqCst), self.inner.started.elapsed())
+    }
+
+    /// Whether a state that's come in late may still have the window made again from it: not once the window's taken input without it.
+    pub fn may_remake_window(&self) -> bool {
+        !self.window_interactive()
     }
 
     /// There's no window to wait for, so this launch has come up as far as it goes.
@@ -3688,7 +3726,17 @@ fn session_thread(inner: &Arc<Inner>) {
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
                 reconcile(inner, &mut synced, &mut events);
                 if first_time {
-                    inner.listener.restore_ready();
+                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it. Nothing outside a quiet run.
+                    match qa::remake_delay(inner.qa.is_some()).filter(|_| inner.shown_without_state.load(Ordering::SeqCst)) {
+                        Some(delay) => {
+                            let listener = Arc::clone(&inner.listener);
+                            let _ = std::thread::Builder::new().name("recto-qa-remake".into()).stack_size(64 * 1024).spawn(move || {
+                                std::thread::sleep(delay);
+                                listener.restore_ready();
+                            });
+                        }
+                        None => inner.listener.restore_ready(),
+                    }
                 }
                 continue;
             }
@@ -3696,7 +3744,10 @@ fn session_thread(inner: &Arc<Inner>) {
                 if !inner.restored.load(Ordering::SeqCst) {
                     match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.started.elapsed()) {
                         // The state hasn't come. The window goes up without it, and when it does come it's taken in.
-                        updates::Patience::ShowNow => inner.listener.restore_ready(),
+                        updates::Patience::ShowNow => {
+                            inner.shown_without_state.store(true, Ordering::SeqCst);
+                            inner.listener.restore_ready();
+                        }
                         updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
                     }
                 }

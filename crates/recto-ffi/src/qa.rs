@@ -24,6 +24,15 @@ pub(crate) fn restore_delay(quiet: bool) -> Option<Duration> {
     Some(Duration::from_millis(ms.min(30_000)))
 }
 
+/// A test's slow window: how long after the state comes in late the window's made again from it, from `RECTO_QA_REMAKE_DELAY_MS`. Nothing outside a quiet run.
+pub(crate) fn remake_delay(quiet: bool) -> Option<Duration> {
+    if !quiet {
+        return None;
+    }
+    let ms: u64 = std::env::var("RECTO_QA_REMAKE_DELAY_MS").ok()?.parse().ok()?;
+    Some(Duration::from_millis(ms.min(10_000)))
+}
+
 /// What a quiet run's relaunch by an update carries over of a test's slow disk, so the new version reads its state as late.
 pub(crate) fn relaunch_env() -> Vec<(String, String)> {
     std::env::var("RECTO_QA_RESTORE_DELAY_MS")
@@ -60,6 +69,10 @@ pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Optio
         eprintln!("recto: this quiet run ended, as {why}.");
         std::process::exit(124);
     });
+}
+
+fn updates_takes_input(inner: &Inner) -> bool {
+    crate::updates::takes_input(inner.shown_with_state.load(Ordering::SeqCst), inner.started.elapsed())
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -266,6 +279,13 @@ impl QaBridge {
 
     /// Asks the UI thread and waits for it. No answer in time means the UI thread is stuck, which is its own kind of failure.
     fn ask(&self, verb: &str, value: &str) -> Result<Value, AgentError> {
+        // What acts on the window waits for it to take input, as a person's click would have to: a window up without the state is made again from it, and what was done to it would go (CI, 2026-11-11). Looking doesn't wait.
+        if !matches!(verb, "state" | "animations" | "copied") {
+            let began = Instant::now();
+            while !self.inner().is_none_or(|inner| updates_takes_input(&inner)) && began.elapsed() < UI_ANSWER_WAIT {
+                std::thread::sleep(ANIMATION_POLL);
+            }
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         lock(&self.answers).insert(id, None);
         self.listener.qa_request(id, verb.to_string(), value.to_string());
