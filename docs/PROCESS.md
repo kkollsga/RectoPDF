@@ -177,3 +177,27 @@ The fifth was a whole-state restore test that hadn't been told about new fields,
 - Process reviews keep the hub-touches-per-merge count, and add hub growth (methods and variants) as a second number.
 
 **Check next time.** Hub growth since today's numbers; whether phase R's first steps start right after the release tag; CI red hours.
+
+## 2026-11-11, CI's whole history: trends and what changes
+
+**Numbers** (`gh run list`, 53 runs on `main`, 2026-11-07 to 11-11): 27 green, 20 red, 5 cancelled. `main` was red for about 12.5 hours over five stretches: 4.5 h over 6 pushes (11-07), 1.5 h, 0.5 h, 3.7 h over 9 pushes (11-08) and about 2.3 h over 3 pushes (11-11). The red rate hasn't fallen: 37% on 11-07, 38% on 11-08, 3 of 7 on 11-11.
+
+**What failed, by cause** (one red run can hold several):
+- **The outside world (4 runs):** GitHub's release downloads answered 504 for over an hour. Fixed with retries, a cache and a source-build fallback; not seen since.
+- **This machine isn't CI's (about 11):** macOS 15's launchd and sandbox behaviour (3 runs), macOS 26 killing a probe, a system scroller setting compared as app state (2), memory retirement never firing in macOS 15's sandbox (3), and CI's virtual machine waking about 80 times a second at rest (4 pushes in a row, still unexplained).
+- **Tests assuming speed or order (about 10):** socket kill windows, a spin test, a print pixel tolerance, the quiet reopen count, the watchdog's 250 ms look, layout done only when asked, and a page-number fade.
+- **Real product bugs, found by those failures (8):** a renderer starting up reaped as idle; a client catching up dropped for its own queued commands; an undo replay scanning the document twice per step; an agent's Find Next not waiting as the app's did; memory retirement off in the macOS 15 sandbox; a late state never applied at launch; the window rebuilt from it losing what was just done; and an update's launch showing a closed window.
+
+**Trends.**
+1. **No failure was in pure core logic.** Every red test touched time, processes, sockets, the window or the OS. The Rust core's deciding code, unit-tested without the app, never failed on CI. Risk sits at the boundaries, so the more that's decided in the core and tested on a fake clock, the less CI finds.
+2. **The same failure came back push after push:** the wake-up test 4 times, launchd 3, the late restore 3. Each time a fix was checked only by pushing it, because CI's condition couldn't be made here. Every long red stretch is one of these loops.
+3. **Red clusters on heavy merge days** (11-08: 10 of 26 runs), when merges went on over a red `main`.
+4. **CI's difference is worth having:** its slower machine and its second macOS version found 8 real bugs and 5 OS assumptions no local run could. Cancelled runs (5) were all a newer push superseding an older one, as designed.
+
+**Changing** (some already done today):
+- CI runs on `build/*` branches, which merge only once green (owner, 2026-11-11). The late-state stage is in the full check, and a full slow mode is planned before release.
+- **A CI-only failure's fix reproduces the failure locally first:** a slow mode, a seam, an OS condition or a loaded machine, shown failing before the fix and passing after. A fix that couldn't fail here doesn't go to `main` to be tested.
+- **Tests that can fail only on another machine say what they saw:** timings, the OS version, what launched when. Several of today's CI logs couldn't tell late from on time.
+- Process reviews count CI red hours and causes from `gh run list` each time, beside the queue and check numbers.
+
+**Check next time.** Red rate and hours since today; whether every CI-only fix was shown failing locally first.

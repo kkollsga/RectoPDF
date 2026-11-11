@@ -1466,7 +1466,8 @@ Each was found one push at a time, because only CI took the slow path. The desig
 4. **Every waiting point can be made slow on purpose.** Disk reads, worker replies, layout and the state read each go through a seam that a test build can delay. One run of the suite in a deliberately slow mode finds all of these at once, instead of one per push.
 5. **Tests wait for what they check,** with a bound, and never count what arrives within a fixed time (see above).
 6. **CI runs on a branch before it merges.** The slow machine is a test input; use it before `main` does.
-7. **Never edit a script a running job is executing.** Bash reads a script as it runs, and an edit mid-run broke a cleanup job the same day with "unexpected EOF". Edit in a worktree, or wait for the job to end.
+7. **A fix for a failure only CI shows is first shown failing locally,** through a slow mode, a seam or the OS condition, and passing with the fix. Over five days, every long red stretch on one project's `main` (4.5 h, 3.7 h, 2.3 h) was the same failure coming back push after push, because each fix was checked only by pushing it. And no CI failure in 53 runs was in pure core logic: all were at time, processes, sockets, windows or the OS. Put decisions in the core where a fake clock can test them.
+8. **Never edit a script a running job is executing.** Bash reads a script as it runs, and an edit mid-run broke a cleanup job the same day with "unexpected EOF". Edit in a worktree, or wait for the job to end.
 
 ### Before a merge, look at what the branch adds
 
