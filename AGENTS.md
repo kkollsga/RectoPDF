@@ -123,3 +123,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Product rules from the owner, before the first release (2026-11-08)
 - The contents helper (Generate contents, through distillPDF) reads untrusted PDFs outside the renderer's sandbox. Asked what 0.1.0 should do: "Turn its image decoding off". Headings come from text.
 - The ✦ agent icon does nothing until the agent sidebar ships. Asked what 0.1.0 should do with it: "Keep it as it is".
+- The owner's dev copy (`target/dev/RectoPDF.app`): "You can swap out rectopdf even if its running (as long as its not actively beeing used, remember the cool down rules)" (2026-11-11). The same rule as automatic updates: only after 30 minutes with no use. With agent access off, the coordinator goes by the Mac's own idle time (HID idle ≥ 30 min), which can only be longer than the app's.
