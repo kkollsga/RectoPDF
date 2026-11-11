@@ -136,7 +136,9 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(opened.status.success(), "{opened:?}");
     let began = std::time::Instant::now();
     let mut looks = 0;
-    while began.elapsed() < Duration::from_secs(2) {
+    // Two seconds and a few reports, however long each report takes: on CI's slower machine five took the whole two seconds (2026-11-11).
+    while began.elapsed() < Duration::from_secs(2) || looks <= 5 {
+        assert!(began.elapsed() < Duration::from_secs(60), "{looks} reports in a minute");
         let app = run.report()["app"].clone();
         assert_eq!(
             (app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()),

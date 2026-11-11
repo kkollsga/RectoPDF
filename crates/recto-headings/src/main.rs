@@ -37,7 +37,18 @@ impl WorkerInk {
 }
 
 impl InkSource for WorkerInk {
+    /// A page the worker couldn't answer for, past its deadline on a starved machine or with the worker gone, gets one more go with a fresh worker: otherwise every heading on it is dropped unseen, as one that can't be checked isn't kept (CI, 2026-11-11: five of six headings, on a loaded virtual machine).
     fn page(&mut self, page: u32) -> Option<PageInk> {
+        if let Some(read) = self.page_once(page).filter(|read| read.checked) {
+            return Some(read);
+        }
+        self.renderer = None;
+        self.page_once(page)
+    }
+}
+
+impl WorkerInk {
+    fn page_once(&mut self, page: u32) -> Option<PageInk> {
         if self.unavailable {
             return None;
         }

@@ -43,10 +43,12 @@ import QuartzCore
             delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), cpuMicros: cpu / 1000, contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
+            layOutNow()
             answer(id, state())
             return
         case "animations":
             // Cheap, as `qa wait-settled` asks it until there's nothing.
+            layOutNow()
             answer(id, controller?.runningAnimations() ?? [])
             return
         case "entry_points":
@@ -346,6 +348,13 @@ import QuartzCore
         // Submenus' items too, as Open Recent's files are.
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
         return (items + items.compactMap(\.submenu).flatMap(\.items)).first { ($0.representedObject as? String) == id && !$0.isHidden }
+    }
+
+    /// What the window's display cycle would do before anything's seen. A quiet run's window is never on screen, so AppKit has no display cycle for it, and its views are laid out only when something asks: a report or `qa wait-settled` that came before that saw a table with no rows made and a pane with no height (CI, 2026-11-11, on a slower machine where the order differed). A person's window is laid out before it's drawn, so this only makes a quiet run the same.
+    private func layOutNow() {
+        for window in NSApp.windows where window.contentView != nil {
+            window.layoutIfNeeded()
+        }
     }
 
     private func state() -> [String: Any] {

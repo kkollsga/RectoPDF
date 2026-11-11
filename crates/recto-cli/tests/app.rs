@@ -181,7 +181,13 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
         }
     }
     let shown = wait_for(&run, |state| state["app"]["contents"]["note"] == "Generated contents");
-    assert_eq!(shown["app"]["contents"]["count"], 6, "{shown}");
+    // What was left out and why, should any be: CI once showed five of the six with no word of which or why (2026-11-11).
+    let made = run.ok(&["contents", "--generated"]);
+    assert_eq!(
+        shown["app"]["contents"]["count"], 6,
+        "hidden_left_out {}, pages_not_checked {}, pages_not_read {}: {}",
+        made["hidden_left_out"], made["pages_not_checked"], made["pages_not_read"], shown["app"]["contents"]
+    );
     let sidebar = run.ok(&["sidebar"]);
     let titles: Vec<&str> = sidebar["rows"]
         .as_array()
