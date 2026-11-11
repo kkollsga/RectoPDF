@@ -32,9 +32,13 @@ security unlock-keychain -p "$kc_pass" "$kc"
 security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
 printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$tmp/developer-id.p12"
 # What openssl writes is the identity unlocked, for the moment it takes to import.
-if ! openssl pkcs12 -in "$tmp/developer-id.p12" -passin env:MACOS_CERT_PASSWORD -nodes -out "$tmp/identity.pem" 2>"$tmp/openssl.err"; then
+# Keychain Access exports a .p12 with older ciphers (RC2, 3DES), which OpenSSL 3 refuses unless asked for its legacy provider:
+# the first preflight failed on GitHub's runner with "inner_evp_generic_fetch:unsupported" (2026-11-11). macOS's own LibreSSL reads
+# them as they are. Each try reads the password from the environment.
+unpack() { local bin="$1"; shift; "$bin" pkcs12 "$@" -in "$tmp/developer-id.p12" -passin env:MACOS_CERT_PASSWORD -nodes -out "$tmp/identity.pem" 2>>"$tmp/openssl.err"; }
+if ! { unpack openssl || unpack openssl -legacy || unpack /usr/bin/openssl; }; then
   rm -f "$tmp/developer-id.p12"
-  echo "::error::MACOS_CERT_P12 couldn't be opened with MACOS_CERT_PASSWORD: a wrong password, or a .p12 this openssl can't read (export it again with the older algorithms)" >&2
+  echo "::error::MACOS_CERT_P12 couldn't be opened with MACOS_CERT_PASSWORD by OpenSSL, its legacy provider or LibreSSL: most likely a wrong password" >&2
   sed 's/^/openssl: /' "$tmp/openssl.err" >&2; rm -f "$tmp/openssl.err"
   exit 1
 fi
