@@ -133,7 +133,7 @@ impl Updater {
             .and_then(version_of_zip)
             .ok_or(InstallRefused::NotABuild)?;
         let facts = {
-            let mut st = lock(&self.st);
+            let st = lock(&self.st);
             if !st.saved.dev_builds.unwrap_or(false) {
                 return Err(InstallRefused::DevBuildsOff);
             }
