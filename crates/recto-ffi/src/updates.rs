@@ -132,11 +132,11 @@ impl Host for Hooks {
         if inner.qa.is_some() {
             args.extend(crate::qa::owner_args());
         }
-        TestLaunch {
-            args,
-            env: vec![("RECTO_STATE_DIR".to_owned(), root)],
-            direct: false,
+        let mut env = vec![("RECTO_STATE_DIR".to_owned(), root)];
+        if inner.qa.is_some() {
+            env.extend(crate::qa::relaunch_env());
         }
+        TestLaunch { args, env, direct: false }
     }
 
     /// Asked on the thread that reads the state, before it does: so it waits for the lock as long as reading would, as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't a second copy.
@@ -217,6 +217,39 @@ pub(crate) fn fall_back_if_unreadable(inner: &Inner, loaded: Loaded) -> Loaded {
     recto_update::install::restore_record(&before, &into);
     inner.updates.fell_back();
     inner.saver.store.load()
+}
+
+/// How long a launch an update opened waits for the state before it shows anything without it, from the launch. Whether its window is closed, in the Dock or hidden, and where it goes, are in the state, and nobody's watching it come up, so it waits; a launch someone asked for waits a second, as a person is looking for it.
+pub(crate) const UPDATE_RESTORE_PATIENCE: Duration = Duration::from_secs(20);
+
+/// What the window's patience for the state comes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Patience {
+    ShowNow,
+    WaitFor(Duration),
+}
+
+/// **The window's patience for the state** (a full check under load: a window closed before an update came back open, and one in the Dock came back shown, as the state was read after the second's patience and the window went up without it). A launch an update may have opened waits for the state up to [`UPDATE_RESTORE_PATIENCE`]; any other goes up now.
+pub(crate) fn restore_patience(may_be_reopened_by_update: bool, since_launch: Duration) -> Patience {
+    if !may_be_reopened_by_update || since_launch >= UPDATE_RESTORE_PATIENCE {
+        return Patience::ShowNow;
+    }
+    Patience::WaitFor(UPDATE_RESTORE_PATIENCE - since_launch)
+}
+
+/// Asks again once that's up, on a thread that lives only that long: the state will usually have come by then, and if not, the window goes up without it.
+pub(crate) fn look_again_after(inner: &Inner, left: Duration) {
+    let core = Arc::clone(&inner.core);
+    let spawned = std::thread::Builder::new()
+        .name("recto-restore-patience".into())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            std::thread::sleep(left);
+            core.push(CoreCall::RestorePatienceOver);
+        });
+    if spawned.is_err() {
+        inner.listener.restore_ready();
+    }
 }
 
 /// What a restore that comes after the host has decided keeps: what the host did, not what was saved. Before it has, what was saved, for it to decide on.
@@ -513,6 +546,15 @@ mod tests {
         assert!(!out_of_sight_when_restored(true, Some(false)), "shown already, so shown");
         assert!(out_of_sight_when_restored(true, None), "not decided yet: what was saved, to decide on");
         assert!(out_of_sight_when_restored(false, Some(true)));
+    }
+
+    /// Failure (full check under load, 2026-11-11): the state read later than the window's second of patience, a window closed before an update came back open and one in the Dock came back shown, as the window went up without the state. A launch an update may have opened waits for it, up to a cap; any other launch doesn't.
+    #[test]
+    fn a_launch_an_update_opened_waits_for_the_state() {
+        let second = Duration::from_secs(1);
+        assert_eq!(restore_patience(false, second), Patience::ShowNow, "someone's looking for it");
+        assert_eq!(restore_patience(true, second), Patience::WaitFor(UPDATE_RESTORE_PATIENCE - second));
+        assert_eq!(restore_patience(true, UPDATE_RESTORE_PATIENCE), Patience::ShowNow, "not for ever");
     }
 
     /// Failure: Settings comes back where there's no screen any more, and can't be reached.

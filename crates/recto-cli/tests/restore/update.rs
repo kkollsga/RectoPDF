@@ -320,20 +320,61 @@ impl Bed {
         }
     }
 
-    /// Starts whatever's at the app's path as `recto qa start` does, and waits for it to be gone: for a version that ends by itself.
-    fn launch_until_it_ends(&self) {
-        let mut command = self.state.command();
-        command.env(REPO_ENV, &self.server.url);
+    /// Starts whatever's at the app's path as `recto qa start` does, and waits for it to be gone: for a version that ends by itself. Says what `qa start` answered, for a failure to show. A start refused as "already running" isn't a launch: what's answering is the last one still closing its socket, and it's waited for and tried again.
+    fn launch_until_it_ends(&self) -> String {
         let executable = self.app.join("Contents/MacOS/RectoPDF");
-        let _ = command
-            .args(["qa", "start", "--app", executable.to_str().unwrap(), "--time-limit", "3m", "--json"])
-            .stderr(std::process::Stdio::null())
-            .output()
-            .unwrap();
         let began = Instant::now();
-        // Or it went back, and what's running at the app's path now is the version before.
-        while !local::processes_running(&executable).is_empty() && self.version() != OLD {
-            assert!(began.elapsed() < Duration::from_secs(60), "it didn't end: {}", self.log());
+        loop {
+            let mut command = self.state.command();
+            command.env(REPO_ENV, &self.server.url);
+            let output = command
+                .args(["qa", "start", "--app", executable.to_str().unwrap(), "--time-limit", "3m", "--json"])
+                .output()
+                .unwrap();
+            let answered = format!(
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            if reply["error"]["code"] == "already_running" {
+                assert!(
+                    began.elapsed() < Duration::from_secs(60),
+                    "the last run never let go: {answered}\n{}",
+                    self.log()
+                );
+                self.wait_until_nothing_answers();
+                continue;
+            }
+            if let Some(pid) = reply["data"]["pid"].as_u64() {
+                self.wait_gone(pid as u32);
+            }
+            // Or it went back, and what's running at the app's path now is the version before.
+            while !local::processes_running(&executable).is_empty() && self.version() != OLD {
+                assert!(began.elapsed() < Duration::from_secs(60), "it didn't end: {}", self.log());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if self.version() != OLD {
+                self.wait_until_nothing_answers();
+            }
+            return answered;
+        }
+    }
+
+    /// Waits for a run to be gone: its process, and then its socket, which a process that can't be asked about any more can still be closing, and which still takes a connection meanwhile, so the next `qa start` would be told something's already running.
+    fn wait_gone(&self, pid: u32) {
+        let began = Instant::now();
+        while local::process_counters(pid).is_some() {
+            assert!(began.elapsed() < Duration::from_secs(60), "process {pid} didn't end: {}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.wait_until_nothing_answers();
+    }
+
+    fn wait_until_nothing_answers(&self) {
+        let began = Instant::now();
+        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
+            assert!(began.elapsed() < Duration::from_secs(60), "the socket stayed: {}", self.log());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -712,7 +753,7 @@ fn a_closed_window_stays_closed_across_an_update() {
     run.ok(&["update", "install"]);
     let run = bed.wait_for_new_app(run);
     assert_eq!(bed.version(), NEW, "the installer heard it had come up, with no frame to show");
-    assert_eq!(run.ok(&["qa", "state"])["app"]["window_open"], false, "still closed");
+    assert_eq!(run.ok(&["qa", "state"])["app"]["window_open"], false, "still closed: DIAG {}", bed.log());
     run.ok(&["qa", "window", "open"]);
     run.settled();
     assert_eq!(run.report()["session"]["tabs"][0]["page"], 8, "with everything in it");
@@ -748,7 +789,7 @@ fn a_minimised_window_and_a_hidden_app_stay_so_across_an_update() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let after = run.report();
-    assert_eq!(after["app"]["window"]["minimised"], true, "still in the Dock");
+    assert_eq!(after["app"]["window"]["minimised"], true, "still in the Dock: DIAG {}", bed.log());
     assert_eq!(after["app"]["hidden"], true, "still hidden");
     assert_same_but(&before, &after, &[], ACROSS_AN_UPDATE);
 
@@ -823,20 +864,22 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let mut arrived = bed.wait_for_new_app_of(run, NEW);
-    // It's come up, for the installer, which has finished. And then it ends.
-    let began = Instant::now();
-    while local::process_counters(arrived.pid).is_some() {
-        assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // It's come up, for the installer, which has finished. And then it ends, socket and all.
+    bed.wait_gone(arrived.pid);
     arrived.ended();
     assert_eq!(bed.version(), NEW, "the installer took it as having come up");
     let files = recto_update::plan::Files::in_state(&bed.state.root);
     let mut launches = 0;
+    let mut answers = Vec::new();
     while bed.version() != OLD {
         launches += 1;
-        assert!(launches <= recto_update::updater::EARLY_ENDS_LIMIT + 1, "it never went back: {}", bed.log());
-        bed.launch_until_it_ends();
+        assert!(
+            launches <= recto_update::updater::EARLY_ENDS_LIMIT + 1,
+            "it never went back: {}\nqa start answered:\n{}",
+            bed.log(),
+            answers.join("\n")
+        );
+        answers.push(bed.launch_until_it_ends());
         // A launch that's going back has left the installer its plan, and the version before is in place a moment later.
         let began = Instant::now();
         while (files.plan().exists() || recto_update::plan::helper_alive(&files)) && bed.version() != OLD {
@@ -961,6 +1004,28 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
     run.kill();
     let run = bed.start();
     assert_eq!(probation().early_ends, 1, "a kill is");
+    run.quit();
+}
+
+/// Failure (full check under load, 2026-11-11: "still closed", and "still in the Dock", each once): the new version read its state after the window's second of patience, so the window went up without it, a closed one opened and one in the Dock shown, and the app hidden came back on the screen. **A slow disk, on purpose:** the new version reads its state 2.5 s after its launch, and a launch an update opened waits for it, so all of it comes back as it was.
+#[test]
+fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start_with(&[("RECTO_QA_RESTORE_DELAY_MS", "2500")]);
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "hide", "on"]);
+    run.ok(&["qa", "window", "close"]);
+    bed.release_of(NEW, Broken::Not);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let run = bed.wait_for_new_app(run);
+    assert_eq!(bed.version(), NEW);
+    // Once the state's been read, as before then there's no window to see either way.
+    let state = crate::common::app::wait_for_long(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
+    assert_eq!(state["app"]["window_open"], false, "still closed: {}", bed.log());
+    assert_eq!(state["app"]["hidden"], true, "still hidden");
     run.quit();
 }
 

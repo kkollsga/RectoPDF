@@ -24,6 +24,16 @@ pub(crate) fn restore_delay(quiet: bool) -> Option<Duration> {
     Some(Duration::from_millis(ms.min(30_000)))
 }
 
+/// What a quiet run's relaunch by an update carries over of a test's slow disk, so the new version reads its state as late.
+pub(crate) fn relaunch_env() -> Vec<(String, String)> {
+    std::env::var("RECTO_QA_RESTORE_DELAY_MS")
+        .ok()
+        .filter(|ms| ms.parse::<u64>().is_ok())
+        .map(|ms| ("RECTO_QA_RESTORE_DELAY_MS".to_owned(), ms))
+        .into_iter()
+        .collect()
+}
+
 /// The process this quiet run ends with, if it was told one: what a relaunch by an update passes on.
 static OWNER: OnceLock<u32> = OnceLock::new();
 
