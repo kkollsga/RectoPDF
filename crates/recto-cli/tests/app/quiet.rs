@@ -2,7 +2,7 @@
 //!
 //! The app's own report can't catch this. Its window says it was never ordered in, and is, until AppKit orders it in to hang a sheet on it, slides it onto the screen from where it was, and takes it away again a moment later (owner, 2026-11-08: "When you are testing the app it flashes open in lower left corner").
 
-use super::common::app::numbered;
+use super::common::app::{OwnCopy, numbered};
 use super::{Run, app_path};
 use recto_platform::screen::{ShownWindow, windows_on_screen};
 use std::path::PathBuf;
@@ -125,24 +125,27 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     assert!(actives.iter().all(|active| active == false), "the app was never the active one: {actives:?}");
 }
 
-/// Failure: the system's opening the bundle again, as `open` does for whoever runs it, reaches a quiet run and makes it a regular app, with a Dock icon and a place in the menu bar, or opens its window. LaunchServices hands the reopen to the running app, and AppKit's own handling of it turned a quiet run regular (measured 2026-11-08, and seen in a full check's restore test while another worktree's update tests were opening their copies). The run stays prohibited, never active and off every screen, looked at for two seconds after.
+/// Failure: the system's opening the bundle again, as `open` does for whoever runs it, reaches a quiet run and makes it a regular app, with a Dock icon and a place in the menu bar, or opens its window. LaunchServices hands the reopen to the running app, and AppKit's own handling of it turned a quiet run regular (measured 2026-11-08, and seen in a full check's restore test while another worktree's update tests were opening their copies). Launch Services itself makes the run regular before it hands over the reopen, and the run's guard puts it back about a millisecond later (2026-11-11, from the change's own stack), so a report read the policy in that moment: 1 of 200 on CI (run 43085841110), here 9 of 1,800 with 240 reopens, read at the end of a report's build after the guard had looked at its start. The run is opened again every few looks, and every look says prohibited, never active and off every screen, for two seconds.
 #[test]
 fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
-    let Some(app) = app_path() else { return };
-    let bundle = app.canonicalize().unwrap().ancestors().nth(3).unwrap().to_path_buf();
-    assert_eq!(bundle.extension().and_then(|it| it.to_str()), Some("app"), "{}", bundle.display());
+    // A copy of its own: the system's open reaches a run of the bundle opened, and with the build's it could be any other test's (likeliest for CI run 43085841110, where another test's report said `regular`: nothing else in the suite opens the build).
+    let Some(copy) = OwnCopy::new() else { return };
+    let (bundle, app) = (copy.bundle.clone(), copy.executable());
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
-    let run = Run::start().unwrap();
+    let run = Run::start_of(&app, Duration::from_secs(120), &[]);
     // On this run's own state and quiet, should it start a copy rather than reach the one running.
-    let opened = std::process::Command::new("/usr/bin/open")
-        .arg("-g")
-        .arg("--env")
-        .arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display()))
-        .arg(&bundle)
-        .args(["--args", "--qa"])
-        .output()
-        .unwrap();
-    assert!(opened.status.success(), "{opened:?}");
+    let open_again = || {
+        let opened = std::process::Command::new("/usr/bin/open")
+            .arg("-g")
+            .arg("--env")
+            .arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display()))
+            .arg(&bundle)
+            .args(["--args", "--qa"])
+            .output()
+            .unwrap();
+        assert!(opened.status.success(), "{opened:?}");
+    };
+    open_again();
     let began = std::time::Instant::now();
     let mut looks = 0;
     // Two seconds, a few reports and enough looks at the screen, however long each takes: on CI's slower machine five reports took the
@@ -160,10 +163,18 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
             "opened again, it stays quiet: {app}"
         );
         looks += 1;
-        std::thread::sleep(Duration::from_millis(50));
+        if looks % 4 == 0 {
+            open_again();
+        } else {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
+    // Reached, rather than a copy started beside it: the run says the system made it regular and it went back.
+    let messages = std::fs::read_to_string(&run.state.paths.server_messages).unwrap_or_default();
     drop(run);
+    drop(copy);
     let (seen, samples, anything) = watch.finish();
+    assert!(messages.contains("changed to regular from outside, and put back"), "{messages}");
     if !anything {
         eprintln!("skipped: the window server listed nothing on any screen");
         return;
@@ -215,14 +226,9 @@ fn a_quiet_run_ends_with_what_started_it() {
 }
 
 /// Failure: something outside the app changes a quiet run's activation policy, and a report or a settle look taken before the guard hears of it says `accessory`, failing a test that compares states (`an_installer_killed_after_the_swap_loses_nothing`, in a full check, 2026-11-11), with the run off its rules until the guard catches up. Here the run turns itself `accessory` every 15 ms, as that change would, and every look says `prohibited`.
+///
 #[test]
 fn a_quiet_run_is_prohibited_whenever_its_looked_at() {
-    // Known failing on CI only (2026-11-11, due 2026-11-12): 1 of 200 reports said `regular` on GitHub's runner (build/helper-qos run
-    // 43085841110), a policy this test never sets. PLAN phase 7 has the item. It runs everywhere else.
-    if std::env::var_os("CI").is_some() {
-        eprintln!("skipped on CI: known failing until the `regular` report is explained (PLAN)");
-        return;
-    }
     let state = super::common::State::new();
     let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_POLICY_NUDGE_MS", "15".as_ref())]) else {
         return;

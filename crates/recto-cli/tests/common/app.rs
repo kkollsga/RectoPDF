@@ -8,8 +8,9 @@ use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// The built app, unless this run said it isn't to be used: a stage of `tools/check.sh` that runs before the app's been built from this tree would otherwise use whatever's there.
@@ -67,17 +68,61 @@ impl Run<'static> {
 
     /// The same, for at most this long: for a test that waits on purpose for longer than a run's usual two minutes. A run's end at its limit is the app gone mid-test, as `session_ended`, so the limit has to outlast whatever the test is prepared to wait for.
     pub fn start_lasting(limit: Duration, extra: &[&str]) -> Option<Self> {
-        let app = app_path()?;
+        Some(Self::start_of(&app_path()?, limit, extra))
+    }
+
+    /// The same, of this executable: a copy of the app's, such as [`OwnCopy`].
+    pub fn start_of(app: &Path, limit: Duration, extra: &[&str]) -> Self {
         let state = State::new();
         let limit = format!("{}s", limit.as_secs());
         let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit];
         args.extend_from_slice(extra);
         let pid = launch(&state, &args);
-        Some(Self {
+        Self {
             state: Held::Own(Box::new(state)),
             pid,
             done: false,
-        })
+        }
+    }
+}
+
+/// A copy of the built app that's one test's alone: an APFS clone beside the build, so it costs no disk and is the build byte for byte. The system sends an `open` of a bundle to a run of that bundle, whichever test started it, and turns a quiet run it reaches into a regular app before the app hears of it, until the run's guard puts it back (2026-11-11: about a millisecond later, and the reopen event some 40 ms after that). So a test that opens the bundle on purpose opens a copy of its own, and reaches no other test's run. The system forgets it, and it's removed, when it's dropped, a panic included.
+#[allow(dead_code)] // Only a test that opens the bundle needs one.
+pub struct OwnCopy {
+    pub bundle: PathBuf,
+}
+
+#[allow(dead_code)]
+impl OwnCopy {
+    pub fn new() -> Option<Self> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let built = app_path()?.ancestors().nth(3)?.canonicalize().ok()?;
+        let folder = loop {
+            let folder = built
+                .parent()?
+                .join(format!("own-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::create_dir(&folder) {
+                Ok(()) => break folder,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("a folder for a copy of the app: {error}"),
+            }
+        };
+        let bundle = folder.join("RectoPDF.app");
+        recto_platform::local::clone_file(&built, &bundle).unwrap_or_else(|error| panic!("a clone of {}: {error}", built.display()));
+        Some(Self { bundle })
+    }
+
+    pub fn executable(&self) -> PathBuf {
+        self.bundle.join("Contents/MacOS/RectoPDF")
+    }
+}
+
+impl Drop for OwnCopy {
+    fn drop(&mut self) {
+        recto_platform::registry::forget(&self.bundle);
+        if let Some(folder) = self.bundle.parent() {
+            let _ = std::fs::remove_dir_all(folder);
+        }
     }
 }
 
