@@ -2011,7 +2011,55 @@ fn quitting_twice_in_a_row_changes_nothing() {
     assert_same(&second, &third, &[]);
 }
 
-/// Failure (slow mode, 2026-11-11: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits 5 s for the state, and goes without it when nothing's unsaved, and the state waited behind the tab on screen's sleep file, which waited behind every sleep file the tabs just opened had queued, one at a time. With sleep files slow to write, as on a busy or slow disk, a quit after opening tabs lost them all. A hundred and fifty tabs opened one after another with each sleep file's read 150 ms and its write 300 ms late, a quit, and every one comes back.
+/// The sleep file of the tab on screen, by the name the state's journals folder gives it, if it's there.
+fn active_sleep_file(state: &State, report: &Value) -> Option<PathBuf> {
+    let session = &report["session"];
+    let tab = session["tabs"].as_array()?.iter().find(|tab| tab["id"] == session["active"])?;
+    let file = &tab["file"];
+    let stamp = recto_platform::FileStamp {
+        size: file["size"].as_u64()?,
+        mtime_ns: file["mtime_ns"].as_i64()?,
+        device: file["device"].as_u64()?,
+        inode: file["inode"].as_u64()?,
+    };
+    let name = recto_session::record::sleep_file_name(stamp, Path::new(tab["path"].as_str()?));
+    Some(state.root.join("session").join("journals").join(name)).filter(|path| path.is_file())
+}
+
+/// Failure (review 1 of the slow mode): a flush right after opening tabs, as a quit or an update has it, skipped the tab on screen's sleep file whenever another was being written, with no trace, and the next launch showed bare paper for its first frame. It waits for the others for what's left of the flush's time, and past that the skip is counted. With sleep files' writes 1.5 s late, a flush straight after opening tabs leaves the tab on screen's file there or says it skipped it; and once the others are done, the next one writes it.
+#[test]
+fn a_flush_writes_the_tab_on_screens_sleep_file_or_says_it_skipped_it() {
+    let state = State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_write=1500"))]) else {
+        return;
+    };
+    let folder = state.root.join("tabs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = long_document("many", 3);
+    for at in 0..8 {
+        let link = folder.join(format!("t{at}.pdf"));
+        recto_platform::local::clone_file(&file.0, &link).unwrap();
+        run.ok(&["open", link.to_str().unwrap()]);
+    }
+    run.settled();
+    run.ok(&["session", "save"]);
+    let saved = run.report();
+    let skipped = saved["record"]["sleep"]["writes_skipped_busy"].as_u64().unwrap();
+    assert!(
+        active_sleep_file(&state, &saved).is_some() || skipped >= 1,
+        "the tab on screen's sleep file is there, or its skip is counted: {}",
+        saved["record"]["sleep"]
+    );
+    // Given the time, it's written.
+    let began = Instant::now();
+    while active_sleep_file(&state, &run.report()).is_none() {
+        assert!(began.elapsed() < Duration::from_secs(60), "never written: {}", run.report()["record"]["sleep"]);
+        run.ok(&["session", "save"]);
+    }
+    run.quit();
+}
+
+/// Failure (slow mode, 2026-11-11: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits 5 s for the state, and goes without it when nothing's unsaved, and the state waited behind the tab on screen's sleep file, which waited behind every sleep file the tabs just opened had queued, one at a time. With sleep files slow to write, as on a busy or slow disk, a quit after opening tabs lost them all. Forty tabs, two of them across a quit first, opened one after another with each sleep file's read 150 ms and its write 2 s late, a quit, and every one comes back.
 #[test]
 fn tabs_just_opened_come_back_when_sleep_files_are_slow() {
     const TABS: usize = 40;

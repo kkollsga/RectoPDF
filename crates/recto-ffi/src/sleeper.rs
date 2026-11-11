@@ -29,6 +29,8 @@ const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
 const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
 /// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
 const BUDGET_LOOK_EVERY: Duration = Duration::from_secs(1);
+/// How often a flush looks again for the sleep files' lock, while it may wait for it.
+const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
 
@@ -50,6 +52,8 @@ struct Counts {
     sleep_bytes: AtomicU64,
     sleep_files: AtomicU64,
     writes_put_off: AtomicU64,
+    /// The tab on screen's file at a flush, not written as another was being written past the flush's time.
+    writes_skipped_busy: AtomicU64,
     woken_from_file: AtomicU64,
     pressure_events: AtomicU64,
 }
@@ -165,6 +169,19 @@ impl Sleeper {
         !soon && hour.1 < SLEEP_BYTES_PER_HOUR
     }
 
+    /// The one-at-a-time lock on writing sleep files: waited for, or until `until` and no further. A flush's thread, never the UI's.
+    fn take_writing(&self, until: Option<Instant>) -> Option<std::sync::MutexGuard<'_, ()>> {
+        let Some(until) = until else { return Some(lock(&self.writing)) };
+        loop {
+            match self.writing.try_lock() {
+                Ok(guard) => return Some(guard),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= until => return None,
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(WRITING_LOOK_EVERY),
+            }
+        }
+    }
+
     fn note_written(&self, id: TabId, bytes: u64) {
         let gap = Duration::from_secs(u64::from(self.write_gap_seconds.load(Ordering::SeqCst)));
         let mut last = lock(&self.last_written);
@@ -191,6 +208,7 @@ impl Sleeper {
             "gone_dormant": { "left_alone": count(&counts.left_alone), "budget": count(&counts.budget), "pressure": count(&counts.pressure), "asked": count(&counts.asked) },
             "sleep_files_written": count(&counts.sleep_files),
             "writes_put_off": count(&counts.writes_put_off),
+            "writes_skipped_busy": count(&counts.writes_skipped_busy),
             "sleep_bytes_written": count(&counts.sleep_bytes),
             "woken_from_file": count(&counts.woken_from_file),
             "pressure_events": count(&counts.pressure_events),
@@ -263,15 +281,15 @@ impl Inner {
 
     /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
     pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
-        self.write_sleep_now_for(id, now, true);
+        self.write_sleep_now_for(id, now, None);
     }
 
-    /// The same, as a quit or a hand-off has it, unless another sleep file's being written: then nothing, as these are only a way to be quick, and a flush mustn't wait behind sleep files queued for a slow disk (slow mode, 2026-11-11: a quit after opening tabs waited its 5 s there and went without the state).
-    pub(crate) fn write_sleep_for_unless_busy(&self, id: TabId) {
-        self.write_sleep_now_for(id, true, false);
+    /// The same, as a quit or a hand-off has it, waiting for another sleep file being written only until `until`, and counted as skipped past it. These are only a way to be quick, and the state's already written by then: a quit waited its 5 s behind sleep files queued for a slow disk and went without the state (slow mode, 2026-11-11). Skipped, the next launch's first frame is bare paper, which the count says.
+    pub(crate) fn write_sleep_for_until(&self, id: TabId, until: Instant) {
+        self.write_sleep_now_for(id, true, Some(until));
     }
 
-    fn write_sleep_now_for(&self, id: TabId, now: bool, wait: bool) {
+    fn write_sleep_now_for(&self, id: TabId, now: bool, until: Option<Instant>) {
         let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
             return;
         };
@@ -279,22 +297,20 @@ impl Inner {
         let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
             return;
         };
-        self.write_with_material(facts, material, now, wait);
+        self.write_with_material(facts, material, now, until);
     }
 
     /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
-    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool, wait: bool) {
+    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool, until: Option<Instant>) {
         let SleepFacts {
             id,
             path,
             sleep,
             pictures_allowed,
         } = facts;
-        let _one_at_a_time = match self.sleeper.writing.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) if wait => lock(&self.sleeper.writing),
-            Err(std::sync::TryLockError::WouldBlock) => return,
+        let Some(_one_at_a_time) = self.sleeper.take_writing(until) else {
+            self.sleeper.counts.writes_skipped_busy.fetch_add(1, Ordering::Relaxed);
+            return;
         };
         let there = self.saver.store.read_sleep(sleep.file, &path);
         let may = now || self.sleeper.may_write_pictures(id);
@@ -329,7 +345,7 @@ impl Inner {
             .collect()
     }
 
-    /// And their sleep files, on a one-shot thread: packing a photograph takes long enough to hold up whatever's asked for next. A flush waits for it.
+    /// And their sleep files, on a one-shot thread: packing a photograph takes long enough to hold up whatever's asked for next. A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind these only for what's left of its time.
     pub(crate) fn write_those_leaving(&self, left: Vec<(SleepFacts, SleepMaterial)>) {
         if left.is_empty() {
             return;
@@ -337,7 +353,7 @@ impl Inner {
         let Some(inner) = self.saver.inner() else { return };
         let _ = std::thread::Builder::new().name("recto-sleep".into()).stack_size(512 * 1024).spawn(move || {
             for (facts, material) in left {
-                inner.write_with_material(facts, material, false, true);
+                inner.write_with_material(facts, material, false, None);
             }
         });
     }
