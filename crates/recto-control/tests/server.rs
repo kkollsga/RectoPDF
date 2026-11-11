@@ -276,7 +276,7 @@ fn an_answer_past_the_cap_says_so() {
     assert!(reply["error"]["next"].as_str().unwrap().contains("less"));
 }
 
-/// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back.
+/// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back. The deadline is waited out once the answer has started, not from a fixed moment.
 #[test]
 fn a_client_that_stops_reading_is_dropped() {
     let limits = Limits {
@@ -286,10 +286,14 @@ fn a_client_that_stops_reading_is_dropped() {
     let running = Running::start(limits);
     let mut lazy = running.connect();
     lazy.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
-    // Give the deadline time to pass while it reads nothing.
+    // The answer has started, so the deadline runs from here: from a fixed moment, a loaded Mac's answer started after it, the client then read it
+    // all as it came, and the read waited out its 20 s timeout on an open connection (it failed `tools/check.sh --full` on 17ad148).
+    let mut first = [0u8; 1];
+    assert_eq!(lazy.read(&mut first).expect("the answer starts"), 1);
+    // Give the deadline time to pass while it reads nothing more.
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
-    let mut total = 0;
+    let mut total = 1;
     let mut chunk = [0u8; 65536];
     while let Ok(count) = lazy.read(&mut chunk) {
         if count == 0 {
