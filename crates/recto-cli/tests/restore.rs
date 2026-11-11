@@ -177,7 +177,14 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
             wrong.push(format!("{path}: nothing then {}", two[path]));
         }
     }
-    assert!(wrong.is_empty(), "these changed across the restart:\n{}", wrong.join("\n"));
+    // A place that moved is easier to tell apart from one said another way with where the view was, and how tall the document, on each side.
+    let view = |state: &Value| json!({ "scroll_y": state["reader"]["scroll_y"], "document_height": state["reader"]["document_height"], "places": state["session"]["tabs"].as_array().map(|tabs| tabs.iter().map(|tab| tab["place"].clone()).collect::<Vec<_>>()) });
+    let views = if wrong.iter().any(|line| line.contains(".place.")) {
+        format!("\nbefore: {}\nafter: {}", view(before), view(after))
+    } else {
+        String::new()
+    };
+    assert!(wrong.is_empty(), "these changed across the restart:\n{}{views}", wrong.join("\n"));
     if !known.is_empty() {
         let unknown: Vec<String> = one
             .keys()

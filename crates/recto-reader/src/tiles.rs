@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 /// Tiles attached in one turn of the UI thread. Platform report §2.6: it stays under budget, and the next turn takes the rest.
 pub const MAX_ATTACH_PER_TURN: usize = 8;
+/// How far from where it was sent the host can put the view, on its own pixels: half a point at 2x, a point at 1x. Within it, the view is still on the place.
+const HOST_ROUNDING: f64 = 1.0;
 /// Files remembered as needing a password the renderer has none for, until the app asks: no more than tabs that could be showing.
 const MAX_KEYLESS: usize = 8;
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
@@ -1836,7 +1838,10 @@ impl Reader {
         // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
         let moved = !self.arrived && doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
         if moved {
-            doc.anchor = doc.layout.anchor_for(viewport.y, page);
+            // The host puts the view on its own pixels, so a view this near where the place is is on it, said the host's way. Taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them.
+            if (doc.layout.anchor_y(doc.anchor) - viewport.y).abs() >= HOST_ROUNDING {
+                doc.anchor = doc.layout.anchor_for(viewport.y, page);
+            }
             doc.exact_y = None;
         }
         doc.scroll_x = viewport.x;
@@ -3824,6 +3829,42 @@ mod tests {
         there.y = y + 5000.0;
         reader.set_viewport(there);
         assert!(reader.take_moved_page().is_some_and(|page| page > 50), "the reader moved");
+    }
+
+    /// Failure (slow mode, 2026-11-11: five update tests): the host puts the view on its own pixels, so it arrives a fraction of a point off where it was sent, and the next word from it that isn't the arrival (the window shown, a layout's tick, a pixel's resize) was taken for the reader moving. The place was taken again from the rounded height: the top of page 9 became the foot of page 8 (it was in the gap above), or a ten-thousandth into the page, and the next launch went there. A view within a point of where the place says is still on the place, said the host's way.
+    #[test]
+    fn a_view_the_host_rounded_to_its_pixels_is_still_on_the_place() {
+        let mut reader = reader_on(100);
+        reader.scrolled_to = 0;
+        settle(&mut reader);
+        let mut base = view(0.0);
+        base.scrolled_to = 0;
+        reader.set_viewport(base);
+        reader.take_moved_page();
+        reader.jump_to(8);
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("no scroll")
+        };
+        let anchor = reader.doc().unwrap().layout.anchor_for(y, 8);
+        assert_eq!(anchor, (8, 0.0));
+        // On a half-point pixel just above, which is in the gap above the page, and just below.
+        for rounded in [(y * 2.0).floor() / 2.0, y + 0.07] {
+            let mut there = view(rounded);
+            there.scrolled_to = seq;
+            reader.set_viewport(there);
+            // Then a word from the host that isn't an arrival: the window a pixel taller.
+            there.height += 1.0;
+            reader.set_viewport(there);
+            let (_, place) = reader.places()[0];
+            assert_eq!(place.anchor, (8, 0.0), "at {rounded}, for the place at {y}");
+            assert_eq!(place.page, 8);
+            assert_eq!(reader.take_moved_page(), None, "and it isn't a move");
+        }
+        // A real scroll is, even a short one.
+        let mut moved = view(y + 3.0);
+        moved.scrolled_to = seq;
+        reader.set_viewport(moved);
+        assert!(reader.places()[0].1.anchor.1 > 0.0, "{:?}", reader.places()[0].1);
     }
 
     /// Failure: synced scroll can't tell the reader's own scroll from a pane arriving where it was sent, so two panes keep sending each other back and forth, or a resize or a zoom drags the other pane along. Only a real scroll counts, and a pane sent somewhere by `follow` arrives there without leading.
