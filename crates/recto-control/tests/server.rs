@@ -534,7 +534,7 @@ fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
     }
 }
 
-/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening.
+/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening, once the first answer is on its way: measured from a fixed moment, a loaded Mac's slower answer was counted as spinning.
 #[test]
 fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let limits = Limits {
@@ -544,7 +544,11 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let running = Running::start(limits);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
-    // Past the deadline it would have spun on, with the answer unread.
+    // The first answer is made and on its way, so the window measured holds none of that work: on a loaded Mac it took past a fixed 200 ms, and its
+    // thread's preemptions read as 200 to 340 wake-ups. Its start is waited for (up to the read timeout) and kept for the reading below.
+    let mut reader = BufLine::default();
+    assert!(reader.started(&mut slow), "the first answer arrives");
+    // Then past the deadline it would have spun on, with the answer unread.
     std::thread::sleep(Duration::from_millis(200));
     let before = process_counters(std::process::id()).unwrap();
     std::thread::sleep(Duration::from_millis(500));
@@ -553,7 +557,6 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let wakes = after.context_switches - before.context_switches;
     assert!(cpu_ms < 100, "{cpu_ms} ms of CPU in 500 ms: it's spinning");
     assert!(wakes < 200, "{wakes} wake-ups in 500 ms: it's spinning");
-    let mut reader = BufLine::default();
     assert!(reader.next(&mut slow).expect("and the client still gets its answer")["data"]["huge"].is_string());
 }
 
