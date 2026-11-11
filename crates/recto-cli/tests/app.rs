@@ -162,7 +162,12 @@ fn the_sidebar_folds_switches_and_goes_to_contents() {
 /// Failure: the sidebar's offer of generated contents doesn't reach the screen for a file with none, a click on it doesn't make them, or the generated list shows with nothing to say it's generated, or with a heading no one can see. The click is what `qa click-row note` calls, the same method the note's own click calls.
 #[test]
 fn the_sidebar_offers_generated_contents_and_labels_them() {
-    let Some(run) = Run::start() else { return };
+    // The helper is at background priority, which a busy Mac can starve, so the wait is as long as the job's own limit, and a little more. The run has to
+    // outlast that: at a run's usual two minutes, CI's slow generating ended the app mid-wait, as `session_ended` (run 43054237265, 2026-11-11).
+    let job = recto_control::generating::time_limit(6) + std::time::Duration::from_secs(30);
+    let Some(run) = Run::start_lasting(job + std::time::Duration::from_secs(120), &[]) else {
+        return;
+    };
     let file = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -170,13 +175,12 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
     assert_eq!(offered["app"]["contents"]["note"], "Generate contents", "{offered}");
     assert!(offered["app"]["contents"]["note_height"].as_f64().unwrap() > 0.0);
     run.ok(&["qa", "click-row", "note"]);
-    // The helper is at background priority, which a busy Mac can starve, so the wait is the agent's own, up to ten minutes.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    let deadline = std::time::Instant::now() + job;
     loop {
-        assert!(std::time::Instant::now() < deadline, "they weren't made in ten minutes");
-        let (done, code) = run.state.json(&["wait", "contents-generated", "--timeout", "120s"]);
+        assert!(std::time::Instant::now() < deadline, "they weren't made within the job's own limit");
+        let (done, code) = run.state.json(&["wait", "contents-generated", "--timeout", "60s"]);
         if code != recto_agent::exit::TIMED_OUT {
-            assert_eq!(code, 0, "{done}");
+            assert_eq!(code, 0, "{done}{}", run.if_gone(&done));
             break;
         }
     }

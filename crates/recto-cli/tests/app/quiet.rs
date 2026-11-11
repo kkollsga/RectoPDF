@@ -7,12 +7,13 @@ use super::{Run, app_path};
 use recto_platform::screen::{ShownWindow, windows_on_screen};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Watches the screen on a thread of its own until it's asked what it saw, for any window of a process running this executable.
 struct ScreenWatch {
     stop: Arc<AtomicBool>,
+    looked: Arc<AtomicUsize>,
     thread: std::thread::JoinHandle<(Vec<ShownWindow>, usize, bool)>,
 }
 
@@ -20,6 +21,8 @@ impl ScreenWatch {
     fn start(executable: PathBuf) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
+        let looked = Arc::new(AtomicUsize::new(0));
+        let counted = looked.clone();
         let thread = std::thread::spawn(move || {
             let mut seen: Vec<ShownWindow> = Vec::new();
             let mut samples = 0;
@@ -39,11 +42,17 @@ impl ScreenWatch {
                     }
                 }
                 samples += 1;
+                counted.store(samples, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(2));
             }
             (seen, samples, anything)
         });
-        Self { stop, thread }
+        Self { stop, looked, thread }
+    }
+
+    /// How many times it has looked so far.
+    fn looks(&self) -> usize {
+        self.looked.load(Ordering::SeqCst)
     }
 
     /// What of ours was on screen, how many times it looked, and whether it saw anything at all.
@@ -136,9 +145,14 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(opened.status.success(), "{opened:?}");
     let began = std::time::Instant::now();
     let mut looks = 0;
-    // Two seconds and a few reports, however long each report takes: on CI's slower machine five took the whole two seconds (2026-11-11).
-    while began.elapsed() < Duration::from_secs(2) || looks <= 5 {
-        assert!(began.elapsed() < Duration::from_secs(60), "{looks} reports in a minute");
+    // Two seconds, a few reports and enough looks at the screen, however long each takes: on CI's slower machine five reports took the
+    // whole two seconds, and in a loaded full check the watcher looked once while 24 reports were taken (2026-11-11).
+    while began.elapsed() < Duration::from_secs(2) || looks <= 5 || watch.looks() <= 50 {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "{looks} reports and {} looks in a minute",
+            watch.looks()
+        );
         let app = run.report()["app"].clone();
         assert_eq!(
             (app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()),
@@ -198,4 +212,25 @@ fn a_quiet_run_ends_with_what_started_it() {
     let (reply, code) = state.json(&["qa", "start", "--app", &app, "--owner", "999999"]);
     assert_ne!(code, 0);
     assert_eq!(reply["error"]["code"], "owner_gone", "{reply}");
+}
+
+/// Failure: something outside the app changes a quiet run's activation policy, and a report or a settle look taken before the guard hears of it says `accessory`, failing a test that compares states (`an_installer_killed_after_the_swap_loses_nothing`, in a full check, 2026-11-11), with the run off its rules until the guard catches up. Here the run turns itself `accessory` every 15 ms, as that change would, and every look says `prohibited`.
+#[test]
+fn a_quiet_run_is_prohibited_whenever_its_looked_at() {
+    let state = super::common::State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_POLICY_NUDGE_MS", "15".as_ref())]) else {
+        return;
+    };
+    let mut said = std::collections::BTreeMap::<String, usize>::new();
+    for look in 0..200 {
+        if look % 10 == 0 {
+            run.settled();
+        }
+        let activation = run.report()["app"]["activation"].as_str().unwrap_or("none").to_string();
+        *said.entry(activation).or_default() += 1;
+    }
+    assert_eq!(said.keys().collect::<Vec<_>>(), ["prohibited"], "what 200 reports said: {said:?}");
+    // It was changed, and put back: not a run the nudge never reached.
+    let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(messages.contains("changed to accessory from outside, and put back"), "{messages}");
 }

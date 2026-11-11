@@ -141,8 +141,66 @@ impl State {
     }
 }
 
+/// Where a failing test's quiet-run logs are kept, past its state folder's removal: CI sets it and uploads what's there (`.github/workflows/ci.yml`).
+pub const KEEP_LOGS_ENV: &str = "RECTO_TEST_LOGS";
+/// The most of one log a failure message carries.
+const LAST_WORDS_LINES: usize = 30;
+
+impl State {
+    /// The logs a run writes in its state folder: the app's own messages (its stderr, where a panic or a quiet run's end is said), the update log, and the activity logs.
+    fn log_files(&self) -> Vec<PathBuf> {
+        let paths = &self.paths;
+        [&paths.server_messages, &paths.log, &paths.old_log, &paths.other_log, &paths.old_other_log]
+            .into_iter()
+            .cloned()
+            .chain([self.root.join("update.log")])
+            .collect()
+    }
+
+    /// The last lines of what the app said on its way out: its own messages and the update log. For a failure message, when it's gone.
+    pub fn last_words(&self) -> String {
+        [&self.paths.server_messages, &self.root.join("update.log")]
+            .iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let tail = lines[lines.len().saturating_sub(LAST_WORDS_LINES)..].join("\n    ");
+                format!(
+                    "{}:\n    {}",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    if tail.is_empty() { "(nothing)" } else { &tail }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A failing test's logs, copied to [`KEEP_LOGS_ENV`]'s folder, if it's set, under the test's name.
+    fn keep_logs(&self) {
+        let Some(keep) = std::env::var_os(KEEP_LOGS_ENV) else { return };
+        let test: String = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' })
+            .collect();
+        let into = Path::new(&keep).join(format!("{test}-{}", self.root.file_name().unwrap_or_default().to_string_lossy()));
+        if std::fs::create_dir_all(&into).is_err() {
+            return;
+        }
+        for file in self.log_files() {
+            if let Some(name) = file.file_name() {
+                let _ = std::fs::copy(&file, into.join(name));
+            }
+        }
+    }
+}
+
 impl Drop for State {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.keep_logs();
+        }
         let _ = std::fs::remove_file(&self.paths.socket);
         let _ = std::fs::remove_dir_all(&self.root);
     }
