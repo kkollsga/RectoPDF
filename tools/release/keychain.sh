@@ -15,7 +15,7 @@ umask 077
 tmp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 if [ "${1:-}" = "--remove" ]; then
   security delete-keychain "$2" 2>/dev/null || true
-  rm -f "$tmp/developer-id.p12" "$tmp/identity.pem" "$tmp/notary.p8"
+  rm -f "$tmp/developer-id.p12" "$tmp/identity.pem" "$tmp/repacked.p12" "$tmp/notary.p8"
   exit 0
 fi
 kc="${1:?usage: tools/release/keychain.sh <keychain path>}"
@@ -32,15 +32,26 @@ security unlock-keychain -p "$kc_pass" "$kc"
 security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
 printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$tmp/developer-id.p12"
 # What openssl writes is the identity unlocked, for the moment it takes to import.
-if ! openssl pkcs12 -in "$tmp/developer-id.p12" -passin env:MACOS_CERT_PASSWORD -nodes -out "$tmp/identity.pem" 2>"$tmp/openssl.err"; then
+# Keychain Access exports a .p12 with older ciphers (RC2, 3DES), which OpenSSL 3 refuses unless asked for its legacy provider:
+# the first preflight failed on GitHub's runner with "inner_evp_generic_fetch:unsupported" (2026-11-11). macOS's own LibreSSL reads
+# them as they are. Each try reads the password from the environment.
+unpack() { local bin="$1"; shift; "$bin" pkcs12 "$@" -in "$tmp/developer-id.p12" -passin env:MACOS_CERT_PASSWORD -nodes -out "$tmp/identity.pem" 2>>"$tmp/openssl.err"; }
+if ! { unpack openssl || unpack openssl -legacy || unpack /usr/bin/openssl; }; then
   rm -f "$tmp/developer-id.p12"
-  echo "::error::MACOS_CERT_P12 couldn't be opened with MACOS_CERT_PASSWORD: a wrong password, or a .p12 this openssl can't read (export it again with the older algorithms)" >&2
+  echo "::error::MACOS_CERT_P12 couldn't be opened with MACOS_CERT_PASSWORD by OpenSSL, its legacy provider or LibreSSL: most likely a wrong password" >&2
   sed 's/^/openssl: /' "$tmp/openssl.err" >&2; rm -f "$tmp/openssl.err"
   exit 1
 fi
 rm -f "$tmp/developer-id.p12" "$tmp/openssl.err"
-security import "$tmp/identity.pem" -k "$kc" -t agg -f pemseq -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+# `security import` takes a PEM's certificate but not an unencrypted PKCS#8 key, which is what OpenSSL 3 writes: on GitHub's runner it
+# failed with "SecKeychainItemImport: Function or operation not implemented", and on a Mac it imported the certificate alone (2026-11-11).
+# So the identity goes in as a .p12 again, packed with the ciphers `security` reads, under a password made here for this moment.
+repack_pass=$(openssl rand -hex 24)
+openssl pkcs12 -export -in "$tmp/identity.pem" -out "$tmp/repacked.p12" -passout "pass:$repack_pass" \
+  -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
 rm -f "$tmp/identity.pem"
+security import "$tmp/repacked.p12" -k "$kc" -P "$repack_pass" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+rm -f "$tmp/repacked.p12"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" >/dev/null
 # Apple's Developer ID intermediate, in case the runner lacks it: the chain must verify.
 curl -fsSL -o "$tmp/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
