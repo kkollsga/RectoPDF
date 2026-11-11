@@ -2414,6 +2414,20 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
 /// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {
+    protected_tab_asks_again(&[]);
+}
+
+/// Failure (slow mode, 2026-11-11): with the state read late, the password sheet went up on the window that was up without it, and that window went for one made from the state. Cancel on the sheet went to the old window's ending, after it had gone, so it was never answered: the sheet came straight back, and stayed counted open, so `session check` would say a sheet's in the way of every hand-off. The state read 1.5 s late and the window made again 300 ms after it: Cancel holds, and nothing's left counted.
+#[test]
+fn a_protected_tab_asks_again_when_the_state_is_read_late() {
+    protected_tab_asks_again(&[
+        ("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500")),
+        ("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("300")),
+    ]);
+}
+
+/// A protected tab, a quit, and a launch with this in its environment: asked again, and Cancel holds.
+fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
@@ -2437,7 +2451,7 @@ fn a_protected_tab_asks_again_after_a_quit() {
     });
     run.settled();
     run.quit();
-    let run = Run::on(&state).unwrap();
+    let run = Run::on_with_env(&state, second_launch).unwrap();
     let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
     run.ok(&["qa", "sheet-answer", "second"]);
@@ -2446,5 +2460,7 @@ fn a_protected_tab_asks_again_after_a_quit() {
         declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")),
         "{declined}"
     );
+    let check = run.ok(&["session", "check"]);
+    assert_eq!(check["safe"], true, "no sheet's left counted open: {check}");
     run.quit();
 }

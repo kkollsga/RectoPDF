@@ -259,6 +259,8 @@ final class BookMark: NSView {
     private var problemShowing: SaveProblem?
     /// The password sheet showing, and its secure field, which QA types into as a person would.
     private var passwordShowing: PasswordPrompt?
+    /// The password sheet ended because its window is going for one made from the state: its ending isn't an answer.
+    private var passwordLetGo: PasswordPrompt?
     let passwordField = NSSecureTextField(string: "")
     /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
     let zoomButton = NSButton(title: "", target: nil, action: nil)
@@ -973,15 +975,27 @@ final class BookMark: NSView {
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "password", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle]]
         delegate.sheets.present(alert, over: window) { [weak self] response in
-            guard let self else { return }
+            // Taken back whatever became of the window, or a sheet would be counted open for good, and no hand-off could go.
             core.sheetChanged(open: false)
+            guard let self else { return }
             self.delegate.sheetShowing = nil
             let typed = response == .alertFirstButtonReturn ? self.passwordField.stringValue : nil
             self.passwordField.stringValue = ""
             self.passwordShowing = nil
+            if self.passwordLetGo == prompt {
+                self.passwordLetGo = nil
+                return
+            }
             // With the id of the prompt it answers, so it goes to that file whatever's waiting by now.
             core.passwordAnswered(id: prompt.id, password: typed)
         }
+    }
+
+    /// **The window's going, for another made from the state that came in late** (slow mode, 2026-11-11): the password sheet over it ends without answering, and the new window asks again, as Rust still has the prompt. Held in a quiet run, Cancel on it went to this window's ending after the window had gone, so it was never answered and came straight back, and the sheet stayed counted open.
+    func letGoOfPasswordSheet() {
+        guard let prompt = passwordShowing else { return }
+        passwordLetGo = prompt
+        _ = delegate.sheets.answer(.abort, over: window)
     }
 
     private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
