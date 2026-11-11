@@ -10,6 +10,7 @@ use recto_control::host::SessionHost;
 use recto_control::log::{self, ActivityLog};
 use recto_control::server::{Limits, Server};
 use recto_control::{StatePaths, levels, local, terminal};
+use recto_platform::helper::Priority;
 use recto_session::Session;
 use serde_json::{Value, json};
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -522,7 +523,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         recto_platform::local::system_temp_dir().ok_or_else(|| AgentError::new("write_failed", "This Mac's temp folder couldn't be found.", exit::FAILED))?;
     let root = temp.join(format!("recto-budget-{}.noindex", std::process::id()));
     let result = (|| {
-        let build = recto_control::indexing::build_now(&file, key, &root, !foreground);
+        let build = recto_control::indexing::build_now(&file, key, &root, if foreground { Priority::Inherited } else { recto_control::HELPER_PRIORITY });
         if build["state"] != "ready" {
             let code = build["code"].as_str().unwrap_or("unknown");
             return Err(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED));

@@ -1608,7 +1608,7 @@ pub static TABLE: &[Spec] = &[
                 flag: Some("--foreground"),
                 kind: Kind::Switch,
                 required: false,
-                help: "Build at normal priority, to measure the work apart from the waiting.",
+                help: "Build at this program's own priority, not the helpers' utility, to measure the work apart from the waiting.",
             },
         ],
         data: "`{ file_bytes, build: { state, pages, elapsed_ms, corpus_bytes, pack_bytes, helper_peak_bytes, worker_peak_bytes, worker_spawns, worker_retirements, memory_kills, deadline_kills, crashes, hidden_check_failures, failed_pages, no_text_pages, hidden_flagged_pages, hidden_unchecked_pages }, searches: [ { query, index: { p50_ms, p95_ms, hits_total }, scan: { p50_ms, p95_ms } } ], corpus_folder, this_process_peak_bytes }`.",

@@ -1,16 +1,16 @@
 //! Builds search indexes on demand, one at a time, whatever's open. **What triggers it is someone asking,** through `search`, `index` or `wait indexing-done`: never opening a tab or switching to one, so 200 open tabs cost nothing here. A tab holds nothing about its index: where a corpus stands is on disk under the file's key, and this holds only what's waiting and what's running.
 //!
-//! The work is in a helper process, `recto-indexer`, at background priority. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
+//! The work is in a helper process, `recto-indexer`, at [`crate::HELPER_PRIORITY`], utility. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
 
 use recto_agent::Event;
 use recto_agent::index::{Indexing, JobState};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
+use recto_platform::helper::{Priority, Spawned};
 use serde_json::{Value, json};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -74,7 +74,12 @@ impl std::fmt::Debug for Indexer {
 
 impl Indexer {
     pub fn new(root: &Path) -> Self {
-        let indexer = Self::with_runner(root, Box::new(HelperProcess { background: true }));
+        let indexer = Self::with_runner(
+            root,
+            Box::new(HelperProcess {
+                priority: crate::HELPER_PRIORITY,
+            }),
+        );
         // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
         if corpus::old_folder_is_there(root) {
             indexer.start_working(&mut indexer.0.lock());
@@ -269,8 +274,8 @@ fn helper_exe() -> Option<PathBuf> {
 /// The real thing.
 #[derive(Clone, Copy, Debug)]
 pub struct HelperProcess {
-    /// At background priority. Off only to measure the work apart from the waiting.
-    pub background: bool,
+    /// [`crate::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
+    pub priority: Priority,
 }
 
 impl Runner for HelperProcess {
@@ -280,24 +285,12 @@ impl Runner for HelperProcess {
         let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else {
             return failed("path_not_text");
         };
-        let mut command = Command::new(exe);
-        // It inherits nothing it doesn't need. These two only ever mean anything in a development build, as the worker's own rules say.
-        command.env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        for name in ["RECTO_RENDER_SERVICE", "RECTO_PDFIUM_LIB"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        let Ok(mut child) = command.spawn() else {
-            return failed("indexer_wouldnt_start");
-        };
-        let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            let _ = child.wait();
+        // It inherits nothing it doesn't need.
+        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::spawn_helper(&exe, &[], self.priority) else {
             return failed("indexer_wouldnt_start");
         };
         // On stdin, so a file's name stays out of `ps`.
-        let line = json!({ "file": file, "root": root, "key": job.key.hex(), "background": self.background }).to_string() + "\n";
+        let line = json!({ "file": file, "root": root, "key": job.key.hex() }).to_string() + "\n";
         if stdin.write_all(line.as_bytes()).is_err() {
             let _ = child.kill();
             let _ = child.wait();
@@ -314,9 +307,9 @@ impl Runner for HelperProcess {
 }
 
 /// Runs one build here and now, blocking until it's over, for `budget index`.
-pub fn build_now(path: &Path, key: CorpusKey, root: &Path, background: bool) -> Value {
+pub fn build_now(path: &Path, key: CorpusKey, root: &Path, priority: Priority) -> Value {
     let mut keep = None;
-    HelperProcess { background }.run(&IndexJob { path: path.to_path_buf(), key }, root, &mut |stop| keep = Some(stop))
+    HelperProcess { priority }.run(&IndexJob { path: path.to_path_buf(), key }, root, &mut |stop| keep = Some(stop))
 }
 
 #[cfg(test)]

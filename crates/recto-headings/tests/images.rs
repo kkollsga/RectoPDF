@@ -77,12 +77,7 @@ fn helper_report(path: &std::path::Path) -> Value {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(
-        stdin,
-        "{}",
-        json!({ "file": path, "key": key.hex(), "background": false, "memory_limit": 512u64 << 20 })
-    )
-    .unwrap();
+    writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
     let mut said = String::new();
     child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
     drop(stdin);

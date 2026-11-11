@@ -339,7 +339,7 @@ fn an_index_leaves_nothing_in_the_session() {
     assert_eq!(raw.call(&common::open_cmd(&file.0))["ok"], true);
     let before = footprint(&mut raw);
     let handles_before = raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap();
-    // The helper is at background priority, which a busy Mac can starve for minutes, and how long it takes isn't what this is about. If it never finishes, nextest's limit ends this.
+    // The helper is at utility, so a busy Mac slows it, and how long it takes isn't what this is about. If it never finishes, nextest's limit ends this.
     let done = loop {
         let answer = raw.call(&json!({ "cmd": "wait", "condition": "indexing_done", "timeout_ms": 120_000 }));
         if answer["error"]["code"] != "timed_out" {

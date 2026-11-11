@@ -1,16 +1,17 @@
 //! Makes generated contents on demand, one document at a time, whatever's open. **What starts it is someone asking:** `recto contents --generated`, `recto wait contents-generated`, or the reader tapping the sidebar's offer. Never opening a tab or switching to one (SPEC decision 22's rule).
 //!
-//! The work is in a helper process, `recto-headings`, at background priority, with `MallocLargeCache=0` in its environment. **It's watched from outside:** its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], or past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. What it says is read as hostile, capped at [`MAX_REPORT_BYTES`], through the same reader as the kept file, and only then written to disk, by this process. The one thread here exists only while there's something to make.
+//! The work is in a helper process, `recto-headings`, at [`crate::HELPER_PRIORITY`], utility, with `MallocLargeCache=0` in its environment. **It's watched from outside:** its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], or past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. What it says is read as hostile, capped at [`MAX_REPORT_BYTES`], through the same reader as the kept file, and only then written to disk, by this process. The one thread here exists only while there's something to make.
 
 use recto_agent::Event;
 use recto_agent::generated::{GenState, Generating};
 use recto_index::corpus::{self, CorpusKey};
 use recto_index::generated::{self, Generated, MAX_FILE_BYTES};
+use recto_platform::helper::{Priority, Spawned};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -21,7 +22,7 @@ use crate::indexing::Notifier;
 pub const MAX_WAITING: usize = 8;
 /// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/ENGINEERING.md`.
 pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
-/// A job's time: three minutes, and a second for each page, up to half an hour, so one file can't hold the only slot for long. It's there for a helper that's stuck, not to hurry one: at background priority a busy Mac can starve it for minutes, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
+/// A job's time: three minutes, and a second for each page, up to half an hour, so one file can't hold the only slot for long. It's there for a helper that's stuck, not to hurry one: a busy Mac slows it, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
 pub fn time_limit(pages: u32) -> Duration {
     (Duration::from_secs(180) + Duration::from_secs(1) * pages).min(Duration::from_secs(30 * 60))
 }
@@ -89,7 +90,12 @@ impl std::fmt::Debug for Generator {
 
 impl Generator {
     pub fn new(root: &Path) -> Self {
-        Self::with_runner(root, Box::new(HelperProcess { background: true }))
+        Self::with_runner(
+            root,
+            Box::new(HelperProcess {
+                priority: crate::HELPER_PRIORITY,
+            }),
+        )
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
@@ -322,8 +328,8 @@ fn helper_exe() -> Option<PathBuf> {
 /// The real thing.
 #[derive(Clone, Copy, Debug)]
 pub struct HelperProcess {
-    /// At background priority. Off only to measure the work apart from the waiting.
-    pub background: bool,
+    /// [`crate::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
+    pub priority: Priority,
 }
 
 impl Runner for HelperProcess {
@@ -333,28 +339,13 @@ impl Runner for HelperProcess {
         let Some(file) = job.path.to_str() else {
             return (Outcome::Refused("couldnt_read".into()), Value::Null);
         };
-        let mut command = Command::new(exe);
         // Nothing inherited but what it needs. `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
-        command
-            .env_clear()
-            .env("MallocLargeCache", "0")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        for name in ["RECTO_RENDER_SERVICE", "RECTO_PDFIUM_LIB"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        let Ok(mut child) = command.spawn() else { return failed("helper_missing") };
-        let pid = child.id();
-        let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return failed("helper_stopped");
+        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::spawn_helper(&exe, &[("MallocLargeCache", OsStr::new("0"))], self.priority) else {
+            return failed("helper_missing");
         };
+        let pid = child.id();
         // On stdin, so a file's name stays out of `ps`. The pipe stays open while it runs: its closing is the helper's sign to go.
-        let line = json!({ "file": file, "key": job.key.hex(), "background": self.background, "memory_limit": MEMORY_LIMIT }).to_string() + "\n";
+        let line = json!({ "file": file, "key": job.key.hex(), "memory_limit": MEMORY_LIMIT }).to_string() + "\n";
         if stdin.write_all(line.as_bytes()).is_err() {
             let _ = child.kill();
             let _ = child.wait();

@@ -2,17 +2,19 @@
 //!
 //! ```text
 //! cargo build --release --manifest-path crates/recto-headings/Cargo.toml --target-dir target
-//! cargo run --release --manifest-path crates/recto-headings/Cargo.toml --target-dir target --example sample -- [--scan typography] [--brief] [--background] FILE...
+//! cargo run --release --manifest-path crates/recto-headings/Cargo.toml --target-dir target --example sample -- [--scan typography] [--brief] [--utility] FILE...
 //! ```
 //!
-//! The helper is `recto-headings` beside this example's folder, and the render worker beside that, as in a build.
+//! The helper is `recto-headings` beside this example's folder, and the render worker beside that, as in a build. `--utility` starts it at the session's own
+//! level, through the same spawn; without it, it runs at this program's.
 
 use recto_index::corpus::CorpusKey;
 use recto_index::generated::Generated;
+use recto_platform::helper::{self, Priority, Spawned};
 use serde_json::{Value, json};
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn helper() -> PathBuf {
@@ -23,36 +25,38 @@ fn helper() -> PathBuf {
 fn main() {
     let mut scan = "full".to_string();
     let mut brief = false;
-    let mut background = false;
+    let mut priority = Priority::Inherited;
     let mut files = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--scan" => scan = args.next().unwrap(),
             "--brief" => brief = true,
-            "--background" => background = true,
+            "--utility" => priority = Priority::Utility,
             _ => files.push(PathBuf::from(arg)),
         }
     }
     for file in files {
-        run(&file, &scan, brief, background);
+        run(&file, &scan, brief, priority);
     }
 }
 
-fn run(file: &Path, scan: &str, brief: bool, background: bool) {
+fn run(file: &Path, scan: &str, brief: bool, priority: Priority) {
     let key = CorpusKey::of_file(file).unwrap();
     let started = Instant::now();
-    let mut command = Command::new(helper());
-    command.env_clear();
     // `SAMPLE_LARGE_CACHE=1` leaves it out, to see what it's worth.
-    if std::env::var_os("SAMPLE_LARGE_CACHE").is_none() {
-        command.env("MallocLargeCache", "0");
-    }
-    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let env: &[(&str, &OsStr)] = if std::env::var_os("SAMPLE_LARGE_CACHE").is_none() {
+        &[("MallocLargeCache", OsStr::new("0"))]
+    } else {
+        &[]
+    };
+    let Spawned {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = helper::spawn(&helper(), env, priority).unwrap();
     let pid = child.id();
-    let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{}", json!({ "file": file, "key": key.hex(), "background": background, "scan": scan })).unwrap();
-    let mut stdout = child.stdout.take().unwrap();
+    writeln!(stdin, "{}", json!({ "file": file, "key": key.hex(), "scan": scan })).unwrap();
     let reader = std::thread::spawn(move || {
         let mut said = String::new();
         let _ = stdout.read_to_string(&mut said);

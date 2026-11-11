@@ -12,7 +12,7 @@ fn path(file: &TempPdf) -> &str {
     file.0.to_str().unwrap()
 }
 
-/// Waits for them, up to ten minutes. The helper runs at background priority, which a busy Mac can starve.
+/// Waits for them, up to ten minutes. The helper runs at utility, below the tests' own processes, so a busy Mac slows it.
 fn wait_made(state: &State) -> (Value, i32) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
     loop {
