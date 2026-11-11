@@ -8,7 +8,7 @@ use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, F
 use recto_platform::local;
 use recto_proto::CharRecord;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 const BUDGET: Budget = Budget {
@@ -107,13 +107,41 @@ fn limits() -> BuildLimits {
     }
 }
 
-/// Where this process works: under `RECTO_FUZZ_STATE` if there's one, as `tools/fuzz.sh` clears that up.
-fn base() -> PathBuf {
-    let base = std::env::var_os("RECTO_FUZZ_STATE").map_or_else(|| std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), PathBuf::from);
-    base.join(format!("corpus-{}", std::process::id()))
+static NEXT_FOLDER: AtomicU32 = AtomicU32::new(0);
+
+/// Where runs make their folders: under `RECTO_FUZZ_STATE` if there's one, as `tools/fuzz.sh` clears that up, and the temp folder if not.
+fn state_base() -> PathBuf {
+    std::env::var_os("RECTO_FUZZ_STATE").map_or_else(|| std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), PathBuf::from)
 }
 
-/// A corpus as a build leaves it, with its agent folder and a file's note of its key: each file's place under the root and its bytes, or `None` for a folder. Made once a process.
+/// One run's own folder: made fresh, never one that was there, and removed when the run ends, by a panic too. The temp folder is shared, so nothing else in it is touched.
+struct Folder(PathBuf);
+
+impl Folder {
+    fn fresh(base: &Path) -> Self {
+        std::fs::create_dir_all(base).expect("a folder to work in");
+        loop {
+            let path = base.join(format!("corpus-{}-{}", std::process::id(), NEXT_FOLDER.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    set_mode(&path, 0o700);
+                    return Self(path);
+                }
+                // Another process's, or one left by a process with this number before: not ours to use or remove.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("a folder to work in: {error}"),
+            }
+        }
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A corpus as a build leaves it, with its agent folder and a file's note of its key: each file's place under the root and its bytes, or `None` for a folder. Made in each run's own folder, as the note of the key goes by the file's path.
 struct Made {
     entries: Vec<(PathBuf, Option<Vec<u8>>)>,
     /// What each page reads back as, from the made corpus itself.
@@ -137,25 +165,19 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
     }
 }
 
-fn made() -> &'static Made {
-    static MADE: OnceLock<Made> = OnceLock::new();
-    MADE.get_or_init(|| {
-        let base = base();
-        let _ = std::fs::remove_dir_all(&base);
-        local::ensure_private_dir(&base).expect("a private folder to work in");
-        let file = base.join("document.pdf");
-        std::fs::write(&file, b"%PDF-1.7 made for the corpus target").expect("the file a corpus is of");
-        let root = base.join("made");
-        local::ensure_private_dir(&root).expect("a private folder");
-        let built = corpus::build_for_file(&file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
-        assert!(matches!(built, BuildOutcome::Ready { .. }), "{built:?}");
-        corpus::ensure_agent_folder(&root, key(), &limits()).expect("its agent folder");
-        let texts = read_all(&root).expect("what was built reads back");
-        let mut entries = Vec::new();
-        walk(&root, &root, &mut entries);
-        let _ = std::fs::remove_dir_all(&root);
-        Made { entries, texts, file }
-    })
+fn made(base: &Path) -> Made {
+    let file = base.join("document.pdf");
+    std::fs::write(&file, b"%PDF-1.7 made for the corpus target").expect("the file a corpus is of");
+    let root = base.join("made");
+    local::ensure_private_dir(&root).expect("a private folder");
+    let built = corpus::build_for_file(&file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
+    assert!(matches!(built, BuildOutcome::Ready { .. }), "{built:?}");
+    corpus::ensure_agent_folder(&root, key(), &limits()).expect("its agent folder");
+    let texts = read_all(&root).expect("what was built reads back");
+    let mut entries = Vec::new();
+    walk(&root, &root, &mut entries);
+    let _ = std::fs::remove_dir_all(&root);
+    Made { entries, texts, file }
 }
 
 /// Every page of a corpus that's there and adds up.
@@ -334,9 +356,14 @@ fn read_back(root: &Path, made: &Made) {
 }
 
 pub fn check(data: &[u8]) {
+    check_in(&state_base(), data);
+}
+
+fn check_in(base: &Path, data: &[u8]) {
     within("corpus", BUDGET, || {
-        let made = made();
-        let root = base().join("work");
+        let folder = Folder::fresh(base);
+        let made = &made(&folder.0);
+        let root = folder.0.join("work");
         lay_out(&root, made);
         let mut take = Take(data);
         if damage(&root, made, &mut take) {
@@ -353,7 +380,6 @@ pub fn check(data: &[u8]) {
             assert!(matches!(built, Ok(BuildOutcome::Ready { .. })), "{built:?}");
             assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "built again, it reads back as written");
         }
-        let _ = std::fs::remove_dir_all(&root);
     });
 }
 
@@ -364,8 +390,9 @@ mod tests {
     /// Failure: putting checksums right no longer matches the reader's, so half of what the fuzzer sends stops at a checksum and the reader's later checks go untested. An untouched corpus, resealed, must read back the same, and so must one with only the byte the reader never reads damaged.
     #[test]
     fn resealing_an_untouched_corpus_changes_nothing() {
-        let made = made();
-        let root = base().join("reseal-test");
+        let folder = Folder::fresh(&state_base());
+        let made = &made(&folder.0);
+        let root = folder.0.join("reseal-test");
         lay_out(&root, made);
         let before = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap();
         reseal(&root);
@@ -379,6 +406,34 @@ mod tests {
         std::fs::write(&table, &bytes).unwrap();
         reseal(&root);
         assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "a damaged unread byte, resealed");
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Failure: every process that runs the target leaves a `corpus-<pid>` folder in the shared temp folder, one more for each run of the smoke tests or a fuzz campaign, and a run that panics leaves its folder too. A run's folder is its own, fresh, and gone at its end, whether it ends well or by a panic.
+    #[test]
+    fn a_run_leaves_no_folder_behind_even_when_it_panics() {
+        let outer = Folder::fresh(&state_base());
+        let left = || {
+            std::fs::read_dir(&outer.0)
+                .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect::<Vec<_>>())
+                .unwrap()
+        };
+        check_in(&outer.0, &[]);
+        check_in(&outer.0, &[1, 4, 0, 7, 3, 9, 200, 1]);
+        assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "runs that ended well");
+        // A folder already there with the next name is someone else's: a run takes another, and leaves that one alone.
+        let theirs = outer.0.join(format!("corpus-{}-{}", std::process::id(), NEXT_FOLDER.load(Ordering::Relaxed)));
+        std::fs::create_dir(&theirs).unwrap();
+        let panicked = std::panic::catch_unwind(|| {
+            let folder = Folder::fresh(&outer.0);
+            assert_ne!(folder.0, theirs);
+            std::fs::write(folder.0.join("document.pdf"), b"made").unwrap();
+            panic!("a check fails mid-run");
+        });
+        assert!(panicked.is_err());
+        assert_eq!(
+            left(),
+            vec![theirs.file_name().unwrap().to_owned()],
+            "a run that panicked, beside a folder that isn't its own"
+        );
     }
 }

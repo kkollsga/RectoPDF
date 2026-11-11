@@ -647,8 +647,9 @@ import QuartzCore
         return (target, enabled)
     }
 
+    /// The policy a report says. In a quiet run it's read through the guard, put back first and read straight after, with nothing in between: the system can change it at any moment, as a reopen does, and a report reading it at the end of a long build of the rest saw `regular` that the guard was about to undo (CI run 43085841110, and a full check's slow stage, 2026-11-11).
     private func policyName() -> String {
-        switch NSApp.activationPolicy() {
+        switch delegate.isQuiet ? QuietRunGuard.policyAsLookedAt() : NSApp.activationPolicy() {
         case .regular: "regular"
         case .accessory: "accessory"
         default: "prohibited"
