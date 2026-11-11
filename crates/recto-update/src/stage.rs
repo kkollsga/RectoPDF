@@ -218,9 +218,11 @@ pub fn has_identifiers(app: &Path, identifier: &str, helper_required: bool) -> b
     }
 }
 
-/// Whether a kept copy may be gone back to by itself, with nobody there to say. Whole, always; and where releases are held to the team, signed by it, or else a development build signed ad hoc only with *Allow development builds* on and this app's identifiers. So a copy that's no release and no build the owner allowed is never put in place by itself.
+/// Whether a kept copy may be gone back to by itself, with nobody there to say. Where releases are held to the team: whole, signed by it, or else a development build signed ad hoc only with *Allow development builds* on and this app's identifiers. So a copy that's no release and no build the owner allowed is never put in place by itself.
 #[must_use]
 pub fn may_go_back_to(app: &Path, team: Option<&str>, builds_allowed: bool, identifier: &str, helper_required: bool) -> bool {
+    // A test's build, whose releases aren't held to a team, isn't held here either, and costs a launch that's going back nothing: a check of seconds there is time for a version that ends at once to end first.
+    let Some(team) = team else { return true };
     let Some(path) = app.to_str() else { return false };
     let verifies = |extra: &[&str]| {
         let mut args = vec!["--verify", "--deep", "--strict"];
@@ -231,7 +233,6 @@ pub fn may_go_back_to(app: &Path, team: Option<&str>, builds_allowed: bool, iden
     if !verifies(&[]) {
         return false;
     }
-    let Some(team) = team else { return true };
     let requirement = format!("={}", developer_id_requirement(team));
     verifies(&["-R", &requirement]) || (builds_allowed && has_identifiers(app, identifier, helper_required))
 }
