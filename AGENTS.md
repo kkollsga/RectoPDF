@@ -122,6 +122,9 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The margin above first page, and below last page should be 50% of page height"
 - "When you are testing the app it flashes open in lower left corner. Is it possible to test the app in the background? Ie headless?" A quiet run must never show a window on the screen, not even for a moment (rule: quiet runs never take the screen).
 
+## Release gate: memory soak (2026-11-11)
+- "24 hour memory soak? We don't have time for that". Asked what replaces it, the owner first chose a 2-hour fast soak, then: "Actually let's skip the soak". So 0.1.0 releases on the existing memory tests (per-feature budgets, 1,000 tabs, the leak tests), with no soak. The 24-hour soak runs after the release, and growth it finds goes into 0.1.1.
+
 ## Release signing (2026-11-11)
 - "I dont want any manual steps." The `release` Environment has no required reviewer; its keys reach only workflows from `main` or a `v*.*.*` tag. The owner changed that setting themselves (the coordinator's own change was blocked as weakening security). Publishing a release stays the owner's decision, given in chat, not a click.
 
