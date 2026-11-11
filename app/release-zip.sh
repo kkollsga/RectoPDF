@@ -86,6 +86,7 @@ check_built() {
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
         || { echo "the app's version isn't $VERSION" >&2; exit 1; }
+    cmp -s "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt" || { echo "the app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt" >&2; exit 1; }
     # The real binaries, with every override set. Owner's bar: a test's way in can never reach a release.
     echo "==> Check a release reads no override"
     local answer
@@ -224,6 +225,7 @@ check_zip() {
     codesign --verify --deep --strict "$check/RectoPDF.app"
     "$APP_DIR/render-helper.sh" --check "$check/RectoPDF.app"
     [ -x "$check/RectoPDF.app/Contents/MacOS/recto-updater" ] || { echo "the zipped app has no installer, so it could never update again" >&2; exit 1; }
+    cmp -s "$REPO/THIRD-PARTY-NOTICES.txt" "$check/RectoPDF.app/Contents/Resources/Licenses.txt" || { echo "the zipped app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt" >&2; exit 1; }
     if [ "$1" = signed ]; then
         [ "$(team_of "$check/RectoPDF.app")" = "$TEAM_ID" ] || { echo "the zipped app lost its signature" >&2; exit 1; }
         xcrun stapler validate "$check/RectoPDF.app"
