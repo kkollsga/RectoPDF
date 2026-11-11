@@ -63,7 +63,13 @@ fn is_there(path: &Path, stamp: Option<FileStamp>) -> bool {
 /// Changes to the kept file and the folder around it, as the bytes say.
 fn damage(take: &mut Take<'_>, kept: &Path, journals: &Path, other: &Path) {
     for _ in 0..take.u8() % 4 {
-        match take.u8() % 12 {
+        // What changes a file's bytes, time or mode does so only to a file there, never through a link put in its place: that would be this check changing what the link points at, not the store.
+        let plain = std::fs::symlink_metadata(kept).is_ok_and(|meta| meta.file_type().is_file());
+        let op = take.u8() % 12;
+        if !plain && matches!(op, 1 | 2 | 3 | 6 | 7 | 8 | 10) {
+            continue;
+        }
+        match op {
             0 => {
                 let _ = std::fs::remove_file(kept);
             }

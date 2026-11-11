@@ -119,6 +119,12 @@ fn damaged_kept_files_do_no_harm() {
     smoke("kept", seed(), rounds(30), 1024);
 }
 
+/// Failure: the `kept` target's own damage, a kept file replaced by a link to the PDF and then rewritten in place, writes through the link into the PDF, and the check blames the store for it. The input libFuzzer found: a closed history whose journal names the canary, then made old, made a link, and rewritten.
+#[test]
+fn damage_to_a_kept_file_never_goes_through_a_link() {
+    recto_fuzz::targets::kept::check(&[0x01, 0x01, 0x01, 0x00, 0x01, 0xf1, 0xff, 0x01, 0x82, 0x00, 0xb0, 0xff, 0xf7, 0xa0, 0x01, 0x00]);
+}
+
 /// Failure: a hostile `latest.json` or zip panics, or writes past what it said. The seeded run of what `tools/fuzz.sh` runs at length.
 #[test]
 fn update_holds() {
