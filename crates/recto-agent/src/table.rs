@@ -260,7 +260,7 @@ const FIRST: Arg = Arg {
 pub const GROUP_START: &str = "Start here";
 pub const GROUP_READ: &str = "Read a document";
 pub const GROUP_MOVE: &str = "Open and move around";
-pub const GROUP_EDIT: &str = "Change pages (in memory: saving isn't built yet)";
+pub const GROUP_EDIT: &str = "Change pages, then save";
 pub const GROUP_SYNC: &str = "Wait instead of polling";
 pub const GROUP_ACCESS: &str = "Access and history";
 pub const GROUP_SESSION: &str = "The session";
@@ -1168,7 +1168,7 @@ pub static TABLE: &[Spec] = &[
         tag: "save",
         group: GROUP_EDIT,
         access: Access::At(Level::Control),
-        summary: "Saves a tab's edits into its file. Turns, moves and added pages are added to the end of the file, so everything that was in it stays. The first save of a file keeps one backup of the original. A certified PDF's pages aren't saved over, and deleting pages isn't saved yet. Nothing from the edit history goes in the file.",
+        summary: "Saves a tab's edits into its file. Turns, moves and added pages are added to the end of the file, so everything that was in it stays. The first save of a file keeps one backup of the original. A save that deletes pages writes the file anew, so what was deleted is gone from it, and needs Full. A certified PDF's pages aren't saved over. Nothing from the edit history goes in the file.",
         args: &[TAB],
         data: SAVED,
         emits: &["saved", "edits_changed"],
