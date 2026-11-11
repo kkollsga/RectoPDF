@@ -573,6 +573,10 @@ impl PageEdits {
         if source == 0 || usize::from(source) > self.added.len() {
             return Err(EditError::OutOfRange);
         }
+        // No more pages than the file has: a journal can say any count, and a page past the end is one nothing can draw, and a list that doesn't read back.
+        if count > self.added[usize::from(source) - 1].page_count {
+            return Err(EditError::OutOfRange);
+        }
         let slots: Box<[PageSlot]> = (0..count)
             .map(|page| PageSlot {
                 source,
@@ -1709,6 +1713,36 @@ mod tests {
             assert_eq!(edits.slots()[0].quarter_turns, 1);
             assert_eq!(edits.slots()[1].quarter_turns, 0);
         }
+    }
+
+    /// Failure: a journal inserts more pages of an added PDF than it has, and replay takes it, so the list holds a page past the file's end: nothing can draw it, and what the list writes doesn't read back ("a page out of range"), which is what every hand-off and compaction checks. Found by the `record` fuzz target, in a journal that adds a one-page file and inserts two of its pages.
+    #[test]
+    fn a_journal_cant_insert_more_pages_than_a_file_has() {
+        let added = crate::record::AddedRecord {
+            path: crate::record::PathField::Text("/docs/added.pdf".into()),
+            page_count: 1,
+            file: None,
+            kept: false,
+            protected: false,
+            holds: None,
+        };
+        let (agent, owner) = (AuthorName::Agent, AuthorName::Owner);
+        let ops = vec![
+            JournalOp::Rotate(1, 1, 1, owner),
+            JournalOp::AddSource(added),
+            JournalOp::Insert(3, 1, 2, agent),
+            JournalOp::Delete(0, 1, agent),
+            JournalOp::Move(0, 1, 2, owner),
+            JournalOp::Undo,
+            JournalOp::Undo,
+            JournalOp::Redo,
+        ];
+        let (edits, applied) = PageEdits::replay(3, None, &ops).unwrap();
+        assert_eq!(applied, 2, "the insert past the file's end is where it stops");
+        PageEdits::from_record(&edits.to_record()).expect("what a replay gives writes what reads");
+        // One that fits goes in.
+        let ops = [&ops[..2], &[JournalOp::Insert(3, 1, 1, agent)]].concat();
+        assert_eq!(PageEdits::replay(3, None, &ops).unwrap().1, 3);
     }
 
     /// Failure: the place can't be followed to the right copy of a page added twice.
