@@ -128,6 +128,9 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Release signing (2026-11-11)
 - "I dont want any manual steps." The `release` Environment has no required reviewer; its keys reach only workflows from `main` or a `v*.*.*` tag. The owner changed that setting themselves (the coordinator's own change was blocked as weakening security). Publishing a release stays the owner's decision, given in chat, not a click.
 
+## Release 0.1.0 (2026-11-11)
+- "I preauthorize the 0.1.0 release once everything is done". This covers pushing the `v0.1.0` tag and publishing its draft, once: the open release work is merged, `tools/check.sh --full` passed on the commit, CI is green on it, and the release workflow's draft built, signed, notarized and passed its checks. If any of those fails, nothing is published; it's fixed, and the tag is made again. It covers 0.1.0 only.
+
 ## Product rules from the owner: privacy (2026-11-11)
 - Asked to approve `PRIVACY.md`, the quiet line in the empty window about the daily check, and the Settings hint and link: "Approve as written".
 - Asked whether the daily update check should get a real off, as it runs with *Update automatically* off too: "Keep as is". One anonymous request a day, always; said in Settings and `PRIVACY.md`.
