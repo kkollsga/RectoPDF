@@ -1,3 +1,7 @@
 # What git ignores and still changes a result on the same code, for the build queue's memory of failures (tools/sysguard/heavy.sh).
 # PDFium, which tools/pdfium.sh puts in target/.
 target/pdfium
+# Settings that change what a test does: the slow mode (RECTO_QA_SLOW), test seams, nextest's profile. A run with another is another run.
+env RECTO_*
+env NEXTEST_*
+env RUSTFLAGS

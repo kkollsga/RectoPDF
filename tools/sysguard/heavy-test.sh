@@ -165,6 +165,23 @@ needs_lib
 check "a changed input counts" "0 3" "$? $(wc -l < "$X/ran3" | tr -d ' ')"
 rm -rf lib ../outside
 
+# Failure (2026-11-11): the same test command run with another setting that changes what it does, a slow mode in its environment, refused as "this exact
+# command failed": the failure was another setting's. What `.heavy-inputs` names with `env`, by name or by a prefix and `*`, counts; nothing else in the
+# environment does, so a shell's own changes don't undo the refusal.
+printf 'env SLOWISH_*\nenv EXACTLY\n' >> .heavy-inputs
+git add .heavy-inputs && git -c user.name=t -c user.email=t@t commit -q -m env-inputs
+: > "$X/ran4"
+fails_with_env() { env "$@" bash "$HEAVY" bash -c "echo run >> '$X/ran4'; exit 4" >/dev/null 2>&1; }
+fails_with_env SLOWISH_A=1
+fails_with_env SLOWISH_A=1
+check "the same setting again is refused" "1" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2
+check "another value of a listed setting runs" "2" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x
+check "and so does a setting listed by its name" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+fails_with_env SLOWISH_A=2 EXACTLY=x UNLISTED=y
+check "one that isn't listed doesn't count" "3" "$(wc -l < "$X/ran4" | tr -d ' ')"
+
 # Failure: a job stopped from outside held against the code.
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1
 bash "$HEAVY" bash -c "echo run >> '$X/ran2'; kill -TERM \$\$" >/dev/null 2>&1
