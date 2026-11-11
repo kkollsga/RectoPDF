@@ -24,6 +24,7 @@ pub(crate) mod snapshot;
 mod svg;
 
 pub(crate) use svg::check_args as check_scale_and_box;
+pub use svg::svg_in_memory;
 pub(crate) use svg::{SvgArgs, export_svg};
 
 /// A box on a page as SVG, into `out`: a snapshot's SVG. `text` is `Both` for a file, with text as outlines and real characters, as `export svg` writes it by default, and `Paths` for the clipboard, whose text is the text item's, hidden text left out: outlines only carry what's drawn.

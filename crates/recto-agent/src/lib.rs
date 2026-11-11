@@ -16,7 +16,7 @@ pub mod print;
 mod reading;
 mod render;
 pub mod saving;
-pub use render::{output_exists, publish_picture};
+pub use render::{output_exists, publish_picture, svg_in_memory};
 mod search;
 mod selecting;
 pub mod skill;

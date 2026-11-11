@@ -21,6 +21,7 @@ recto-proto.workspace = true
 recto-reader.workspace = true
 recto-render-service.workspace = true
 recto-session.workspace = true
+recto-svg.workspace = true
 recto-testpdf.workspace = true
 recto-update.workspace = true
 serde_json.workspace = true

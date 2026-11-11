@@ -102,6 +102,11 @@ fn read(bytes: &[u8]) {
                     .all(|(width, height)| width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0)
             );
         }
+        // What an SVG export asks of a page before it starts: bounded, or `None`, on any page a file can name.
+        for page in [0, 1, 7, u32::MAX] {
+            let _ = recto_core::page_effects_bytes(Arc::clone(&shared), page);
+        }
+        let _ = recto_core::copy_restricted_bytes(Arc::clone(&shared));
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);
         }
@@ -266,9 +271,10 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
     }
     let mut objects = Vec::with_capacity(count);
     objects.push(recto_testpdf::Object::Dict(format!(
-        "<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R /PageLabels {} >>",
+        "<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R /PageLabels {} /OCProperties << /OCGs [{}] >> >>",
         reference(&mut take, count),
-        reference(&mut take, count)
+        reference(&mut take, count),
+        references(&mut take, count)
     )));
     while objects.len() < count {
         let which = if objects.len() < 6 { objects.len() as u8 - 1 } else { take.u8() % 12 };
@@ -307,7 +313,9 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
             3 => recto_testpdf::Object::Dict(format!("<< /Fields [{}] >>", references(&mut take, count))),
             4 => recto_testpdf::Object::Dict(format!("<< /DocMDP {} >>", reference(&mut take, count))),
             5 => recto_testpdf::Object::Dict(format!(
-                "<< /Type /Page /Parent {} /MediaBox [0 0 {} {}] /CropBox [{} {} {} {}] /Rotate {} /Annots {} >>",
+                "<< /Type /Page /Parent {} /Resources {} /Contents {} /MediaBox [0 0 {} {}] /CropBox [{} {} {} {}] /Rotate {} /Annots {} >>",
+                reference(&mut take, count),
+                reference(&mut take, count),
                 reference(&mut take, count),
                 take.pick(NUMBERS),
                 take.pick(NUMBERS),
@@ -316,7 +324,7 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
                 take.pick(NUMBERS),
                 take.pick(NUMBERS),
                 take.pick(NUMBERS),
-                if take.u8() % 2 == 0 {
+                if take.u8().is_multiple_of(2) {
                     format!("[{}]", references(&mut take, count))
                 } else {
                     reference(&mut take, count)
@@ -360,13 +368,13 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
                 text(&mut take),
                 reference(&mut take, count),
                 reference(&mut take, count),
-                if take.u8() % 2 == 0 {
+                if take.u8().is_multiple_of(2) {
                     format!("[{}]", references(&mut take, count))
                 } else {
                     reference(&mut take, count)
                 }
             )),
-            _ => match take.u8() % 3 {
+            _ => match take.u8() % 7 {
                 0 => recto_testpdf::Object::Dict(format!(
                     "<< /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /Name {} /M {} /ByteRange [{} {} {} {}] >>",
                     text(&mut take),
@@ -380,12 +388,105 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
                     dict: format!("/Type /ObjStm /N {} /First {}", take.pick(NUMBERS), take.pick(NUMBERS)),
                     data: take.pick(&[b"1 0 << >>".as_slice(), b"9 0 2 3 << /Kids [1 0 R] >>", b""]).to_vec(),
                 },
+                // What `page_effects` walks: resources, the forms, images and patterns they name, graphics states and layers, and a page's own drawing.
+                3 => recto_testpdf::Object::Dict(format!(
+                    "<< /XObject << /X1 {} /X2 {} >> /Pattern << /P1 {} >> /ExtGState << /G1 << /SMask {} /BM {} >> /G2 {} >> /Properties << /MC1 {} >> /ColorSpace << /C1 {} >> >>",
+                    reference(&mut take, count),
+                    reference(&mut take, count),
+                    reference(&mut take, count),
+                    take.pick(&["/None", "1 0 R", "<< /S /Luminosity >>", "/Luminosity"]),
+                    take.pick(&["/Normal", "/Multiply", "[/Screen /Normal]", "3 0 R"]),
+                    reference(&mut take, count),
+                    reference(&mut take, count),
+                    take.pick(&["/DeviceRGB", "[/ICCBased 3 0 R]", "[/Indexed /DeviceRGB 255 <00>]", "/CMYK"])
+                )),
+                4 => recto_testpdf::Object::Stream {
+                    dict: format!(
+                        "/Type /XObject /Subtype {} /Filter {} /Decode {} /DecodeParms {} /SMask {} /SMaskInData {} /ColorSpace {} /OC {} /Resources {} /Width 1 /Height 1 /BitsPerComponent 8",
+                        take.pick(&["/Form", "/Image", "/Form", "/PS"]),
+                        take.pick(&["/DCTDecode", "[/FlateDecode /DCT]", "/FlateDecode", "[/Fl]", "3 0 R", "/JPXDecode"]),
+                        take.pick(&["[1 0 1 0 1 0]", "[0 1 0 1 0 1]", "[]", "3 0 R"]),
+                        take.pick(&["<< /ColorTransform 0 >>", "<< /Predictor 12 >>", "[null]", "3 0 R"]),
+                        reference(&mut take, count),
+                        take.pick(NUMBERS),
+                        take.pick(&["/DeviceGray", "/DeviceCMYK", "[/ICCBased 3 0 R]", "/Lab"]),
+                        reference(&mut take, count),
+                        reference(&mut take, count)
+                    ),
+                    data: take
+                        .pick(&[b"x\x9c\x03\x00".as_slice(), b"\xff\xd8\xff\xd9", b"q 1 0 0 1 0 0 cm /X1 Do Q", b""])
+                        .to_vec(),
+                },
+                5 => recto_testpdf::Object::Dict(format!(
+                    "<< /PatternType {} /Shading {} /Resources {} /Type /OCG /Name {} >>",
+                    take.pick(NUMBERS),
+                    reference(&mut take, count),
+                    reference(&mut take, count),
+                    text(&mut take)
+                )),
+                6 => recto_testpdf::Object::Stream {
+                    dict: take
+                        .pick(&[
+                            "",
+                            "/Filter /FlateDecode",
+                            "/Filter [/FlateDecode /FlateDecode]",
+                            "/Filter /FlateDecode /DecodeParms << /Predictor 2 >>",
+                        ])
+                        .to_string(),
+                    data: take
+                        .pick(&[
+                            b"BI /W 1 /H 1 /F /DCT ID \xff\xd8\xff\xd9 EI".as_slice(),
+                            b"BI /W 1 /H 1 /Filter [/DCTDecode] ID x EI",
+                            b"x\x9c\xcb\x48\xcd\xc9\xc9\x07\x00\x06\x2c\x02\x15",
+                            b"q /X1 Do Q (BI /F /DCT) Tj",
+                        ])
+                        .to_vec(),
+                },
                 _ => recto_testpdf::Object::Dict(format!("[{}]", references(&mut take, count))),
             },
         };
         objects.push(object);
     }
-    recto_testpdf::build(&objects)
+    // Now and then a document's information and an encryption dictionary, which the trailer names: what a title, `/P` and opening with no password read.
+    let trailer = match take.u8() % 4 {
+        0 => {
+            objects.push(recto_testpdf::Object::Dict(format!(
+                "<< /Title {} /Author {} >>",
+                text(&mut take),
+                text(&mut take)
+            )));
+            format!("/Info {} 0 R", objects.len())
+        }
+        1 => {
+            objects.push(recto_testpdf::Object::Dict(format!(
+                "<< /Filter /Standard /V {} /R {} /Length {} /P {} /O <{}> /U <{}> /CF << /StdCF << /CFM {} /Length 16 >> >> /StmF /StdCF /StrF /StdCF >>",
+                take.pick(&["1", "2", "4", "5", "99"]),
+                take.pick(&["2", "3", "4", "6", "-1"]),
+                take.pick(&["40", "128", "256", "7"]),
+                take.pick(&["-4", "-3904", "0", "4294967295", "1 0 R"]),
+                "28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A",
+                take.pick(&["", "00", "28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A"]),
+                take.pick(&["/V2", "/AESV2", "/AESV3", "/None", "/Identity"])
+            )));
+            format!("/Encrypt {} 0 R /ID [<0123456789ABCDEF0123456789ABCDEF> <00>]", objects.len())
+        }
+        _ => String::new(),
+    };
+    let built = recto_testpdf::build(&objects);
+    if trailer.is_empty() {
+        return built;
+    }
+    // The trailer comes after the cross-reference table, so what's added there moves no offset.
+    let root: &[u8] = b"/Root 1 0 R";
+    match built.windows(root.len()).rposition(|window| window == root) {
+        Some(at) => {
+            let mut out = built[..at].to_vec();
+            out.extend_from_slice(format!("/Root 1 0 R {trailer}").as_bytes());
+            out.extend_from_slice(&built[at + "/Root 1 0 R".len()..]);
+            out
+        }
+        None => built,
+    }
 }
 
 /// Text cleaning alone. Catches: a cut inside a character, or a text string that keeps what a reader can't see.
