@@ -1451,6 +1451,23 @@ In one stretch, four of five failed full checks were tests making timing assumpt
 
 A test waits for the condition it checks, polling with a bound and failing with what it saw. It never sleeps and then counts, and never assumes an order the code doesn't promise. Don't widen such a test until it passes. Find what it assumed: here, the deadline test also hid a real bug, where a page the machine was too busy to read was remembered as unreadable for the whole session.
 
+### Code that's right only when it's fast
+
+In one day, `main` went red on CI for three pushes in a row, each time on a machine slower than the developers'. Three of the causes were product bugs no fast machine had shown:
+- **A launch that guessed.** It waited one second for the saved state and then showed a default window. A state arriving at 1.5 s was never applied, so the window size, full screen, appearance, settings and scroll were lost. The fix for that then lost what the person had done in the moment before the window was rebuilt.
+- **An update's launch** showed a closed or minimised window, as its state came after the same second.
+- **The test side:** a quiet window laid out only when something asked, a watchdog that looked every 250 ms and missed a 2.3 s stall, and a test that counted answers within a fixed two seconds.
+
+Each was found one push at a time, because only CI took the slow path. The design rules that stop this class of bug:
+
+1. **Wait for the event, not a clock.** A timer may decide only where no event exists, and then its fallback is a full state with its own rules, not a degraded shortcut. Write "what happens if this arrives late, after the fallback?" next to every timeout, and test that case.
+2. **One source of truth, and the view drawn from it.** A host that keeps its own copy of state (a window built before the state, a focus or a selection held only in the toolkit) diverges when the order changes. Make the view a function of the state held in Rust, so drawing again from the state gives the same thing whatever happened first.
+3. **Lifecycles are explicit state machines in the core.** Launch, restore, update and sleep each get a typed state (loading, shown without state, ready, and so on), with the allowed transitions and the input each state accepts. Unit-test them with a fake clock, where "late" is one line.
+4. **Every waiting point can be made slow on purpose.** Disk reads, worker replies, layout and the state read each go through a seam that a test build can delay. One run of the suite in a deliberately slow mode finds all of these at once, instead of one per push.
+5. **Tests wait for what they check,** with a bound, and never count what arrives within a fixed time (see above).
+6. **CI runs on a branch before it merges.** The slow machine is a test input; use it before `main` does.
+7. **Never edit a script a running job is executing.** Bash reads a script as it runs, and an edit mid-run broke a cleanup job the same day with "unexpected EOF". Edit in a worktree, or wait for the job to end.
+
 ### Before a merge, look at what the branch adds
 
 A branch carried 649 MiB of build output from a helper crate built in its own folder: the root `.gitignore` said `/target`, which covers only the root. A review caught it before the push, and the fix was a history rewrite. Ignore `target/` everywhere. Before merging, check the objects a branch adds for build folders and their total size (`git rev-list --objects main..branch` piped to `git cat-file --batch-check`). It takes seconds, and a pushed mistake like this stays in the history for good.

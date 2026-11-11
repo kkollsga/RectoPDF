@@ -354,6 +354,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] `check.sh --full` stamps the commit it started on even when tracked files changed during the run (process review 2026-11-11: a test edited mid-run passed unrecorded on a dirty tree). Refuse to stamp when the tree's fingerprint at the end differs from the start, with a `check-test.sh` case
 - [ ] `--full` never runs `notices.rs`'s bundle tests (`the_built_app_carries_the_notices`, `nothing_in_the_built_app_has_extended_attributes`) against the bundle it just built: they run with `RECTO_SKIP_APP` in other-tests and aren't in the app-tests list (found by the icon worker, 2026-11-11). Move them after app-build, with a `check-test.sh` case
 - [ ] Temp folders named by process id alone, or process id and a count, are reused when an id comes round again and an earlier test left its folder (707 such folders in `$TMPDIR` on 2026-11-11). `TempPdf` is fixed (`a_folder_left_behind_is_never_shared`); the same pattern is in `recto-core/tests/save.rs` and `support/mod.rs`, `recto-control/tests/server.rs` and `owner_edits.rs`, `recto-control/src/levels.rs`, `recto-platform`'s `walls.rs` and `local_mac.rs` tests, and `recto-render/tests/pdfium.rs`. One helper that makes a fresh folder, used by all
+- [ ] A slow mode for the whole app-test suite (guide, "Code that's right only when it's fast", 2026-11-11): beyond the late-state stage's 13 tests and one seam, every waiting point (state read, worker replies, the headings helper, layout, the socket's first answer) gets a quiet-run-only delay, and one stage runs a broad set of app and restore tests with all of them slow. Found today's CI-only failures one push at a time; this finds them in one run. Before release, as the release's own update and restore paths depend on it
 - [ ] Build speed follow-ups (`docs/reports/build-performance-2026-11-11.md`): nextest threads per queue slot (a shared-queue change, so `heavy-test.sh`); test consolidation into fewer binaries, deferred to phase R; an sccache opt-out for this repo if the owner wants it
 
 **Done when:** you approve the signed draft. Nothing is published without your go-ahead.
@@ -375,6 +376,7 @@ Owner, 2026-11-08: "add the large restructuring into the plan before we start on
 - [ ] 11. A toolkit-free `recto-app` crate, so the app core is unit-tested in `--quick`; `recto-ffi` becomes adapters only. 4–6 d
 - [ ] 12. A QA verb table in `recto-app`, with Swift's verbs checked against it. 1–2 d
 - [ ] 13. Swift child controllers and `InlineEditField`. 2–4 d
+- [ ] 14. Launch, restore, update and sleep as typed state machines in the core (loading, shown without state, ready…), with the input each state takes and what a late arrival does, unit-tested on a fake clock; the window drawn from Rust's state alone, so the host keeps no copy (focus, selection, a field's text) that can diverge (guide, "Code that's right only when it's fast"). 3–5 d
 
 ## Later, after the first release
 
