@@ -7,6 +7,9 @@ HEAVY="$(cd "$(dirname "${1:-$0}")" && pwd)/$(basename "${1:-heavy.sh}")"
 X=$(mktemp -d "${TMPDIR:-/tmp}/heavy-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock"
+# The Mac's own free memory isn't this test's: with other work running, its jobs waited for memory a fixed pause didn't allow for, and the order checks
+# below failed by that (three of them, under two other workers' builds, 2026-11-11: "needs more than 60%" at 50 % free). The memory check sets its own.
+export MIN_FREE=0
 # local.env sends other copies to the main checkout's script, which would test the wrong file.
 export HEAVY_TESTING=1
 unset CARGO_BUILD_JOBS HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS HEAVY_RETRY tests_joined
