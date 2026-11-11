@@ -263,6 +263,15 @@ impl Inner {
 
     /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
     pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
+        self.write_sleep_now_for(id, now, true);
+    }
+
+    /// The same, as a quit or a hand-off has it, unless another sleep file's being written: then nothing, as these are only a way to be quick, and a flush mustn't wait behind sleep files queued for a slow disk (slow mode, 2026-11-11: a quit after opening tabs waited its 5 s there and went without the state).
+    pub(crate) fn write_sleep_for_unless_busy(&self, id: TabId) {
+        self.write_sleep_now_for(id, true, false);
+    }
+
+    fn write_sleep_now_for(&self, id: TabId, now: bool, wait: bool) {
         let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
             return;
         };
@@ -270,18 +279,23 @@ impl Inner {
         let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
             return;
         };
-        self.write_with_material(facts, material, now);
+        self.write_with_material(facts, material, now, wait);
     }
 
     /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
-    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool) {
+    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool, wait: bool) {
         let SleepFacts {
             id,
             path,
             sleep,
             pictures_allowed,
         } = facts;
-        let _one_at_a_time = lock(&self.sleeper.writing);
+        let _one_at_a_time = match self.sleeper.writing.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if wait => lock(&self.sleeper.writing),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
         let there = self.saver.store.read_sleep(sleep.file, &path);
         let may = now || self.sleeper.may_write_pictures(id);
         if !may && there.is_some() {
@@ -323,7 +337,7 @@ impl Inner {
         let Some(inner) = self.saver.inner() else { return };
         let _ = std::thread::Builder::new().name("recto-sleep".into()).stack_size(512 * 1024).spawn(move || {
             for (facts, material) in left {
-                inner.write_with_material(facts, material, false);
+                inner.write_with_material(facts, material, false, true);
             }
         });
     }

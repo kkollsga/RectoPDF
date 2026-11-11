@@ -2000,6 +2000,45 @@ fn quitting_twice_in_a_row_changes_nothing() {
     assert_same(&second, &third, &[]);
 }
 
+/// Failure (slow mode, 2026-11-11: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits 5 s for the state, and goes without it when nothing's unsaved, and the state waited behind the tab on screen's sleep file, which waited behind every sleep file the tabs just opened had queued, one at a time. With sleep files slow to write, as on a busy or slow disk, a quit after opening tabs lost them all. A hundred and fifty tabs opened one after another with each sleep file's read 150 ms and its write 300 ms late, a quit, and every one comes back.
+#[test]
+fn tabs_just_opened_come_back_when_sleep_files_are_slow() {
+    const TABS: usize = 40;
+    let slow = [("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_read=150,sleep_write=2000"))];
+    let state = State::new();
+    let Some(run) = Run::on_with_env(&state, &slow) else { return };
+    let file = long_document("many", 3);
+    let folder = state.root.join("tabs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let link = |at: usize| folder.join(format!("t{at}.pdf"));
+    for at in 0..TABS {
+        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
+    }
+    // Two, and back from a quit with them, as each has its sleep file to wake from; then the rest, one after another.
+    run.ok(&["open", link(0).to_str().unwrap()]);
+    run.ok(&["open", link(1).to_str().unwrap()]);
+    run.settled();
+    run.quit();
+    let run = Run::on_with_env(&state, &slow).unwrap();
+    run.settled();
+    for at in 2..TABS {
+        run.ok(&["open", link(at).to_str().unwrap()]);
+    }
+    run.settled();
+    let opened = run.report();
+    assert_eq!(opened["session"]["tabs"].as_array().unwrap().len(), TABS);
+    assert!(
+        opened["slow"]["seams"]["sleep_write"]["times"].as_u64().unwrap() > 0,
+        "sleep files were being written: {}",
+        opened["slow"]
+    );
+    run.quit();
+    let run = Run::on(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["session"]["tabs"].as_array().unwrap().len(), TABS, "every tab came back");
+    run.quit();
+}
+
 /// Failure: a record of 1,000 tabs comes back slowly, or with a handle or a thread for each, or wakes them all. Only the active tab holds a document, and it has no more handles or threads than 2 tabs do, but for the one read of the active tab's file and the one look at the others, which may not have ended yet.
 #[test]
 fn a_thousand_tabs_come_back_cold() {
