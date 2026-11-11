@@ -715,9 +715,29 @@ pub(crate) struct AppHost {
     handing_off: AtomicBool,
     /// What a read of the record told the reader, while they've not moved on.
     notice: Mutex<Option<String>>,
+    /// Who's watching over the socket, once it runs: the session's news goes on to them. See [`AppHost::listen`].
+    watchers: Mutex<Option<Notifier>>,
 }
 
 impl AppHost {
+    /// **The session's news reaches the app from the start, and watchers once the socket runs** (slow mode, 2026-11-11: with the socket's first answer late, Find came back with its hits and not the hit gone to). The app heard of Find's hits and of generated contents only once the socket's server ran and attached, so what finished before that, or all of it with the socket another session's, was heard by nobody. Given once, as the session takes it once.
+    fn listen(self: &Arc<Self>) {
+        let core = Arc::clone(&self.core);
+        let host = Arc::downgrade(self);
+        self.session.attach(Arc::new(move |events: Vec<Event>| {
+            if events.iter().any(|event| event.name == "contents_generated") {
+                core.push(CoreCall::GeneratedFinished);
+            }
+            // The Finder's news, for the sidebar's list and a step waiting for hits.
+            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
+                core.push(CoreCall::Find(find::FindCall::News));
+            }
+            if let Some(notify) = host.upgrade().and_then(|host| lock(&host.watchers).clone()) {
+                notify(events);
+            }
+        }));
+    }
+
     fn record_command(&self, level: Level, command: &Command) -> Result<Value, AgentError> {
         match command {
             Command::SessionShow {} => {
@@ -825,18 +845,8 @@ impl Host for AppHost {
     }
 
     fn attach(&self, notify: Notifier) {
-        // The sidebar hears of generated contents as watchers do, and looks on the session thread.
-        let core = Arc::clone(&self.core);
-        self.session.attach(Arc::new(move |events: Vec<Event>| {
-            if events.iter().any(|event| event.name == "contents_generated") {
-                core.push(CoreCall::GeneratedFinished);
-            }
-            // The Finder's news, for the sidebar's list and a step waiting for hits.
-            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
-                core.push(CoreCall::Find(find::FindCall::News));
-            }
-            notify(events);
-        }));
+        // The session's been told since the start, by `listen`: from now its news goes on to watchers too.
+        *lock(&self.watchers) = Some(notify);
     }
 
     fn shut_down(&self) {
@@ -1904,7 +1914,9 @@ impl AppCore {
             running: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
+            watchers: Mutex::new(None),
         });
+        host.listen();
         // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
         let find_keys = Arc::clone(&keys);
         host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
@@ -5477,6 +5489,7 @@ mod tests {
             running: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
+            watchers: Mutex::new(None),
         };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
     }

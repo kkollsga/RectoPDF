@@ -379,6 +379,17 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2]) {
 /// Failure: Find doesn't come back as it was left (decision 23): its field, the hits of what was found, the hit gone to, and that hit selected on the page, after a quit and a launch. The hits are found again, as they're never kept, and the hit is chosen again by its place.
 #[test]
 fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
+    find_comes_back(&[]);
+}
+
+/// Failure (slow mode, 2026-11-11: with the control socket's first answer late, Find came back with its hits and not the hit gone to): the app heard of Find's hits only once the socket's server ran, so a search that finished before then was heard by nobody, and the hit was never chosen again. The same with the socket another session's, which a launch allows, for every search. The socket answering 2 s late on the launch after the quit, and the hit comes back.
+#[test]
+fn find_comes_back_when_the_socket_answers_late() {
+    find_comes_back(&[("RECTO_QA_SLOW", std::ffi::OsStr::new("socket=2000"))]);
+}
+
+/// Find left on its third hit, a quit, and a launch with this in its environment: all of it comes back.
+fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let file = long_document("findable", 30);
@@ -408,7 +419,7 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
         before["app"]["pages"]
     );
     run.quit();
-    let run = Run::on(&state).unwrap();
+    let run = Run::on_with_env(&state, second_launch).unwrap();
     run.settled();
     let after = run.report();
     for field in ["open", "rows", "status", "current_row", "untrusted", "list_height", "rows_on_screen"] {
