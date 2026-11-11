@@ -385,3 +385,83 @@ fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
     assert_eq!(after["panes"]["reading"], 0);
     assert_eq!(pages(&after), pages(&before), "each pane where it was");
 }
+
+/// The app's own objects and AppKit's views, scrollers, controls and gesture recognizers alive in the app's process, by class, as `heap` counts them. Nothing else: caches of strings, fonts and glyphs come and go with what's been drawn.
+fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
+    let out = std::process::Command::new("/usr/bin/heap").arg(pid.to_string()).output().expect("heap runs");
+    assert!(out.status.success(), "heap couldn't read the app: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut alive = std::collections::HashMap::new();
+    let mut in_table = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("=====") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        // The first table is every zone together: the rest say it again by zone.
+        if line.trim().is_empty() {
+            break;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let Some(count) = fields.first().and_then(|count| count.parse::<u64>().ok()) else {
+            continue;
+        };
+        if fields.len() < 6 {
+            continue;
+        }
+        let (kind, binary) = (fields[fields.len() - 2], fields[fields.len() - 1]);
+        let class = fields[3..fields.len() - 2].join(" ");
+        let ours = binary == "RectoPDF" && matches!(kind, "Swift" | "ObjC");
+        let views = binary == "AppKit" && kind == "ObjC" && ["View", "Scroller", "GestureRecognizer", "Control"].iter().any(|word| class.contains(word));
+        if ours || views {
+            *alive.entry(class).or_default() += count;
+        }
+    }
+    assert!(!alive.is_empty(), "heap said nothing of the app's views:\n{text}");
+    alive
+}
+
+/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
+#[test]
+fn comparisons_leave_no_views_behind() {
+    const STRETCH: u64 = 12;
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let (left, right) = (common::app::chaptered("left", 12, 6), common::app::chaptered("right", 10, 5));
+    run.ok(&["open", left.0.to_str().unwrap()]);
+    run.ok(&["open", right.0.to_str().unwrap()]);
+    run.settled();
+    // Thin scrollers that fade, the style the app asks for unless the Mac always shows them.
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    let compare = |times: u64| {
+        for _ in 0..times {
+            run.ok(&["compare", "--tabs", "#1,#2"]);
+            run.settled();
+            // A scroll shows the scrollers, which then fade.
+            run.ok(&["qa", "scroll", "400"]);
+            run.settled();
+            run.ok(&["compare", "--off"]);
+            run.settled();
+        }
+    };
+    // What the first comparisons make once, AppKit's own included.
+    compare(4);
+    let first = views_alive(run.pid);
+    compare(STRETCH);
+    let second = views_alive(run.pid);
+    compare(STRETCH);
+    let third = views_alive(run.pid);
+    let count = |of: &std::collections::HashMap<String, u64>, class: &str| of.get(class).copied().unwrap_or(0);
+    let growing: Vec<String> = third
+        .keys()
+        .filter(|class| {
+            let (a, b, c) = (count(&first, class), count(&second, class), count(&third, class));
+            b >= a + STRETCH * 3 / 4 && c >= b + STRETCH * 3 / 4
+        })
+        .map(|class| format!("{class}: {} -> {} -> {}", count(&first, class), count(&second, class), count(&third, class)))
+        .collect();
+    assert!(growing.is_empty(), "grew with every comparison, {STRETCH} at a time: {growing:?}");
+}

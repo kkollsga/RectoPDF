@@ -25,8 +25,9 @@ import sys
 import threading
 import time
 
-DIR, BUNDLE, CORPUS = sys.argv[1], sys.argv[2], sys.argv[3]
-HOURS = float(sys.argv[4]) if len(sys.argv) > 4 else 24.0
+# Imported by test_soak.py, which has no arguments for it.
+DIR, BUNDLE, CORPUS = sys.argv[1:4] if __name__ == "__main__" else ("", "", "")
+HOURS = float(sys.argv[4]) if __name__ == "__main__" and len(sys.argv) > 4 else 24.0
 RECTO = os.path.join(BUNDLE, "Contents/MacOS/recto")
 STATE = os.path.join(DIR, "state")
 WORK = os.path.join(DIR, "work")
@@ -95,7 +96,21 @@ def descendants(root):
 
 
 def tab_name(t):
+    """A tab's name as `tabs` gives it: its file's name without `.pdf` (recto-session's `tab_name`), cleaned, so compare with `stem()`."""
     return ((t.get("untrusted") or {}).get("name") or "")
+
+
+def stem(path):
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def to_close(tabs, keep, limit):
+    """Which tabs to close so that at most `limit - 1` are left before the next open: oldest first, never one in `keep`, the active one
+    or one with unsaved edits. The 24-hour soak of 2026-11-08 closed one a round at most and told its edit copy by `name == "edit-copy.pdf"`,
+    which never matched, as a name has no `.pdf`: so it closed its own edit copy, opened it again as a new tab, and went from 8 to 70 tabs."""
+    spare = [t for t in tabs if t.get("sel") not in keep and not t.get("edited") and not t.get("active")]
+    over = len(tabs) - (limit - 1)
+    return [t.get("sel") for t in spare[:max(0, over)] if t.get("sel")]
 
 
 def du_kib(path):
@@ -195,10 +210,23 @@ class Soak:
             json.dump(info, f, indent=1)
         os.replace(RUN + ".tmp", RUN)
 
+    def own_memory(self):
+        """The app's malloc in use and its compressed memory, in MiB, as `qa state` reads them in the app (`task_info` and
+        `malloc_zone_statistics`, which can't be read from outside). Compression counts in the footprint: in the investigation of the
+        2026-11-08 soak, a quiet app's footprint rose 3.7 MiB with its heap unchanged when the system compressed 13 MiB of it, under
+        other work on the Mac. The heap is what the app holds, whatever the system does to it. Not counted as an action or an error."""
+        try:
+            p = subprocess.run([RECTO, "qa", "state", "--json"], capture_output=True, text=True, timeout=30, env=self.env, cwd=DIR)
+            memory = (json.loads(p.stdout).get("data") or {}).get("memory") or {}
+            return f"{memory['heap_bytes'] / 1048576:.2f}", f"{memory['compressed_bytes'] / 1048576:.2f}"
+        except Exception:
+            return "", ""
+
     # --- sampling --------------------------------------------------------------------------------------------------------
     def sampler(self):
         header = ("time,elapsed_s,run_id,phase,app_pid,app_mib,children_mib,total_mib,children,app_threads,total_threads,"
-                  "app_fds,total_fds,app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,children_names")
+                  "app_fds,total_fds,app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,app_heap_mib,"
+                  "app_compressed_mib,children_names")
         new = not os.path.exists(CSV)
         with open(CSV, "a") as f:
             if new:
@@ -225,14 +253,15 @@ class Soak:
                         names.append(f"{name}:{k[0] / 1048576:.1f}")
                 at, af = threads(pid), fds(pid)
                 state = du_kib(STATE) if n % 10 == 0 else ""
+                heap, compressed = self.own_memory()
                 row = [time.strftime("%Y-%m-%dT%H:%M:%S"), int(time.time() - self.started), self.run_id, self.phase, pid,
                        f"{fp[0] / 1048576:.2f}", f"{kid_fp / 1048576:.2f}", f"{(fp[0] + kid_fp) / 1048576:.2f}", len(kids), at,
                        at + kid_thr, af, af + kid_fd, f"{fp[1] / 1e9:.2f}", fp[2], state, self.tabs_open, self.rounds, self.actions,
-                       self.errors, self.timeouts, self.saves, " ".join(names)]
+                       self.errors, self.timeouts, self.saves, heap, compressed, " ".join(names)]
             else:
                 row = [time.strftime("%Y-%m-%dT%H:%M:%S"), int(time.time() - self.started), self.run_id, "app_gone", pid or "",
                        "", "", "", "", "", "", "", "", "", "", "", self.tabs_open, self.rounds, self.actions, self.errors,
-                       self.timeouts, self.saves, ""]
+                       self.timeouts, self.saves, "", "", ""]
             with open(CSV, "a") as f:
                 f.write(",".join(str(x) for x in row) + "\n")
             n += 1
@@ -258,6 +287,14 @@ class Soak:
         last_hour = int(time.time() - self.started) // 3600
         last_idle_hour = -1
         saves_on_copy = 0
+        # The edit copy's tab, as `open` said: it's never closed to make room, and it's told by its selector, not its name.
+        edit = {"sel": None}
+
+        def open_edit():
+            data = self.recto("open", edit_path)
+            if data and data.get("sel"):
+                edit["sel"] = data["sel"]
+            return data
 
         def ensure_app():
             if self.alive():
@@ -267,7 +304,7 @@ class Soak:
             self.phase = "starting"
             ok = self.start_app()
             if ok:
-                self.recto("open", edit_path)
+                open_edit()
             return ok
 
         if not ensure_app():
@@ -293,24 +330,20 @@ class Soak:
             r = self.rounds
             tabs = self.tabs()
             self.tabs_open = len(tabs)
-            # Open the next corpus file, closing the oldest plain tab past MAX_TABS: every file comes round in turn.
+            # Open the next corpus file, closing the oldest plain tabs down to MAX_TABS: every file comes round in turn.
             path = pdfs[cursor % len(pdfs)]
             cursor += 1
-            if len(tabs) >= MAX_TABS:
-                for t in tabs:
-                    if tab_name(t) != "edit-copy.pdf" and not t.get("edited") and not t.get("active"):
-                        self.recto("close", "--tab", t.get("sel") or "#1")
-                        break
-            self.recto("open", path, timeout=180)
+            for sel in to_close(tabs, {edit["sel"]}, MAX_TABS):
+                self.recto("close", "--tab", sel)
+            opened = self.recto("open", path, timeout=180) or {}
             self.settle()
             tabs = self.tabs()
             self.tabs_open = len(tabs)
+            if len(tabs) > MAX_TABS + 2:
+                self.log(f"drift: {len(tabs)} tabs open, past the {MAX_TABS} the driver keeps")
             n = max(1, len(tabs))
             # Read this one: pages, scrolling, zoom.
-            pages = 1
-            for t in tabs:
-                if tab_name(t) == os.path.basename(path):
-                    pages = int(t.get("pages") or 1)
+            pages = int(opened.get("pages") or 1)
             self.recto("goto", str(rng.randint(1, max(1, pages))))
             self.settle()
             for _ in range(rng.randint(5, 20)):
@@ -361,7 +394,7 @@ class Soak:
                 self.settle()
             if r % 6 == 0:
                 # Edit and save into the temp copy, with an undo and redo on the way.
-                self.recto("open", edit_path)
+                open_edit()
                 self.settle()
                 self.recto("page", "rotate", str(rng.randint(1, 3)), "--by", "90")
                 self.recto("undo")
@@ -371,10 +404,10 @@ class Soak:
                     saves_on_copy += 1
                 self.settle()
                 if saves_on_copy >= 25:
-                    self.recto("close")
+                    self.recto("close", "--tab", edit["sel"] or "active")
                     shutil.copyfile(edit_src, edit_path)
                     saves_on_copy = 0
-                    self.recto("open", edit_path)
+                    open_edit()
                     self.settle()
             if r % 7 == 0 and n >= 2:
                 # Put another tab to sleep now, then come back to it later by tapping.

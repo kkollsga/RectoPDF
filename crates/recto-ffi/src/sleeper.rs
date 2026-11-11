@@ -166,7 +166,12 @@ impl Sleeper {
     }
 
     fn note_written(&self, id: TabId, bytes: u64) {
-        lock(&self.last_written).insert(id, Instant::now());
+        let gap = Duration::from_secs(u64::from(self.write_gap_seconds.load(Ordering::SeqCst)));
+        let mut last = lock(&self.last_written);
+        // Only a write within the gap holds the next one back, so older ones go: without this every tab ever written stayed, closed ones too, a day's soak of them.
+        last.retain(|_, at| at.elapsed() < gap);
+        last.insert(id, Instant::now());
+        drop(last);
         lock(&self.this_hour).1 += bytes;
         self.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
         self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -554,5 +559,20 @@ mod tests {
         assert!(slots.finish(TabId(1)), "the look asked for meanwhile is asked for again");
         assert!(slots.start(TabId(1)), "a slot comes back when a look ends");
         assert!(!slots.finish(TabId(1)), "nothing was asked for meanwhile this time");
+    }
+
+    /// Failure: when each tab's sleep file was last written is kept for every tab that ever had one, closed tabs included, so a session that opens and closes tabs all day grows without a cap (the 24-hour soak of 2026-11-08 went through 3,068 tabs). Only those written within the gap are kept, and the gap still holds a tab back.
+    #[test]
+    fn last_written_keeps_only_writes_within_the_gap() {
+        let sleeper = Sleeper::new();
+        sleeper.set_write_gap(1);
+        for id in 0..500 {
+            sleeper.note_written(TabId(id), 1);
+        }
+        assert!(!sleeper.may_write_pictures(TabId(499)), "a tab just written waits for the gap");
+        std::thread::sleep(Duration::from_millis(1_100));
+        sleeper.note_written(TabId(1_000), 1);
+        assert_eq!(lock(&sleeper.last_written).len(), 1, "those older than the gap have gone");
+        assert!(sleeper.may_write_pictures(TabId(499)), "a tab past the gap may write again");
     }
 }

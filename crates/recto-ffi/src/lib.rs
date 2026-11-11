@@ -2226,7 +2226,7 @@ impl AppCore {
         lock(&self.inner.contents_follow).view_changed();
     }
 
-    /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to slide.
+    /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to change in view, where the host fades them over.
     pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
         lock(&self.inner.contents_follow).row_change(
             ContentsRowChange {
