@@ -816,6 +816,10 @@ fn session_show(data: &Value) -> String {
 fn update_status(data: &Value) -> String {
     let mut out = text(&data["words"]).to_string();
     let _ = write!(out, "\nAutomatic updates: {}.", if data["auto_update"] == true { "on" } else { "off" });
+    let _ = write!(out, "\nDevelopment builds: {}.", if data["dev_builds"] == true { "allowed" } else { "off" });
+    if let Some(waiting) = data["build_waiting"].as_str() {
+        let _ = write!(out, "\nWaiting to go in: development build {waiting}.");
+    }
     if let Some(kept) = data["kept"].as_str() {
         let _ = write!(out, "\nKept to go back to: {kept}.");
     }
