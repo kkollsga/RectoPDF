@@ -78,7 +78,7 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
 check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
@@ -278,6 +278,19 @@ check "and the ledger names the stage" "fail:app-bundle" "$(last_ledger_field 4)
 rm -f "$CALLS.bundle"
 tools/check.sh --quick > /dev/null 2>&1
 check "the quick check skips them, as it builds no app" "0" "$( [ -f "$CALLS.bundle" ] && wc -l < "$CALLS.bundle" | tr -d ' ' || echo 0)"
+: > "$CALLS"
+
+# Failure (2026-11-11): the Windows compile check passed on a warning, an unused variable in code only Windows builds see (916efaf), which no other
+# stage compiles. It fails on warnings as clippy does, in the quick check and the full one.
+: > "$CALLS"
+tools/check.sh --quick > /dev/null 2>&1
+check "the quick check's Windows compile check fails on warnings" "1" "$(grep -c -- '--target x86_64-pc-windows-gnu.* -- -D warnings$' "$CALLS")"
+: > "$CALLS"
+fresh_ledger
+commit_code windows-warns
+out=$(STUB_FAIL="x86_64-pc-windows-gnu" STUB_EXIT=101 full); rc=$?
+check "and a warning there fails the full run" "101" "$rc"
+check "with the ledger naming the stage" "fail:windows" "$(last_ledger_field 4)"
 : > "$CALLS"
 
 # Failure: a job stopped from outside held against the branch.

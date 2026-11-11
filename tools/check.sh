@@ -251,9 +251,11 @@ run() {
   # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.
   cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed. A compile error, so it goes before anything runs.
+  # Clippy at the level above, so a warning fails it: code only a Windows build compiles is seen nowhere else, and an unused variable in it passed a plain
+  # `cargo check` (916efaf). Clippy shares the check's artifacts for dependencies, so nothing more is built than before.
   stage windows
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-    cargo check --workspace --locked --target x86_64-pc-windows-gnu
+    cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
   fi
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   stage workers

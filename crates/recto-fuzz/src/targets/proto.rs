@@ -215,9 +215,10 @@ fn frames_through_a_real_channel(bytes: &[u8]) {
     let Ok((sender, receiver)) = Channel::pair() else { return };
     let (_, peak) = peak_of(|| {
         std::thread::scope(|scope| {
+            // Moved in, so it closes as soon as this has sent, and the reader sees the end. (Not an explicit `drop`: on a platform whose channel is
+            // a stub with nothing to close, clippy calls that a mistake, and the Windows check fails on it.)
             scope.spawn(move || {
                 let _ = send_all(&sender, bytes, &[]);
-                drop(sender);
             });
             // Moved in, so it closes when this stops reading, and a writer blocked on a full socket gets its error instead of waiting for ever.
             let receiver = receiver;
