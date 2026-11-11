@@ -2922,7 +2922,9 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
         .unwrap_or(opened);
     assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
     run.ok(&["qa", "find-type", "words"]);
-    run.settled();
+    // Settled once Find has read all 200 pages, each a worker's job: as long as that takes, which with the worker's answers late (the slow stage) came to
+    // 29 s of this test's 30 s here, and past it with the profile doubled (2026-11-11). What's checked is that it settles, not how soon.
+    run.ok(&["qa", "wait-settled", "--timeout", "120s"]);
     let found = run.report();
     let find = &found["app"]["find"];
     assert_eq!(
