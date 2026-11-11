@@ -1473,9 +1473,12 @@ fn wait_settled_waits_for_the_sidebars_animations() {
         run.ok(&["goto", &(chapter * (sections + 1) + 1).to_string()]);
         let settled = run.ok(&["qa", "wait-settled", "--timeout", "30s"]);
         let state = run.report();
+        // The page number's fade starts on a timer 3 s after the last change of place, so on a slow machine it can begin between
+        // settling and this report (seen at load 25, 2026-11-11). Settling waits for a fade that's running; one that starts later
+        // isn't the sidebar's, which is what this checks.
         assert_eq!(
-            state["app"]["animations"],
-            json!([]),
+            moving_besides_the_timed_fade(&state),
+            Vec::<Value>::new(),
             "chapter {chapter}: settled, and still moving: {settled} {}",
             state["app"]["contents"]
         );
@@ -1487,7 +1490,22 @@ fn wait_settled_waits_for_the_sidebars_animations() {
     run.ok(&["goto", &(20 * (sections + 1) + 1).to_string()]);
     let shot = run.ok(&["qa", "shot", "--out", run.state.root.join("settled.png").to_str().unwrap()]);
     assert_eq!(shot["settled"], true, "{shot}");
-    assert_eq!(run.report()["app"]["animations"], json!([]), "a shot is taken with nothing moving");
+    assert_eq!(
+        moving_besides_the_timed_fade(&run.report()),
+        Vec::<Value>::new(),
+        "a shot is taken with nothing moving"
+    );
+}
+
+/// What's moving, less the page number's and zoom's fade, which starts on its own timer and so can begin after anything settles.
+fn moving_besides_the_timed_fade(state: &Value) -> Vec<Value> {
+    state["app"]["animations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|one| one.as_str() != Some("chrome_fading"))
+        .cloned()
+        .collect()
 }
 
 /// Failure: closing a warm tab leaves its document, tiles and worker held until the next switch of tab, which may never come.
