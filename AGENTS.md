@@ -122,6 +122,9 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The margin above first page, and below last page should be 50% of page height"
 - "When you are testing the app it flashes open in lower left corner. Is it possible to test the app in the background? Ie headless?" A quiet run must never show a window on the screen, not even for a moment (rule: quiet runs never take the screen).
 
+## Release signing (2026-11-11)
+- "I dont want any manual steps." The `release` Environment has no required reviewer; its keys reach only workflows from `main` or a `v*.*.*` tag. The owner changed that setting themselves (the coordinator's own change was blocked as weakening security). Publishing a release stays the owner's decision, given in chat, not a click.
+
 ## Product rules from the owner: privacy (2026-11-11)
 - Asked to approve `PRIVACY.md`, the quiet line in the empty window about the daily check, and the Settings hint and link: "Approve as written".
 - Asked whether the daily update check should get a real off, as it runs with *Update automatically* off too: "Keep as is". One anonymous request a day, always; said in Settings and `PRIVACY.md`.

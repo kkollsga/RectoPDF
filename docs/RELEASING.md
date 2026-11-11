@@ -18,7 +18,7 @@ Once, by you: the certificate and the key are tied to your Apple account. Never 
    gh secret set NOTARY_ISSUER_ID --repo kkollsga/RectoPDF         # the Issuer ID
    ```
    Then delete the `.p12` and the `.p8` from Desktop and Downloads.
-5. **A protected Environment, so a pushed tag alone can't reach the keys.** GitHub › the repository › Settings › Environments › New environment, named `release`, with yourself under *Required reviewers*. Move the five secrets to it (`gh secret set NAME --env release --repo kkollsga/RectoPDF`), and delete them from the repository's. Without the review it still works, and then anyone who can push a tag can have something signed.
+5. **A protected Environment.** Owner, 2026-11-11: "I dont want any manual steps." So `release` has no required reviewer; instead its keys reach only workflows running from `main` or a `v*.*.*` tag (Settings › Environments › release › Deployment branches and tags), which only the owner and the coordinator can push. The five secrets live in the Environment, not the repository. Set up and checked on 2026-11-11: `release-preflight.yml` run 43083056883 opened the certificate as *Developer ID Application: Kristian de Figueiredo Kollsgård (6GND8Z2C7Z)*, signed with a secure timestamp, and Apple accepted the notarization key. Keychain Access's `.p12` needs OpenSSL's legacy provider or LibreSSL, and goes into the keychain repacked (`tools/release/keychain.sh`).
 6. **The repository has to stay public, or the updater can't read it:** it fetches `releases/latest/download/latest.json` with no credentials, on purpose. A private repository answers 404, which reads as "no releases yet".
 
 Without those secrets the release workflow fails at once. There's no unsigned release.
