@@ -338,6 +338,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [x] `qa budget`'s idle window starts 1 s after settling, so the tail of settling reads as up to 1.35 wake-ups a second: start it later. Done in `b25ec1f`, from 5 s; the final budget report read 0.4 and 0.25 a second
 - [ ] Commit `184f5a7` doesn't compile alone: it uses `JobPlan` from the next commit. The tip is fine, and a bisect has to skip it
 - [ ] `check.sh --full` stamps the commit it started on even when tracked files changed during the run (process review 2026-11-11: a test edited mid-run passed unrecorded on a dirty tree). Refuse to stamp when the tree's fingerprint at the end differs from the start, with a `check-test.sh` case
+- [ ] `--full` never runs `notices.rs`'s bundle tests (`the_built_app_carries_the_notices`, `nothing_in_the_built_app_has_extended_attributes`) against the bundle it just built: they run with `RECTO_SKIP_APP` in other-tests and aren't in the app-tests list (found by the icon worker, 2026-11-11). Move them after app-build, with a `check-test.sh` case
 - [ ] Build speed follow-ups (`docs/reports/build-performance-2026-11-11.md`): nextest threads per queue slot (a shared-queue change, so `heavy-test.sh`); test consolidation into fewer binaries, deferred to phase R; an sccache opt-out for this repo if the owner wants it
 
 **Done when:** you approve the signed draft. Nothing is published without your go-ahead.
