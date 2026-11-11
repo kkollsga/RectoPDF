@@ -348,6 +348,24 @@ struct Deliveries {
 
 const DELIVERY_IDLE: Duration = Duration::from_millis(500);
 
+/// **The delivery thread's own end, however it comes** (review 1): a call that panics takes the thread with it, and with `running` left set no other was ever started, so nothing late arrived again. Ended by a panic, it says it's gone, and starts another for what's still waiting.
+struct Running(&'static Deliveries);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let deliveries = self.0;
+        let waiting = !deliveries.due.lock().unwrap_or_else(PoisonError::into_inner).0.is_empty();
+        if waiting {
+            deliveries.start();
+        } else {
+            deliveries.running.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 fn deliveries() -> &'static Deliveries {
     static DELIVERIES: OnceLock<Deliveries> = OnceLock::new();
     DELIVERIES.get_or_init(Deliveries::default)
@@ -363,17 +381,22 @@ impl Deliveries {
         }
         self.ready.notify_one();
         if !self.running.swap(true, Ordering::SeqCst) {
-            let spawned = std::thread::Builder::new()
-                .name("recto-qa-slow".into())
-                .stack_size(256 * 1024)
-                .spawn(move || self.deliver());
-            if spawned.is_err() {
-                self.running.store(false, Ordering::SeqCst);
-                // No thread: everything waiting goes now, rather than never.
-                let waiting = std::mem::take(&mut self.due.lock().unwrap_or_else(PoisonError::into_inner).0);
-                for due in waiting.into_sorted_vec().into_iter().rev() {
-                    (due.call)();
-                }
+            self.start();
+        }
+    }
+
+    /// The thread, with `running` already set for it.
+    fn start(&'static self) {
+        let spawned = std::thread::Builder::new().name("recto-qa-slow".into()).stack_size(256 * 1024).spawn(move || {
+            let _guard = Running(self);
+            self.deliver();
+        });
+        if spawned.is_err() {
+            self.running.store(false, Ordering::SeqCst);
+            // No thread: everything waiting goes now, rather than never.
+            let waiting = std::mem::take(&mut self.due.lock().unwrap_or_else(PoisonError::into_inner).0);
+            for due in waiting.into_sorted_vec().into_iter().rev() {
+                (due.call)();
             }
         }
     }
@@ -513,6 +536,24 @@ mod tests {
         assert_eq!(got, (0..20).collect::<Vec<_>>());
         assert!(start.elapsed() >= Duration::from_millis(30), "not before they're due");
         assert!(receive.recv_timeout(Duration::from_millis(50)).is_err(), "once each");
+    }
+
+    /// Failure (review 1): a late call that panics takes the delivery thread with it, `running` stays set, and no late call arrives again, as no other thread is started. The ones after it arrive, and so does one made later.
+    #[test]
+    fn a_call_that_panics_doesnt_stop_the_ones_after_it() {
+        let (send, receive) = channel();
+        let start = Instant::now();
+        deliveries().push(start + Duration::from_millis(10), Box::new(|| panic!("a call that panics, on purpose")));
+        let after = send.clone();
+        deliveries().push(start + Duration::from_millis(20), Box::new(move || after.send(1).unwrap()));
+        assert_eq!(receive.recv_timeout(Duration::from_secs(10)), Ok(1), "the one after it");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while deliveries().running.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the thread never went");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        deliveries().push(Instant::now(), Box::new(move || send.send(2).unwrap()));
+        assert_eq!(receive.recv_timeout(Duration::from_secs(10)), Ok(2), "and one made later");
     }
 
     /// Failure: the delivery thread stays once nothing's waiting, so a quiet slow run carries a thread a fast one doesn't, and a test that counts threads at rest fails only in slow mode.
