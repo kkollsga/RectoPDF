@@ -59,7 +59,7 @@ fn cdhash_of(app: &Path) -> String {
 
 /// An installed old version, a staged new one, a record, and a stand-in for the running process.
 struct Bed {
-    dir: PathBuf,
+    dir: recto_testpdf::TempDir,
     files: Files,
     app: PathBuf,
     plan: Plan,
@@ -67,11 +67,7 @@ struct Bed {
 
 impl Bed {
     fn new(name: &str, new_app_does: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-installer-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-installer-{name}-"));
         let root = dir.join("state");
         local::ensure_private_dir(&root).unwrap();
         let files = Files::in_state(&root);
@@ -251,7 +247,6 @@ impl Drop for Bed {
         for pid in local::processes_running(&self.plan.executable()) {
             local::signal_process(pid, true);
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -978,11 +973,7 @@ fn an_app_reopened_during_an_install_goes_on_as_normal() {
 /// Failure: a release with a zip the updater's reader won't take gets published, and nobody can update to it. `release-zip.sh` checks with this.
 #[test]
 fn the_reader_can_be_asked_about_a_zip() {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("recto-installer-{}-checkzip", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-installer-checkzip-");
     std::fs::create_dir_all(&dir).unwrap();
     let app = bundle(&dir, "0.2.0");
     let zip = dir.join("r.zip");

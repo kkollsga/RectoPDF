@@ -27,12 +27,18 @@ fn slow_report() -> Value {
     })
 }
 
-/// A test's outside change to a quiet run's activation policy: how often the run turns itself `accessory`, as something outside the app once did (a full check, 2026-11-11, and `open -g` of a copy with the same identifier, twice in about 145 reports), from `RECTO_QA_POLICY_NUDGE_MS`. Nothing outside a quiet run.
+/// A test's outside change to a quiet run's activation policy: how often the run turns itself `accessory`, as something outside the app once did (a full check, 2026-11-11, and `open -g` of a copy with the same identifier, twice in about 145 reports), from `RECTO_QA_POLICY_NUDGE_MS`. Nothing outside a quiet run, and never in a release build.
 pub(crate) fn policy_nudge(quiet: bool) -> Option<Duration> {
-    if !quiet {
+    nudge_for(recto_platform::RELEASE_BUILD, quiet, || std::env::var("RECTO_QA_POLICY_NUDGE_MS").ok())
+}
+
+/// [`policy_nudge`] for a build that is or isn't a release, with the switch read only if it's needed. A release never takes it, whatever its
+/// environment says, as the slow mode doesn't (`recto_platform::slow::arm`): `RELEASE_BUILD` is compiled in.
+fn nudge_for(release: bool, quiet: bool, switch: impl FnOnce() -> Option<String>) -> Option<Duration> {
+    if release || !quiet {
         return None;
     }
-    let ms: u64 = std::env::var("RECTO_QA_POLICY_NUDGE_MS").ok()?.parse().ok()?;
+    let ms: u64 = switch()?.parse().ok()?;
     Some(Duration::from_millis(ms.clamp(5, 10_000)))
 }
 
@@ -822,6 +828,31 @@ fn cleaned(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: a release build takes a test's hook from its environment: `RECTO_QA_POLICY_NUDGE_MS` turned a release's quiet run `accessory` every
+    /// few milliseconds, where the slow mode beside it is off in a release whatever the environment says. Not read at all there, and only in a quiet run.
+    #[test]
+    fn a_release_never_takes_the_policy_nudge() {
+        let read = std::cell::Cell::new(false);
+        let switch = || {
+            read.set(true);
+            Some("15".to_owned())
+        };
+        assert_eq!(nudge_for(true, true, switch), None, "a release's quiet run took the nudge");
+        assert!(!read.get(), "a release read the switch");
+        assert_eq!(
+            nudge_for(false, false, || Some("15".to_owned())),
+            None,
+            "a launch that isn't quiet took the nudge"
+        );
+        assert_eq!(nudge_for(false, true, || Some("15".to_owned())), Some(Duration::from_millis(15)));
+        assert_eq!(
+            nudge_for(false, true, || Some("1".to_owned())),
+            Some(Duration::from_millis(5)),
+            "held to its floor"
+        );
+        assert_eq!(nudge_for(false, true, || Some("soon".to_owned())), None);
+    }
 
     /// Failure: the recording calls one move many, or a rest a move, so the numbers reported say something other than what happened. A made-up path: rest, a move, rest, a move that holds still for a moment at a rounded pixel, rest.
     #[test]

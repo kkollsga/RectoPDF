@@ -29,6 +29,7 @@ case "$*" in
 esac
 echo "$*" >> "$CALLS"
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
+[[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == *clippy* ]]; then bash -c "$STUB_DURING"; fi
 if [ -n "${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then exit "${STUB_EXIT:-100}"; fi
 STUB
@@ -77,8 +78,8 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
 # Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
@@ -164,6 +165,25 @@ check "and the guard doesn't get it" "no-stamp" "$([ -s "$CHECKED" ] && echo has
 case "$(last_ledger_field 3)" in *+dirty) r=dirty ;; *) r=clean ;; esac
 check "and the ledger says so" "dirty" "$r"
 
+# Failure (process review, 2026-11-11): a tracked file edited during a run and put back before it ends, as a test tried mid-run is, leaves the tree as it
+# started, so the run's pass was stamped on a commit whose code wasn't all of what ran.
+fresh_ledger
+commit_code put-back-base
+out=$(STUB_DURING='cp crates/alpha/src/lib.rs "$CALLS.keep"; echo during >> crates/alpha/src/lib.rs; cp "$CALLS.keep" crates/alpha/src/lib.rs' full); rc=$?
+: > "$CALLS"
+check "a file changed and put back during the run: the run still passes" "0" "$rc"
+check "but isn't remembered" "no-passes" "$([ -s "$PASSES" ] && echo has-passes || echo no-passes)"
+check "nor given to the guard" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
+case "$(last_ledger_field 3)" in *+dirty) r=dirty ;; *) r=clean ;; esac
+check "and the ledger says it was dirty" "dirty" "$r"
+has "and it says why" "changed while it ran" "$out"
+has "naming the file" "crates/alpha/src/lib.rs" "$out"
+# And a run nothing touched is still stamped, so the check never refuses everything.
+commit_code untouched-base
+full > /dev/null
+: > "$CALLS"
+check "a run nothing touched is stamped" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED" 2>/dev/null)"
+
 # Failure: a commit of documents only, made while a run is under way, throws the pass away, so the push guard refuses code that passed (2026-11-08).
 fresh_ledger
 commit_code docs-during-base
@@ -237,6 +257,40 @@ check "and the run passes" "pass" "$(last_ledger_field 4)"
 : > "$CALLS"
 tools/check.sh --quick > /dev/null 2>&1
 check "the quick check skips it, as it builds no app" "0" "$(grep -c -- '--test registrations' "$CALLS")"
+: > "$CALLS"
+
+# Failure (icon worker, 2026-11-11): the bundle's own checks (its notices, no extended attributes) ran only with RECTO_SKIP_APP, so a full run never held
+# the app it had just built to them. They run after the build, needing that app, and a failure there fails the run.
+fresh_ledger
+rm -f "$CALLS.bundle"
+commit_code bundle-pass
+full > /dev/null
+: > "$CALLS"
+bundle=$(cat "$CALLS.bundle" 2>/dev/null)
+check "the bundle's checks run once in a full run" "1" "$(printf '%s' "$bundle" | grep -c . | tr -d ' ')"
+has "needing the app just built, not skipping it" "skip= require=1 " "$bundle"
+has "with the notices' copy" "test(=the_built_app_carries_the_notices)" "$bundle"
+has "and extended attributes" "test(=nothing_in_the_built_app_has_extended_attributes)" "$bundle"
+commit_code bundle-fail
+out=$(STUB_FAIL="--test notices" STUB_EXIT=100 full); rc=$?
+check "a bundle without its notices fails the full run" "100" "$rc"
+check "and the ledger names the stage" "fail:app-bundle" "$(last_ledger_field 4)"
+rm -f "$CALLS.bundle"
+tools/check.sh --quick > /dev/null 2>&1
+check "the quick check skips them, as it builds no app" "0" "$( [ -f "$CALLS.bundle" ] && wc -l < "$CALLS.bundle" | tr -d ' ' || echo 0)"
+: > "$CALLS"
+
+# Failure (2026-11-11): the Windows compile check passed on a warning, an unused variable in code only Windows builds see (916efaf), which no other
+# stage compiles. It fails on warnings as clippy does, in the quick check and the full one.
+: > "$CALLS"
+tools/check.sh --quick > /dev/null 2>&1
+check "the quick check's Windows compile check fails on warnings" "1" "$(grep -c -- '--target x86_64-pc-windows-gnu.* -- -D warnings$' "$CALLS")"
+: > "$CALLS"
+fresh_ledger
+commit_code windows-warns
+out=$(STUB_FAIL="x86_64-pc-windows-gnu" STUB_EXIT=101 full); rc=$?
+check "and a warning there fails the full run" "101" "$rc"
+check "with the ledger naming the stage" "fail:windows" "$(last_ledger_field 4)"
 : > "$CALLS"
 
 # Failure: a job stopped from outside held against the branch.

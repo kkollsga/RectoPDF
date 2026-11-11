@@ -20,3 +20,7 @@ recto-platform.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+# Test-only: fresh temp folders.
+recto-testpdf.workspace = true

@@ -1506,14 +1506,8 @@ mod tests {
     use recto_session::TabId;
     use recto_session::record::{FileRecord, MAIN_KIND, PathField};
 
-    fn state() -> (PathBuf, StatePaths) {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let root =
-            std::env::temp_dir()
-                .canonicalize()
-                .unwrap()
-                .join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        let _ = std::fs::remove_dir_all(&root);
+    fn state() -> (recto_testpdf::TempDir, StatePaths) {
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "rs");
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
         (root, paths)

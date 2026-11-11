@@ -30,25 +30,5 @@ pub fn three_page_pdf(catalog_extra: &str, extra: &[String], trailer_extra: &str
     pdf(&objects, &format!("/Root 1 0 R {trailer_extra}"))
 }
 
-/// A unique temp file holding the bytes, removed on drop.
-pub struct TempPdf(pub std::path::PathBuf);
-
-impl TempPdf {
-    pub fn new(name: &str, bytes: &[u8]) -> Self {
-        let dir = std::env::temp_dir().join(format!("recto-core-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(name);
-        std::fs::write(&path, bytes).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempPdf {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-        // The folder is shared within a test binary's process, so this only removes it once it's empty.
-        if let Some(dir) = self.0.parent() {
-            let _ = std::fs::remove_dir(dir);
-        }
-    }
-}
+/// A unique temp file holding the bytes, in a folder of its own, removed on drop.
+pub use recto_testpdf::TempPdf;

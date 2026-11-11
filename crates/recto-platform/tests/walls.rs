@@ -40,17 +40,13 @@ fn run(command: &mut Command) {
 
 /// A scratch folder with a canary in it, and a listener to connect to. Removed on drop, with anything a launch left in the LaunchServices database.
 struct Fixture {
-    scratch: PathBuf,
+    scratch: recto_testpdf::TempDir,
     listener: TcpListener,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let scratch = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-walls-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-walls-{name}-"));
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("canary.txt"), "canary").unwrap();
         Self {
@@ -173,7 +169,6 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = Command::new(LSREGISTER).arg("-u").arg(self.escape_app()).output();
         let _ = Command::new(LSREGISTER).arg("-u").arg(self.helper()).output();
-        let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 

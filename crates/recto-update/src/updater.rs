@@ -1746,7 +1746,7 @@ mod tests {
     }
 
     struct Bed {
-        dir: PathBuf,
+        dir: recto_testpdf::TempDir,
         server: Server,
         fake: Arc<Fake>,
         updater: Arc<Updater>,

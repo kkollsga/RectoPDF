@@ -90,18 +90,17 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    fn temp_paths(name: &str) -> StatePaths {
-        let root = std::env::temp_dir().join(format!("recto-levels-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn temp_paths(name: &str) -> (recto_testpdf::TempDir, StatePaths) {
+        let root = recto_testpdf::TempDir::new(&format!("recto-levels-{name}-"));
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
-        paths
+        (root, paths)
     }
 
     /// Failure: the default isn't Off, or a damaged, linked or open file counts as whatever it says. Fail closed: an agent must never gain from a broken file.
     #[test]
     fn anything_odd_about_the_file_means_off() {
-        let paths = temp_paths("closed");
+        let (_root, paths) = temp_paths("closed");
         assert_eq!(current(&paths), Level::Off, "the default");
         store(&paths, Level::Control).unwrap();
         assert_eq!(current(&paths), Level::Control);

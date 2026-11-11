@@ -11,11 +11,9 @@ use recto_session::TabId;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A host that does whatever a test's command asks. `facts` panics, `tabs` blocks until released, `text` is slow, `where` answers with something huge.
 #[derive(Default)]
@@ -112,14 +110,12 @@ struct Running {
     host: Arc<Stand>,
     thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     stopper: recto_control::server::Stopper,
+    _root: recto_testpdf::TempDir,
 }
 
 impl Running {
     fn start(limits: Limits) -> Self {
-        let root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "rs");
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
         levels::store(&paths, Level::Full).unwrap();
@@ -133,6 +129,7 @@ impl Running {
             host,
             thread: Some(thread),
             stopper,
+            _root: root,
         }
     }
 
@@ -162,7 +159,6 @@ impl Drop for Running {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        let _ = std::fs::remove_dir_all(&self.paths.root);
     }
 }
 

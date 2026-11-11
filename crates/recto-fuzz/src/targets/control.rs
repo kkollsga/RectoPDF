@@ -56,23 +56,23 @@ struct Running {
     host: Arc<Guarded>,
     stopper: Stopper,
     thread: JoinHandle<std::io::Result<()>>,
+    /// A folder of its own when `RECTO_FUZZ_STATE` doesn't name one, never one an earlier process with the same id left; removed with the server.
+    _folder: Option<recto_testpdf::TempDir>,
 }
 
 static SERVER: Mutex<Option<Running>> = Mutex::new(None);
 
 /// `RECTO_FUZZ_STATE` is how `tools/fuzz.sh` says where, so it can clear up after a run that ends by being stopped.
-fn state_folder() -> PathBuf {
-    if let Some(chosen) = std::env::var_os("RECTO_FUZZ_STATE") {
-        return PathBuf::from(chosen);
-    }
-    std::env::temp_dir()
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("rf{}", std::process::id()))
+fn chosen_folder() -> Option<PathBuf> {
+    std::env::var_os("RECTO_FUZZ_STATE").map(PathBuf::from)
 }
 
 fn start() -> Running {
-    let paths = StatePaths::overridden(&state_folder()).expect("a state folder in the temp folder");
+    let folder = chosen_folder()
+        .is_none()
+        .then(|| recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), "rf"));
+    let root = chosen_folder().unwrap_or_else(|| folder.as_ref().expect("made when none is chosen").to_path_buf());
+    let paths = StatePaths::overridden(&root).expect("a state folder in the temp folder");
     paths.prepare().expect("the state folder");
     levels::store(&paths, Level::Control).expect("the level file");
     let server = Server::bind(&paths).expect("the socket");
@@ -80,7 +80,13 @@ fn start() -> Running {
     let host = Arc::new(Guarded(SessionHost::new(NamedLoader)));
     let hosted = Arc::clone(&host);
     let thread = std::thread::spawn(move || server.run(hosted, Limits::default()));
-    Running { paths, host, stopper, thread }
+    Running {
+        paths,
+        host,
+        stopper,
+        thread,
+        _folder: folder,
+    }
 }
 
 /// Ends the server and removes its folder. A smoke run calls this. A libFuzzer run ends by being stopped, and `tools/fuzz.sh` clears up after it.
@@ -90,7 +96,9 @@ pub fn shut_down() {
         running.stopper.stop();
         let _ = running.thread.join();
     }
-    let _ = std::fs::remove_dir_all(state_folder());
+    if let Some(chosen) = chosen_folder() {
+        let _ = std::fs::remove_dir_all(chosen);
+    }
 }
 
 /// Catches: a panic in a job, a line that stops the server answering, a client that keeps the next one out, or an answer that isn't a line of JSON.

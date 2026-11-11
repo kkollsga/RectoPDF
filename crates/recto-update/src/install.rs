@@ -745,11 +745,7 @@ mod tests {
     /// Failure: the copy of the record misses part of it, brings back a history of a closed PDF it never took, or leaves behind what a broken new version added.
     #[test]
     fn a_record_comes_back_as_it_was() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-install-{}-record", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-install-record-");
         let (session, before) = (dir.join("session"), dir.join("before"));
         std::fs::create_dir_all(session.join("journals")).unwrap();
         std::fs::write(session.join("record.a.json"), "good a").unwrap();

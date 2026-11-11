@@ -1,7 +1,7 @@
 //! Writes small PDFs for tests, so expected values come from the bytes rather than from another parser. Test-only: nothing that ships
 //! depends on this crate. No third-party file is committed: the hostile cases here are generated too.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A body for one object: either a dictionary or a stream with its own dictionary entries.
@@ -407,34 +407,79 @@ pub fn relisted_xref(sections: usize) -> Vec<u8> {
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// A unique temp file holding the bytes, removed on drop.
-pub struct TempPdf(pub PathBuf);
+/// A folder of a test's own, made fresh and removed with everything in it on drop. Named `<prefix><pid>-<n><suffix>`, and never one
+/// already there: a process id comes round again, and a test that was killed or left a file leaves its folder behind, so a later
+/// process with the same id and count would share it (2026-11-11: a save test found another test's `large.svg` beside its document,
+/// and 707 such folders were in the temp folder). Only the leaf is made, so the base must exist. Private to this user (`0700`), so it
+/// can be a state folder, which must be.
+pub struct TempDir(PathBuf);
 
-impl TempPdf {
-    pub fn new(name: &str, bytes: &[u8]) -> Self {
-        // A folder of its own, never one already there: a process id comes round again, and a test that was killed or left a file
-        // leaves its folder behind, so a later test with the same id and count would share it (2026-11-11: a save test found
-        // another test's `large.svg` beside its document).
-        let dir = loop {
-            let dir = std::env::temp_dir().join(format!("recto-render-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-            match std::fs::create_dir(&dir) {
-                Ok(()) => break dir,
+impl TempDir {
+    /// In the system's temp folder.
+    pub fn new(prefix: &str) -> Self {
+        Self::with_suffix(&std::env::temp_dir(), prefix, "")
+    }
+
+    /// In `base`, which must exist.
+    pub fn new_in(base: &Path, prefix: &str) -> Self {
+        Self::with_suffix(base, prefix, "")
+    }
+
+    /// In `base`, with `suffix` after the count, such as `.noindex` to keep Spotlight out.
+    pub fn with_suffix(base: &Path, prefix: &str, suffix: &str) -> Self {
+        loop {
+            let dir = base.join(format!("{prefix}{}-{}{suffix}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            #[cfg(unix)]
+            let made = std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir);
+            #[cfg(not(unix))]
+            let made = std::fs::create_dir(&dir);
+            match made {
+                Ok(()) => return Self(dir),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("making {}: {error}", dir.display()),
             }
-        };
-        let path = dir.join(name);
-        std::fs::write(&path, bytes).unwrap();
-        Self(path)
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
     }
 }
 
-impl Drop for TempPdf {
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-        if let Some(dir) = self.0.parent() {
-            let _ = std::fs::remove_dir(dir);
-        }
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A unique temp file holding the bytes, in a folder of its own, removed with that folder on drop.
+pub struct TempPdf(pub PathBuf, TempDir);
+
+impl TempPdf {
+    pub fn new(name: &str, bytes: &[u8]) -> Self {
+        let dir = TempDir::new("recto-render-test-");
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        Self(path, dir)
+    }
+
+    /// The folder it's in, which is its own.
+    pub fn folder(&self) -> &Path {
+        &self.1
     }
 }
 
@@ -457,5 +502,32 @@ mod tests {
         assert_eq!(beside, ["doc.pdf"]);
         let _ = std::fs::remove_file(stale.join("left.svg"));
         let _ = std::fs::remove_dir(&stale);
+    }
+
+    /// Failure: a test's folder is one left behind by an earlier process with the same id and count, so the test finds that
+    /// process's files in it; or the folder outlives the test, as 707 did on 2026-11-11.
+    #[test]
+    fn a_temp_dir_is_always_fresh_and_goes_with_its_files() {
+        let base = TempDir::new("recto-temp-dir-test-");
+        let next = NEXT.load(Ordering::Relaxed);
+        let stale = base.join(format!("t{}-{next}.noindex", std::process::id()));
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::write(stale.join("left.svg"), b"x").unwrap();
+        let dir = TempDir::with_suffix(&base, "t", ".noindex");
+        assert_ne!(dir.path(), stale);
+        assert!(dir.file_name().unwrap().to_str().unwrap().ends_with(".noindex"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a fresh folder has nothing in it");
+        #[cfg(unix)]
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&dir).unwrap().permissions()) & 0o077,
+            0,
+            "private"
+        );
+        std::fs::create_dir(dir.join("inner")).unwrap();
+        std::fs::write(dir.join("inner/file"), b"x").unwrap();
+        let path = dir.path().to_path_buf();
+        drop(dir);
+        assert!(!path.exists(), "the folder and what's in it go on drop");
+        assert!(stale.join("left.svg").exists(), "another's folder is left alone");
     }
 }

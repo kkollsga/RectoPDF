@@ -69,16 +69,12 @@ fn helper(args: &[&std::ffi::OsStr]) {
 
 /// This build's worker in a helper of its own, in a temp folder that goes with it.
 struct Bundle {
-    scratch: PathBuf,
+    scratch: recto_testpdf::TempDir,
 }
 
 impl Bundle {
     fn new(name: &str) -> Self {
-        let scratch = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-sandbox-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-sandbox-{name}-"));
         std::fs::create_dir_all(&scratch).unwrap();
         let bundle = Self { scratch };
         let contents = bundle.contents();
@@ -108,12 +104,6 @@ impl Bundle {
         );
         config.heavy_slot = HeavySlot::new();
         config
-    }
-}
-
-impl Drop for Bundle {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 

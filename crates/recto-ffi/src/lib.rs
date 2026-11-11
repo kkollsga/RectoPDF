@@ -5509,16 +5509,14 @@ mod tests {
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
     #[test]
     fn stop_is_refused_by_a_normal_app() {
+        let state = recto_testpdf::TempDir::new("rf-");
         let host = AppHost {
             engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
             session: SessionHost::new(DrawableLoader),
             core: Arc::new(CoreQueue::default()),
             qa: None,
             saver: Arc::new(Saver::new(
-                RecordStore::open(
-                    &StatePaths::overridden(&std::env::temp_dir().join(format!("rf-{}", std::process::id()))).unwrap(),
-                    Flavor::App,
-                ),
+                RecordStore::open(&StatePaths::overridden(&state).unwrap(), Flavor::App),
                 Arc::new(CoreQueue::default()),
             )),
             running: AtomicU32::new(0),

@@ -312,8 +312,7 @@ mod tests {
     /// Failure: a damaged or nonsense plan gets acted on, so a broken file could move something.
     #[test]
     fn a_plan_that_doesnt_make_sense_is_no_plan() {
-        let dir = std::env::temp_dir().join(format!("recto-plan-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = recto_testpdf::TempDir::new("recto-plan-");
         local::ensure_private_dir(&dir).unwrap();
         let file = dir.join("plan.json");
         assert_eq!(Plan::read(&file), None);

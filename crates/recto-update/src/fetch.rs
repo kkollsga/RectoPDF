@@ -333,7 +333,8 @@ pub(crate) mod tests {
         let source = server.source();
         let url = format!("{}/a", server.url);
         assert_eq!(get_small(&source, &url, "x", 64 * 1024, Duration::from_secs(20)), Err(FetchError::TooLarge));
-        let file = std::env::temp_dir().join(format!("recto-fetch-{}-forever", std::process::id()));
+        let folder = recto_testpdf::TempDir::new("recto-fetch-forever-");
+        let file = folder.join("download");
         assert_eq!(
             download(&source, &url, "x", &file, 1024 * 1024, Duration::from_secs(20)),
             Err(FetchError::TooLarge)
@@ -346,7 +347,8 @@ pub(crate) mod tests {
     fn a_download_is_whole_or_it_is_nothing() {
         let server = Server::start();
         let source = server.source();
-        let file = std::env::temp_dir().join(format!("recto-fetch-{}-whole", std::process::id()));
+        let folder = recto_testpdf::TempDir::new("recto-fetch-whole-");
+        let file = folder.join("download");
         server.set("/ok", Answer::Body(b"abc".to_vec()));
         let sha = download(&source, &format!("{}/ok", server.url), "x", &file, 1024, LIMIT).unwrap();
         assert_eq!(sha, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");

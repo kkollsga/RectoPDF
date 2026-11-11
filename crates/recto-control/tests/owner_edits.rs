@@ -35,11 +35,12 @@ struct Running {
     host: Arc<SessionHost<Fake>>,
     thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     stopper: recto_control::server::Stopper,
+    _root: recto_testpdf::TempDir,
 }
 
 impl Running {
     fn at(level: Level) -> Self {
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("roe{}", std::process::id()));
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "roe");
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
         levels::store(&paths, level).unwrap();
@@ -53,6 +54,7 @@ impl Running {
             host,
             thread: Some(thread),
             stopper,
+            _root: root,
         }
     }
 
@@ -89,7 +91,6 @@ impl Drop for Running {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        let _ = std::fs::remove_dir_all(&self.paths.root);
     }
 }
 

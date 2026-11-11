@@ -867,7 +867,7 @@ mod tests {
     /// Failure (CI timing worker, 2026-11-08): a server killed mid-render leaves `.recto-<pid>-N.partial` in the output folder, and nothing ever removes it. A dead run's go; a live run's, this run's, a link and a file that only looks like one stay.
     #[test]
     fn temp_files_of_runs_that_died_are_swept() {
-        let folder = std::env::temp_dir().join(format!("recto-temp-sweep-{}", std::process::id()));
+        let folder = recto_testpdf::TempDir::new("recto-temp-sweep-");
         std::fs::create_dir_all(&folder).unwrap();
         let (dead, live, mine) = (4_000_001u32, 4_000_002u32, std::process::id());
         let file = |name: String| {

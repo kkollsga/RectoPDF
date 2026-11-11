@@ -277,7 +277,7 @@ fn orphan_host_entry() {
 /// notice by itself.
 #[test]
 fn an_orphaned_worker_stops_itself() {
-    let dir = std::env::temp_dir().join(format!("recto-orphan-{}", std::process::id()));
+    let dir = recto_testpdf::TempDir::new("recto-orphan-");
     std::fs::create_dir_all(&dir).unwrap();
     let pid_file = dir.join("pid");
     let host = std::process::Command::new(std::env::current_exe().unwrap())

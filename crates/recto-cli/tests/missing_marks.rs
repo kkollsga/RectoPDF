@@ -117,7 +117,7 @@ fn browser_draws(chrome: &str, svg: &Path, shot: &Path, profile: &Path, size: (f
 /// Exports one page, draws it both ways and gives the largest mark the export lost, with where it is.
 fn lost_from(chrome: &str, what: &str, pdf: &Path, page: &str) -> (usize, usize, usize) {
     let state = State::at(Level::Full);
-    let folder = pdf.parent().unwrap().join(format!("marks-{}-{what}", std::process::id()));
+    let folder = recto_testpdf::TempDir::new_in(pdf.parent().unwrap(), &format!("marks-{what}-"));
     std::fs::create_dir_all(&folder).unwrap();
     let (render, svg, shot) = (folder.join("page.png"), folder.join("page.svg"), folder.join("shot.png"));
     let path = pdf.to_str().unwrap();

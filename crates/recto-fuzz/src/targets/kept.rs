@@ -14,7 +14,6 @@ use recto_session::{HistorySource, Session};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime};
 
 const BUDGET: Budget = Budget {
@@ -25,11 +24,9 @@ const PAGES: u32 = 5;
 /// What a canary holds, so a change to it shows.
 const CANARY: &[u8] = b"not the history's to touch";
 
-static NEXT_FOLDER: AtomicU32 = AtomicU32::new(0);
-
-fn folder() -> PathBuf {
+fn folder() -> recto_testpdf::TempDir {
     let base = std::env::var_os("RECTO_FUZZ_STATE").map_or_else(|| std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), PathBuf::from);
-    base.join(format!("kept{}-{}", std::process::id(), NEXT_FOLDER.fetch_add(1, Ordering::Relaxed)))
+    recto_testpdf::TempDir::new_in(&base, "kept")
 }
 
 fn five_pages() -> Vec<u8> {

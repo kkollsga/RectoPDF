@@ -721,7 +721,7 @@ fn text_survives_a_page_the_check_cant_draw() {
 #[test]
 fn the_fetch_script_stops_on_a_bad_digest() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/pdfium.sh");
-    let dir = std::env::temp_dir().join(format!("recto-pdfium-script-{}", std::process::id()));
+    let dir = recto_testpdf::TempDir::new("recto-pdfium-script-");
     std::fs::create_dir_all(&dir).unwrap();
     let bad = dir.join("-not-the-tarball.tgz");
     std::fs::write(&bad, b"not the tarball").unwrap();

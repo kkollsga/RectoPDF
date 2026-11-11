@@ -252,11 +252,8 @@ mod tests {
     #[test]
     fn a_link_to_the_home_is_seen_through() {
         let home = local::real_home().unwrap().canonicalize().unwrap();
-        let link = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-home-link-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-home-link-");
+        let link = temp.join("link");
         std::os::unix::fs::symlink(&home, &link).unwrap();
         let error = StatePaths::overridden(&link).unwrap_err();
         assert_eq!(error.code, "state_refused");
@@ -282,11 +279,8 @@ mod tests {
         assert!(is_in_real_home(&home.join("no-such-folder-recto/skill")));
         let climbing = PathBuf::from(format!("/usr/..{}/no-such-folder-recto", home.display()));
         assert!(is_in_real_home(&climbing), "{climbing:?}");
-        let link = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-in-home-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-in-home-");
+        let link = temp.join("link");
         std::os::unix::fs::symlink(&home, &link).unwrap();
         assert!(is_in_real_home(&link.join("no-such-folder-recto")));
         std::fs::remove_file(&link).unwrap();
@@ -310,8 +304,8 @@ mod tests {
     #[test]
     fn prepare_makes_private_folders_and_refuses_open_ones() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("recto-prepare-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let temp = recto_testpdf::TempDir::new("recto-prepare-");
+        let root = temp.join("state");
         let paths = StatePaths::overridden(&root).unwrap();
         assert!(!root.exists(), "checking a path must not create it");
         paths.prepare().unwrap();

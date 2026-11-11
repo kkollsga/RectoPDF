@@ -108,7 +108,8 @@ fn files_that_cant_be_read_say_why() {
     assert_eq!(signatures(std::path::Path::new("/no/such/file.pdf")).unwrap_err(), OpenError::NotFound);
     let junk = TempPdf::new("junk.pdf", b"not a pdf");
     assert_eq!(signatures(&junk.0).unwrap_err(), OpenError::NotPdf);
-    let fifo = std::env::temp_dir().join(format!("recto-core-fifo-{}", std::process::id()));
+    let folder = recto_testpdf::TempDir::new("recto-core-fifo-");
+    let fifo = folder.join("pipe");
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
     assert_eq!(inspect(&fifo).unwrap_err(), OpenError::NotPdf, "a pipe must be refused, not waited on");
     assert_eq!(signatures(&fifo).unwrap_err(), OpenError::NotPdf);
