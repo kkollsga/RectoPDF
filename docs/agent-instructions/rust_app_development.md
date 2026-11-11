@@ -1387,6 +1387,10 @@ so **anything that must hold everywhere goes into a skill or the repo, not only 
   names the container, and what the system does when a container meets a new signer is something you'd find out on the
   user's Mac.
 
+### 11.2.2 Development builds never touch the keychain
+
+Signing a build with the Developer ID in the login keychain can stop and wait for the user to approve keychain access. On one project that approval sometimes took hours, and every development build waited behind it. Sign development builds ad hoc, with a designated requirement that names only the bundle identifier (`codesign -s - -r='designated => identifier "<bundle id>"'`). macOS then treats each new build as the same app and keeps its folder permissions (TCC), and no keychain call is made. Developer ID signing and notarization belong in CI, on a pushed release tag, with a temporary keychain built from secrets. A notarization rehearsal also runs there, not on the user's Mac.
+
 ### 11.3 Infrastructure the user owns
 
 - Cloud resources (a Cloudflare Worker for rendezvous here) are set up by the user with their own tokens. Agents
