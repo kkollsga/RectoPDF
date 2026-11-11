@@ -164,3 +164,72 @@ fn a_long_session_stays_flat() {
     let _ = state.json(&["qa", "quit"]);
     let _ = pid;
 }
+
+/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, the pictures queued for writing stay under their cap, and its footprint doesn't climb with the tabs. Numbers that matter come from a release build: `--no-capture` prints them.
+#[test]
+fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
+    use common::app::{Run, long_document};
+    const TABS: usize = 80;
+    let state = State::new();
+    let slow = [("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_write=5000"))];
+    let Some(run) = Run::on_with_env(&state, &slow) else { return };
+    let file = long_document("leaving", 3);
+    let folder = state.root.join("tabs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let link = |at: usize| folder.join(format!("t{at}.pdf"));
+    for at in 0..TABS {
+        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
+    }
+    let sample = |run: &Run| {
+        let report = run.report();
+        let memory = &report["memory"];
+        (memory["threads"].as_u64().unwrap(), memory["footprint_bytes"].as_u64().unwrap(), report)
+    };
+    // The warm ones full, and none left yet: what the app holds with nothing queued.
+    for at in 0..recto_session::MAX_WARM {
+        run.ok(&["open", link(at).to_str().unwrap()]);
+        run.settled();
+    }
+    let (threads_full, footprint_full, _) = sample(&run);
+    let (mut peak_threads, mut peak_footprint) = (threads_full, footprint_full);
+    let began = std::time::Instant::now();
+    for at in recto_session::MAX_WARM..TABS {
+        run.ok(&["open", link(at).to_str().unwrap()]);
+        run.settled();
+        let (threads, footprint, _) = sample(&run);
+        peak_threads = peak_threads.max(threads);
+        peak_footprint = peak_footprint.max(footprint);
+    }
+    let took = began.elapsed();
+    let (_, _, report) = sample(&run);
+    let sleep = &report["record"]["sleep"];
+    println!(
+        "{} tabs left in {took:?} with sleep writes 5 s late: threads {threads_full} with the warm ones full, at most {peak_threads}; footprint {:.1} MiB, at most {:.1} MiB; sleep {sleep}",
+        TABS - recto_session::MAX_WARM,
+        footprint_full as f64 / 1048576.0,
+        peak_footprint as f64 / 1048576.0,
+    );
+    assert!(
+        report["slow"]["seams"]["sleep_write"]["times"].as_u64().unwrap() > 0,
+        "sleep files were being written: {}",
+        report["slow"]
+    );
+    // One writer, and a command's thread or a look at a file at the moment of asking.
+    assert!(
+        peak_threads <= threads_full + 3,
+        "threads grew with the tabs leaving: {threads_full} then {peak_threads}"
+    );
+    let leaving = &sleep["leaving"];
+    assert!(
+        leaving["peak_bytes"].as_u64().unwrap() <= leaving["cap_bytes"].as_u64().unwrap(),
+        "the pictures queued passed their cap: {leaving}"
+    );
+    assert!(leaving["peak_writers"].as_u64().unwrap() <= 1, "{leaving}");
+    // What's queued is capped, so what the app holds is too: the cap, and room for the system's own caches, not a share per tab.
+    let cap = leaving["cap_bytes"].as_u64().unwrap();
+    assert!(
+        peak_footprint <= footprint_full + cap + 16 * 1024 * 1024,
+        "the footprint climbed with the tabs leaving: {footprint_full} then {peak_footprint}"
+    );
+    run.quit();
+}

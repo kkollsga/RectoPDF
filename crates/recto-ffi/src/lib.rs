@@ -19,6 +19,7 @@ mod qa;
 mod saver;
 mod saving;
 mod sidebar_access;
+mod sleep_queue;
 mod sleeper;
 mod snapshot_tool;
 pub mod updates;

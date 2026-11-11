@@ -31,6 +31,8 @@ const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
 const BUDGET_LOOK_EVERY: Duration = Duration::from_secs(1);
 /// How often a flush looks again for the sleep files' lock, while it may wait for it.
 const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
+/// The most the writer of those leaving holds back for a flush waiting to write, each time.
+const FLUSH_FIRST_FOR: Duration = Duration::from_secs(1);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
 
@@ -72,6 +74,10 @@ pub(crate) struct Sleeper {
     this_hour: Mutex<(Instant, u64)>,
     /// One sleep file being written at a time, so a flush has what's on its way.
     writing: Mutex<()>,
+    /// Flushes waiting for [`Self::writing`]: the writer of those leaving lets them go first.
+    flushes_waiting: AtomicU32,
+    /// Sleep files of tabs pushed out of the warm ones, waiting for their one writer: [`crate::sleep_queue`].
+    leaving: Mutex<crate::sleep_queue::LeavingQueue>,
     counts: Counts,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
@@ -127,6 +133,8 @@ impl Sleeper {
             last_written: Mutex::new(HashMap::new()),
             this_hour: Mutex::new((Instant::now(), 0)),
             writing: Mutex::new(()),
+            flushes_waiting: AtomicU32::new(0),
+            leaving: Mutex::new(crate::sleep_queue::LeavingQueue::default()),
             counts: Counts::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
         }
@@ -172,13 +180,24 @@ impl Sleeper {
     /// The one-at-a-time lock on writing sleep files: waited for, or until `until` and no further. A flush's thread, never the UI's.
     fn take_writing(&self, until: Option<Instant>) -> Option<std::sync::MutexGuard<'_, ()>> {
         let Some(until) = until else { return Some(lock(&self.writing)) };
-        loop {
+        self.flushes_waiting.fetch_add(1, Ordering::SeqCst);
+        let taken = loop {
             match self.writing.try_lock() {
-                Ok(guard) => return Some(guard),
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= until => return None,
+                Ok(guard) => break Some(guard),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break Some(poisoned.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= until => break None,
                 Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(WRITING_LOOK_EVERY),
             }
+        };
+        self.flushes_waiting.fetch_sub(1, Ordering::SeqCst);
+        taken
+    }
+
+    /// Before the writer of those leaving takes the lock for its next, a flush waiting for it goes first: it looks only every [`WRITING_LOOK_EVERY`], and the writer, going from one to the next, would otherwise have it again before then, every time. Bounded, as the flush has a limit of its own.
+    fn let_a_flush_go_first(&self) {
+        let began = Instant::now();
+        while self.flushes_waiting.load(Ordering::SeqCst) > 0 && began.elapsed() < FLUSH_FIRST_FOR {
+            std::thread::sleep(WRITING_LOOK_EVERY);
         }
     }
 
@@ -213,6 +232,7 @@ impl Sleeper {
             "woken_from_file": count(&counts.woken_from_file),
             "pressure_events": count(&counts.pressure_events),
             "looks_running": self.looks.running(),
+            "leaving": lock(&self.leaving).report(),
         })
     }
 }
@@ -297,6 +317,8 @@ impl Inner {
         let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
             return;
         };
+        // What's queued for it is older than this.
+        lock(&self.sleeper.leaving).forget(id);
         self.write_with_material(facts, material, now, until);
     }
 
@@ -345,17 +367,40 @@ impl Inner {
             .collect()
     }
 
-    /// And their sleep files, on a one-shot thread: packing a photograph takes long enough to hold up whatever's asked for next. A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind these only for what's left of its time.
+    /// And their sleep files, queued for the one writer, which is started if it isn't there: packing a photograph takes long enough to hold up whatever's asked for next. The queue's capped, by tabs and by bytes, and what's dropped past that is counted ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
     pub(crate) fn write_those_leaving(&self, left: Vec<(SleepFacts, SleepMaterial)>) {
         if left.is_empty() {
             return;
         }
-        let Some(inner) = self.saver.inner() else { return };
-        let _ = std::thread::Builder::new().name("recto-sleep".into()).stack_size(512 * 1024).spawn(move || {
-            for (facts, material) in left {
-                inner.write_with_material(facts, material, false, None);
-            }
-        });
+        let start = {
+            let mut queue = lock(&self.sleeper.leaving);
+            left.into_iter().fold(false, |start, (facts, material)| queue.push(facts, material) | start)
+        };
+        if !start {
+            return;
+        }
+        let Some(inner) = self.saver.inner() else {
+            lock(&self.sleeper.leaving).writer_gone();
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("recto-sleep".into())
+            .stack_size(512 * 1024)
+            .spawn(move || inner.write_leaving());
+        if spawned.is_err() {
+            lock(&self.sleeper.leaving).writer_gone();
+        }
+    }
+
+    /// **The one writer of those leaving:** oldest first, until there's none, and then it ends. Each is taken from the queue only as it's about to be written, so what waits is what the queue's caps allow.
+    fn write_leaving(&self) {
+        loop {
+            // Its own statement, so the queue's lock is let go before the write: in a `while let` it would be held through it.
+            let next = lock(&self.sleeper.leaving).next();
+            let Some((facts, material)) = next else { return };
+            self.sleeper.let_a_flush_go_first();
+            self.write_with_material(facts, material, false, None);
+        }
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
