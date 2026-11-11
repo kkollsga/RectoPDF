@@ -687,6 +687,11 @@ impl Engine {
         lock(&self.shared.reader).page_size_shown(page)
     }
 
+    /// How far a page is shown turned, in quarter turns clockwise. A short lock.
+    pub fn page_turns(&self, page: u32) -> u8 {
+        lock(&self.shared.reader).page_turns(page)
+    }
+
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         lock(&self.shared.reader).document_point(page, x, y)

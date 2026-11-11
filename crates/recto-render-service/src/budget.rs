@@ -231,9 +231,7 @@ pub fn draw_page_box(
     mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<PageDrawn, RenderFailure> {
     let started = Instant::now();
-    let (width_points, height_points) = doc.page_size(page)?;
-    let (width, height) = fitted_size(width_points, height_points, scale, caps).ok_or(RenderFailure::TooLargeAtThisScale)?;
-    let region = box_pixels(rect, (width_points, height_points), (width, height)).ok_or(RenderFailure::BadRequest)?;
+    let region = page_box_region(doc, page, scale, rect, caps)?;
     sink(PageEvent::Begin {
         width: region.width,
         height: region.height,
@@ -244,6 +242,38 @@ pub fn draw_page_box(
         height: region.height,
         render_us,
     })
+}
+
+/// Where [`draw_page_box`]'s box is in the page drawn whole at `scale`, in pixels: what its picture is cut from. The same checks: the page must fit the caps at that scale, and the box must be on it.
+pub fn page_box_region(doc: &mut DocRenderer, page: u32, scale: f32, rect: [f32; 4], caps: &OutputCaps) -> Result<TileRect, RenderFailure> {
+    let (width_points, height_points) = doc.page_size(page)?;
+    let (width, height) = fitted_size(width_points, height_points, scale, caps).ok_or(RenderFailure::TooLargeAtThisScale)?;
+    box_pixels(rect, (width_points, height_points), (width, height)).ok_or(RenderFailure::BadRequest)
+}
+
+/// Draws part of a box's picture, `part`, which must lie inside `region`, what [`page_box_region`] gave for the box: its rows to `sink`, top to bottom, with no `Begin`. For a picture made in pieces, as a snapshot of a turned page is, a band at a time. Returns the time drawing, in µs.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_page_region(
+    doc: &mut DocRenderer,
+    page: u32,
+    scale: f32,
+    region: TileRect,
+    part: TileRect,
+    generation: u64,
+    caps: &OutputCaps,
+    surface: &mut Option<SharedMemory>,
+    mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
+) -> Result<u64, RenderFailure> {
+    let inside = part.width > 0
+        && part.height > 0
+        && part.x >= region.x
+        && part.y >= region.y
+        && u64::from(part.x) + u64::from(part.width) <= u64::from(region.x) + u64::from(region.width)
+        && u64::from(part.y) + u64::from(part.height) <= u64::from(region.y) + u64::from(region.height);
+    if !inside {
+        return Err(RenderFailure::BadRequest);
+    }
+    strips(doc, page, scale, generation, part, Instant::now(), caps, surface, &mut sink)
 }
 
 /// Where a box in points lands in a page drawn at `pixels`, rounded out to whole pixels and held to the page. `None` for a box that isn't on it.

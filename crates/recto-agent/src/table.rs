@@ -508,7 +508,7 @@ pub static TABLE: &[Spec] = &[
         tag: "index_clear",
         group: GROUP_READ,
         access: Access::At(Level::Control),
-        summary: "Throws away the tab's search index, or with `--all` every one. It's a copy of documents' text on disk, and it can be built again. Whatever's on its way for them stops first.",
+        summary: "Throws away the tab's search index and generated contents, or with `--all` every document's. They're copies of documents' text on disk, and they can be made again. Whatever's on its way for them stops first.",
         args: &[
             TAB,
             Arg {
@@ -519,7 +519,7 @@ pub static TABLE: &[Spec] = &[
                 help: "Every document's.",
             },
         ],
-        data: "`{ cleared, being_built }`: how many went, and how many builds wouldn't stop in time and stayed. If some couldn't be removed it's exit 1 with `clear_incomplete`, saying that text is still there.",
+        data: "`{ cleared, contents_cleared, being_built }`: how many documents' indexes went, how many documents' generated contents, and how many builds wouldn't stop in time and stayed. If some couldn't be removed it's exit 1 with `clear_incomplete`, saying that text is still there.",
         examples: &["recto index clear", "recto index clear --all"],
         ..BASE
     },
@@ -920,7 +920,7 @@ pub static TABLE: &[Spec] = &[
         summary: "A page's links and where each goes: a page of this document, a web or email address, or refused, as a script, a program or a file on the Mac always is. Nothing is opened or run.",
         args: &[PAGE_OR_BARE, TAB],
         bare_page: true,
-        data: "`{ tab, page, links: [ { link, rect, goes_to, page, within, refused, note, untrusted: { address, label } } ], truncated, note, untrusted: { label } }`. A `label` is what the file calls a page, where that isn't its number. `goes_to` is `page`, `web`, `back`, `forward`, `refused` or `nowhere`. `rect` is x, y, width, height in points on the page as the file shows it, from its top left. `page` is where it goes, counted from 1 with edits counted, and `within` how far down that page, from 0 to 1, if the link says. `refused` says what kind: `file`, `script`, `launch`, `scheme`, `action` or `bad_address`. An address is the file's, under `untrusted`.",
+        data: "`{ tab, page, links: [ { link, rect, shown_rect, goes_to, page, within, refused, note, untrusted: { address, label } } ], quarter_turns, truncated, note, untrusted: { label } }`. A `label` is what the file calls a page, where that isn't its number. `goes_to` is `page`, `web`, `back`, `forward`, `refused` or `nowhere`. `rect` is x, y, width, height in points on the page as the file shows it, from its top left. On a page with an unsaved turn, `quarter_turns` says how far clockwise, and `shown_rect` is the same box on the page as it's seen turned. `page` is where it goes, counted from 1 with edits counted, and `within` how far down that page, from 0 to 1, if the link says. `refused` says what kind: `file`, `script`, `launch`, `scheme`, `action` or `bad_address`. An address is the file's, under `untrusted`.",
         examples: &["recto links 1", "recto links --page 3 --json"],
         ..BASE
     },

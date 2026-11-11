@@ -187,8 +187,20 @@ pub fn render(tag: &str, data: &Value) -> String {
         "find" => find(data),
         "index" | "index_status" => index(data),
         "index_clear" => format!(
-            "Cleared {}.{}",
+            "Cleared {}{}.{}",
             count(number(&data["cleared"]), "document's index", "documents' indexes"),
+            if number(&data["contents_cleared"]) > 0 {
+                format!(
+                    " and {}",
+                    count(
+                        number(&data["contents_cleared"]),
+                        "document's generated contents",
+                        "documents' generated contents"
+                    )
+                )
+            } else {
+                String::new()
+            },
             if number(&data["being_built"]) > 0 {
                 format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are"))
             } else {

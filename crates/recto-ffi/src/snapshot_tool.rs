@@ -40,6 +40,8 @@ struct Job {
     position: u32,
     wanted: Wanted,
     anyway: bool,
+    /// How far the page was shown turned when the box was taken, which the pictures are turned by: what's copied is what was seen.
+    turns: u8,
 }
 
 /// What to say by the page about the last snapshot, with its number.
@@ -66,6 +68,7 @@ struct Promise {
     path: PathBuf,
     page: u32,
     rect: [f32; 4],
+    turns: u8,
 }
 
 /// What's on its way to the clipboard, or on it.
@@ -242,11 +245,13 @@ impl Tool {
         let ops = self.box_ops(pane, None);
         let Some(tab) = engine.hot_tab() else { return ops };
         let job = match taken {
+            // An image goes as itself, its own bytes, so it isn't turned.
             Taken::Click(point) => Job {
                 tab,
                 position: point.page,
                 wanted: Wanted::Image { x: point.x, y: point.y },
                 anyway: false,
+                turns: 0,
             },
             Taken::Box { page, rect } => Job {
                 tab,
@@ -255,6 +260,7 @@ impl Tool {
                     rect: [rect.x, rect.y, rect.width, rect.height],
                 },
                 anyway: false,
+                turns: engine.page_turns(page),
             },
             Taken::Nothing => return ops,
         };
@@ -427,7 +433,12 @@ fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBu
     *lock(&tool.refused) = offers.then_some((serial, job));
     if let ClipOutcome::Ready(clip) = outcome {
         let promise = match job.wanted {
-            Wanted::Box { rect } => source.map(|(path, page)| Promise { path, page, rect }),
+            Wanted::Box { rect } => source.map(|(path, page)| Promise {
+                path,
+                page,
+                rect,
+                turns: job.turns,
+            }),
             Wanted::Image { .. } => None,
         };
         let items = clip
@@ -460,7 +471,7 @@ fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathB
     };
     let outcome = match job.wanted {
         Wanted::Image { x, y } => extract::image_clip(&path, page, x, y, job.anyway, stop),
-        Wanted::Box { rect } => extract::snapshot_clip(&path, page, rect, job.anyway, stop),
+        Wanted::Box { rect } => extract::snapshot_clip(&path, page, rect, job.turns, job.anyway, stop),
     };
     (outcome, Some((path, page)))
 }
@@ -507,7 +518,7 @@ impl AppCore {
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
         match self.inner.tool.data(serial, &uti)? {
             Data::Ready(bytes) => Some(bytes),
-            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, cap).ok(),
+            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, cap).ok(),
         }
     }
 
@@ -530,6 +541,7 @@ mod tests {
             position: 0,
             wanted: Wanted::Image { x, y: 0.0 },
             anyway: false,
+            turns: 0,
         }
     }
 
@@ -670,6 +682,7 @@ mod tests {
             path: "/a.pdf".into(),
             page: 0,
             rect: [0.0, 0.0, 1.0, 1.0],
+            turns: 0,
         };
         *lock(&tool.offered) = Some(Offered {
             serial: 7,
