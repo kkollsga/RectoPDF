@@ -210,7 +210,9 @@ pub(crate) enum Enable {
     Update,
     Save,
     Print,
-    SaveAsOrClose,
+    /// Save As: not for a file its two readers disagree about (the agreement gate), as the copy would be written from a reading that isn't what's shown.
+    SaveAs,
+    Close,
     /// Clear Menu, with files in Open Recent.
     ClearRecent,
     Undo,
@@ -242,7 +244,8 @@ pub(crate) fn enable_rule(id: &str) -> Option<Enable> {
         "app.update" => Enable::Update,
         "file.save" => Enable::Save,
         "file.print" => Enable::Print,
-        "file.save_as" | "file.close" => Enable::SaveAsOrClose,
+        "file.save_as" => Enable::SaveAs,
+        "file.close" => Enable::Close,
         "recent.clear" => Enable::ClearRecent,
         "edit.undo" => Enable::Undo,
         "edit.redo" => Enable::Redo,
@@ -264,7 +267,8 @@ pub(crate) fn enabled_by_reading(rule: Enable, has_document: bool, has_selection
         Enable::Update
         | Enable::Save
         | Enable::Print
-        | Enable::SaveAsOrClose
+        | Enable::SaveAs
+        | Enable::Close
         | Enable::ClearRecent
         | Enable::Undo
         | Enable::Redo

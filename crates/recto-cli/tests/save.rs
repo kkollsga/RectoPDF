@@ -468,3 +468,49 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
         }
     }
 }
+
+/// A file the two readers walk differently: a `/Type /Page` with `/Kids` is a page to lopdf and a branch to PDFium, so both count two pages, but
+/// not the same first one.
+fn walked_differently() -> Vec<u8> {
+    build(&[
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Kids [4 0 R] >>".into()),
+        Object::Dict("<< /Type /Page /Parent 3 0 R /MediaBox [0 0 400 400] >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>".into()),
+    ])
+}
+
+/// Failure (SPEC section 3, the agreement gate): a file lopdf and PDFium read differently is saved from lopdf's reading, so a turn lands on another
+/// page than the one the person saw, or a page they saw is dropped. Save and Save As are refused, saying why in words, nothing is written, and the
+/// edits stand; and the same for pages added from such a file into a sound one.
+#[test]
+fn a_file_the_two_readers_see_differently_isnt_saved() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let file = TempPdf::new("damaged.pdf", &walked_differently());
+    let original = std::fs::read(&file.0).unwrap();
+    ok(&state, &["open", path(&file)]);
+    ok(&state, &["page", "rotate", "1", "--by", "90"]);
+    let (refused, code) = state.json(&["save"]);
+    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("parsers_disagree")), "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("page 1") && message.contains("Nothing was written"), "{message}");
+    assert_eq!(std::fs::read(&file.0).unwrap(), original, "not a byte changed");
+    let copy = file.0.with_file_name("copy.pdf");
+    let (refused, _) = state.json(&["save-as", "--out", copy.to_str().unwrap()]);
+    assert_eq!(refused["error"]["code"], "parsers_disagree", "{refused}");
+    assert!(!copy.exists(), "and no copy was made");
+    assert_eq!(ok(&state, &["edits"])["edited"], true, "the edits stand");
+    ok(&state, &["discard"]);
+    ok(&state, &["close"]);
+    // Pages added from such a file are written from lopdf's reading of it too.
+    let sound = TempPdf::new("sound.pdf", &marked(&["SOUND"]));
+    let sound_bytes = std::fs::read(&sound.0).unwrap();
+    ok(&state, &["open", path(&sound)]);
+    ok(&state, &["page", "insert", path(&file), "--at", "2"]);
+    let (refused, _) = state.json(&["save"]);
+    assert_eq!(refused["error"]["code"], "parsers_disagree", "{refused}");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("damaged.pdf"), "{refused}");
+    assert_eq!(std::fs::read(&sound.0).unwrap(), sound_bytes);
+}

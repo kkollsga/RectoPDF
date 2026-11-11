@@ -86,6 +86,25 @@ impl<'a> Run<'a> {
         })
     }
 
+    /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
+    #[allow(dead_code)] // Not every test binary uses a seam.
+    pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
+        let app = app_path()?;
+        let mut command = state.command();
+        command.args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m", "--json"]);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{reply}");
+        Some(Self {
+            state: Held::Lent(state),
+            pid: reply["data"]["pid"].as_u64().unwrap() as u32,
+            done: false,
+        })
+    }
+
     /// A run some other way started on that state folder, such as the app an update put in place, by its process.
     pub fn attach(state: &'a State, pid: u32) -> Self {
         Self {

@@ -327,7 +327,7 @@ pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &str) -> Result<Valu
     }
     let inventory = match recto_core::signatures(&file.path) {
         // The file was readable when it opened, and isn't now. That's the same answer: not read, rather than none.
-        Err(OpenError::NotPdf) => return Ok(not_read()),
+        Err(OpenError::NotPdf | OpenError::TooComplex) => return Ok(not_read()),
         other => other?,
     };
     if !inventory.structure_read {

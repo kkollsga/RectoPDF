@@ -276,7 +276,7 @@ fn an_answer_past_the_cap_says_so() {
     assert!(reply["error"]["next"].as_str().unwrap().contains("less"));
 }
 
-/// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back.
+/// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back. The deadline is waited out once the answer has started, not from a fixed moment.
 #[test]
 fn a_client_that_stops_reading_is_dropped() {
     let limits = Limits {
@@ -286,10 +286,14 @@ fn a_client_that_stops_reading_is_dropped() {
     let running = Running::start(limits);
     let mut lazy = running.connect();
     lazy.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
-    // Give the deadline time to pass while it reads nothing.
+    // The answer has started, so the deadline runs from here: from a fixed moment, a loaded Mac's answer started after it, the client then read it
+    // all as it came, and the read waited out its 20 s timeout on an open connection (it failed `tools/check.sh --full` on 17ad148).
+    let mut first = [0u8; 1];
+    assert_eq!(lazy.read(&mut first).expect("the answer starts"), 1);
+    // Give the deadline time to pass while it reads nothing more.
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
-    let mut total = 0;
+    let mut total = 1;
     let mut chunk = [0u8; 65536];
     while let Ok(count) = lazy.read(&mut chunk) {
         if count == 0 {
@@ -534,7 +538,7 @@ fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
     }
 }
 
-/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening.
+/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening, once the first answer is on its way: measured from a fixed moment, a loaded Mac's slower answer was counted as spinning.
 #[test]
 fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let limits = Limits {
@@ -544,7 +548,11 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let running = Running::start(limits);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
-    // Past the deadline it would have spun on, with the answer unread.
+    // The first answer is made and on its way, so the window measured holds none of that work: on a loaded Mac it took past a fixed 200 ms, and its
+    // thread's preemptions read as 200 to 340 wake-ups. Its start is waited for (up to the read timeout) and kept for the reading below.
+    let mut reader = BufLine::default();
+    assert!(reader.started(&mut slow), "the first answer arrives");
+    // Then past the deadline it would have spun on, with the answer unread.
     std::thread::sleep(Duration::from_millis(200));
     let before = process_counters(std::process::id()).unwrap();
     std::thread::sleep(Duration::from_millis(500));
@@ -553,7 +561,6 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     let wakes = after.context_switches - before.context_switches;
     assert!(cpu_ms < 100, "{cpu_ms} ms of CPU in 500 ms: it's spinning");
     assert!(wakes < 200, "{wakes} wake-ups in 500 ms: it's spinning");
-    let mut reader = BufLine::default();
     assert!(reader.next(&mut slow).expect("and the client still gets its answer")["data"]["huge"].is_string());
 }
 

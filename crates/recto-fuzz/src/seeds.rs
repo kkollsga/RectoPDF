@@ -119,7 +119,11 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
     };
     let frames: Vec<Vec<u8>> = vec![
         encode_hello(Hello { pid: 7, walled: false }),
-        encode_opened(12, 1),
+        encode_opened(Opened {
+            pages: 12,
+            version: 1,
+            repaired: true,
+        }),
         job.encode(),
         tile.encode(),
         region.encode(),

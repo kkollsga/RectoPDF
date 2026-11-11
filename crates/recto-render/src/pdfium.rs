@@ -153,6 +153,7 @@ pdfium_api! {
     FPDF_LoadCustomDocument: fn(*mut FPDF_FILEACCESS, *const std::ffi::c_char) -> FPDF_DOCUMENT;
     FPDF_CloseDocument: fn(FPDF_DOCUMENT);
     FPDF_GetPageCount: fn(FPDF_DOCUMENT) -> c_int;
+    FPDF_DocumentHasValidCrossReferenceTable: fn(FPDF_DOCUMENT) -> FPDF_BOOL;
     FPDF_GetFileIdentifier: fn(FPDF_DOCUMENT, c_int, *mut c_void, c_ulong) -> c_ulong;
     FPDF_GetPageSizeByIndex: fn(FPDF_DOCUMENT, c_int, *mut c_double, *mut c_double) -> c_int;
     FPDF_LoadPage: fn(FPDF_DOCUMENT, c_int) -> FPDF_PAGE;
@@ -335,6 +336,8 @@ pub struct PdfiumBackend {
     page_count: u32,
     /// Which version of the file this is, from what opening it read anyway: see [`Self::version`].
     version: u64,
+    /// PDFium rebuilt the file's cross-reference data by scanning it.
+    repaired: bool,
     /// Holds `m_Param`'s `File` and the access struct for as long as the document reads them.
     _access: Box<FPDF_FILEACCESS>,
     _file: Box<File>,
@@ -374,6 +377,11 @@ impl PdfiumBackend {
     /// Which version of the file this is: see [`version_of`].
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Whether PDFium couldn't use the file's own cross-reference data and rebuilt it by scanning the file (`FPDF_DocumentHasValidCrossReferenceTable`), for the agreement gate.
+    pub fn repaired(&self) -> bool {
+        self.repaired
     }
 
     /// Opens a document on an open file. PDFium reads it through `pread` as it needs bytes, with no file path anywhere in the process.
@@ -416,6 +424,8 @@ impl PdfiumBackend {
         // SAFETY: `document` was just checked to be live.
         let page_count = u32::try_from(unsafe { (api.FPDF_GetPageCount)(document) }).unwrap_or(0).min(MAX_PAGE_COUNT);
         let version = version_of(api, document, len, page_count);
+        // SAFETY: `document` is live. Says whether PDFium had to rebuild the file's cross-reference data by scanning it, for the agreement gate.
+        let repaired = unsafe { (api.FPDF_DocumentHasValidCrossReferenceTable)(document) } == 0;
         Ok(Self {
             api,
             document,
@@ -427,6 +437,7 @@ impl PdfiumBackend {
             open_page: None,
             page_count,
             version,
+            repaired,
             _access: access,
             _file: file,
             _one_thread: PhantomData,

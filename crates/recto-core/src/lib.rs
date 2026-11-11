@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod agreement;
 mod effects;
 pub mod nav;
 pub mod save;
@@ -43,6 +44,10 @@ pub enum OpenError {
     NotAllowed,
     PasswordNeeded,
     NotPdf,
+    /// The structure reader stopped at one of its limits, as on a file with 100,000 revisions or a page tree hundreds deep: built to cost far more
+    /// than any real document. The renderer is still asked, so it opens to be read with Save off; this is the answer when the renderer can't read
+    /// it either.
+    TooComplex,
 }
 
 impl OpenError {
@@ -53,6 +58,7 @@ impl OpenError {
             Self::NotAllowed => "not_allowed",
             Self::PasswordNeeded => "password_needed",
             Self::NotPdf => "not_pdf",
+            Self::TooComplex => "too_complex",
         }
     }
 
@@ -63,6 +69,7 @@ impl OpenError {
             Self::NotAllowed => "RectoPDF isn't allowed to read this file.",
             Self::PasswordNeeded => "This PDF needs a password.",
             Self::NotPdf => "This file couldn't be read as a PDF.",
+            Self::TooComplex => "This file goes far past what any real PDF needs, as damaged and hostile files do, and it couldn't be read.",
         }
     }
 }
@@ -200,7 +207,7 @@ pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderE
     // A file that needs a password the reader wasn't given, or was given wrongly, says so: it's a PDF, and only the person can open it.
     let reader = opened.map_err(|error| match error {
         lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => OpenError::PasswordNeeded,
-        _ => OpenError::NotPdf,
+        other => agreement::refusal_of(&other),
     })?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
@@ -245,7 +252,7 @@ pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
 }
 
 fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
-    let page_count = u32::try_from(reader.page_count().map_err(|_| OpenError::NotPdf)?).map_err(|_| OpenError::NotPdf)?;
+    let page_count = u32::try_from(reader.page_count().map_err(|error| agreement::refusal_of(&error))?).map_err(|_| OpenError::NotPdf)?;
     // A damaged outline shouldn't stop a readable PDF from opening, nor damaged labels.
     let mut toc = read_toc(reader).unwrap_or_default();
     toc.labels = nav::read_labels(reader, page_count);

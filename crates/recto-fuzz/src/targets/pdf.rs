@@ -92,6 +92,16 @@ fn read(bytes: &[u8]) {
         if let Ok(read) = page_links_bytes(Arc::clone(&shared), &[0, 1, 2, 7, u32::MAX]) {
             assert_links_hold(&read);
         }
+        // The agreement gate's half: bounded, a size for each page compared and no more, and every size a real one.
+        if let Ok(view) = recto_core::agreement::structure_view_bytes(Arc::clone(&shared)) {
+            assert_eq!(view.sizes.len(), recto_core::agreement::compared_pages(view.page_count).len());
+            assert!(
+                view.sizes
+                    .iter()
+                    .flatten()
+                    .all(|(width, height)| width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0)
+            );
+        }
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);
         }

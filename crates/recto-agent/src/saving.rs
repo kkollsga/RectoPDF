@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 pub trait SaveSupport: Sync {
     /// The folder for the one backup of each original. `None` keeps none.
     fn backups(&self) -> Option<PathBuf>;
+    /// **A save is about to start writing:** what the session has waiting for its journals goes now. Edits wait up to 5 s for the journal (SPEC
+    /// decision 25), and a save of a big file takes seconds, so a crash during it would otherwise lose the very edits being saved. A host with no
+    /// journals has nothing to write.
+    fn before_writing(&self, _tab: TabId) {}
     /// Writes what the session has waiting for its journals now, and reads back that the save's note is there, before the file's moved into place. A host with no journals has nothing to write.
     fn note_on_disk(&self, _tab: TabId, _target: FileStamp) -> Result<(), String> {
         Ok(())
@@ -207,6 +211,11 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         }
     }
     let to = &to;
+    // The agreement gate (SPEC section 3), before the tab's held, as a look can take seconds (review round 1); asked again below, from what this kept.
+    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.is_edited(id)))?;
+    if something && let Some(refusal) = crate::agreement::refusal_for(access, tab)? {
+        return Err(refusal);
+    }
     let (id, snapshot) = access.with(|s| {
         let id = select(s, tab)?;
         let snapshot = s.begin_save(id, matches!(to, SaveTo::As { .. }))?;
@@ -216,6 +225,14 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         return Ok(access.with(|s| nothing_to_save(s, id)));
     };
     let ending = Ending { access, id };
+    if let Some(support) = access.saving() {
+        support.before_writing(id);
+    }
+    // The agreement gate again, now the tab's held: anything added since is looked at, the rest is what was kept.
+    if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
+        drop(ending);
+        return Err(refusal);
+    }
     let pages: Vec<PageRef> = snapshot
         .slots
         .iter()
