@@ -582,6 +582,7 @@ final class TabTable: NSTableView {
     func contentsReport() -> [String: Any] {
         let visible = contentsTable.rows(in: contentsTable.visibleRect)
         let shown = contentsScroll.superview != nil
+        if shown, contentsHeight > 0, contentsScroll.frame.height == 0 { sayContentsWithoutHeight() }
         return [
             "count": Int(model.contentsCount),
             "current": model.contentsCurrent.map { Int($0) as Any } ?? NSNull(),
@@ -608,6 +609,18 @@ final class TabTable: NSTableView {
             "note": model.tocOpen ? (model.contentsNote?.text ?? "") : "",
             "note_height": noteHeight,
         ]
+    }
+
+    private var saidContentsWithoutHeight = false
+
+    /// The contents in their row with no height, where the room says they have some, once in the run's messages with what the row and the view holding them were: seen on CI only (`contents.accessibility.len: 12 then 0` after a restart, run 43079093694), and not here with the state read late, the window made again, jitter or load, so the next time says which it was.
+    private func sayContentsWithoutHeight() {
+        guard !saidContentsWithoutHeight else { return }
+        saidContentsWithoutHeight = true
+        let holder = contentsScroll.superview
+        let row = activeIndex.map { table.rect(ofRow: $0).height } ?? -1
+        let isTheRows = activeIndex.map { table.view(atColumn: 0, row: $0, makeIfNecessary: false) === holder } ?? false
+        FileHandle.standardError.write(Data("recto: the contents had no height in a report: room \(layout.contentsHeight), active row \(activeIndex ?? -1) of height \(row), the view holding them \(holder.map { "\($0.bounds.height) high, needing layout \($0.needsLayout), in the window \($0.window != nil), the row's own view \(isTheRows)" } ?? "none").\n".utf8))
     }
 
     /// Row views the table holds that show something other than the model says. There should never be any.
