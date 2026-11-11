@@ -49,11 +49,23 @@ fn a_slow_run_waits_at_every_seam_it_passes() {
     run.quit();
 }
 
-/// Failure: a quiet run with no switch is slow anyway, or says it is, so every app test pays for delays nobody asked for.
+/// Failure: a quiet run with no switch is slow anyway, or says it is, so every app test pays for delays nobody asked for. Started with the switches taken out of its environment, as the `slow` stage has them in its own.
 #[test]
 fn a_quiet_run_with_no_switch_is_never_slow() {
-    let Some(run) = Run::start() else { return };
+    let Some(app) = super::app_path() else { return };
+    let state = State::new();
+    // Whatever this test was run with: the `slow` stage runs it with the switch on.
+    let mut command = state.command();
+    command.args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "1m", "--json"]);
+    for name in ["RECTO_QA_SLOW", "RECTO_QA_RESTORE_DELAY_MS", "RECTO_QA_REMAKE_DELAY_MS"] {
+        command.env_remove(name);
+    }
+    let output = command.output().unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{reply}");
+    let run = Run::attach(&state, reply["data"]["pid"].as_u64().unwrap() as u32);
     assert!(run.report()["slow"].is_null(), "{}", run.report()["slow"]);
+    run.quit();
 }
 
 /// Failure: a switch with a typo in it is taken as nothing, and the slow stage passes as a fast run. The launch is refused, with the switch's words.

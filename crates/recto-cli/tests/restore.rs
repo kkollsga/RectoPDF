@@ -74,6 +74,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("printing", include_str!("restore/exceptions/printing.txt")),
     ("reader", include_str!("restore/exceptions/reader.txt")),
     ("record", include_str!("restore/exceptions/record.txt")),
+    ("slow", include_str!("restore/exceptions/slow.txt")),
     ("snapshot", include_str!("restore/exceptions/snapshot.txt")),
     ("update", include_str!("restore/exceptions/update.txt")),
 ];

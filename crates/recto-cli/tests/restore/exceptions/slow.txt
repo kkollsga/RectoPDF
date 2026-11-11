@@ -1,0 +1,1 @@
+slow. A test's slow mode: its own delays and how often each was waited at, counted from its own start. What it does to the restore is what the stage that runs with it tests.
