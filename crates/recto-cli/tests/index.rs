@@ -37,7 +37,7 @@ fn the_same_answer(mut answer: Value) -> Value {
 }
 
 fn wait_done(state: &State, tab: &str) -> Value {
-    // The helper is at background priority, which a busy Mac can starve for minutes. If it never finishes, nextest's limit ends this.
+    // The helper is at utility, below the tests' own processes, so a busy Mac slows it. If it never finishes, nextest's limit ends this.
     let (done, code) = loop {
         let (done, code) = state.json(&["wait", "indexing-done", "--tab", tab, "--timeout", "120s"]);
         if code != exit::TIMED_OUT {
@@ -277,7 +277,7 @@ fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let line = serde_json::json!({ "file": file, "root": root, "key": key.hex(), "background": false }).to_string() + "\n";
+    let line = serde_json::json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
     child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
     child
 }

@@ -9,7 +9,7 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# A helper process, so what indexing costs ends when it exits. SPEC §2: background work is a helper process at background priority, and exits when done.
+# A helper process, so what indexing costs ends when it exits. SPEC §2: background work is a helper process, at utility, and exits when done.
 [[bin]]
 name = "recto-indexer"
 path = "src/main.rs"

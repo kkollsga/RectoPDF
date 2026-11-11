@@ -108,11 +108,6 @@ pub fn file_device_and_inode(path: &Path) -> Option<(u64, u64)> {
     }
 }
 
-/// Puts this process at background priority: slower CPUs and slower disk, so it gets out of the way of whatever someone's waiting for. A failure leaves it as it was, which only costs politeness. The children it starts after this inherit it.
-pub fn run_in_background() {
-    isolate::run_in_background();
-}
-
 /// This process's own memory, three ways. The footprint is what Activity Monitor shows. `compressed` is the part of it in the compressor, which moves with the whole Mac's memory pressure: a page of a system library's data the app never touched again isn't charged while it's resident and shared, and is once the system compresses it, so the footprint can rise by megabytes with nothing done. `heap` is what's allocated and not freed, in every malloc zone, which is where a leak of this app's or AppKit's shows, and which pressure doesn't move.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnMemory {
@@ -183,6 +178,11 @@ pub fn memory_free_percent() -> Option<u32> {
 #[cfg_attr(target_os = "macos", path = "isolate_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "isolate_stub.rs")]
 pub mod isolate;
+
+/// A helper process on pipes, at a scheduling level set for the whole of it as it starts.
+#[cfg_attr(target_os = "macos", path = "helper_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "helper_stub.rs")]
+pub mod helper;
 
 /// The control socket's OS calls: one blocking wait over many local sockets, the peer's user, and files and folders private to this user.
 #[cfg_attr(target_os = "macos", path = "local_mac.rs")]

@@ -6,6 +6,7 @@
 pub mod client;
 pub mod finding;
 pub mod generating;
+pub mod helpers;
 pub mod host;
 pub mod indexing;
 pub mod levels;

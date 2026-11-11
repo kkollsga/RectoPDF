@@ -19,12 +19,7 @@ fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Opt
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(
-        stdin,
-        "{}",
-        json!({ "file": path, "key": key.hex(), "background": false, "memory_limit": 512u64 << 20 })
-    )
-    .unwrap();
+    writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
     if close_stdin {
         drop(stdin);
     } else {

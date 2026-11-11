@@ -126,22 +126,28 @@ fn recto_acts_on_the_running_app_and_sees_what_it_does() {
 /// Failure: the app's session has no indexer, or the bundle has no helper, so a search in the app never has an index, and `recto wait indexing-done` waits out its time on something nobody can start. The CLI's own session passes all of this while the app's doesn't.
 #[test]
 fn a_search_in_the_app_gets_its_index() {
-    // Known failing on CI only (2026-11-11, until build/helper-qos lands, due 2026-11-12): the helper runs at Darwin background
-    // priority, which GitHub's virtual Macs starve. It runs everywhere else. PLAN phase 7 has the item.
-    if std::env::var_os("CI").is_some() {
-        eprintln!("skipped on CI: known failing until the helpers leave background priority (PLAN)");
+    // Four pages take seconds, 3 s here with three busy processes a core. The helper is below the app, at utility, so a starved CI Mac slows it: the wait
+    // is three minutes, in waits of a minute, and the run outlasts it. One wait of 60 s timed out on CI three times on 2026-11-11, with the helper at
+    // Darwin background, which those Macs starve.
+    let job = std::time::Duration::from_secs(180);
+    let Some(run) = Run::start_lasting(job + std::time::Duration::from_secs(120), &[]) else {
         return;
-    }
-    let Some(run) = Run::start() else { return };
+    };
     let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
-    let (waited, code) = run.state.json(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
-    // CI once timed out here (build/ci-deaths, run 43062878803), not seen here with every waiting point slow or the app at background priority: where the index stood says whether its helper was starved or a word it was done never came.
-    if code != 0 {
-        let (stands, _) = run.state.json(&["index", "--tab", "active"]);
-        panic!("{waited}\nthe index: {stands}");
-    }
-    let done = &waited["data"];
+    let deadline = std::time::Instant::now() + job;
+    let done = loop {
+        if std::time::Instant::now() >= deadline {
+            // Where the index stood says whether its helper was starved or a word it was waiting for never came (CI, build/ci-deaths, run 43062878803).
+            let (stands, _) = run.state.json(&["index", "--tab", "active"]);
+            panic!("the index wasn't built in three minutes\nthe index: {stands}");
+        }
+        let (done, code) = run.state.json(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+        if code != recto_agent::exit::TIMED_OUT {
+            assert_eq!(code, 0, "{done}{}", run.if_gone(&done));
+            break done["data"].clone();
+        }
+    };
     assert_eq!(done["state"], "ready", "{done}");
     let found = run.ok(&["search", "number"]);
     assert_eq!(found["route"], "index", "{found}");
@@ -180,13 +186,7 @@ fn the_sidebar_folds_switches_and_goes_to_contents() {
 /// Failure: the sidebar's offer of generated contents doesn't reach the screen for a file with none, a click on it doesn't make them, or the generated list shows with nothing to say it's generated, or with a heading no one can see. The click is what `qa click-row note` calls, the same method the note's own click calls.
 #[test]
 fn the_sidebar_offers_generated_contents_and_labels_them() {
-    // Known failing on CI only (2026-11-11, until build/helper-qos lands, due 2026-11-12): the helper runs at Darwin background
-    // priority, which GitHub's virtual Macs starve. It runs everywhere else. PLAN phase 7 has the item.
-    if std::env::var_os("CI").is_some() {
-        eprintln!("skipped on CI: known failing until the helpers leave background priority (PLAN)");
-        return;
-    }
-    // The helper is at background priority, which a busy Mac can starve, so the wait is as long as the job's own limit, and a little more. The run has to
+    // The helper is at utility, below the app, so a busy Mac slows it, and the wait is as long as the job's own limit, and a little more. The run has to
     // outlast that: at a run's usual two minutes, CI's slow generating ended the app mid-wait, as `session_ended` (run 43054237265, 2026-11-11).
     let job = recto_control::generating::time_limit(6) + std::time::Duration::from_secs(30);
     let Some(run) = Run::start_lasting(job + std::time::Duration::from_secs(120), &[]) else {

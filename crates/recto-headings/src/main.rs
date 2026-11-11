@@ -104,9 +104,6 @@ fn main() {
     let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
         return failed("bad_job");
     };
-    if job["background"] != false {
-        recto_platform::run_in_background();
-    }
     // Whoever started this has gone or wants it stopped.
     let _ = std::thread::Builder::new().name("stdin".into()).stack_size(64 * 1024).spawn(|| {
         let mut sink = [0u8; 64];

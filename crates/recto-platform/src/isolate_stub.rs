@@ -155,8 +155,6 @@ pub(crate) fn memory_free_percent() -> Option<u32> {
 
 pub fn harden_this_process() {}
 
-pub(crate) fn run_in_background() {}
-
 pub fn exit_now(code: i32) -> ! {
     std::process::exit(code)
 }

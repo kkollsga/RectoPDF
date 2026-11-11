@@ -14,7 +14,7 @@ use std::time::Duration;
 const MAX_JOB_BYTES: u64 = 128 * 1024;
 /// A worker's limit while indexing. Half of what a reader's page gets. Only the check for hidden text needs to draw, and a page that can't be drawn under this is marked as not checked, and is drawn if a search ever finds something on it. By `docs/ENGINEERING.md`, 17 of 5,872 real pages pass this at 2x.
 const MEMORY_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
-/// A page's time. Twice a reader's, as this runs at background priority, on the slower cores.
+/// A page's time. Twice a reader's, as this runs at utility, below what the person is looking at.
 const PAGE_DEADLINE: Duration = Duration::from_secs(10);
 /// Hidden-text checks that may stop a worker before the rest of the document's pages go unchecked. Each costs a kill and a new worker, and kills are capped per document: spending them all on checks would leave pages unread.
 const MAX_HIDDEN_CHECK_FAILURES: u32 = 16;
@@ -220,9 +220,6 @@ fn main() {
         say(&json!({ "state": "failed", "code": "bad_job" }));
         return;
     };
-    if job["background"] != false {
-        recto_platform::run_in_background();
-    }
     // Whoever started this has gone or wants it stopped. It ends at once: every step of a build can be killed.
     let _ = std::thread::Builder::new().name("stdin".into()).stack_size(64 * 1024).spawn(|| {
         let mut sink = [0u8; 64];
@@ -297,7 +294,7 @@ fn report(built: std::io::Result<BuildOutcome>, stats: RenderStats, hidden_check
 mod tests {
     use super::*;
 
-    /// Failure: on a busy Mac a helper at background priority gets too little time to start a worker, and the index counts as failed: `recto wait indexing-done` says it couldn't be built, and it isn't tried for a minute. It's paused, as for running out of time, and goes on when asked. A failure that's about the install still says so.
+    /// Failure: on a busy Mac a helper below the app's priority gets too little time to start a worker, and the index counts as failed: `recto wait indexing-done` says it couldn't be built, and it isn't tried for a minute. It's paused, as for running out of time, and goes on when asked. A failure that's about the install still says so.
     #[test]
     fn too_busy_pauses_a_build_rather_than_failing_it() {
         assert_eq!(outcome_json(&BuildOutcome::Paused(TOO_BUSY))["state"], "paused");

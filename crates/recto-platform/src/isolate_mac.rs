@@ -862,12 +862,6 @@ mod reaper {
 }
 
 /// A process's memory from outside. Works on any process of this user, including a killed child not yet collected.
-/// `PRIO_DARWIN_BG` on the whole process, as `taskpolicy -b` does. Children inherit it across `posix_spawn`.
-pub(crate) fn run_in_background() {
-    // SAFETY: plain integers, and it changes nothing but this process's scheduling.
-    let _ = unsafe { libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG) };
-}
-
 pub fn process_memory(pid: u32) -> Option<ProcessMemory> {
     let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
     // SAFETY: the buffer matches the requested flavor and lives for the whole call; the kernel fills it on success.

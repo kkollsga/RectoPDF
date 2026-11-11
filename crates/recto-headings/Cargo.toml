@@ -12,7 +12,7 @@ publish = false
 [lints.rust]
 unsafe_code = "forbid"
 
-# A helper process: what distillPDF uses ends when it exits. SPEC §2: background work is a helper process at background priority, and exits when done.
+# A helper process: what distillPDF uses ends when it exits. SPEC §2: background work is a helper process, at utility, and exits when done.
 [[bin]]
 name = "recto-headings"
 path = "src/main.rs"
