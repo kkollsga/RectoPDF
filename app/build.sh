@@ -3,6 +3,7 @@
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
+#   app/build.sh --dev-release  Release code with thin LTO, for the owner's dev copy and quick release-like runs: about half release's time after an edit. Never for a budget.
 #   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. The only mode that reads it: the others sign ad hoc. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
 #
 # Run it through tools/sysguard/heavy.sh.
@@ -15,7 +16,8 @@ case "$mode" in
     --sign-only) ;;
     --debug) CARGO_ARGS=(); RUST_OUT="$REPO/target/debug"; SWIFT_ARGS=(-c debug) ;;
     --release) CARGO_ARGS=(--release); RUST_OUT="$REPO/target/release"; SWIFT_ARGS=(-c release) ;;
-    *) sed -n '2,8p' "$0"; exit 2 ;;
+    --dev-release) CARGO_ARGS=(--profile dev-release); RUST_OUT="$REPO/target/dev-release"; SWIFT_ARGS=(-c release) ;;
+    *) sed -n '2,9p' "$0"; exit 2 ;;
 esac
 BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"

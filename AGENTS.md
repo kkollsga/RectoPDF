@@ -25,6 +25,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 
 ## This machine
 - 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` runs with nothing else running: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
+- **Start a worktree with `tools/worktree.sh new <branch> .worktrees/<name>`.** Its `target/` is an APFS clone of the main checkout's, so the first build reuses every dependency already built and rebuilds only the workspace: about 45 s for the builds of a first check against about 105 s cold, under load (2026-11-11, `docs/reports/build-performance-2026-11-11.md`). `tools/worktree.sh remove <path>` ends it.
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git

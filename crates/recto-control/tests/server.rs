@@ -138,7 +138,11 @@ impl Running {
 
     fn connect(&self) -> UnixStream {
         let stream = UnixStream::connect(&self.paths.socket).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        // On macOS, setting a timeout on a socket whose other end has already closed is `EINVAL`. A server turning a peer away closes at
+        // once, so that's the answer being tested, not a failure: the read after sees the close without waiting.
+        if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(20))) {
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        }
         stream
     }
 
