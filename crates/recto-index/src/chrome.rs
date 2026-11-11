@@ -435,7 +435,10 @@ mod tests {
             chrome_spans(5, &head, &[(1, &[line(false, 40.0, "Annual report 2024")])]).is_empty(),
             "the other edge"
         );
-        assert!(chrome_spans(5, &head, &[(1, &[line(true, 80.0, "Annual report 2024")])]).is_empty(), "far from it");
+        assert!(
+            chrome_spans(5, &head, &[(1, &[line(true, 80.0, "Annual report 2024")])]).is_empty(),
+            "far from it"
+        );
         assert!(chrome_spans(5, &head, &[]).is_empty(), "nothing to compare with");
         let big = [EdgeLine { relative: 1.5, ..head[0] }];
         assert!(chrome_spans(5, &big, &[(1, &head)]).is_empty(), "a heading");
@@ -478,13 +481,22 @@ mod tests {
             1,
             "a page number, with no page around to compare"
         );
-        assert!(chrome_spans(5, &[bottom("2024", true)], &[]).is_empty(), "a year at the foot of a one-page letter");
-        assert!(chrome_spans(5, &[bottom("17", false)], &[]).is_empty(), "not set apart, and nothing to count with");
+        assert!(
+            chrome_spans(5, &[bottom("2024", true)], &[]).is_empty(),
+            "a year at the foot of a one-page letter"
+        );
+        assert!(
+            chrome_spans(5, &[bottom("17", false)], &[]).is_empty(),
+            "not set apart, and nothing to count with"
+        );
         let mark = |page: u32| EdgeLine {
             relative: 0.43,
             ..bottom(&page.to_string(), true)
         };
-        assert!(chrome_spans(5, &[mark(1)], &[(1, &[mark(2)])]).is_empty(), "footnote marks, though they count up");
+        assert!(
+            chrome_spans(5, &[mark(1)], &[(1, &[mark(2)])]).is_empty(),
+            "footnote marks, though they count up"
+        );
         assert!(
             chrome_spans(5, &[bottom("0 25 50 75 100", true)], &[(1, &[bottom("0 25 50 75 100", true)])]).is_empty(),
             "a slide's axis labels repeated"
@@ -534,13 +546,23 @@ mod tests {
     fn a_rows_numbers_step_with_the_pages_or_it_is_not_repeated() {
         let top = |text: &str| line(true, 40.0, text);
         let heading = [top("Article 12")];
-        assert!(chrome_spans(5, &heading, &[(2, &[top("Article 13")])]).is_empty(), "two pages on, one article on");
+        assert!(
+            chrome_spans(5, &heading, &[(2, &[top("Article 13")])]).is_empty(),
+            "two pages on, one article on"
+        );
         assert!(
             chrome_spans(5, &heading, &[(1, &[top("Article 13")]), (2, &[])]).is_empty(),
             "the next page's heading only: one page isn't enough"
         );
-        assert!(chrome_spans(5, &heading, &[(1, &[top("Article 15")])]).is_empty(), "numbers that don't count with the pages");
-        assert_eq!(chrome_spans(5, &heading, &[(1, &[top("Article 13")])]).len(), 1, "every page around agrees: it's all there is");
+        assert!(
+            chrome_spans(5, &heading, &[(1, &[top("Article 15")])]).is_empty(),
+            "numbers that don't count with the pages"
+        );
+        assert_eq!(
+            chrome_spans(5, &heading, &[(1, &[top("Article 13")])]).len(),
+            1,
+            "every page around agrees: it's all there is"
+        );
         let head = [top("Page 12 of 40")];
         assert_eq!(
             chrome_spans(5, &head, &[(-1, &[top("Page 11 of 40")]), (1, &[top("Page 13 of 40")]), (2, &[])]).len(),
@@ -562,7 +584,11 @@ mod tests {
             row_numbers: numbers(number.chars()),
             from_left,
             from_right: 612.0 - from_left,
-            place: InRow { row: 0, alone: false, last: from_left > 300.0 },
+            place: InRow {
+                row: 0,
+                alone: false,
+                last: from_left > 300.0,
+            },
             ..top(number)
         };
         let row = |name: &str, number: &str| {

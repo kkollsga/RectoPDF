@@ -444,10 +444,16 @@ mod tests {
     /// Failure: VoiceOver reads a palette row as its marks, or without where it lives or its key, so a row can't be told from another with the same title, or a key isn't said as a person would press it.
     #[test]
     fn a_row_is_said_in_words() {
-        assert_eq!(row("find.next".into(), "Find Next".into(), "Edit", "⌘G".into(), false).spoken, "Find Next, Edit, Command G");
+        assert_eq!(
+            row("find.next".into(), "Find Next".into(), "Edit", "⌘G".into(), false).spoken,
+            "Find Next, Edit, Command G"
+        );
         assert_eq!(spoken_key("⇧⌘G"), "Shift Command G");
         assert_eq!(spoken_key("⌃⌘S"), "Control Command S");
         assert_eq!(spoken_key("⌘+"), "Command Plus");
-        assert_eq!(row("tab:2".into(), "report.pdf".into(), "Open tab", String::new(), true).spoken, "report.pdf, Open tab");
+        assert_eq!(
+            row("tab:2".into(), "report.pdf".into(), "Open tab", String::new(), true).spoken,
+            "report.pdf, Open tab"
+        );
     }
 }

@@ -1476,13 +1476,23 @@ mod tests {
         let page = |page: u32| {
             let (mut chars, mut boxes) = (Vec::new(), Vec::new());
             for line in 0..36 {
-                add_line(&mut chars, &mut boxes, &format!("Body line {line} of page {page}"), 72.0, 600.0 - line as f32 * 15.0);
+                add_line(
+                    &mut chars,
+                    &mut boxes,
+                    &format!("Body line {line} of page {page}"),
+                    72.0,
+                    600.0 - line as f32 * 15.0,
+                );
             }
             let last = "the approach will be neces";
             for (index, ch) in last.chars().enumerate() {
                 let left = 72.0 + index as f32 * 6.0;
                 chars.push(CharRecord::new(ch as u32, 0));
-                boxes.push(if ch == ' ' { [left, 60.0, left + 6.0, 60.0] } else { [left, 60.0, left + 5.0, 70.0] });
+                boxes.push(if ch == ' ' {
+                    [left, 60.0, left + 6.0, 60.0]
+                } else {
+                    [left, 60.0, left + 5.0, 70.0]
+                });
             }
             // PDFium's marker in place of the line's break, a thin bar at the line's middle, and the number straight after it, below and just to the right, as at the end of a full line.
             let end = 72.0 + last.len() as f32 * 6.0;
@@ -1502,7 +1512,14 @@ mod tests {
             "{:?}",
             copied.text
         );
-        assert!(!copied.text.lines().any(|line| line.ends_with(|ch: char| ch.is_ascii_digit()) && line.contains("neces")), "{:?}", copied.text);
+        assert!(
+            !copied
+                .text
+                .lines()
+                .any(|line| line.ends_with(|ch: char| ch.is_ascii_digit()) && line.contains("neces")),
+            "{:?}",
+            copied.text
+        );
     }
 
     /// A page of lines at their own sizes: each `(text, x, y, size)`, a character 0.6 of the size wide and the size tall.
