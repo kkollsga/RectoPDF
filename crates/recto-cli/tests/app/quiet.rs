@@ -7,12 +7,13 @@ use super::{Run, app_path};
 use recto_platform::screen::{ShownWindow, windows_on_screen};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Watches the screen on a thread of its own until it's asked what it saw, for any window of a process running this executable.
 struct ScreenWatch {
     stop: Arc<AtomicBool>,
+    looked: Arc<AtomicUsize>,
     thread: std::thread::JoinHandle<(Vec<ShownWindow>, usize, bool)>,
 }
 
@@ -20,6 +21,8 @@ impl ScreenWatch {
     fn start(executable: PathBuf) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
+        let looked = Arc::new(AtomicUsize::new(0));
+        let counted = looked.clone();
         let thread = std::thread::spawn(move || {
             let mut seen: Vec<ShownWindow> = Vec::new();
             let mut samples = 0;
@@ -39,11 +42,17 @@ impl ScreenWatch {
                     }
                 }
                 samples += 1;
+                counted.store(samples, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(2));
             }
             (seen, samples, anything)
         });
-        Self { stop, thread }
+        Self { stop, looked, thread }
+    }
+
+    /// How many times it has looked so far.
+    fn looks(&self) -> usize {
+        self.looked.load(Ordering::SeqCst)
     }
 
     /// What of ours was on screen, how many times it looked, and whether it saw anything at all.
@@ -136,9 +145,14 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(opened.status.success(), "{opened:?}");
     let began = std::time::Instant::now();
     let mut looks = 0;
-    // Two seconds and a few reports, however long each report takes: on CI's slower machine five took the whole two seconds (2026-11-11).
-    while began.elapsed() < Duration::from_secs(2) || looks <= 5 {
-        assert!(began.elapsed() < Duration::from_secs(60), "{looks} reports in a minute");
+    // Two seconds, a few reports and enough looks at the screen, however long each takes: on CI's slower machine five reports took the
+    // whole two seconds, and in a loaded full check the watcher looked once while 24 reports were taken (2026-11-11).
+    while began.elapsed() < Duration::from_secs(2) || looks <= 5 || watch.looks() <= 50 {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "{looks} reports and {} looks in a minute",
+            watch.looks()
+        );
         let app = run.report()["app"].clone();
         assert_eq!(
             (app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()),
