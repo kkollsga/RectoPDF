@@ -85,3 +85,35 @@ fn a_switch_that_cant_be_read_refuses_the_launch() {
     assert_ne!(code, Some(0), "{reply}");
     assert!(reply.contains("RECTO_QA_SLOW"), "{reply}");
 }
+
+/// Failure: a test the `slow` stage of `tools/check.sh` names is renamed or moved, and its filter matches nothing, so the stage quietly stops running it with nobody told. Every name in `SLOW_TESTS` is a test in the app or restore binaries, in the module it says. Needs no app.
+#[test]
+fn every_test_the_slow_stage_names_is_there() {
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let check = std::fs::read_to_string(tests.join("../../../tools/check.sh")).unwrap();
+    let line = check
+        .lines()
+        .find(|line| line.starts_with("SLOW_TESTS='"))
+        .expect("check.sh says what the slow stage runs");
+    let names: Vec<&str> = line.split("test(=").skip(1).filter_map(|part| part.split(')').next()).collect();
+    assert!(names.len() >= 20, "{names:?}");
+    for name in names {
+        let (files, function) = match name.split_once("::") {
+            Some((module, function)) => (
+                vec![
+                    tests.join("app").join(format!("{module}.rs")),
+                    tests.join("restore").join(format!("{module}.rs")),
+                ],
+                function,
+            ),
+            None => (vec![tests.join("app.rs"), tests.join("restore.rs")], name),
+        };
+        let found = files.iter().filter_map(|file| std::fs::read_to_string(file).ok()).any(|source| {
+            let lines: Vec<&str> = source.lines().collect();
+            lines
+                .windows(2)
+                .any(|pair| pair[0].trim() == "#[test]" && pair[1].starts_with(&format!("fn {function}()")))
+        });
+        assert!(found, "the slow stage names `{name}`, which isn't a test where it says");
+    }
+}
