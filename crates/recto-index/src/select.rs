@@ -407,6 +407,12 @@ impl PageText {
                         .flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' ')))
                 };
                 let (row_key, row_numbers) = (chrome::key(row_text()), chrome::numbers(row_text()));
+                // The first piece framed by a number as a page's is: the row's own number, if it has one.
+                let framed = members
+                    .iter()
+                    .map(|piece| chrome::framed_number(&self.visible_chars(piece.start, piece.end).collect::<String>()))
+                    .find(|framed| *framed != chrome::NO_FRAMED)
+                    .unwrap_or(chrome::NO_FRAMED);
                 let count = members.len();
                 for (at, piece) in members.into_iter().enumerate() {
                     let place = chrome::InRow {
@@ -414,7 +420,7 @@ impl PageText {
                         alone: count == 1,
                         last: at + 1 == count,
                     };
-                    edges.push(self.edge_line(top, piece, usual, (row_key, row_numbers), true, place));
+                    edges.push(self.edge_line(top, piece, usual, (row_key, row_numbers, framed), true, place));
                     taken.push(piece.start);
                 }
                 row_id += 1;
@@ -430,7 +436,7 @@ impl PageText {
                     }
                     let text: String = self.visible_chars(piece.start, piece.end).collect();
                     if chrome::page_number(&text).is_some() {
-                        let row = (chrome::key(text.chars()), chrome::numbers(text.chars()));
+                        let row = (chrome::key(text.chars()), chrome::numbers(text.chars()), chrome::framed_number(&text));
                         edges.push(self.edge_line(
                             top,
                             piece,
@@ -453,7 +459,15 @@ impl PageText {
     }
 
     /// One candidate, as a copy compares it.
-    fn edge_line(&self, top: bool, piece: &Piece, usual: f32, (row_key, row_numbers): (u64, [u32; 2]), isolated: bool, place: chrome::InRow) -> EdgeLine {
+    fn edge_line(
+        &self,
+        top: bool,
+        piece: &Piece,
+        usual: f32,
+        (row_key, row_numbers, framed_number): (u64, [u32; 2], u16),
+        isolated: bool,
+        place: chrome::InRow,
+    ) -> EdgeLine {
         let (start, end, size) = (piece.start, piece.end, piece.size);
         let from_edge = if top { piece.top } else { self.height - piece.bottom };
         let text: String = self.visible_chars(start, end).collect();
@@ -471,6 +485,8 @@ impl PageText {
             key: chrome::key(text.chars()),
             row_key,
             row_numbers,
+            numbers: chrome::numbers(text.chars()),
+            framed_number,
             start,
             end,
             number: chrome::page_number(&text),
@@ -524,35 +540,45 @@ impl PageText {
         // A line in the middle of what's left past the cap would pass it.
         let room = MAX_LINES.saturating_sub(1);
         let sideways = self.runs_sideways(start, end);
-        let (mut from, mut last) = (start, None);
+        // How big the line's letters are so far, across it: their height, or their thickness on a line that runs up the page. A hyphen's own box is a thin bar, and isn't one.
+        let (mut from, mut last, mut scale) = (start, None, 0f32);
         for at in start..end {
             // A space's box says little, and a line can't be left on one.
             if !self.shows(at) || self.text[at].is_whitespace() {
                 continue;
             }
+            let view = self.boxes[at];
             if let Some(before) = last
                 && spans.len() < room
-                && Self::leaves_the_line(&self.boxes[before], &self.boxes[at], sideways, self.text[before] == '-')
+                && Self::leaves_the_line(&self.boxes[before], &view, sideways, (self.text[before] == '-').then_some(scale))
             {
                 spans.push((from as u32, at as u32));
                 from = at;
+                scale = 0.0;
+            }
+            if self.text[at] != '-' {
+                scale = scale.max(if sideways { view[2] - view[0] } else { view[3] - view[1] });
             }
             last = Some(at);
         }
         spans.push((from as u32, end as u32));
     }
 
-    /// `after_hyphen`: the character before is a hyphen. A line-end hyphen stands where the line's break was, so whatever comes next well off its line is on another, forward or back: part B p197's page number, drawn after the last line's `neces-` and below it, read as `neces-197` and stayed in a copy.
-    fn leaves_the_line(before: &[f32; 4], here: &[f32; 4], sideways: bool, after_hyphen: bool) -> bool {
+    /// `after_hyphen`: the character before is a hyphen, with the size of the line's letters so far. A line-end hyphen stands where the line's break was, so whatever comes next well off its line is on another, forward or back: part B p197's page number, drawn after the last line's `neces-` and below it, read as `neces-197` and stayed in a copy. How far is off goes by the line's letters, not the hyphen's thin box or a tiny mark after it, so a small low glyph after a hyphen stays on its line.
+    fn leaves_the_line(before: &[f32; 4], here: &[f32; 4], sideways: bool, after_hyphen: Option<f32>) -> bool {
+        let line = |boxes: f32| after_hyphen.filter(|scale| *scale > 0.0).unwrap_or(boxes);
         if sideways {
             // Glyphs are as thick as a line here, whatever their width, so this is how far they've stepped across.
             let thick = (before[2] - before[0]).max(here[2] - here[0]);
+            let thick = if after_hyphen.is_some() { line(thick) } else { thick };
             return (here[0] - before[0]).abs() > OFF_THE_LINE * thick;
         }
         let height = (before[3] - before[1]).max(here[3] - here[1]);
         // Letters share a baseline at one edge of their boxes, which is the other edge on a page turned upside down, and letters on another line share neither.
         let off = (here[3] - before[3]).abs().min((here[1] - before[1]).abs());
-        (here[0] < before[0] - STEP_BACK * height && off > SAME_LINE * height) || (off > OFF_THE_LINE * height && (here[0] < before[2] || after_hyphen))
+        (here[0] < before[0] - STEP_BACK * height && off > SAME_LINE * height)
+            || (off > OFF_THE_LINE * height && here[0] < before[2])
+            || (after_hyphen.is_some() && off > OFF_THE_LINE * line(height))
     }
 
     fn measure(&self, (start, end): (u32, u32), usual: f32, upside_down: bool) -> Line {
@@ -1140,7 +1166,8 @@ impl Selection {
 /// What a copy leaves out of `page` as chrome, given a way to the edge lines of the pages around it that could be read: see [`crate::chrome`]. Whether the pick was only chrome is the copy's to decide, over all of it: see [`CopiedText::finish`].
 pub fn chrome_for<'a>(page: u32, text: &PageText, pages: u32, edges_of: impl Fn(u32) -> Option<&'a [EdgeLine]>) -> Vec<(u32, u32)> {
     let neighbours: Vec<(i64, &[EdgeLine])> = neighbour_pages(page, pages)
-        .filter_map(|other| Some((i64::from(other) - i64::from(page), edges_of(other)?)))
+        // A page whose edges aren't known is one with nothing to compare, as every caller has it.
+        .map(|other| (i64::from(other) - i64::from(page), edges_of(other).unwrap_or(&[])))
         .collect();
     text.chrome_spans(page, &neighbours)
 }
@@ -1520,6 +1547,27 @@ mod tests {
             "{:?}",
             copied.text
         );
+    }
+
+    /// Failure: a hyphen followed by a tiny glyph a little low on its line, as a subscript or a mark, splits the line there, as the jump was measured against the hyphen's thin box and the tiny glyph rather than the line's letters (review of `build/release-fixes`).
+    #[test]
+    fn a_tiny_low_glyph_after_a_hyphen_stays_on_its_line() {
+        let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+        for (index, ch) in "the H2O-x".chars().enumerate() {
+            let left = 72.0 + index as f32 * 6.0;
+            chars.push(CharRecord::new(ch as u32, 0));
+            boxes.push(match ch {
+                ' ' => [left, 700.0, left + 6.0, 700.0],
+                '-' => [left, 704.5, left + 3.0, 705.1],
+                // A tiny mark at the foot of the line.
+                'x' => [left, 699.0, left + 1.0, 700.0],
+                _ => [left, 700.0, left + 5.0, 710.0],
+            });
+        }
+        let page = PageText::build(&chars, &boxes, FRAME, true, false);
+        let (start, end) = page.unit_at(80.0, shown(705.0), Unit::Line).unwrap();
+        assert_eq!(page.text_of(start, end), "the H2O-x");
+        assert_eq!(page.line_count(), 1);
     }
 
     /// A page of lines at their own sizes: each `(text, x, y, size)`, a character 0.6 of the size wide and the size tall.
