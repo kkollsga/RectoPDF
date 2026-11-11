@@ -13,7 +13,9 @@ is over 1 MiB/h, or threads or descriptors keep climbing. Restarts of the app (r
 
 Judged per open tab: each open tab is allowed SPEC §2's 4 KiB, taken off before the slope and the medians are judged, and where
 tabs and time vary apart a fit of both says what a tab costs, growing past 64 KiB. A tab count past the driver's 8 plus its edit
-copy, and 2 more, is the driver's fault and said so.
+copy, and 2 more, is the driver's fault and said so. Where the samples have the app's heap (malloc in use, from `qa state`), its
+slope is judged too, over 0.25 MiB/h being growing: the footprint counts what the system compresses, which another load on the
+Mac raises with nothing changed in the app.
 """
 import csv
 import statistics
@@ -50,6 +52,9 @@ TAB_BUDGET_KIB = 4
 # A per-tab cost over this, where tabs and time can be told apart, is growing on its own: well over the budget, as a fit over a
 # few dozen tabs has noise of tens of KiB a tab from what happens to be on screen.
 PER_TAB_LIMIT_KIB = 64
+# What the app holds in malloc may rise this much an hour, with each open tab's budget taken off, before it's growing. The system's
+# own caches in the app (glyphs, fonts) rise a little as new text is drawn, and stop once it's all been seen.
+HEAP_LIMIT_MIB_H = 0.25
 # The driver keeps MAX_TABS plus its edit copy; past this many more, the run didn't do what it set out to.
 DRIVER_TABS = 8
 DRIFT_ALLOWED = 2
@@ -147,6 +152,12 @@ reasons = []
 # Judged on what's left once each open tab has had its budget: a soak whose tab count drifts is still judged on the app.
 if per_tab["time_slope"] > 0.5:
     reasons.append(f"app footprint rises {per_tab['time_slope']:.2f} MiB/h beyond {TAB_BUDGET_KIB} KiB per open tab")
+heap_rows = [(h, float(r["app_heap_mib"]), t) for r, h, t in zip(post, hours, tabs_post) if r.get("app_heap_mib")]
+heap_slope = None
+if len(heap_rows) >= 10:
+    heap_slope = slope([h for h, _, _ in heap_rows], [v - t * TAB_BUDGET_KIB / 1024 for _, v, t in heap_rows])
+    if heap_slope > HEAP_LIMIT_MIB_H:
+        reasons.append(f"app heap rises {heap_slope:.2f} MiB/h beyond {TAB_BUDGET_KIB} KiB per open tab")
 if per_tab["kib_per_tab"] is not None and per_tab["kib_per_tab"] > PER_TAB_LIMIT_KIB:
     reasons.append(f"each open tab costs {per_tab['kib_per_tab']:.0f} KiB, over {PER_TAB_LIMIT_KIB}")
 if last_med - first_med - per_tab["tab_change"] * TAB_BUDGET_KIB / 1024 > 5:
@@ -173,6 +184,13 @@ print(f"Samples: {len(rows)} ({len(alive)} with the app alive, {len(gone)} witho
 print(f"Judged: run {main_run}, {span_h:.2f} h, {len(post)} samples after a {warm:g} h warm-up")
 print(f"App footprint: slope {app_slope:+.3f} MiB/h; median first 2 h {first_med:.2f}, last 2 h {last_med:.2f} MiB; "
       f"min {min(app):.2f}, max {max(app):.2f}")
+if heap_slope is not None:
+    compressed = [float(r["app_compressed_mib"]) for r in post if r.get("app_compressed_mib")]
+    print(f"App heap (malloc in use): slope {heap_slope:+.3f} MiB/h with each open tab's budget off; {heap_rows[0][1]:.1f} to {heap_rows[-1][1]:.1f} MiB"
+          + (f"; compressed by the system {compressed[0]:.1f} at first, {compressed[-1]:.1f} at the end, max {max(compressed):.1f} MiB, "
+             "which counts in the footprint" if compressed else ""))
+else:
+    print("App heap: not sampled in this run, so the footprint can't be told apart from what the system compressed")
 mean_tabs = sum(tabs_post) / len(tabs_post) if tabs_post else 0
 print(f"Per open tab: slope {per_tab['time_slope']:+.3f} MiB/h with {TAB_BUDGET_KIB} KiB a tab taken off; "
       + (f"fit apart, {per_tab['time_slope_fit']:+.3f} MiB/h and {per_tab['kib_per_tab']:.1f} KiB a tab"

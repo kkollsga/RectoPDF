@@ -210,10 +210,23 @@ class Soak:
             json.dump(info, f, indent=1)
         os.replace(RUN + ".tmp", RUN)
 
+    def own_memory(self):
+        """The app's malloc in use and its compressed memory, in MiB, as `qa state` reads them in the app (`task_info` and
+        `malloc_zone_statistics`, which can't be read from outside). Compression counts in the footprint: in the investigation of the
+        2026-11-08 soak, a quiet app's footprint rose 3.7 MiB with its heap unchanged when the system compressed 13 MiB of it, under
+        other work on the Mac. The heap is what the app holds, whatever the system does to it. Not counted as an action or an error."""
+        try:
+            p = subprocess.run([RECTO, "qa", "state", "--json"], capture_output=True, text=True, timeout=30, env=self.env, cwd=DIR)
+            memory = (json.loads(p.stdout).get("data") or {}).get("memory") or {}
+            return f"{memory['heap_bytes'] / 1048576:.2f}", f"{memory['compressed_bytes'] / 1048576:.2f}"
+        except Exception:
+            return "", ""
+
     # --- sampling --------------------------------------------------------------------------------------------------------
     def sampler(self):
         header = ("time,elapsed_s,run_id,phase,app_pid,app_mib,children_mib,total_mib,children,app_threads,total_threads,"
-                  "app_fds,total_fds,app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,children_names")
+                  "app_fds,total_fds,app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,app_heap_mib,"
+                  "app_compressed_mib,children_names")
         new = not os.path.exists(CSV)
         with open(CSV, "a") as f:
             if new:
@@ -240,14 +253,15 @@ class Soak:
                         names.append(f"{name}:{k[0] / 1048576:.1f}")
                 at, af = threads(pid), fds(pid)
                 state = du_kib(STATE) if n % 10 == 0 else ""
+                heap, compressed = self.own_memory()
                 row = [time.strftime("%Y-%m-%dT%H:%M:%S"), int(time.time() - self.started), self.run_id, self.phase, pid,
                        f"{fp[0] / 1048576:.2f}", f"{kid_fp / 1048576:.2f}", f"{(fp[0] + kid_fp) / 1048576:.2f}", len(kids), at,
                        at + kid_thr, af, af + kid_fd, f"{fp[1] / 1e9:.2f}", fp[2], state, self.tabs_open, self.rounds, self.actions,
-                       self.errors, self.timeouts, self.saves, " ".join(names)]
+                       self.errors, self.timeouts, self.saves, heap, compressed, " ".join(names)]
             else:
                 row = [time.strftime("%Y-%m-%dT%H:%M:%S"), int(time.time() - self.started), self.run_id, "app_gone", pid or "",
                        "", "", "", "", "", "", "", "", "", "", "", self.tabs_open, self.rounds, self.actions, self.errors,
-                       self.timeouts, self.saves, ""]
+                       self.timeouts, self.saves, "", "", ""]
             with open(CSV, "a") as f:
                 f.write(",".join(str(x) for x in row) + "\n")
             n += 1

@@ -47,11 +47,11 @@ class ToClose(unittest.TestCase):
 
 
 HEADER = ("time,elapsed_s,run_id,phase,app_pid,app_mib,children_mib,total_mib,children,app_threads,total_threads,app_fds,total_fds,"
-          "app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,children_names").split(",")
+          "app_cpu_s,app_wakeups,state_kib,tabs_open,rounds,actions,errors,timeouts,saves,app_heap_mib,app_compressed_mib,children_names").split(",")
 
 
-def verdict_of(app_and_tabs):
-    """Runs verdict.py on a made CSV, a sample a minute for each (app MiB, tabs) given."""
+def verdict_of(app_and_tabs, heap=None):
+    """Runs verdict.py on a made CSV, a sample a minute for each (app MiB, tabs) given, and the heap's MiB for each if given."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "samples.csv")
         with open(path, "w", newline="") as f:
@@ -61,7 +61,8 @@ def verdict_of(app_and_tabs):
                 w.writerow({k: "" for k in HEADER} | {
                     "time": f"t{i}", "elapsed_s": i * 60, "run_id": 1, "phase": "rest", "app_pid": 1, "app_mib": f"{app:.3f}",
                     "children_mib": 0, "total_mib": f"{app:.3f}", "children": 0, "app_threads": 11, "total_threads": 11,
-                    "app_fds": 20, "total_fds": 20, "tabs_open": tabs, "rounds": i, "actions": i, "errors": 0, "timeouts": 0, "saves": 0})
+                    "app_fds": 20, "total_fds": 20, "tabs_open": tabs, "rounds": i, "actions": i, "errors": 0, "timeouts": 0, "saves": 0,
+                    "app_heap_mib": f"{heap[i]:.3f}" if heap else "", "app_compressed_mib": "1.0" if heap else ""})
         out = subprocess.run([sys.executable, "-I", os.path.join(HERE, "verdict.py"), path], capture_output=True, text=True)
         return out.stdout + out.stderr
 
@@ -93,6 +94,19 @@ class Verdict(unittest.TestCase):
         out = verdict_of(rows)
         self.assertTrue(out.startswith("Soak verdict: GROWING"), out)
         self.assertIn("each open tab costs", out)
+
+    def test_a_heap_that_climbs_under_a_flat_footprint(self):
+        """Catches a leak the footprint hides, as when the system's compression moves it more than the app does: the heap rising
+        0.5 MiB an hour is growing, though the footprint is flat."""
+        rows = [(40.0, 9) for _ in range(MINUTES)]
+        out = verdict_of(rows, heap=[8 + m / 120 for m in range(MINUTES)])
+        self.assertTrue(out.startswith("Soak verdict: GROWING"), out)
+        self.assertIn("app heap rises", out)
+
+    def test_no_heap_column_says_so(self):
+        """Catches a verdict on a run without the heap reading as though it had judged it: the 2026-11-08 soak had no such column."""
+        out = verdict_of([(40.0, 9) for _ in range(MINUTES)])
+        self.assertIn("App heap: not sampled", out)
 
 
 if __name__ == "__main__":
