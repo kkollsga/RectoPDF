@@ -102,6 +102,9 @@ fn damage(take: &mut Take<'_>, kept: &Path, journals: &Path, other: &Path) {
                 let _ = std::fs::remove_file(kept);
                 #[cfg(unix)]
                 let _ = std::os::unix::fs::symlink(other, kept);
+                // No links to make elsewhere: Windows's check builds this too, and warned of `other` unused.
+                #[cfg(not(unix))]
+                let _ = other;
             }
             5 => {
                 let _ = std::fs::remove_file(kept);

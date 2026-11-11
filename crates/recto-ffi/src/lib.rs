@@ -19,6 +19,7 @@ mod qa;
 mod saver;
 mod saving;
 mod sidebar_access;
+mod sleep_queue;
 mod sleeper;
 mod snapshot_tool;
 pub mod updates;
@@ -4520,7 +4521,7 @@ fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: 
         return;
     }
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
-        let left = inner.pictures_of_those_leaving();
+        inner.queue_those_leaving();
         // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
         if !engine.holds(id.0) {
             engine.note_wake(id.0, Instant::now());
@@ -4548,7 +4549,6 @@ fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: 
         if let Some(selection) = selection {
             engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
-        inner.write_those_leaving(left);
         synced.tab = Some(id);
         synced.pages = shown.pages;
         synced.map = shown.map.clone();
