@@ -16,7 +16,7 @@ pub fn app_path() -> Option<PathBuf> {
     if std::env::var_os("RECTO_SKIP_APP").is_some() {
         return None;
     }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF");
     if root.is_file() {
         return Some(root);
     }
@@ -167,6 +167,15 @@ impl Drop for Run<'_> {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+        // A run ended by its own quit forgets its copy itself; one that had to be killed couldn't.
+        forget_the_built_app();
+    }
+}
+
+/// Tells the system to forget the built app, which starting a quiet run registered: only the one install is to be in Open With (owner, 2026-11-11).
+pub fn forget_the_built_app() {
+    if let Some(app) = app_path().as_deref().and_then(|program| program.ancestors().nth(3)) {
+        recto_platform::registry::forget(app);
     }
 }
 

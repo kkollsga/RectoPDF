@@ -8,7 +8,7 @@ set -euo pipefail
 out="$1"; pdf="$2"; page="${3:-1}"; from="${4:-40,20}"; to="${5:-560,150}"; image="${6:-500,70}"
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 recto="${RECTO_BIN:-$here/target/debug/recto}"
-app="${RECTO_APP:-$here/app/build/RectoPDF.app/Contents/MacOS/RectoPDF}"
+app="${RECTO_APP:-$here/app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF}"
 mkdir -p "$out"
 root="$(mktemp -d)"
 trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT

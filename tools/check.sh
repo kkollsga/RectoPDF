@@ -261,6 +261,9 @@ run() {
     # At most two at once: each is a real app, and this Mac is in use.
     stage app-tests
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 2
+    # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
+    stage registrations
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations
   fi
   stage done
 }

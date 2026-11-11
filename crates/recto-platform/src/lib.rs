@@ -181,6 +181,11 @@ pub mod isolate;
 #[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
 pub mod local;
 
+/// What Launch Services has registered of the app's copies, and forgetting a copy that isn't the one install: a test's, a build's, a quiet run's.
+#[cfg_attr(target_os = "macos", path = "registry_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "registry_stub.rs")]
+pub mod registry;
+
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};

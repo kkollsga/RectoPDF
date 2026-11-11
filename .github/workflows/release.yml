@@ -71,7 +71,7 @@ jobs:
           MIN_FREE: '0'
         run: app/release-zip.sh --built-only
       - name: Pack the built app, as ditto keeps what a bundle needs
-        run: ditto -c -k --keepParent app/build/RectoPDF.app "$RUNNER_TEMP/built-app.zip"
+        run: ditto -c -k --keepParent app/build.noindex/RectoPDF.app "$RUNNER_TEMP/built-app.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: built-app
@@ -98,8 +98,8 @@ jobs:
           path: ${{ runner.temp }}/built
       - name: Unpack the built app
         run: |
-          mkdir -p app/build
-          ditto -x -k "$RUNNER_TEMP/built/built-app.zip" app/build
+          mkdir -p app/build.noindex
+          ditto -x -k "$RUNNER_TEMP/built/built-app.zip" app/build.noindex
       - name: Developer ID certificate and notarization key, from the Environment's secrets
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -163,10 +163,10 @@ jobs:
         with:
           name: mac
           path: |
-            app/build/release/RectoPDF-*.zip
-            app/build/release/SHA256SUMS
-            app/build/release/latest.json
-            app/build/release/NOTES.md
+            app/build.noindex/release/RectoPDF-*.zip
+            app/build.noindex/release/SHA256SUMS
+            app/build.noindex/release/latest.json
+            app/build.noindex/release/NOTES.md
           if-no-files-found: error
 
   draft:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One command from a clean checkout: Rust core -> Swift bindings -> Swift app -> app/build/RectoPDF.app, ad-hoc signed.
+# One command from a clean checkout: Rust core -> Swift bindings -> Swift app -> app/build.noindex/RectoPDF.app, ad-hoc signed.
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
@@ -17,7 +17,7 @@ case "$mode" in
     --release) CARGO_ARGS=(--release); RUST_OUT="$REPO/target/release"; SWIFT_ARGS=(-c release) ;;
     *) sed -n '2,8p' "$0"; exit 2 ;;
 esac
-BUILD="$APP_DIR/build"
+BUILD="${RECTO_APP_BUILD:-$APP_DIR/build.noindex}"
 APP="$BUILD/RectoPDF.app"
 # One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
