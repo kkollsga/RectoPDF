@@ -204,6 +204,33 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(seen.is_empty(), "a quiet run's windows were on screen: {:?}", &seen[..seen.len().min(8)]);
 }
 
+/// Failure: a test's own copy of the app is left registered with Launch Services after it's dropped, a second RectoPDF in Open With
+/// (`no_copy_but_the_one_install_is_left_registered` on CI, run 43101058944, found `app/build.noindex/own-34946-0/RectoPDF.app`). The system
+/// registers a copy it launches as that launch goes on, so a copy forgotten while it was still starting, or before its run had quit, was
+/// registered again after. Here a copy is opened and dropped straight away, and the system no longer has it.
+#[test]
+fn a_copy_opened_and_dropped_at_once_is_forgotten() {
+    let Some(copy) = OwnCopy::new() else { return };
+    let bundle = copy.bundle.clone();
+    let state = super::common::State::new();
+    let opened = std::process::Command::new("/usr/bin/open")
+        .arg("-g")
+        .arg("--env")
+        .arg(format!("{}={}", recto_control::state::STATE_ENV, state.root.display()))
+        .arg(&bundle)
+        .args(["--args", "--qa"])
+        .output()
+        .unwrap();
+    assert!(opened.status.success(), "{opened:?}");
+    drop(copy);
+    assert!(!bundle.exists(), "the copy is still there");
+    let left: Vec<_> = recto_platform::registry::registered()
+        .into_iter()
+        .filter(|copy| copy.path.starts_with(&bundle))
+        .collect();
+    assert!(left.is_empty(), "still registered after the copy was dropped: {left:#?}");
+}
+
 /// Waits for a run's process to be gone, and fails with what it was waiting for.
 fn ends(pid: u32, why: &str) {
     let began = std::time::Instant::now();
@@ -266,4 +293,28 @@ fn a_quiet_run_is_prohibited_whenever_its_looked_at() {
     // It was changed, and put back: not a run the nudge never reached.
     let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(messages.contains("changed to accessory from outside, and put back"), "{messages}");
+}
+
+/// Failure: the system's change lands inside the guard's put-back, between its set and its read, and the guard takes its one set for done, so a report
+/// straight after says `accessory` or `regular` (`an_update_in_the_middle_of_things_changes_nothing`, a full check, 2026-11-11; three quiet runs side by
+/// side, each nudged and opened by `open -g`, said `regular` in 2 of 900 reports, as a set from `accessory` said it took and the read after said
+/// `regular`). Here each put-back's first set is followed by a change to `accessory` before its read, and every look says `prohibited`.
+#[test]
+fn a_change_landing_in_the_put_back_is_put_back_too() {
+    let state = super::common::State::new();
+    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_POLICY_NUDGE_MS", "15,in-put-back".as_ref())]) else {
+        return;
+    };
+    let mut said = std::collections::BTreeMap::<String, usize>::new();
+    for look in 0..200 {
+        if look % 10 == 0 {
+            run.settled();
+        }
+        let activation = run.report()["app"]["activation"].as_str().unwrap_or("none").to_string();
+        *said.entry(activation).or_default() += 1;
+    }
+    assert_eq!(said.keys().collect::<Vec<_>>(), ["prohibited"], "what 200 reports said: {said:?}");
+    // The change did land in a put-back, and it took a second try: not a run the nudge never reached.
+    let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(messages.contains("back took 2 tries: after the first it read accessory"), "{messages}");
 }

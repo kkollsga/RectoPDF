@@ -194,6 +194,9 @@ pub mod local;
 #[cfg_attr(not(target_os = "macos"), path = "registry_stub.rs")]
 pub mod registry;
 
+/// A folder of a run's own in a temp folder, never one already there, removed when it's dropped.
+pub mod fresh;
+
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};

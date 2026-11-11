@@ -12,6 +12,10 @@ pub struct Registered {
 
 pub fn forget(_bundle: &Path) {}
 
+pub fn forget_until_gone(_bundle: &Path, _limit: std::time::Duration) -> bool {
+    true
+}
+
 pub fn forget_soon(_bundle: &Path) {}
 
 pub fn forget_all_under(_folder: &Path) {}

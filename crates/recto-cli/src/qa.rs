@@ -337,18 +337,18 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
 struct Measured {
     child: Child,
     paths: StatePaths,
-    root: PathBuf,
+    /// Removed after the run's been stopped: a field goes after `drop` has run.
+    root: recto_platform::fresh::FreshDir,
     pid: u32,
 }
 
 impl Measured {
     fn start(app: &Path, options: &Launch) -> Result<Self, AgentError> {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = recto_platform::local::system_temp_dir()
-            .ok_or_else(|| failed("no_temp", "There's no temp folder."))?
-            .join(format!("rqb{}-{number}", std::process::id()));
-        let paths = StatePaths::overridden(&root)?;
+        // A state folder of this run's own, never one a run killed partway left behind (a process id comes round again), and gone with the run.
+        let temp = recto_platform::local::system_temp_dir().ok_or_else(|| failed("no_temp", "There's no temp folder."))?;
+        let root =
+            recto_platform::fresh::FreshDir::new_in(&temp, "rqb", "").map_err(|error| failed("no_temp", format!("Couldn't make a state folder: {error}.")))?;
+        let paths = StatePaths::overridden(root.path())?;
         // This command waits on the run it measures, so it's what the run ends with.
         let options = Launch {
             owner_pid: Some(std::process::id()),
@@ -429,7 +429,6 @@ impl Drop for Measured {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -732,7 +731,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
 
     // Many tabs: the footprint with each of many tabs of the same large file, under names of their own.
     let run = Measured::start(&app, &Launch::default())?;
-    let tabs_dir = run.root.join("tabs");
+    let tabs_dir = run.root.path().join("tabs");
     std::fs::create_dir_all(&tabs_dir).map_err(|_| failed("write_failed", "The temp folder couldn't be written to."))?;
     let tab_file = heavy.clone().unwrap_or_else(|| file.clone());
     let clone_from = recto_platform::local::clone_source_in(&tab_file, &tabs_dir).map_err(|_| failed("write_failed", "A file to clone couldn't be made."))?;
