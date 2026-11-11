@@ -171,12 +171,16 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// The state's read and in the session, or the wait for it is over.
     func restoreReady() {
-        guard windowController == nil else { return }
-        switch core.appearanceChoice() {
-        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        default: break
+        // Once only, whether the state came in time or the window went up without it.
+        if launchDone {
+            restoredLate()
+            return
         }
+        launchDone = true
+        // Asked first: a state that comes in while this runs is taken in by `restoredLate` after.
+        let withState = core.stateRead()
+        if withState { lateTakenIn = true }
+        applyAppearanceChoice()
         if core.windowShouldOpen() {
             openWindow()
         } else {
@@ -189,7 +193,38 @@ final class Bridge: AppListener, @unchecked Sendable {
         if core.appComesBackHidden() {
             if isQuiet { quietHidden = true } else { NSApp.hide(nil) }
         }
+        if withState { core.shownWithState() }
         core.ready()
+    }
+
+    /// Whether the launch's window has been decided on, with or without the state.
+    private var launchDone = false
+    private var lateTakenIn = false
+    /// A window being made again, so its closing isn't the user closing it.
+    private var replacingWindow = false
+
+    private func applyAppearanceChoice() {
+        switch core.appearanceChoice() {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
+    }
+
+    /// The state's come in after the window went up without it, past the patience (CI, 2026-11-11: the contents came back with no height; with a slow disk the window's size and full screen, the appearance and Settings didn't come back either). Everything an on-time read brings back comes back now, made from it as a launch makes it: the appearance, the window made again from the state, and Settings. What the host chose already of what's out of sight stays as chosen, which Rust keeps in the state.
+    private func restoredLate() {
+        guard core.stateRead(), !lateTakenIn else { return }
+        lateTakenIn = true
+        applyAppearanceChoice()
+        if let old = windowController {
+            replacingWindow = true
+            old.window.close()
+            replacingWindow = false
+            windowController = nil
+            openWindow()
+        }
+        if core.settingsWindowWasOpen() && settings == nil { showSettings(takingKey: false) }
+        core.shownWithState()
     }
 
     /// Opens Settings, or brings it forward. Nothing's made for it until it's asked for. Coming back at a launch it doesn't take the keyboard, which is the main window's as it was.
@@ -320,6 +355,11 @@ final class Bridge: AppListener, @unchecked Sendable {
     /// What the window's closing does, whoever closed it.
     func windowDidClose() {
         windowController = nil
+        // Made again from the state that's come in late: it isn't closed, only what it showed goes.
+        if replacingWindow {
+            core.windowReplaced()
+            return
+        }
         core.windowClosed()
     }
 

@@ -1321,6 +1321,8 @@ struct Inner {
     app: Mutex<AppState>,
     /// The record's been read and applied, whatever it said.
     restored: AtomicBool,
+    /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
+    shown_with_state: AtomicBool,
     /// The control socket, ready to run once the session's as it was, so nothing asks about an empty one or opens over it.
     waiting_server: Mutex<Option<Server>>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
@@ -1393,6 +1395,10 @@ struct AppState {
     hidden_decided: bool,
     /// The same for the window in the Dock.
     minimised_decided: bool,
+    /// And for whether there's a window at all.
+    window_decided: bool,
+    /// What the state said, as it was taken in after a window went up without it. That window can report its own size, focus and the rest before it's made again, which a full check on a slow machine saw, so the one made again goes by this: see [`AppCore::window_replaced`].
+    from_state: Option<Box<AppState>>,
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
@@ -1932,8 +1938,11 @@ impl AppCore {
                 app_hidden: false,
                 hidden_decided: false,
                 minimised_decided: false,
+                window_decided: false,
+                from_state: None,
             }),
             restored: AtomicBool::new(false),
+            shown_with_state: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
             holding_tab: Mutex::new(None),
             hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
@@ -2898,6 +2907,27 @@ impl AppCore {
         self.inner.saver.view_changed();
     }
 
+    /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
+    pub fn window_replaced(&self) {
+        for engine in self.inner.panes.engines(&self.inner.engine) {
+            engine.window_closed();
+        }
+        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
+        let mut app = lock(&self.inner.app);
+        if let Some(state) = app.from_state.take() {
+            let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
+            let (hidden, closed) = (app.app_hidden, app.window_closed);
+            let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
+            *app = *state;
+            app.app_hidden = hidden;
+            app.window_closed = closed;
+            (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
+            if let Some(window) = app.window.as_mut() {
+                window.minimised = minimised;
+            }
+        }
+    }
+
     /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
     pub fn window_minimised_changed(&self, minimised: bool) {
         if let Some(window) = lock(&self.inner.app).window.as_mut() {
@@ -2929,13 +2959,34 @@ impl AppCore {
         for engine in self.inner.panes.engines(&self.inner.engine) {
             engine.window_opened();
         }
+        // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
+        let contents_y = lock(&self.inner.app).contents_y;
+        if let Some(y) = contents_y {
+            let mut follow = lock(&self.inner.contents_follow);
+            let following = follow.is_following();
+            follow.new_contents();
+            follow.resume_at(y, following);
+        }
         lock(&self.inner.app).window_closed = false;
         self.inner.saver.view_changed();
     }
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
-        !(lock(&self.inner.app).window_closed && self.inner.updates.reopened_by_update())
+        let reopened = self.inner.updates.reopened_by_update();
+        let mut app = lock(&self.inner.app);
+        app.window_decided = true;
+        !(app.window_closed && reopened)
+    }
+
+    /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
+    pub fn state_read(&self) -> bool {
+        self.inner.restored.load(Ordering::SeqCst)
+    }
+
+    /// What the host shows has been made from the state that was read.
+    pub fn shown_with_state(&self) {
+        self.inner.shown_with_state.store(true, Ordering::SeqCst);
     }
 
     /// There's no window to wait for, so this launch has come up as far as it goes.
@@ -3416,7 +3467,7 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                 {
                     let mut app = lock(&inner.app);
                     app.settings_window = saved.settings_window;
-                    app.window_closed = saved.window_closed;
+                    app.window_closed = updates::out_of_sight_when_restored(saved.window_closed, app.window_decided.then_some(app.window_closed));
                     // Once the host's shown or hidden things without the state, what it did is how things are, and the record says that, not what was saved.
                     app.app_hidden = updates::out_of_sight_when_restored(saved.app_hidden, app.hidden_decided.then_some(app.app_hidden));
                     let minimised_now = app.minimised_decided.then(|| app.window.as_ref().is_some_and(|window| window.minimised));
@@ -3438,6 +3489,14 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                             .map(|selection| (id, selection))
                     });
                     app.contents_y = saved.contents_scroll.map(|scroll| scroll.y);
+                    // Taken in with a window already up without it: the window made again from it goes by what it said.
+                    if app.window_decided {
+                        let state = AppState {
+                            from_state: None,
+                            ..app.clone()
+                        };
+                        app.from_state = Some(Box::new(state));
+                    }
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
