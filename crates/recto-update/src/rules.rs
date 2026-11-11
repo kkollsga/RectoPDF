@@ -14,6 +14,10 @@ pub const MIN_GAP_MS: u64 = 60 * 1000;
 pub const RETRY_AFTER_MS: u64 = 3600 * 1000;
 /// An automatic install waits until the user hasn't touched the app for this long. Owner, 2026-11-07: "let's update in a window the user hasn't touched the app for 30 minutes".
 pub const IDLE_BEFORE_INSTALL_MS: u64 = 30 * 60 * 1000;
+/// A development build handed over waits until the app hasn't been used for this long. Owner, 2026-11-11, of the dev copy: "for dev work, lets set the limit to 5 mins". A release keeps its 30.
+pub const IDLE_BEFORE_BUILD_MS: u64 = 5 * 60 * 1000;
+// A release keeps its 30 minutes: a build's wait is never the longer.
+const _: () = assert!(IDLE_BEFORE_BUILD_MS < IDLE_BEFORE_INSTALL_MS);
 /// How soon an automatic install looks again when something's in flight. Only while one's waiting, so never at rest.
 pub const BUSY_RETRY_MS: u64 = 60 * 1000;
 
@@ -50,10 +54,10 @@ pub fn parse_system_version(text: &str) -> Option<(u32, u32, u32)> {
     }
 }
 
-/// `new` is a newer version than `current`, and both are plain.
+/// `new` is a newer version than `current`, and both are versions: a release's, or a development build's, which counts after the release it builds on and before the next ([`crate::version`]).
 #[must_use]
 pub fn is_newer(new: &str, current: &str) -> bool {
-    matches!((parse_version(new), parse_version(current)), (Some(new), Some(current)) if new > current)
+    crate::version::is_newer(new, current)
 }
 
 /// The zip a release carries for this version.
@@ -98,7 +102,17 @@ impl Latest {
     /// Newer than what's running, and this Mac is new enough for it.
     #[must_use]
     pub fn on_offer(&self, current: &str, system: &str) -> bool {
-        is_newer(&self.version, current) && parse_system_version(system).is_some_and(|system| system >= self.minimum_macos)
+        is_newer(&self.version, current) && self.runs_on(system)
+    }
+
+    /// The way back from a development build to the release, when development builds have been turned off: any release other than what's running, older included, as the release a build builds on is older than the build.
+    #[must_use]
+    pub fn on_offer_back(&self, current: &str, system: &str) -> bool {
+        crate::version::is_development(current) && self.version != current && self.runs_on(system)
+    }
+
+    fn runs_on(&self, system: &str) -> bool {
+        parse_system_version(system).is_some_and(|system| system >= self.minimum_macos)
     }
 }
 
@@ -147,6 +161,18 @@ pub struct AutoLook {
     pub busy: bool,
     /// How long until a failed install may be tried again.
     pub back_off_ms: u64,
+}
+
+/// The 5-minute rule for a development build that's been handed over and checked: it goes once the app hasn't been used for 5 minutes and nothing's in flight. Pure, as the 30-minute rule is.
+#[must_use]
+pub fn build_step(since_input_ms: u64, busy: bool) -> AutoStep {
+    if since_input_ms < IDLE_BEFORE_BUILD_MS {
+        return AutoStep::Wait(IDLE_BEFORE_BUILD_MS - since_input_ms);
+    }
+    if busy {
+        return AutoStep::Wait(BUSY_RETRY_MS);
+    }
+    AutoStep::Go
 }
 
 /// The 30-minute rule. Whether or not the app is frontmost: it's how long since the user touched it.
@@ -205,6 +231,7 @@ mod tests {
         ] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
+        assert!(parse_version("0.1.0.1").is_none(), "a release never has a fourth part");
         assert!(is_newer("0.1.10", "0.1.9"), "numbers, not text");
         assert!(!is_newer("0.1.9", "0.1.10"));
         assert!(!is_newer("0.1.0", "0.1.0"));
@@ -349,5 +376,30 @@ mod tests {
             "one that failed isn't tried again by itself"
         );
         assert_eq!(auto_step(AutoLook { back_off_ms: 5, ..look }), AutoStep::Wait(5));
+    }
+
+    /// Failure: a development build handed over goes in while the owner is using the app, waits the release's 30 minutes rather than the owner's 5 for dev work, or goes over something in flight.
+    #[test]
+    fn a_development_build_waits_for_five_quiet_minutes() {
+        assert_eq!(build_step(IDLE_BEFORE_BUILD_MS, false), AutoStep::Go, "five minutes exactly");
+        assert_eq!(build_step(IDLE_BEFORE_BUILD_MS - 1, false), AutoStep::Wait(1));
+        assert_eq!(build_step(0, false), AutoStep::Wait(IDLE_BEFORE_BUILD_MS), "just touched");
+        assert_eq!(
+            build_step(IDLE_BEFORE_BUILD_MS, true),
+            AutoStep::Wait(BUSY_RETRY_MS),
+            "something in flight finishes first"
+        );
+    }
+
+    /// Failure: turning development builds off leaves the owner on a build for good, or the way back offers what isn't a release or what's already running.
+    #[test]
+    fn the_way_back_from_a_build_is_any_other_release() {
+        let latest = parse_latest(good("0.1.0").as_bytes()).unwrap();
+        assert!(!latest.on_offer("0.1.0.3", "15.0"), "older than the build, so not an update");
+        assert!(latest.on_offer_back("0.1.0.3", "15.0"), "but the way back");
+        assert!(parse_latest(good("0.2.0").as_bytes()).unwrap().on_offer_back("0.1.0.3", "15.0"));
+        assert!(!latest.on_offer_back("0.1.0", "15.0"), "a release is already where it's going");
+        assert!(!parse_latest(good("0.0.9").as_bytes()).unwrap().on_offer_back("0.1.0", "15.0"));
+        assert!(!latest.on_offer_back("0.1.0.3", "14.0"), "too old a Mac");
     }
 }

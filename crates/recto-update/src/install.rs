@@ -281,7 +281,7 @@ pub fn run(plan: &Plan) -> Ended {
         files: Files::in_state(&plan.root),
     };
     let files = &run.files;
-    if !crate::rules::is_newer(&plan.to, &plan.from) {
+    if !may_replace(plan) {
         run.say("installer: that isn't a newer version, so nothing was replaced");
         return Ended::NotInstalled;
     }
@@ -343,8 +343,14 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the record couldn't be copied aside, so going back would bring back what's there");
     }
     run.step("record_copied");
-    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file.
-    let team = if RELEASE_BUILD || plan.team_required { Some(TEAM_ID) } else { None };
+    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file. Except a development build, which is signed ad hoc and is held to an intact signature, and only with the owner's switch on, which is read here again rather than taken from the plan.
+    let team = if plan.development_build && builds_allowed(files) {
+        None
+    } else if RELEASE_BUILD || plan.team_required {
+        Some(TEAM_ID)
+    } else {
+        None
+    };
     if !crate::stage::still_what_was_verified(&plan.new_app(), &plan.cdhash, &plan.to, team) {
         run.say("installer: what's waiting isn't what was verified, so nothing was replaced");
         run.finish_with(OutcomeKind::NotInstalled, "changed_since_checked");
@@ -391,6 +397,20 @@ pub fn run(plan: &Plan) -> Ended {
     let _ = std::fs::remove_file(plan.beside.join("staged.json"));
     run.clear_own_files();
     Ended::Updated
+}
+
+/// *Allow development builds*, as the owner's switch says in the updater's own file.
+fn builds_allowed(files: &Files) -> bool {
+    crate::saved::Saved::read(&files.saved).dev_builds == Some(true)
+}
+
+/// Whether the plan's version may replace the one it came from: a newer one, or with [`Plan::any_version`] any other, but never itself.
+fn may_replace(plan: &Plan) -> bool {
+    if plan.any_version {
+        crate::version::parse(&plan.to).is_some() && crate::version::parse(&plan.to) != crate::version::parse(&plan.from)
+    } else {
+        crate::rules::is_newer(&plan.to, &plan.from)
+    }
 }
 
 /// Keeping the old app didn't work, so it's still in the swap's other half. It's the only way back, so it stays.
@@ -535,6 +555,9 @@ mod tests {
             id: "1-1".into(),
             cdhash: String::new(),
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 1,
@@ -606,5 +629,37 @@ mod tests {
         restore_record(&before, &session);
         assert_eq!(std::fs::read_to_string(session.join("record.a.json")).unwrap(), "newer");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: the installer takes an older version over a newer one from a plan that didn't ask for that, or refuses the one plan that does (a development build handed over, or the way back to the release), or installs a version over itself.
+    #[test]
+    fn only_a_plan_for_any_version_goes_back_a_version() {
+        assert!(may_replace(&plan()), "newer");
+        let older = Plan {
+            from: "0.1.0.3".into(),
+            to: "0.1.0".into(),
+            ..plan()
+        };
+        assert!(!may_replace(&older), "older, unasked");
+        assert!(
+            may_replace(&Plan {
+                any_version: true,
+                ..older.clone()
+            }),
+            "the way back"
+        );
+        assert!(may_replace(&Plan {
+            from: "0.1.0".into(),
+            to: "0.1.0.1".into(),
+            ..plan()
+        }));
+        for same in [false, true] {
+            assert!(!may_replace(&Plan {
+                from: "0.1.0.3".into(),
+                to: "0.1.0.3".into(),
+                any_version: same,
+                ..plan()
+            }));
+        }
     }
 }

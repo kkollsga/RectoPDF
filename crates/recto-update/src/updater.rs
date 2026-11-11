@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub mod builds;
+
 /// How long a hand-off gets to write and read back the state.
 const HAND_OFF_LIMIT: Duration = Duration::from_secs(5);
 /// How often an install that's been asked for looks again at what it's waiting for.
@@ -121,6 +123,8 @@ pub enum Status {
         version: String,
         back_on: String,
     },
+    /// A development build's been handed over and checked, and goes in once the app hasn't been used for 5 minutes.
+    BuildReady(String),
 }
 
 impl Status {
@@ -141,6 +145,7 @@ impl Status {
             Self::Failed { .. } => "failed",
             Self::Updated(_) => "updated",
             Self::WentBack { .. } => "went_back",
+            Self::BuildReady(_) => "build_ready",
         }
     }
 
@@ -171,6 +176,17 @@ pub enum InstallRefused {
     Underway,
     /// Another copy of the app has the state, and it's the one that can.
     AnotherCopy,
+    /// A development build handed over, and *Allow development builds* is off.
+    DevBuildsOff,
+    /// What was handed over isn't a `RectoPDF-<version>.zip`.
+    NotABuild,
+    /// It's the version that's running.
+    SameVersion,
+    /// It was checked, and it isn't one to install: the code and our own words.
+    Refused {
+        code: &'static str,
+        why: String,
+    },
 }
 
 struct St {
@@ -190,6 +206,8 @@ struct St {
     first_frame_done: bool,
     /// The first frame came before what's remembered had been read, off a slow disk. It's dealt with as soon as it has.
     first_frame_early: Option<u64>,
+    /// A development build handed over and checked, waiting beside the app for its moment.
+    build: Option<builds::Build>,
 }
 
 pub struct Updater {
@@ -256,6 +274,7 @@ impl Updater {
             arrived_by_update: false,
             first_frame_done: false,
             first_frame_early: None,
+            build: None,
         };
         Arc::new(Self {
             files: Files::in_state(root),
@@ -341,7 +360,11 @@ impl Updater {
             return None;
         }
         let current = st.facts.as_ref()?.version.as_str();
-        st.saved.offered.as_ref().filter(|offered| is_newer(offered, current)).cloned()
+        st.saved
+            .offered
+            .as_ref()
+            .filter(|offered| is_newer(offered, current) || builds::is_way_back(&st.saved, offered, current))
+            .cloned()
     }
 
     /// What the host knows of this copy. Given once, before anything else asks. Reads what's remembered, says what became of an install that's just ended, and tidies up. All of it files, so never on the UI thread, and none of it holding what the UI thread asks through.
@@ -349,6 +372,7 @@ impl Updater {
         let now = self.now_ms();
         facts.app = facts.app.canonicalize().unwrap_or(facts.app);
         let mut saved = Saved::read(&self.files.saved);
+        let mut dirty_at_launch = false;
         let current = facts.version.clone();
         let app = facts.app.clone();
         // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
@@ -359,7 +383,15 @@ impl Updater {
             self.settle_last_install(&mut saved, &current, &app, now)
         };
         let may_replace = self.source.may_replace_itself() && !second_copy;
-        let offered = saved.offered.clone().filter(|offered| is_newer(offered, &current));
+        // A release running is where the way back from a development build was going.
+        if saved.back_to_release && !crate::version::is_development(&current) {
+            saved.back_to_release = false;
+            dirty_at_launch = true;
+        }
+        let offered = saved
+            .offered
+            .clone()
+            .filter(|offered| is_newer(offered, &current) || builds::is_way_back(&saved, offered, &current));
         // What's staged and no longer on offer is the size of the app, for nothing. Only with no installer at work.
         if !second_copy && settled.plan_gone && !helper_alive(&self.files) {
             self.clear_leftovers(&app, &current, offered.is_some());
@@ -373,7 +405,7 @@ impl Updater {
         });
         // A new version counts towards going back until it's reached a first frame. Once it has, a launch writes nothing here.
         let mut going_back = false;
-        let mut dirty = settled.changed;
+        let mut dirty = settled.changed || dirty_at_launch;
         let beside = beside_app(&app).unwrap_or_default();
         if may_replace && saved.proven.as_deref() != Some(current.as_str()) && previous_app_in(&beside).is_dir() {
             saved.unstarted = saved.unstarted.saturating_add(1);
@@ -518,7 +550,7 @@ impl Updater {
         if plan.to == current {
             settled.status = Some(Status::Updated(plan.to.clone()));
             settled.notice = Some(Notice {
-                text: format!("Updated to {}.", plan.to),
+                text: builds::arrived_words(&plan),
                 fades: true,
             });
             saved.offered = None;
@@ -582,13 +614,18 @@ impl Updater {
     /// This version keeps failing before its first frame and an older one's kept: starts the installer to go back to it.
     fn start_going_back(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> bool {
         let Some(beside) = beside_app(app) else { return false };
-        let Some(previous) = stage::app_version(&previous_app_in(&beside)).filter(|previous| is_newer(current, previous)) else {
+        // Older, or after a development build was handed over, any other version: never this one.
+        let Some(previous) = stage::app_version(&previous_app_in(&beside)).filter(|previous| previous != current && crate::version::parse(previous).is_some())
+        else {
             return false;
         };
         let plan = Plan {
             id: crate::plan::new_id(),
             cdhash: String::new(),
             team_required: false,
+            any_version: !is_newer(current, &previous),
+            development_build: false,
+            team_signed: false,
             from: previous,
             to: current.to_owned(),
             pid: std::process::id(),
@@ -708,6 +745,12 @@ impl Updater {
             }
             _ => {}
         }
+        if let Some(build) = &st.build {
+            return MenuItem {
+                title: format!("Update to {}…", build.version),
+                enabled: true,
+            };
+        }
         match self.offered_here(&st) {
             Some(version) => MenuItem {
                 title: format!("Update to {version}…"),
@@ -722,11 +765,13 @@ impl Updater {
 
     /// The menu item was chosen. Whichever it says: it starts on a thread of its own, and the UI's not held.
     pub fn menu_chosen(self: &Arc<Self>) {
-        let on_offer = {
+        let (on_offer, build) = {
             let st = lock(&self.st);
-            self.offered_here(&st).is_some()
+            (self.offered_here(&st).is_some(), st.build.is_some() && !st.status.is_under_way())
         };
-        if on_offer {
+        if build {
+            self.build_now(Asked::ByHand);
+        } else if on_offer {
             let _ = self.install(Asked::ByHand);
         } else {
             self.check_in_background(Asked::ByHand);
@@ -740,10 +785,8 @@ impl Updater {
         if st.facts.is_none() || st.status.is_under_way() || st.second_copy {
             return None;
         }
-        let check = self
-            .source
-            .checks_by_itself()
-            .then(|| rules::next_check_at(&st.saved, st.launched_ms, self.now_ms()));
+        // While a build waits, the check waits for it, so it doesn't set the timer either: a check that's due and can't go would wake it every second.
+        let check = (self.source.checks_by_itself() && st.build.is_none()).then(|| rules::next_check_at(&st.saved, st.launched_ms, self.now_ms()));
         match (check, st.install_look_at) {
             (Some(check), Some(install)) => Some(check.min(install)),
             (check, install) => check.or(install),
@@ -758,7 +801,8 @@ impl Updater {
             if st.status.is_under_way() || st.facts.is_none() {
                 return;
             }
-            let check_due = self.source.checks_by_itself() && rules::next_check_at(&st.saved, st.launched_ms, now) <= now;
+            // A build that's waiting goes first, and the check comes after: it's what's to be said till then.
+            let check_due = self.source.checks_by_itself() && st.build.is_none() && rules::next_check_at(&st.saved, st.launched_ms, now) <= now;
             (check_due, st.install_look_at.is_some_and(|at| at <= now))
         };
         if check_due {
@@ -771,12 +815,17 @@ impl Updater {
 
     /// The 30-minute rule, now.
     fn look_at_installing(self: &Arc<Self>, now: u64) {
+        if lock(&self.st).build.is_some() {
+            self.look_at_build(now);
+            return;
+        }
         let look = self.host.look();
         let since_input_ms = self.since_input(&look);
         let step = {
             let mut st = lock(&self.st);
             let offered = self.offered_here(&st);
-            let on = st.saved.auto_update.unwrap_or_else(|| self.source.auto_default());
+            // The way back from a development build goes by itself, whichever way the switch is: it's what turning development builds off asked for.
+            let on = st.saved.auto_update.unwrap_or_else(|| self.source.auto_default()) || st.saved.back_to_release;
             let step = rules::auto_step(AutoLook {
                 build_may: self.source.may_replace_itself(),
                 switch_on: on,
@@ -822,7 +871,8 @@ impl Updater {
 
     fn begin_check(&self) -> bool {
         let mut st = lock(&self.st);
-        if st.status.is_under_way() || st.facts.is_none() {
+        // A build that's waiting is what's to be said until it goes, and a check would only cover it up.
+        if st.status.is_under_way() || st.facts.is_none() || st.build.is_some() {
             return false;
         }
         st.status = Status::Checking;
@@ -856,7 +906,7 @@ impl Updater {
             Ok(latest) => {
                 st.saved.last_check_ms = Some(now);
                 st.saved.failures = 0;
-                if latest.on_offer(&current, &system) {
+                if latest.on_offer(&current, &system) || (st.saved.back_to_release && latest.on_offer_back(&current, &system)) {
                     st.saved.offered = Some(latest.version.clone());
                     if self.source.may_replace_itself() {
                         st.status = Status::Available(latest.version.clone());
@@ -865,10 +915,7 @@ impl Updater {
                         format!("{APP_NAME} {0} is available. Choose Update to {0}… in the {APP_NAME} menu.", latest.version)
                     } else {
                         st.status = Status::AvailableElsewhere(latest.version.clone());
-                        format!(
-                            "{APP_NAME} {} is available. This is a development build, so it won't replace itself.",
-                            latest.version
-                        )
+                        format!("{APP_NAME} {} is available. This is a local build, so it won't replace itself.", latest.version)
                     }
                 } else {
                     st.saved.offered = None;
@@ -916,7 +963,7 @@ impl Updater {
         self.stopping.store(false, Ordering::SeqCst);
         let version = {
             let mut st = lock(&self.st);
-            if st.status.is_under_way() {
+            if st.status.is_under_way() || st.build.is_some() {
                 return Err(InstallRefused::Underway);
             }
             if st.second_copy {
@@ -960,6 +1007,11 @@ impl Updater {
         if lasting {
             st.saved.note_failed_version(version);
         }
+        // A build that didn't go is handed over again if it's wanted: nothing's tried again by itself.
+        let build_gone = st.build.as_ref().is_some_and(|build| build.version == version);
+        if build_gone {
+            st.build = None;
+        }
         // A failure that may pass gets another chance after a while, by the back-off.
         st.install_look_at = (!lasting && self.offered_here(&st).is_some()).then(|| now.saturating_add(st.saved.install_back_off(now)));
         st.notice = (asked == Asked::ByHand).then(|| Notice {
@@ -967,6 +1019,9 @@ impl Updater {
             fades: true,
         });
         drop(st);
+        if build_gone && let Some(app) = self.app_path() {
+            stage::clear_staged(&app);
+        }
         self.save();
         self.log(&format!("the update to {version} failed: {why}"));
         self.host.changed();
@@ -974,7 +1029,11 @@ impl Updater {
 
     fn back_on_offer(&self, version: &str, look_at: Option<u64>) {
         let mut st = lock(&self.st);
-        st.status = Status::Available(version.to_owned());
+        st.status = if st.build.as_ref().is_some_and(|build| build.version == version) {
+            Status::BuildReady(version.to_owned())
+        } else {
+            Status::Available(version.to_owned())
+        };
         st.install_look_at = look_at;
         st.notice = None;
         drop(st);
@@ -982,8 +1041,8 @@ impl Updater {
     }
 
     /// Whether an automatic install is still right to go ahead: the user may have come back during a download.
-    fn still_idle(&self, look: &Look) -> bool {
-        self.since_input(look) >= rules::IDLE_BEFORE_INSTALL_MS
+    fn still_idle(&self, look: &Look, idle_ms: u64) -> bool {
+        self.since_input(look) >= idle_ms
     }
 
     fn run_install(self: &Arc<Self>, asked: Asked, version: &str) {
@@ -991,8 +1050,9 @@ impl Updater {
         self.ready_folder();
         self.log(&format!("updating to {version}"));
         // Read again, so one that's been withdrawn doesn't go in, and the checksum's today's.
+        let way_back = lock(&self.st).saved.back_to_release;
         let latest = match self.fetch_latest(&facts.version) {
-            Ok(latest) if latest.on_offer(&facts.version, &facts.system) => latest,
+            Ok(latest) if latest.on_offer(&facts.version, &facts.system) || (way_back && latest.on_offer_back(&facts.version, &facts.system)) => latest,
             Ok(_) | Err(FetchError::NotFound) => {
                 let mut st = lock(&self.st);
                 st.saved.offered = None;
@@ -1034,11 +1094,20 @@ impl Updater {
                 return;
             }
         };
-        self.wait_and_hand_off(asked, version, &facts, &staged.cdhash);
+        let to = Going {
+            version,
+            cdhash: &staged.cdhash,
+            idle_ms: rules::IDLE_BEFORE_INSTALL_MS,
+            any_version: way_back && !is_newer(version, &facts.version),
+            development_build: false,
+            team_signed: true,
+        };
+        self.wait_and_hand_off(asked, &facts, &to);
     }
 
     /// The download's good. What's in flight finishes first, and the user's told if they're waiting on it. Then the hand-off and the quit: from here, what's written is what comes back.
-    fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str) {
+    fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>) {
+        let version = to.version;
         let began = Instant::now();
         loop {
             // The user's quitting by other means, and this doesn't turn that into a reopening.
@@ -1047,16 +1116,16 @@ impl Updater {
                 return;
             }
             let look = self.host.look();
-            if asked == Asked::ByItself && !self.still_idle(&look) {
+            if asked == Asked::ByItself && !self.still_idle(&look, to.idle_ms) {
                 // They've come back. It's all ready for the next quiet half hour.
-                let wait = rules::IDLE_BEFORE_INSTALL_MS.saturating_sub(self.since_input(&look));
+                let wait = to.idle_ms.saturating_sub(self.since_input(&look));
                 self.back_on_offer(version, Some(self.now_ms().saturating_add(wait)));
                 return;
             }
             if look.busy.is_empty() {
                 match self.host.hand_off(HAND_OFF_LIMIT) {
                     Ok(()) => {
-                        self.quit_after_hand_off(asked, version, facts, cdhash);
+                        self.quit_after_hand_off(asked, facts, to);
                         return;
                     }
                     Err(HandOffRefused::NotSaved(why)) => {
@@ -1098,7 +1167,8 @@ impl Updater {
     }
 
     /// Past a good hand-off the app's frozen, so every way out from here has to free it.
-    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str) {
+    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>) {
+        let (version, cdhash) = (to.version, to.cdhash);
         let give_up = |why: &str| {
             let _ = std::fs::remove_file(self.files.plan());
             self.host.cancelled();
@@ -1111,9 +1181,9 @@ impl Updater {
         }
         let look = self.host.look();
         // The user may have touched it in the moment before it froze.
-        if asked == Asked::ByItself && !self.still_idle(&look) {
+        if asked == Asked::ByItself && !self.still_idle(&look, to.idle_ms) {
             self.host.cancelled();
-            let wait = rules::IDLE_BEFORE_INSTALL_MS.saturating_sub(self.since_input(&look));
+            let wait = to.idle_ms.saturating_sub(self.since_input(&look));
             self.back_on_offer(version, Some(self.now_ms().saturating_add(wait)));
             return;
         }
@@ -1131,6 +1201,9 @@ impl Updater {
             id: crate::plan::new_id(),
             cdhash: cdhash.to_owned(),
             team_required,
+            any_version: to.any_version,
+            development_build: to.development_build,
+            team_signed: to.team_signed,
             from: facts.version.clone(),
             to: version.to_owned(),
             pid: std::process::id(),
@@ -1182,7 +1255,7 @@ impl Updater {
                 |at| format!("{APP_NAME} {version} is up to date · checked {}", ago(at, now)),
             ),
             Status::Available(offered) => format!("{APP_NAME} {offered} is available"),
-            Status::AvailableElsewhere(offered) => format!("{APP_NAME} {offered} is available · a development build doesn't replace itself"),
+            Status::AvailableElsewhere(offered) => format!("{APP_NAME} {offered} is available · a local build doesn't replace itself"),
             Status::CheckFailed(why) => format!("Couldn't check for updates: {why}"),
             Status::Preparing(offered) => format!("Downloading {APP_NAME} {offered}…"),
             Status::Waiting { version: offered, for_what } => format!("Updating to {offered} as soon as this is done: {for_what}"),
@@ -1190,6 +1263,7 @@ impl Updater {
             Status::Failed { version: offered, why } => format!("Update to {offered} failed: {why}"),
             Status::Updated(offered) => format!("Updated to {offered}"),
             Status::WentBack { version: offered, back_on } => format!("{offered} didn't start, so {back_on} came back"),
+            Status::BuildReady(build) => format!("Development build {build} is ready, and goes in once {APP_NAME} hasn't been used for 5 minutes"),
         }
     }
 
@@ -1236,6 +1310,10 @@ impl Updater {
             "next_wake_in_ms": next_wake.map(|at| at.saturating_sub(now)),
             "install_look_in_ms": st.install_look_at.map(|at| at.saturating_sub(now)),
             "kept": kept,
+            "dev_builds": st.saved.dev_builds.unwrap_or(false),
+            "back_to_release": st.saved.back_to_release,
+            "build_waiting": st.build.as_ref().map(|build| build.version.clone()),
+            "build_team": st.build.as_ref().and_then(|build| build.team.clone()),
             "log": self.files.log,
         })
     }
@@ -1249,6 +1327,19 @@ impl Updater {
     pub fn stop_over(&self) {
         self.stopping.store(false, Ordering::SeqCst);
     }
+}
+
+/// What an install is going to, once it's been checked: a release downloaded, or a development build handed over.
+struct Going<'a> {
+    version: &'a str,
+    cdhash: &'a str,
+    /// How long the app has to have gone unused, for an install that goes by itself: a release's 30 minutes, or a development build's 5.
+    idle_ms: u64,
+    /// Any other version may replace this one, older included ([`Plan::any_version`]).
+    any_version: bool,
+    /// A development build handed over ([`Plan::development_build`]), and whether a team signed it.
+    development_build: bool,
+    team_signed: bool,
 }
 
 /// What each of the installer's reasons comes to, and whether it's the sort of thing that'll be the same tomorrow.
@@ -1838,6 +1929,9 @@ mod tests {
             id: "1-1".into(),
             cdhash: "a".repeat(40),
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 1,
@@ -1971,6 +2065,9 @@ mod tests {
             id: "1-1".into(),
             cdhash: "a".repeat(40),
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 1,
@@ -2087,6 +2184,9 @@ mod tests {
             id: "1-1".into(),
             cdhash: "a".repeat(40),
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 1,

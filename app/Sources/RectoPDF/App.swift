@@ -147,7 +147,8 @@ final class Bridge: AppListener, @unchecked Sendable {
         watchActivityAndInput()
         let info = Bundle.main.infoDictionary
         let system = ProcessInfo.processInfo.operatingSystemVersion
-        core.setUpdateFacts(version: info?["CFBundleShortVersionString"] as? String ?? "", bundlePath: Bundle.main.bundlePath, systemVersion: "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)")
+        // A development build's own version is beside its release's: Rust decides which this copy runs as.
+        core.setUpdateFacts(version: info?["CFBundleShortVersionString"] as? String ?? "", devVersion: info?["RectoDevVersion"] as? String, bundlePath: Bundle.main.bundlePath, systemVersion: "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)")
         // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
         core.beginRestore()
         let core = self.core

@@ -40,6 +40,10 @@ pub trait Host: Send + Sync + 'static {
     fn shut_down(&self) {}
     /// Agent access is Off now. Whatever agents started that's still working on documents stops. Must never block: this is the socket's own thread.
     fn access_is_off(&self) {}
+    /// The owner's standing consent to this one command, whatever the level: a switch of theirs that says it may come from anyone on this Mac who can reach the socket, which is only this user. Must never block: this is the socket's own thread.
+    fn consents_to(&self, _command: &Command) -> bool {
+        false
+    }
 }
 
 /// A session in this process.

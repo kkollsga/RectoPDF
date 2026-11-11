@@ -118,6 +118,7 @@ fn is_change(cmd: &str, outcome: &str) -> bool {
                 | "stop"
                 | "permission_set"
                 | "update_install"
+                | "update_dev_builds"
         )
 }
 

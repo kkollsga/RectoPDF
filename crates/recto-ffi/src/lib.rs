@@ -772,6 +772,7 @@ impl Host for AppHost {
                 | Command::SessionShow {}
                 | Command::SessionSave {}
                 | Command::UpdateStatus {}
+                | Command::UpdateDevBuilds { set: None }
                 | Command::Settings { auto_update: None }
         );
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
@@ -826,6 +827,11 @@ impl Host for AppHost {
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
         self.session.acted_tab(command)
+    }
+
+    /// The owner's switch for development builds: `updates::consents_to` has the rule.
+    fn consents_to(&self, command: &Command) -> bool {
+        self.saver.inner().is_some_and(|inner| inner.consents_to(command))
     }
 
     fn attach(&self, notify: Notifier) {
@@ -976,12 +982,12 @@ impl AppHost {
         }
         if matches!(
             command,
-            Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. }
+            Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. }
         ) {
-            if !recto_agent::allowed(level, command.access()) {
+            let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
+            if !recto_agent::allowed(level, command.access()) && !inner.consents_to(command) {
                 return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
             }
-            let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
             return inner.update_command(command);
         }
         if matches!(command, Command::SessionCheck {}) {
@@ -3177,8 +3183,8 @@ impl AppCore {
     }
 
     /// What this copy of the app is, from the host. Before `begin_restore`, which is what reads what the updater remembers.
-    pub fn set_update_facts(&self, version: String, bundle_path: String, system_version: String) {
-        self.inner.note_update_facts(version, bundle_path, system_version);
+    pub fn set_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
+        self.inner.note_update_facts(version, dev_version, bundle_path, system_version);
     }
 
     /// When the host's one timer should go off, if at all. It's the same until something happens, and the host arms again only when it isn't.
@@ -3266,6 +3272,13 @@ impl AppCore {
     pub fn shutdown(&self) {
         if let Some(stopper) = lock(&self.inner.stopper).take() {
             stopper.stop();
+        }
+        // A quiet run's copy is a test's or a script's, and the system registered it when it was started: it's forgotten again, so the one install is the only RectoPDF in Open With.
+        if self.inner.qa.is_some()
+            && let Some(app) = self.inner.updates.app_path()
+            && app != std::path::Path::new("/Applications/RectoPDF.app")
+        {
+            recto_platform::registry::forget_soon(&app);
         }
     }
 }

@@ -7,7 +7,8 @@
 //! - [`stage`]: everything slow, done before the app quits: download, checksum, unpack, signature, team and Gatekeeper.
 //! - [`plan`]: what the app hands the installer, and what the installer leaves behind.
 //! - [`install`]: the `recto-updater` helper: waits for the old process, swaps the app in one step, and goes back if the new one doesn't start.
-//! - [`updater`]: all that together, for the app.
+//! - [`updater`]: all that together, for the app, with development builds in [`updater::builds`].
+//! - [`version`]: a release's `X.Y.Z` and a development build's `X.Y.Z.N`, and their order. Pure.
 
 pub mod fetch;
 pub mod install;
@@ -18,6 +19,7 @@ pub mod saved;
 pub mod source;
 pub mod stage;
 pub mod updater;
+pub mod version;
 pub mod zip;
 
 /// The project on GitHub. A release build's one and only source.

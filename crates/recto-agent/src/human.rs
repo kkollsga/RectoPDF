@@ -272,7 +272,7 @@ pub fn render(tag: &str, data: &Value) -> String {
             }
         },
         "update_status" | "update_check" => update_status(data),
-        "update_install" | "settings" => text(&data["words"]).to_string(),
+        "update_install" | "update_dev_builds" | "settings" => text(&data["words"]).to_string(),
         "session_check" => {
             let mut out = if data["safe"] == true {
                 "Safe to hand off.".to_string()

@@ -91,6 +91,9 @@ impl Bed {
             id: "first".into(),
             cdhash,
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 0,
@@ -525,6 +528,30 @@ fn what_it_swaps_in_is_what_was_verified() {
     assert!(!bed.run(None).success());
     assert_eq!(bed.installed(), "0.1.0");
     assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
+}
+
+/// Failure: a development build signed ad hoc, which is all a dev build ever is (owner, 2026-11-11: no keychain), is refused at the swap where the team is required, or one is taken with the owner's switch off, as a plan saying so is only a file. The switch is read again here, from the updater's own file.
+#[test]
+fn an_ad_hoc_build_is_taken_only_with_the_owners_switch() {
+    for (switch, taken) in [(None, false), (Some(false), false), (Some(true), true)] {
+        let mut bed = Bed::new(&format!("build-{switch:?}"), "ok");
+        bed.plan.team_required = true;
+        bed.plan.development_build = true;
+        let saved = recto_update::saved::Saved {
+            dev_builds: switch,
+            ..recto_update::saved::Saved::default()
+        };
+        saved.write(&bed.files.saved);
+        let ended = bed.run(None);
+        assert_eq!(ended.success(), taken, "{switch:?}");
+        if taken {
+            assert_eq!(bed.installed(), "0.2.0");
+            assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "the old app's kept, as for a release");
+        } else {
+            assert_eq!(bed.installed(), "0.1.0", "{switch:?}");
+            assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
+        }
+    }
 }
 
 /// Failure: **the last look isn't the last thing:** with the record copied after it, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. Held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
