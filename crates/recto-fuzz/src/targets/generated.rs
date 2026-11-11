@@ -111,7 +111,7 @@ pub fn check(data: &[u8]) {
                 fields.iter().all(|(key, value)| matches!(key.as_str(), "state" | "code") || value.is_u64()),
                 "{report}"
             );
-            assert!(fields.len() <= 12, "{report}");
+            assert!(fields.len() <= 20, "{report}");
         }
         // As the helper's answer: a report line, then the contents.
         for answer in [data.to_vec(), [&b"{\"state\":\"ready\"}\n"[..], &shaped].concat()] {

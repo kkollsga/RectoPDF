@@ -312,7 +312,7 @@ impl Runner for HelperProcess {
     }
 }
 
-/// The numbers a helper's report may carry, each a count or a time.
+/// The numbers a helper's report may carry, each a count, a size or a time: what `recto-indexer` says of its build and of its own and its workers' memory.
 const REPORT_NUMBERS: &[&str] = &[
     "pages",
     "pages_built",
@@ -324,6 +324,14 @@ const REPORT_NUMBERS: &[&str] = &[
     "no_text_pages",
     "hidden_flagged_pages",
     "hidden_unchecked_pages",
+    "helper_peak_bytes",
+    "worker_peak_bytes",
+    "worker_spawns",
+    "worker_retirements",
+    "memory_kills",
+    "deadline_kills",
+    "crashes",
+    "hidden_check_failures",
 ];
 /// The longest code a report may give, which is longer than any it does.
 const MAX_REPORT_CODE: usize = 48;
