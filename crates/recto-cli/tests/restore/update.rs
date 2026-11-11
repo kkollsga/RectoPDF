@@ -382,6 +382,28 @@ impl Bed {
         }
     }
 
+    /// Waits for the old process to end, for the installer to see this version come up, and for it to end by itself: for a release that ends a moment after its first frame. From the update log and the processes at the app's path, and not by catching it answering: it answers for well under a second, which a poll on a slow machine can miss, and then nothing's running to answer until the test starts one. CI's run 43054237265 saw `not_running` for the whole 90 s after it had come and gone (2026-11-11).
+    fn wait_for_new_version_to_come_and_go(&self, mut old: Run<'_>, version: &str) {
+        old.ended();
+        let came_up = format!("installer: {version} started");
+        let began = Instant::now();
+        while !self.log().contains(&came_up) {
+            assert!(
+                began.elapsed() < Duration::from_secs(90),
+                "the installer never saw {version} come up:\n{}",
+                self.said()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The old app was gone before the swap, so whatever runs from the app's path now is the new version.
+        let executable = self.app.join("Contents/MacOS/RectoPDF");
+        while !local::processes_running(&executable).is_empty() {
+            assert!(began.elapsed() < Duration::from_secs(120), "{version} didn't end by itself:\n{}", self.said());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.wait_until_nothing_answers();
+    }
+
     /// Starts whatever's at the app's path as `recto qa start` does, and waits for it to be gone: for a version that ends by itself. Says what `qa start` answered, for a failure to show. A start refused as "already running" isn't a launch: what's answering is the last one still closing its socket, and it's waited for and tried again.
     fn launch_until_it_ends(&self) -> String {
         let executable = self.app.join("Contents/MacOS/RectoPDF");
@@ -1080,10 +1102,8 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     bed.release_of(NEW, broken);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
-    let mut arrived = bed.wait_for_new_app_of(run, NEW);
-    // It's come up, for the installer, which has finished. And then it ends, socket and all.
-    bed.wait_gone(arrived.pid);
-    arrived.ended();
+    // It comes up, for the installer, which finishes. And then it ends, socket and all.
+    bed.wait_for_new_version_to_come_and_go(run, NEW);
     assert_eq!(bed.version(), NEW, "the installer took it as having come up");
     let files = recto_update::plan::Files::in_state(&bed.state.root);
     let mut launches = 0;
