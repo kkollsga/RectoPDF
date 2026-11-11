@@ -1,7 +1,7 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
-use crate::{AppListener, CoreQueue, Inner, lock};
+use crate::{AppCore, AppListener, CoreQueue, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
@@ -25,6 +25,23 @@ fn slow_report() -> Value {
             .collect();
         json!({ "seams": seams, "jitter": report.jitter, "ui_refusals": report.ui_refusals })
     })
+}
+
+/// A test's outside change to a quiet run's activation policy: how often the run turns itself `accessory`, as something outside the app once did (a full check, 2026-11-11, and `open -g` of a copy with the same identifier, twice in about 145 reports), from `RECTO_QA_POLICY_NUDGE_MS`. Nothing outside a quiet run.
+pub(crate) fn policy_nudge(quiet: bool) -> Option<Duration> {
+    if !quiet {
+        return None;
+    }
+    let ms: u64 = std::env::var("RECTO_QA_POLICY_NUDGE_MS").ok()?.parse().ok()?;
+    Some(Duration::from_millis(ms.clamp(5, 10_000)))
+}
+
+#[uniffi::export]
+impl AppCore {
+    /// [`policy_nudge`], in milliseconds, for the host's quiet-run guard.
+    pub fn qa_policy_nudge_ms(&self) -> Option<u64> {
+        policy_nudge(self.qa_mode).map(|every| every.as_millis() as u64)
+    }
 }
 
 /// The process this quiet run ends with, if it was told one: what a relaunch by an update passes on.
@@ -383,7 +400,7 @@ impl QaBridge {
             }
             "settings" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                if !matches!(value, "open" | "close") && !inner.has_setting(value) {
+                if !matches!(value, "open" | "close" | "privacy") && !inner.has_setting(value) {
                     return Err(bad(format!("`{}` isn't something `settings` takes.", cleaned(value))));
                 }
                 self.ask(verb, value)?;

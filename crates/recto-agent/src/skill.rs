@@ -103,7 +103,11 @@ pub fn reference_md() -> String {
     out.push_str("## Units\n\n- Pages count from 1, in the PDF's own order: `4`, or `4-6` for a range.\n- Times: `500ms`, `30s`, `5m`, `1h`. A bare number is refused, because it could mean anything. In JSON, fields ending `_ms` are milliseconds.\n- Scale: `2` or `2x`.\n- Rotation: `90`, `180`, `270`, `-90` degrees, clockwise.\n- In JSON, fields ending `_bytes` are bytes. Plain output uses KiB, MiB and GiB.\n\n");
     out.push_str("## Selectors\n\n`--tab` takes `#3`, `active`, or part of a tab's name. Leaving it out means the active tab. They never guess: if two tabs match, it's exit 4 with `error.candidates`.\n\n");
     out.push_str("## The envelope\n\n```json\n{\"v\":1,\"ok\":true,\"cmd\":\"tabs\",\"data\":{}}\n{\"v\":1,\"ok\":false,\"cmd\":\"text\",\"error\":{\"code\":\"permission_denied\",\"message\":\"...\",\"candidates\":[],\"exit\":5,\"next\":\"...\",\"ask\":\"recto permission request read_only\"}}\n```\n\nFields are only added within a version. Anything from a document is under `untrusted`.\n\n");
-    out.push_str("## Levels\n\n- **Off**, the default: `status`, which says how many PDFs are open, `help`, `permission` and `skill`. Nothing from a document, not even a name.\n- **Read-only**: read and search, and measure.\n- **Control**: open, move around, edit pages in memory, and throw away agents' own edits, never the user's.\n- **Full**: write a new picture to disk, and throw away the user's edits too.\n\nOnly the user raises a level, at their own terminal. No command, flag or variable does it.\n\n");
+    out.push_str("## Levels\n\nOff is the default.\n\n");
+    for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+        let _ = writeln!(out, "- **{}**: {}", level.label(), level.allows());
+    }
+    out.push_str("\nOnly the user raises a level, at their own terminal. No command, flag or variable does it.\n\n");
     out.push_str("## Events\n\n`recto watch --events` groups: ");
     let groups: Vec<String> = crate::table::EVENT_GROUPS
         .iter()
@@ -411,5 +415,37 @@ mod tests {
         );
         assert_eq!(shell_words(r#"a "b\"c" """#), ["a", "b\"c", ""]);
         assert_eq!(shell_words(r#"a 'b "c' 'it'\''s'"#), ["a", "b \"c", "it's"]);
+    }
+
+    /// Failure: what a level is said to allow drifts from what the command table lets it do, as it did when `recto save` came in at Control while Control still said "nothing reaches a file". The user raises a level on these words, and `PRIVACY.md` repeats them.
+    #[test]
+    fn each_level_says_what_its_commands_do() {
+        let at = |tag: &str| TABLE.iter().find(|spec| spec.tag == tag).and_then(needs);
+        for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+            let words = level.allows().to_lowercase();
+            let saves = at("save").is_some_and(|needed| needed <= level);
+            assert!(!saves || !words.contains("nothing reaches a file"), "{level:?}: {words}");
+            if at("save") == Some(level) {
+                assert!(words.contains("save"), "{level:?} saves: {words}");
+            }
+            if at("update_check") == Some(level) {
+                assert!(words.contains("check for updates"), "{level:?} checks: {words}");
+            }
+            if at("update_install") == Some(level) {
+                assert!(words.contains("install updates"), "{level:?} installs: {words}");
+            }
+            if at("export_svg") == Some(level) {
+                assert!(words.contains("export"), "{level:?} exports: {words}");
+            }
+            assert!(!words.contains("sign") || words.contains("signing is never included"), "{level:?}: {words}");
+        }
+        assert!(
+            TABLE.iter().filter(|spec| spec.tag == "sign").all(|spec| needs(spec).is_none()),
+            "signing is no level's"
+        );
+        let reference = reference_md();
+        for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+            assert!(reference.contains(level.allows()), "the reference says {level:?} as `permission show` does");
+        }
     }
 }

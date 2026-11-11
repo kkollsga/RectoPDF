@@ -108,38 +108,9 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          umask 077
-          # A release is Developer ID signed and notarized, never ad hoc.
-          for s in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
-            [ -n "${!s}" ] || { echo "::error::a release is Developer ID signed and notarized; set the secret $s (docs/RELEASING.md)"; exit 1; }
-          done
-          team=$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' crates/recto-update/src/lib.rs)
+          # The same script the preflight runs (release-preflight.yml), so a preflight that passed loads the keys as this does.
           kc="$RUNNER_TEMP/recto-signing.keychain-db"
-          # The keychain's own password is made here, for this job alone, and is all that's on a command line.
-          kc_pass=$(openssl rand -hex 24)
-          security create-keychain -p "$kc_pass" "$kc"
-          security set-keychain-settings -lut 21600 "$kc"
-          security unlock-keychain -p "$kc_pass" "$kc"
-          # shellcheck disable=SC2046 # the runner's keychain paths have no spaces
-          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
-          # The certificate's password goes in by the environment, never on a command line where `ps` could show it:
-          # openssl reads it from there, and what it writes is the identity unlocked, for the moment it takes to import.
-          openssl pkcs12 -in "$RUNNER_TEMP/developer-id.p12" -passin env:MACOS_CERT_PASSWORD -nodes -out "$RUNNER_TEMP/identity.pem"
-          rm -f "$RUNNER_TEMP/developer-id.p12"
-          security import "$RUNNER_TEMP/identity.pem" -k "$kc" -t agg -f pemseq -T /usr/bin/codesign -T /usr/bin/security
-          rm -f "$RUNNER_TEMP/identity.pem"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" >/dev/null
-          # Apple's Developer ID intermediate, in case the runner lacks it: the chain must verify.
-          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
-            && security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc" >/dev/null 2>&1 || true
-          # The keychain search list just set, which is what codesign and app/render-helper.sh search too, so the identity found here is the one they'll find.
-          identity=$(security find-identity -v -p codesigning | sed -n "s/.*\"\(Developer ID Application: .*($team)\)\"\$/\1/p" | sort -u | head -1)
-          [ -n "$identity" ] || { echo "::error::MACOS_CERT_P12 holds no valid Developer ID Application identity of team $team"; exit 1; }
-          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          xcrun notarytool store-credentials recto-notary --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" \
-            --issuer "$NOTARY_ISSUER_ID" --keychain "$kc" >/dev/null
-          rm -f "$RUNNER_TEMP/notary.p8"
+          identity=$(tools/release/keychain.sh "$kc")
           {
             echo "RECTO_SIGN_IDENTITY=$identity"
             echo "RECTO_NOTARY_PROFILE=recto-notary"
@@ -150,9 +121,7 @@ jobs:
         run: app/release-zip.sh --signed --already-built
       - name: Remove the signing keychain and anything of a secret
         if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/recto-signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/identity.pem" "$RUNNER_TEMP/notary.p8"
+        run: tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-signing.keychain-db"
       - name: Run the stapled app drawing a PDF, and check the zip as the updater will, with the keys gone
         env:
           RECTO_SIGN_IDENTITY: ''

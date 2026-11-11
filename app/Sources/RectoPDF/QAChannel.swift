@@ -43,12 +43,12 @@ import QuartzCore
             delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), cpuMicros: cpu / 1000, contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
-            layOutNow()
+            readyToBeLookedAt()
             answer(id, state())
             return
         case "animations":
             // Cheap, as `qa wait-settled` asks it until there's nothing.
-            layOutNow()
+            readyToBeLookedAt()
             answer(id, controller?.runningAnimations() ?? [])
             return
         case "entry_points":
@@ -150,6 +150,7 @@ import QuartzCore
             switch value {
             case "open": delegate.showSettings()
             case "close": delegate.settings?.window.close()
+            case "privacy": delegate.settings?.privacyLink.performClick(nil)
             default:
                 guard let toggle = delegate.settings?.switches[value] else { return fail(id, "That switch isn't showing.") }
                 toggle.performClick(nil)
@@ -351,7 +352,10 @@ import QuartzCore
     }
 
     /// What the window's display cycle would do before anything's seen. A quiet run's window is never on screen, so AppKit has no display cycle for it, and its views are laid out only when something asks: a report or `qa wait-settled` that came before that saw a table with no rows made and a pane with no height (CI, 2026-11-11, on a slower machine where the order differed). A person's window is laid out before it's drawn, so this only makes a quiet run the same.
-    private func layOutNow() {
+    ///
+    /// And the run's activation policy as its guard holds it: something outside the app can change it, and the guard hears of that a turn of the run loop or more later, so a report in between said `accessory` (a full check, 2026-11-11). The guard puts it back here first, so a look sees the rule kept, and says in the run's messages that it had to.
+    private func readyToBeLookedAt() {
+        if delegate.isQuiet { QuietRunGuard.keepProhibited() }
         for window in NSApp.windows where window.contentView != nil {
             window.layoutIfNeeded()
         }
@@ -382,6 +386,7 @@ import QuartzCore
             "chrome": controller.chrome.report,
             "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !overPages(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0)), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.paneAreas[controller.paneAreas.count - 1].scrollView.scrollerInsets.top] as [String: Any],
             "home": !controller.home.isHidden,
+            "home_note": controller.homeNote.text.isEmpty ? NSNull() as Any : ["text": controller.homeNote.text, "frame": [controller.homeNote.frame.minX, controller.homeNote.frame.minY, controller.homeNote.frame.width, controller.homeNote.frame.height], "in_home": controller.home.bounds.contains(controller.homeNote.frame)] as [String: Any],
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
             "focus_view": delegate.core.focusView(),

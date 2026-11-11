@@ -24,9 +24,25 @@ import AppKit
 
     @objc private func ignore(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {}
 
-    /// Back to no Dock icon, no menu bar and never active, if anything's changed that.
-    static func keepProhibited() {
-        guard NSApp.activationPolicy() != .prohibited else { return }
-        NSApp.setActivationPolicy(.prohibited)
+    private var nudge: Timer?
+
+    /// A test's stand-in for the system changing the policy from outside (`RECTO_QA_POLICY_NUDGE_MS`, read in Rust): every so often the run turns itself `accessory`, on the main thread, as AppKit would.
+    func nudge(every milliseconds: UInt64) {
+        nudge = Timer.scheduledTimer(withTimeInterval: Double(milliseconds) / 1000, repeats: true) { _ in
+            MainActor.assumeIsolated { _ = NSApp.setActivationPolicy(.accessory) }
+        }
     }
+
+    /// Back to no Dock icon, no menu bar and never active, if anything's changed that. Said once in the run's messages, so a failure's logs show it happened.
+    static func keepProhibited() {
+        let policy = NSApp.activationPolicy()
+        guard policy != .prohibited else { return }
+        NSApp.setActivationPolicy(.prohibited)
+        if !saidPutBack {
+            saidPutBack = true
+            FileHandle.standardError.write(Data("recto: this quiet run's activation was changed to \(policy == .regular ? "regular" : "accessory") from outside, and put back.\n".utf8))
+        }
+    }
+
+    private static var saidPutBack = false
 }

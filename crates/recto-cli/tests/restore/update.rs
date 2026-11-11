@@ -312,6 +312,11 @@ impl Bed {
         std::fs::read_to_string(self.state.root.join("update.log")).unwrap_or_default()
     }
 
+    /// What the state folder's run said, the update log among it, and what the system recorded, for a failure message where nothing answered.
+    fn said(&self) -> String {
+        crate::common::app::what_became_of(&self.state, None)
+    }
+
     fn version(&self) -> String {
         recto_update::stage::app_version(&self.app).unwrap()
     }
@@ -332,7 +337,7 @@ impl Bed {
             if status["status"] == wanted {
                 return status;
             }
-            assert!(began.elapsed() < Duration::from_secs(60), "waited for {wanted}: {status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(60), "waited for {wanted}: {status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -355,7 +360,7 @@ impl Bed {
                     assert_ne!(status["data"]["status"], "failed", "{status}\n{}", self.log());
                 }
             }
-            assert!(began.elapsed() < Duration::from_secs(90), "no new app: {reply}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(90), "no new app: {reply}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -372,23 +377,28 @@ impl Bed {
             {
                 return Run::attach(&self.state, pid["data"]["pid"].as_u64().unwrap() as u32);
             }
-            assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
 
-    /// The new version's come up, as the installer says, and then nothing's running at the app's path any more: for a version that ends by itself a moment after its first frame. It may never answer on its socket: a slow machine's socket can be later than that (slow mode, the socket 700 ms late, 2026-11-11), and waiting for it to answer waited out the time.
-    fn wait_for_new_app_to_come_and_go(&self, mut old: Run<'_>) {
-        let old_pid = old.pid;
+    /// Waits for the old process to end, for the installer to see this version come up, and for it to end by itself: for a release that ends a moment after its first frame. From the update log and the processes at the app's path, and not by catching it answering: it answers for well under a second, which a poll on a slow machine can miss, and then nothing's running to answer until the test starts one. CI's run 43054237265 saw `not_running` for the whole 90 s after it had come and gone (2026-11-11).
+    fn wait_for_new_version_to_come_and_go(&self, mut old: Run<'_>, version: &str) {
         old.ended();
-        let executable = self.app.join("Contents/MacOS/RectoPDF");
+        let came_up = format!("installer: {version} started");
         let began = Instant::now();
-        while !(self.log().contains("installer: started") && local::process_counters(old_pid).is_none() && local::processes_running(&executable).is_empty()) {
+        while !self.log().contains(&came_up) {
             assert!(
                 began.elapsed() < Duration::from_secs(90),
-                "the new version didn't come up and end: {}",
-                self.log()
+                "the installer never saw {version} come up:\n{}",
+                self.said()
             );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The old app was gone before the swap, so whatever runs from the app's path now is the new version.
+        let executable = self.app.join("Contents/MacOS/RectoPDF");
+        while !local::processes_running(&executable).is_empty() {
+            assert!(began.elapsed() < Duration::from_secs(120), "{version} didn't end by itself:\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
         self.wait_until_nothing_answers();
@@ -461,7 +471,7 @@ impl Bed {
             if code == 0 && status["ok"] == true {
                 return Run::attach(&self.state, status["data"]["pid"].as_u64().unwrap() as u32);
             }
-            assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", self.log());
+            assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", self.said());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1092,8 +1102,8 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     bed.release_of(NEW, broken);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
-    // It's come up, for the installer, which has finished. And then it ends, socket and all, maybe before its socket ever answered.
-    bed.wait_for_new_app_to_come_and_go(run);
+    // It comes up, for the installer, which finishes. And then it ends, socket and all.
+    bed.wait_for_new_version_to_come_and_go(run, NEW);
     assert_eq!(bed.version(), NEW, "the installer took it as having come up");
     let files = recto_update::plan::Files::in_state(&bed.state.root);
     let mut launches = 0;

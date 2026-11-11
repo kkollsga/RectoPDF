@@ -6,6 +6,7 @@ use super::State;
 use recto_platform::local::process_counters;
 use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
 use serde_json::{Value, json};
+use std::io::Read;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::process::Command;
@@ -61,9 +62,15 @@ impl Run<'static> {
 
     /// The same, with more of `qa start`'s flags.
     pub fn start_with(extra: &[&str]) -> Option<Self> {
+        Self::start_lasting(Duration::from_secs(120), extra)
+    }
+
+    /// The same, for at most this long: for a test that waits on purpose for longer than a run's usual two minutes. A run's end at its limit is the app gone mid-test, as `session_ended`, so the limit has to outlast whatever the test is prepared to wait for.
+    pub fn start_lasting(limit: Duration, extra: &[&str]) -> Option<Self> {
         let app = app_path()?;
         let state = State::new();
-        let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "2m"];
+        let limit = format!("{}s", limit.as_secs());
+        let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit];
         args.extend_from_slice(extra);
         let pid = launch(&state, &args);
         Some(Self {
@@ -121,8 +128,17 @@ impl<'a> Run<'a> {
 
     pub fn ok(&self, args: &[&str]) -> Value {
         let (reply, code) = self.state.json(args);
-        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}");
+        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}{}", self.if_gone(&reply));
         reply["data"].clone()
+    }
+
+    /// For a failure message: if this answer says the app isn't there, what became of it.
+    pub fn if_gone(&self, reply: &Value) -> String {
+        if app_gone(reply) {
+            format!("\n{}", what_became_of(&self.state, Some(self.pid)))
+        } else {
+            String::new()
+        }
     }
 
     pub fn settled(&self) {
@@ -188,6 +204,68 @@ impl Drop for Run<'_> {
         let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
         // A run ended by its own quit forgets its copy itself; one that had to be killed couldn't.
         forget_the_built_app();
+    }
+}
+
+/// Whether an answer says the app it was for isn't there: it ended while asked, or wasn't running.
+pub fn app_gone(reply: &Value) -> bool {
+    matches!(reply["error"]["code"].as_str(), Some("session_ended" | "not_running"))
+}
+
+/// What became of an app that's gone, for a failure message: whether its process is still there, its last words (a panic, or a quiet run's end and why, are said in its messages), and the crash reports the system wrote for it or for the helpers. CI said only `session_ended` or `not_running`, so a crash, a time limit and a test that looked too late couldn't be told apart (run 43054237265, 2026-11-11). Its exit status isn't to be had: the app isn't this test's child, as `recto qa start` or an installer started it.
+pub fn what_became_of(state: &State, pid: Option<u32>) -> String {
+    let process = match pid {
+        Some(pid) if still_running(pid) => format!("process {pid} is still running"),
+        Some(pid) => format!("process {pid} has ended"),
+        None => "no process known".to_string(),
+    };
+    format!("{process}\n{}\n{}", state.last_words(), crash_reports(pid))
+}
+
+/// The system's crash reports of the last half hour for the app and its helpers, with the exception and termination lines of any for this process.
+fn crash_reports(pid: Option<u32>) -> String {
+    const RECENT: Duration = Duration::from_secs(30 * 60);
+    const MAX_REPORT_BYTES: u64 = 4 * 1024 * 1024;
+    let folders = [
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Logs/DiagnosticReports")),
+        Some(PathBuf::from("/Library/Logs/DiagnosticReports")),
+    ];
+    let mut said = Vec::new();
+    for folder in folders.into_iter().flatten() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let recent = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age < RECENT);
+            if !recent || !(name.starts_with("RectoPDF") || name.starts_with("recto")) {
+                continue;
+            }
+            let mut text = String::new();
+            let _ = std::fs::File::open(entry.path()).and_then(|file| file.take(MAX_REPORT_BYTES).read_to_string(&mut text));
+            let this_one = pid.is_some_and(|pid| text.contains(&format!("\"pid\" : {pid},")) || text.contains(&format!("\"pid\":{pid},")));
+            said.push(format!("{}{}", entry.path().display(), if this_one { " (this process)" } else { "" }));
+            if this_one {
+                said.extend(
+                    text.lines()
+                        .filter(|line| {
+                            ["\"exception\"", "\"termination\"", "\"asi\"", "\"crashed\""]
+                                .iter()
+                                .any(|key| line.contains(key))
+                        })
+                        .take(8)
+                        .map(|line| format!("    {}", line.chars().take(400).collect::<String>())),
+                );
+            }
+        }
+    }
+    if said.is_empty() {
+        "crash reports: none for the app or its helpers in the last half hour".to_string()
+    } else {
+        format!("crash reports:\n  {}", said.join("\n  "))
     }
 }
 

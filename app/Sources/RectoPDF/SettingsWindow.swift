@@ -8,6 +8,9 @@ import AppKit
     private var shownRows: [SettingRow] = []
     private let rows = NSStackView()
     private let status = NSTextField(wrappingLabelWithString: "")
+    /// The privacy statement, in Rust's words, opened as a link the person chose.
+    let privacyLink = NSButton(title: "", target: nil, action: nil)
+    private var privacyURL = ""
     private static let width: CGFloat = 460
 
     init(delegate: AppDelegate, place: [Double]?) {
@@ -36,6 +39,10 @@ import AppKit
         status.preferredMaxLayoutWidth = Self.width - 40
         content.addArrangedSubview(rows)
         content.addArrangedSubview(status)
+        privacyLink.isBordered = false
+        privacyLink.target = self
+        privacyLink.action = #selector(openPrivacy)
+        content.addArrangedSubview(privacyLink)
         window.contentView = content
         refresh()
         if delegate.isQuiet {
@@ -52,6 +59,8 @@ import AppKit
         let model = delegate.core.settingsModel()
         window.title = model.title
         status.stringValue = model.status
+        privacyURL = model.privacyUrl
+        privacyLink.attributedTitle = NSAttributedString(string: model.privacyTitle, attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.linkColor])
         if model.rows != shownRows {
             shownRows = model.rows
             rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -87,6 +96,10 @@ import AppKit
         return line
     }
 
+    @objc private func openPrivacy() {
+        delegate.openAddress(privacyURL)
+    }
+
     @objc private func flipped(_ sender: NSSwitch) {
         guard let id = sender.identifier?.rawValue else { return }
         delegate.core.settingChosen(id: id, on: sender.state == .on)
@@ -108,7 +121,7 @@ import AppKit
     /// For QA: what's showing.
     func report() -> [String: Any] {
         let model = delegate.core.settingsModel()
-        return ["open": true, "x": window.frame.minX, "y": window.frame.minY, "title": window.title, "status": status.stringValue, "rows": model.rows.map { row in
+        return ["open": true, "x": window.frame.minX, "y": window.frame.minY, "title": window.title, "status": status.stringValue, "privacy": ["title": privacyLink.attributedTitle.string, "url": privacyURL], "rows": model.rows.map { row in
             ["id": row.id, "title": row.title, "hint": row.hint, "on": switches[row.id]?.state == .on, "enabled": switches[row.id]?.isEnabled ?? false] as [String: Any]
         }]
     }

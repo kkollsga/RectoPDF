@@ -14,6 +14,7 @@ mod palette;
 mod panes;
 pub mod passwords;
 mod printing;
+mod privacy;
 mod qa;
 mod saver;
 mod saving;
@@ -520,6 +521,8 @@ pub struct AppStrings {
     pub sidebar_button_tooltip: String,
     /// What goes beside a tab's name when something's wrong with its file. Its notice is what hovering over it says.
     pub notice_mark: String,
+    /// The empty window's quiet line about the daily update check, or empty for none: [`privacy::home_note`].
+    pub home_note: String,
 }
 
 /// Limits the host applies to native controls. The zoom limits are Rust's, and it says them once.
@@ -2117,6 +2120,7 @@ impl AppCore {
             agent_tooltip: "The agent isn't built yet".into(),
             sidebar_button_tooltip: "Show or hide the sidebar (⌃⌘S)".into(),
             notice_mark: "\u{26A0}\u{FE0E}".into(),
+            home_note: privacy::home_note(self.inner.updates.source().checks_by_itself()).unwrap_or_default().into(),
         }
     }
 

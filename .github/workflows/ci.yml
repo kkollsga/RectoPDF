@@ -51,6 +51,27 @@ jobs:
           restore-keys: check-
       - name: Full check
         run: tools/check.sh --full
+        env:
+          # A failing test's quiet-run logs are copied here before its state folder goes (crates/recto-cli/tests/common/mod.rs).
+          RECTO_TEST_LOGS: ${{ runner.temp }}/recto-test-logs
+      # What CI saw, when it fails: run 43054237265 said only that the app had gone, so a crash, a time limit and a test looking too late
+      # couldn't be told apart (2026-11-11). The quiet runs' logs above, and the system's crash reports for the app and its helpers.
+      - name: Crash reports, when the check failed
+        if: failure()
+        run: |
+          into="$RUNNER_TEMP/recto-test-logs/crash-reports"
+          mkdir -p "$into"
+          for folder in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            find "$folder" -maxdepth 1 -type f \( -name 'RectoPDF*' -o -name 'recto*' \) -mmin -90 -exec cp {} "$into/" \; 2>/dev/null || true
+          done
+          ls -la "$RUNNER_TEMP/recto-test-logs" "$into"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: check-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/recto-test-logs
+          retention-days: 7
+          if-no-files-found: ignore
   # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
   # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
   # change in either between versions fails here, not on a user's Mac as a renderer that won't start.

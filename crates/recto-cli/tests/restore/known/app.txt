@@ -94,6 +94,7 @@ app.find.visible_rows
 app.focus_view
 app.hidden
 app.home
+app.home_note
 app.hover
 app.is_active
 app.layout
@@ -178,6 +179,8 @@ app.save_button.frame[]
 app.save_button.tooltip
 app.save_button.visible
 app.settings.open
+app.settings.privacy.title
+app.settings.privacy.url
 app.settings.rows.len
 app.settings.rows[].enabled
 app.settings.rows[].hint

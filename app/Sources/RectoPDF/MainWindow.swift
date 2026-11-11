@@ -287,6 +287,8 @@ final class BookMark: NSView {
     let home = FlippedView()
     private let homeTitle = TextLine()
     private let homeHint = TextLine()
+    /// Rust's quiet line about the daily update check, at the foot of the empty window. Empty in a build that doesn't check by itself.
+    let homeNote = TextLine()
     private let homeButton = NSButton(title: "", target: nil, action: nil)
     var homeButtonForQA: NSControl { homeButton }
     private let homeBook = BookMark()
@@ -558,7 +560,7 @@ final class BookMark: NSView {
         homeButton.attributedTitle = NSAttributedString(string: strings.openButton, attributes: [.foregroundColor: NSColor.white, .font: NSFont.boldSystemFont(ofSize: 14)])
         homeButton.target = delegate
         homeButton.action = #selector(AppDelegate.openDocument(_:))
-        for view in [homeBook, homeTitle, homeHint, homeButton] { home.addSubview(view) }
+        for view in [homeBook, homeTitle, homeHint, homeButton, homeNote] { home.addSubview(view) }
     }
 
     /// Whole pixels, one pass. Autoresizing would do the same work with more to go wrong.
@@ -853,6 +855,8 @@ final class BookMark: NSView {
         y += hint.height + 18
         let width = homeButton.attributedTitle.size().width + 44
         homeButton.frame = NSRect(x: middle - width / 2, y: y, width: width, height: 30)
+        let note = homeNote.size()
+        homeNote.frame = NSRect(x: middle - note.width / 2, y: max(home.bounds.maxY - note.height - 24, y + 60), width: note.width, height: note.height)
     }
 
     @objc private func scrollerStyleChanged() {
@@ -1121,6 +1125,7 @@ final class BookMark: NSView {
         sidebarEdge.layer?.backgroundColor = Theme.hairline.cg
         homeTitle.set(delegate.strings.appName, font: .boldSystemFont(ofSize: 28), color: Theme.textStrong.ns)
         homeHint.set(delegate.strings.homeHint, font: .systemFont(ofSize: 14), color: Theme.textQuiet.ns)
+        homeNote.set(delegate.strings.homeNote, font: .systemFont(ofSize: NSFont.smallSystemFontSize), color: Theme.textQuiet.ns)
         homeButton.layer?.backgroundColor = Theme.buttonFill.cg
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
