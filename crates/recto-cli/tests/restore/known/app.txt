@@ -68,6 +68,7 @@ app.find.thumb.thumb_width
 app.find.untrusted.field
 app.find.visible_rows
 app.focus_view
+app.hidden
 app.home
 app.hover
 app.is_active
@@ -169,6 +170,7 @@ app.sidebar_width
 app.window.full_screen
 app.window.height
 app.window.is_visible
+app.window.minimised
 app.window.on_any_screen
 app.window.width
 app.window.x

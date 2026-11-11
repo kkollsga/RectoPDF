@@ -42,6 +42,13 @@ pub struct SettingsModel {
     pub status: String,
 }
 
+/// What an update chosen from the menu came to, for an app-modal alert. Rust's words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UpdateAlert {
+    pub message: String,
+    pub button: String,
+}
+
 /// The switch's id, in the window, in QA and nowhere else.
 pub(crate) const AUTO_UPDATE_ROW: &str = "update.automatic";
 
@@ -112,7 +119,11 @@ impl Host for Hooks {
     fn relaunch(&self) -> TestLaunch {
         let Some(inner) = self.inner() else { return TestLaunch::default() };
         let root = inner.paths.as_ref().map(|paths| paths.root.display().to_string()).unwrap_or_default();
-        let args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
+        let mut args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
+        // The new run ends with the same test as this one.
+        if inner.qa.is_some() {
+            args.extend(crate::qa::owner_args());
+        }
         TestLaunch {
             args,
             env: vec![("RECTO_STATE_DIR".to_owned(), root)],
@@ -130,6 +141,38 @@ impl Host for Hooks {
         let Some(paths) = inner.paths.as_ref() else { return false };
         draws_a_page(&paths.root.join("update"))
     }
+
+    /// Asked on the install's thread, with the app frozen by the hand-off, so nothing changes under it.
+    fn tabs_handed_off(&self) -> Option<u32> {
+        let inner = self.inner()?;
+        u32::try_from(inner.host.session.with_session(|session| session.tabs().len())).ok()
+    }
+
+    /// Only once what was read has been put in the session: a first frame that came before that, off a slow disk, says nothing.
+    fn tabs_restored(&self) -> Option<u32> {
+        let inner = self.inner()?;
+        if !inner.restored.load(Ordering::SeqCst) {
+            return None;
+        }
+        u32::try_from(inner.host.session.with_session(|session| session.tabs().len())).ok()
+    }
+}
+
+/// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on. Then a test's broken release ends here, as a new version that crashes once it's up would.
+pub(crate) fn first_frame_shown(updates: &recto_update::updater::Updater) {
+    updates.first_frame(recto_update::wall_ms());
+    if updates
+        .app()
+        .is_some_and(|app| recto_update::test_breakage(&app, recto_update::TestBreakage::EndsAfterFirstFrame))
+    {
+        std::thread::sleep(Duration::from_millis(300));
+        std::process::exit(70);
+    }
+}
+
+/// What this launch reads: the record, or nothing at all for a test's broken release that misreads it.
+pub(crate) fn misreads_the_record(facts: Option<&Facts>) -> bool {
+    facts.is_some_and(|facts| recto_update::test_breakage(&facts.app, recto_update::TestBreakage::MisreadsTheRecord))
 }
 
 impl Inner {
@@ -197,6 +240,12 @@ impl Inner {
 
     pub(crate) fn update_report(&self) -> Value {
         self.updates.report()
+    }
+
+    /// With the window open, the margin says it, and nothing more is put up.
+    pub(crate) fn take_update_alert(&self) -> Option<UpdateAlert> {
+        let words = self.updates.take_alert()?;
+        alert_for(words, !lock(&self.app).window_closed)
     }
 
     pub(crate) fn update_timer_fired(&self) {
@@ -325,6 +374,19 @@ pub(crate) fn opens_in_background(arrived_by_update: bool, was_frontmost: bool) 
     arrived_by_update && !was_frontmost
 }
 
+/// What a menu's update says, as an alert: only with no window, where the margin would have said it.
+pub(crate) fn alert_for(words: String, window_open: bool) -> Option<UpdateAlert> {
+    (!window_open).then(|| UpdateAlert {
+        message: words,
+        button: "OK".to_owned(),
+    })
+}
+
+/// Whether something out of sight stays so: a window in the Dock, or the app hidden. Across an update, exactly as it was, as an update the user didn't watch mustn't put anything in front of them. Any other launch was asked for by someone, who's looking for the app.
+pub(crate) fn stays_out_of_sight(was: bool, arrived_by_update: bool) -> bool {
+    was && arrived_by_update
+}
+
 /// Going into full screen is another Space, and moves the user there. So not by itself: not until they come to it.
 pub(crate) fn full_screen_on_showing(was_full_screen: bool, in_background: bool) -> (bool, bool) {
     (was_full_screen && !in_background, was_full_screen && in_background)
@@ -368,6 +430,24 @@ mod tests {
         assert_eq!(full_screen_on_showing(true, true), (false, true), "not yet");
         assert_eq!(full_screen_on_showing(true, false), (true, false), "at once, as normal");
         assert_eq!(full_screen_on_showing(false, true), (false, false));
+    }
+
+    /// Failure (owner, 2026-11-07: "It's crucial that app state is perfectly recovered before and after update"): a window the user put in the Dock, or an app they hid, comes back on the screen across an update they didn't watch. Or the other way, a launch someone asked for keeps the app out of sight. Out of sight stays so across an update and only then.
+    #[test]
+    fn out_of_sight_stays_so_across_an_update_and_only_then() {
+        assert!(stays_out_of_sight(true, true));
+        assert!(!stays_out_of_sight(true, false), "a launch someone asked for shows it");
+        assert!(!stays_out_of_sight(false, true));
+        assert!(!stays_out_of_sight(false, false));
+    }
+
+    /// Failure: a check chosen from the menu with the window closed says how it went nowhere the user can see. With no window it's an alert; with one, the margin says it and nothing's put over the page.
+    #[test]
+    fn a_menus_answer_is_an_alert_only_with_no_window() {
+        let alert = alert_for("You're up to date: RectoPDF 0.1.0.".into(), false).unwrap();
+        assert_eq!(alert.message, "You're up to date: RectoPDF 0.1.0.");
+        assert!(!alert.button.is_empty());
+        assert_eq!(alert_for("x".into(), true), None);
     }
 
     /// Failure: Settings comes back where there's no screen any more, and can't be reached.

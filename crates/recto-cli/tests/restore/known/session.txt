@@ -1,4 +1,5 @@
 session.active
+session.app.app_hidden
 session.app.appearance
 session.app.contents_scroll.following
 session.app.contents_scroll.y
@@ -15,6 +16,7 @@ session.app.window.frame.width
 session.app.window.frame.x
 session.app.window.frame.y
 session.app.window.full_screen
+session.app.window.minimised
 session.app.window.screen
 session.app.window_closed
 session.comparison.sync_from.len

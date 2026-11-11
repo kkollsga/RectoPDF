@@ -120,8 +120,38 @@ pub struct Plan {
     pub background: bool,
     pub quit_limit_ms: u64,
     pub start_limit_ms: u64,
+    /// How many tabs the old app handed off. A new version that comes up with fewer has misread the record, as no tab is dropped by a restore, and goes back with the record from before it.
+    #[serde(default)]
+    pub handed_off_tabs: Option<u32>,
+    /// Going back leaves the record as it is: a version that's been in use since it came up and then kept ending has the user's latest work in it, which the previous version reads, or leaves alone if it's of a newer kind.
+    #[serde(default)]
+    pub keep_record: bool,
     #[serde(default)]
     pub test: Option<TestLaunch>,
+}
+
+/// What a new version writes to `launch-ok` once it's come up: its version, process, the time, and how many tabs it restored, if it's read the record by then.
+#[must_use]
+pub fn launch_ok_line(version: &str, pid: u32, shown_at_ms: u64, tabs: Option<u32>) -> String {
+    match tabs {
+        Some(tabs) => format!("{version} {pid} {shown_at_ms} tabs={tabs}"),
+        None => format!("{version} {pid} {shown_at_ms}"),
+    }
+}
+
+/// What a `launch-ok` says: the version, and the tabs it restored if it says. Anything else in it is passed over.
+#[must_use]
+pub fn read_launch_ok(text: &str) -> Option<(&str, Option<u32>)> {
+    let mut words = text.split_whitespace();
+    let version = words.next()?;
+    let tabs = words.find_map(|word| word.strip_prefix("tabs=")?.parse().ok());
+    Some((version, tabs))
+}
+
+/// Whether a new version that's come up has misread the record: it says it restored fewer tabs than were handed off. One that doesn't say, as it showed a frame before the record was read, isn't taken to have.
+#[must_use]
+pub fn misread(handed_off: Option<u32>, restored: Option<u32>) -> bool {
+    matches!((handed_off, restored), (Some(handed_off), Some(restored)) if restored < handed_off)
 }
 
 impl Plan {
@@ -174,14 +204,19 @@ pub fn beside_app(app: &Path) -> Option<PathBuf> {
     Some(app.parent()?.join(".RectoPDF-update"))
 }
 
+/// What the staged new app is called while it waits. **Not `.app`, nor is the kept one:** Launch Services takes any folder called that as an app, and a scan of the app's folder registered a copy in this hidden one (`lsregister -R -f`, 2026-11-11), which puts a second RectoPDF in Open With, and lets the system open a PDF with a version that isn't the installed one, as it prefers the newest. A bundle's signature and Gatekeeper go by what's in it, not its name (checked the same day on a notarized app renamed so), and the swap and going back rename it to the app's own name.
+pub const STAGED_BUNDLE: &str = "RectoPDF.staged";
+/// What the previous app is called while it's kept: see [`STAGED_BUNDLE`].
+pub const KEPT_BUNDLE: &str = "RectoPDF.kept";
+
 #[must_use]
 pub fn new_app_in(beside: &Path) -> PathBuf {
-    beside.join("new").join(crate::APP_BUNDLE)
+    beside.join("new").join(STAGED_BUNDLE)
 }
 
 #[must_use]
 pub fn previous_app_in(beside: &Path) -> PathBuf {
-    beside.join("previous").join(crate::APP_BUNDLE)
+    beside.join("previous").join(KEPT_BUNDLE)
 }
 
 /// What the installer has to say that isn't the new app coming up: what the next launch of the old app reads.
@@ -268,6 +303,8 @@ mod tests {
             background: false,
             quit_limit_ms: 1,
             start_limit_ms: 1,
+            handed_off_tabs: None,
+            keep_record: false,
             test: None,
         };
         plan.write(&file).unwrap();
@@ -300,5 +337,21 @@ mod tests {
         local::write_private_file(&file, b"not json").unwrap();
         assert_eq!(Plan::read(&file), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: a new version that misread the record and started with fewer tabs than were handed off counts as having come up, and stays, with the user's tabs gone. Or one that showed a frame before the record was read is sent back for having none. A `launch-ok` from before it said its tabs still reads.
+    #[test]
+    fn fewer_tabs_than_were_handed_off_is_a_misread() {
+        let line = launch_ok_line("0.2.0", 9, 5, Some(3));
+        assert_eq!(read_launch_ok(&line), Some(("0.2.0", Some(3))));
+        assert_eq!(read_launch_ok("0.2.0 9 5"), Some(("0.2.0", None)), "it doesn't say");
+        assert_eq!(read_launch_ok("0.2.0 9 5 tabs=x"), Some(("0.2.0", None)));
+        assert_eq!(read_launch_ok(""), None);
+        assert!(misread(Some(3), Some(0)), "started empty");
+        assert!(misread(Some(3), Some(2)));
+        assert!(!misread(Some(3), Some(3)));
+        assert!(!misread(Some(3), Some(4)), "a file opened as it came up");
+        assert!(!misread(Some(3), None), "shown before the record was read");
+        assert!(!misread(None, Some(0)), "an old app that didn't say");
     }
 }

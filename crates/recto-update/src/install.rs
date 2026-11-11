@@ -7,7 +7,7 @@
 //! 4. Swaps the new app and the running one's bundle in a single step. There's never a moment with no app or half of one.
 //! 5. Moves the old app to be kept.
 //! 6. Opens the new app, and waits for it to say it's come up: see [`crate::updater::Updater::first_frame`] for what that means.
-//! 7. If it doesn't, stops it, puts the record back, swaps the old app back, and opens that.
+//! 7. If it doesn't, or it comes up with fewer tabs than were handed off, having misread the record, stops it, puts the record back, swaps the old app back, and opens that.
 //!
 //! The installer quits nothing: quitting was the app's own hand-off. What's left if this is killed is put right at the next launch ([`crate::updater`]). It writes a log to the state folder, with words of its own.
 
@@ -141,7 +141,15 @@ impl Run<'_> {
         let mut gone_since: Option<Instant> = None;
         let mut next_look = began;
         while began.elapsed() < limit {
-            if std::fs::read_to_string(self.files.launch_ok()).is_ok_and(|text| text.split_whitespace().next() == Some(self.plan.to.as_str())) {
+            if let Ok(text) = std::fs::read_to_string(self.files.launch_ok())
+                && let Some((version, tabs)) = crate::plan::read_launch_ok(&text)
+                && version == self.plan.to
+            {
+                // Up, and with fewer tabs than it was given: it's misread the record, and what it's showing isn't the user's.
+                if crate::plan::misread(self.plan.handed_off_tabs, tabs) {
+                    self.say("installer: the new app came up with fewer tabs than it was handed");
+                    return Err("misread");
+                }
                 return Ok(());
             }
             if self.files.launch_failed().exists() {
@@ -196,7 +204,9 @@ impl Run<'_> {
         self.step("going_back");
         self.stop_new_app();
         self.step("new_app_stopped");
-        restore_record(&self.files.before(), &self.files.session());
+        if !self.plan.keep_record {
+            restore_record(&self.files.before(), &self.files.session());
+        }
         self.step("record_restored");
         let Some(old) = self.old_app() else {
             self.say("installer: there's no earlier version to go back to");
@@ -398,7 +408,7 @@ fn new_app_holds_the_old_one(plan: &Plan) -> bool {
     crate::stage::app_version(&plan.new_app()).as_deref() == Some(plan.from.as_str())
 }
 
-/// Goes back to the kept app with no install before it: what a launch does when the new version keeps failing with no installer around to see it.
+/// Goes back to the kept app with no install before it: what a launch does when the new version keeps failing with no installer around to see it, before its first frame or, for a while, after it.
 #[must_use]
 pub fn run_back(plan: &Plan) -> Ended {
     let run = Run {
@@ -418,7 +428,8 @@ pub fn run_back(plan: &Plan) -> Ended {
         run.finish_with(OutcomeKind::NotInstalled, "old_app_stayed");
         return Ended::NotInstalled;
     }
-    run.go_back("kept_failing")
+    // A version that came up and then kept ending leaves the record as it is: see [`Plan::keep_record`].
+    run.go_back(if plan.keep_record { "kept_ending" } else { "kept_failing" })
 }
 
 fn keep_old_app(plan: &Plan) -> std::io::Result<()> {
@@ -545,6 +556,8 @@ mod tests {
             background: false,
             quit_limit_ms: 1,
             start_limit_ms: 1,
+            handed_off_tabs: None,
+            keep_record: false,
             test: None,
         }
     }

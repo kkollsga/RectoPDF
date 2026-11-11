@@ -121,7 +121,8 @@ class Soak:
         self.started = time.time()
         self.stop = False
         self.err_kinds = {}
-        self.env = dict(os.environ, RECTO_STATE_DIR=STATE)
+        # Each quiet run ends with this driver, however it ends.
+        self.env = dict(os.environ, RECTO_STATE_DIR=STATE, RECTO_QA_OWNER_PID=str(os.getpid()))
         self.env.pop("RECTO_BIN", None)
 
     def log(self, text):

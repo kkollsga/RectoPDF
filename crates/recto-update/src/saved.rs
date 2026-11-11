@@ -35,6 +35,21 @@ pub struct Saved {
     pub last_update: Option<LastUpdate>,
     /// *Update automatically*, if it's been chosen. Here and not with the session, so losing a record can't turn it back on against what the user chose.
     pub auto_update: Option<bool>,
+    /// A new version that's come up, watched for a while in case it then keeps ending: see [`crate::updater::EARLY_END_MS`].
+    pub probation: Option<Probation>,
+}
+
+/// A version that's arrived by an update and come up, and is watched for runs that end early, for as long as the record from before it is kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Probation {
+    pub version: String,
+    /// When it first came up. Watched from then for [`crate::updater::KEEP_RECORD_COPY_MS`].
+    pub since_ms: u64,
+    /// When the run under way started, until it's been up long enough or quit as asked. Still set at a launch, the last run ended early: a crash, a kill, a hang someone ended.
+    pub running_since_ms: Option<u64>,
+    /// Runs in a row that ended early.
+    pub early_ends: u32,
 }
 
 /// How the last update went.
@@ -70,6 +85,7 @@ impl Saved {
         saved.offered = saved.offered.filter(|version| parse_version(version).is_some());
         saved.proven = saved.proven.filter(|version| parse_version(version).is_some());
         saved.failed.retain(|version| parse_version(version).is_some());
+        saved.probation = saved.probation.filter(|probation| parse_version(&probation.version).is_some());
         saved.last_update = saved
             .last_update
             .filter(|update| parse_version(&update.from).is_some() && parse_version(&update.to).is_some());
@@ -113,7 +129,7 @@ mod tests {
         dir
     }
 
-    /// Failure: a damaged or tampered `updates.json` stops checks for good, or puts something other than a version into the menu's words.
+    /// Failure: a damaged or tampered `updates.json` stops checks for good, or puts something other than a version into the menu's words or the version being watched.
     #[test]
     fn a_damaged_file_is_as_good_as_none() {
         let dir = folder("damaged");
@@ -129,12 +145,13 @@ mod tests {
         assert_eq!(Saved::read(&file), saved);
         local::write_private_file(
             &file,
-            br#"{"offered":"Update to <evil>","failed":["x","0.1.1"],"proven":"$(rm)","last_check_ms":7}"#,
+            br#"{"offered":"Update to <evil>","failed":["x","0.1.1"],"proven":"$(rm)","last_check_ms":7,"probation":{"version":"$(rm)","early_ends":9}}"#,
         )
         .unwrap();
         let read = Saved::read(&file);
         assert_eq!(read.offered, None);
         assert_eq!(read.proven, None);
+        assert_eq!(read.probation, None, "nothing's watched that isn't a version");
         assert_eq!(read.failed, vec!["0.1.1".to_string()]);
         assert_eq!(read.last_check_ms, Some(7));
         for junk in [&b"not json"[..], b"[]", &[0xFF, 0x00]] {

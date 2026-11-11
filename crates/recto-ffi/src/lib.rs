@@ -157,6 +157,8 @@ pub struct WindowPlacement {
     pub in_background: bool,
     /// And it was in full screen, which it goes back into when they come to it.
     pub full_screen_when_active: bool,
+    /// It goes into the Dock, as it was there when the update came. Shown, it's where the rest of this says.
+    pub minimised: bool,
 }
 
 /// How it stands for a hand-off.
@@ -1393,6 +1395,8 @@ struct AppState {
     focus: FocusRecord,
     settings_window: Option<SettingsWindow>,
     window_closed: bool,
+    /// Hidden with ⌘H, as the record has it.
+    app_hidden: bool,
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
@@ -1531,6 +1535,7 @@ impl Inner {
             notice,
             settings_window: app.settings_window,
             window_closed: app.window_closed,
+            app_hidden: app.app_hidden,
         }
     }
 
@@ -1769,6 +1774,8 @@ struct LaunchArgs {
     qa: bool,
     memory_limit_mib: Option<u64>,
     time_limit: Option<Duration>,
+    /// The process a quiet run ends with, as its test or script: see [`qa::end_with_starter`].
+    owner_pid: Option<u32>,
     open: Vec<PathBuf>,
 }
 
@@ -1791,6 +1798,15 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
                     words.next().and_then(|value| value.parse().ok()).ok_or("--qa-time-limit-ms takes a number.")?,
                 ))
             }
+            "--qa-owner-pid" => {
+                parsed.owner_pid = Some(
+                    words
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .filter(|pid| *pid > 1)
+                        .ok_or("--qa-owner-pid takes a process number.")?,
+                )
+            }
             // What macOS adds to a launch from elsewhere, and a file to open.
             other if other.starts_with("-psn_") || other.starts_with("-NS") || other.starts_with("-Apple") => {
                 let _ = words.next();
@@ -1799,7 +1815,7 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
             other => parsed.open.push(PathBuf::from(other)),
         }
     }
-    if !parsed.qa && (parsed.memory_limit_mib.is_some() || parsed.time_limit.is_some()) {
+    if !parsed.qa && (parsed.memory_limit_mib.is_some() || parsed.time_limit.is_some() || parsed.owner_pid.is_some()) {
         return Err("Those options are only for a QA run.".into());
     }
     Ok(parsed)
@@ -1910,6 +1926,7 @@ impl AppCore {
                 focus: FocusRecord::default(),
                 settings_window: None,
                 window_closed: false,
+                app_hidden: false,
             }),
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
@@ -2013,12 +2030,9 @@ impl AppCore {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || session_thread(&session_side))
             .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
-        if let Some(limit) = args.time_limit.or(args.qa.then_some(Duration::from_secs(600))) {
-            // Every QA run has a limit, so a run nobody ended can't sit on the owner's Mac.
-            let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
-                std::thread::sleep(limit);
-                std::process::exit(124);
-            });
+        if args.qa {
+            let state = inner.paths.as_ref().map(|paths| paths.root.clone());
+            qa::end_with_starter(args.time_limit.unwrap_or(qa::QUIET_RUN_LIMIT), args.owner_pid, state);
         }
         Ok(Arc::new(Self {
             inner,
@@ -2859,8 +2873,40 @@ impl AppCore {
         for engine in self.inner.panes.engines(&self.inner.engine) {
             engine.window_closed();
         }
-        lock(&self.inner.app).window_closed = true;
+        let mut app = lock(&self.inner.app);
+        app.window_closed = true;
+        // A window opened again isn't in the Dock.
+        if let Some(window) = app.window.as_mut() {
+            window.minimised = false;
+        }
+        drop(app);
         self.inner.saver.view_changed();
+    }
+
+    /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
+    pub fn window_minimised_changed(&self, minimised: bool) {
+        if let Some(window) = lock(&self.inner.app).window.as_mut() {
+            window.minimised = minimised;
+        }
+        self.inner.saver.view_changed();
+    }
+
+    /// The app was hidden or shown again, by the system's notices, or QA. Going out of sight writes what's changed, as going to the background does.
+    pub fn app_hidden_changed(&self, hidden: bool) {
+        lock(&self.inner.app).app_hidden = hidden;
+        if hidden {
+            self.inner.saver.write_soon();
+        } else {
+            self.inner.saver.view_changed();
+        }
+    }
+
+    /// Whether this launch hides the app as soon as it's up: an update arriving to an app that was hidden. Any other launch shows it, and the record's told so.
+    pub fn app_comes_back_hidden(&self) -> bool {
+        let mut app = lock(&self.inner.app);
+        let hidden = updates::stays_out_of_sight(app.app_hidden, self.inner.updates.arrived_by_update());
+        app.app_hidden = hidden;
+        hidden
     }
 
     pub fn window_opened(&self) {
@@ -2882,7 +2928,7 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates.first_frame(recto_update::wall_ms()));
+            .spawn(move || updates::first_frame_shown(&updates));
     }
 
     /// The UI thread has woken.
@@ -2914,12 +2960,14 @@ impl AppCore {
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
             // Before the record: a version that keeps failing goes back here, and not by reading on.
-            if let Some(facts) = lock(&inner.update_facts).take()
+            let facts = lock(&inner.update_facts).take();
+            let misreads = updates::misreads_the_record(facts.as_ref());
+            if let Some(facts) = facts
                 && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
             {
                 std::process::exit(0);
             }
-            let loaded = inner.saver.store.load();
+            let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
             inner.core.push(CoreCall::Restored(Box::new(loaded)));
         });
         if spawned.is_err() {
@@ -2961,12 +3009,21 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates.first_frame(recto_update::wall_ms()));
+            .spawn(move || updates::first_frame_shown(&updates));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
     pub fn window_placement(&self, screens: Vec<ScreenInfo>) -> WindowPlacement {
-        let app = lock(&self.inner.app).clone();
+        let app = {
+            let mut app = lock(&self.inner.app);
+            // In the Dock across an update, as it was. Any other launch shows it, and the record's told so.
+            let arrived = self.inner.updates.arrived_by_update();
+            if let Some(window) = app.window.as_mut() {
+                window.minimised = updates::stays_out_of_sight(window.minimised, arrived);
+            }
+            app.clone()
+        };
+        let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
         let activate = app.focus.app_frontmost;
         let focus_sidebar = app.focus.view == FocusView::Sidebar;
         let in_background = updates::opens_in_background(self.inner.updates.arrived_by_update(), activate);
@@ -2982,6 +3039,7 @@ impl AppCore {
                 focus_sidebar,
                 in_background,
                 full_screen_when_active: false,
+                minimised: false,
             };
         };
         if self.qa_mode {
@@ -2996,6 +3054,7 @@ impl AppCore {
                 focus_sidebar,
                 in_background: false,
                 full_screen_when_active: false,
+                minimised,
             };
         }
         let now: Vec<ScreenNow> = screens
@@ -3030,6 +3089,7 @@ impl AppCore {
             focus_sidebar,
             in_background,
             full_screen_when_active,
+            minimised,
         }
     }
 
@@ -3045,6 +3105,7 @@ impl AppCore {
             },
             screen: None,
             full_screen: false,
+            minimised: false,
         });
         // Its frame in full screen isn't where leaving full screen takes it.
         if let Some([x, y, width, height]) = frame.as_deref() {
@@ -3196,6 +3257,16 @@ impl AppCore {
         self.inner.settings_model()
     }
 
+    /// What an update chosen from the menu came to, as an alert, when there's no window to say it in. Taken once: the host shows it, app-modal.
+    pub fn take_update_alert(&self) -> Option<updates::UpdateAlert> {
+        self.inner.take_update_alert()
+    }
+
+    /// The alert's been answered: what it said has been read.
+    pub fn update_alert_answered(&self) {
+        self.inner.updates.dismiss_notice();
+    }
+
     /// A switch in Settings was flipped.
     pub fn setting_chosen(&self, id: String, on: bool) {
         self.inner.setting_chosen(&id, on);
@@ -3238,6 +3309,10 @@ impl AppCore {
             let outcome = receiver.recv_timeout(QUIT_PATIENCE);
             let fine = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
             let unsaved = inner.host.session.unsaved_tabs();
+            if fine || unsaved.is_empty() {
+                // Asked for, so this run of a version being watched didn't end early.
+                inner.updates.quitting_as_asked();
+            }
             if !(fine || unsaved.is_empty()) {
                 inner.set_frozen(false);
                 inner.updates.stop_over();
@@ -3317,6 +3392,7 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     let mut app = lock(&inner.app);
                     app.settings_window = saved.settings_window;
                     app.window_closed = saved.window_closed;
+                    app.app_hidden = saved.app_hidden;
                     app.window = saved.window.clone();
                     app.appearance = saved.appearance;
                     app.focus = saved.focus;
@@ -5272,6 +5348,12 @@ mod tests {
         let words = |list: &[&str]| list.iter().map(|word| (*word).to_string()).collect::<Vec<_>>();
         assert!(parse_args(&words(&["--qa-memory-limit-mib", "64"])).is_err());
         assert!(parse_args(&words(&["--qa-time-limit-ms", "5"])).is_err());
+        assert!(parse_args(&words(&["--qa-owner-pid", "5"])).is_err());
+        assert_eq!(parse_args(&words(&["--qa", "--qa-owner-pid", "77"])).unwrap().owner_pid, Some(77));
+        assert!(
+            parse_args(&words(&["--qa", "--qa-owner-pid", "1"])).is_err(),
+            "launchd adopts orphans, so it'd be no owner"
+        );
         let parsed = parse_args(&words(&["--qa", "--qa-memory-limit-mib", "64", "/d/a.pdf"])).unwrap();
         assert!(parsed.qa);
         assert_eq!(parsed.memory_limit_mib, Some(64));

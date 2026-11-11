@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const OLD: &str = "0.1.0";
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const NEW: &str = "0.1.99";
 
 /// What differs between an old app and the new one, on purpose. Everything else is compared.
@@ -142,6 +143,10 @@ enum Broken {
     DamagesTheRecordAndEnds,
     /// The app's fine, and its renderer doesn't work. It'd come up and show a window with no pages.
     NoRenderer,
+    /// The real app, which ends a moment after its first frame, every launch: a crash loop that a first frame can't catch.
+    EndsAfterFirstFrame,
+    /// The real app, which starts empty, as if it couldn't make sense of the record, and comes up.
+    MisreadsTheRecord,
 }
 
 /// All a real update needs, in temp folders that go with it.
@@ -193,6 +198,15 @@ impl Bed {
                         .unwrap()
                         .success()
                 );
+                sign(&app);
+            }
+            Broken::EndsAfterFirstFrame | Broken::MisreadsTheRecord => {
+                let what = if broken == Broken::EndsAfterFirstFrame {
+                    recto_update::TestBreakage::EndsAfterFirstFrame
+                } else {
+                    recto_update::TestBreakage::MisreadsTheRecord
+                };
+                std::fs::write(app.join("Contents/Resources").join(what.file()), "").unwrap();
                 sign(&app);
             }
         }
@@ -301,6 +315,50 @@ impl Bed {
         }
     }
 
+    /// Starts whatever's at the app's path as `recto qa start` does, and waits for it to be gone: for a version that ends by itself.
+    fn launch_until_it_ends(&self) {
+        let mut command = self.state.command();
+        command.env(REPO_ENV, &self.server.url);
+        let executable = self.app.join("Contents/MacOS/RectoPDF");
+        let _ = command
+            .args(["qa", "start", "--app", executable.to_str().unwrap(), "--time-limit", "3m", "--json"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let began = Instant::now();
+        // Or it went back, and what's running at the app's path now is the version before.
+        while !local::processes_running(&executable).is_empty() && self.version() != OLD {
+            assert!(began.elapsed() < Duration::from_secs(60), "it didn't end: {}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The run that's answering on this state folder, once one is.
+    fn answering(&self) -> Run<'_> {
+        let began = Instant::now();
+        loop {
+            let (status, code) = self.state.json(&["status"]);
+            if code == 0 && status["ok"] == true {
+                return Run::attach(&self.state, status["data"]["pid"].as_u64().unwrap() as u32);
+            }
+            assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The paths Launch Services has registered under this bed's folder, from its whole database: `lsregister -dump`, which takes some seconds.
+    fn registered_here(&self) -> Vec<String> {
+        let dump = Command::new(LSREGISTER).arg("-dump").output().unwrap();
+        let folder = self.folder.to_str().unwrap();
+        String::from_utf8_lossy(&dump.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("path:"))
+            .map(str::trim)
+            .filter(|path| path.starts_with(folder))
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// That it's the same app it was, doing what it did. A frozen one refuses a command.
     fn still_usable(&self, run: &Run<'_>) {
         assert!(local::process_counters(run.pid).is_some(), "it's still running");
@@ -317,10 +375,7 @@ impl Drop for Bed {
             local::signal_process(pid, true);
         }
         // `open` told the system about these. It forgets them again here, rather than at some later tidying.
-        let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
-            .arg("-u")
-            .arg(&self.app)
-            .status();
+        let _ = Command::new(LSREGISTER).arg("-u").arg(&self.app).status();
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
@@ -660,6 +715,171 @@ fn a_closed_window_stays_closed_across_an_update() {
     run.quit();
     let run = bed.start();
     assert_eq!(run.ok(&["qa", "state"])["app"]["window_open"], true, "any other launch opens one");
+    run.quit();
+}
+
+/// Failure (owner, 2026-11-07: "It's crucial that app state is perfectly recovered before and after update"): an app the user had put in the Dock, or hidden, comes back on the screen after an update they didn't watch, as neither was in the record. Both come back exactly so, with everything in them, and any other launch shows them. And neither copy of the app the updater keeps beside it is registered with Launch Services, not even by a scan of the folder (PLAN: "Whether the hidden `previous/` copy gets registered"), which would put a second RectoPDF in Open With.
+#[test]
+fn a_minimised_window_and_a_hidden_app_stay_so_across_an_update() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "9"]);
+    run.settled();
+    run.ok(&["qa", "minimise", "on"]);
+    run.ok(&["qa", "hide", "on"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    let before = run.report();
+    assert_eq!((&before["app"]["window"]["minimised"], &before["app"]["hidden"]), (&json!(true), &json!(true)));
+    assert_eq!(before["session"]["app"]["window"]["minimised"], true);
+    assert_eq!(before["session"]["app"]["app_hidden"], true);
+    bed.release_of(NEW, Broken::Not);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let run = bed.wait_for_new_app(run);
+    assert_eq!(bed.version(), NEW);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["app"]["window"]["minimised"], true, "still in the Dock");
+    assert_eq!(after["app"]["hidden"], true, "still hidden");
+    assert_same_but(&before, &after, &[], ACROSS_AN_UPDATE);
+
+    // What's kept beside the app isn't an app to the system, even once the folder's been looked through. A scan does find the renderer's helper inside it, which is background-only with no documents, so it's never in Open With, and its name is sealed by the app's signature.
+    let install = bed.app.parent().unwrap();
+    assert!(Command::new(LSREGISTER).args(["-R", "-f"]).arg(install).status().unwrap().success());
+    let registered = bed.registered_here();
+    assert!(
+        registered
+            .iter()
+            .all(|path| !path.contains(".RectoPDF-update") || path.contains("/Contents/Helpers/")),
+        "only the app at its own path: {registered:?}"
+    );
+    assert!(bed.kept().is_some(), "and the old one is still kept: {registered:?}");
+
+    run.quit();
+    let run = bed.start();
+    let shown = run.report();
+    assert_eq!(shown["app"]["window"]["minimised"], false, "any other launch shows it");
+    assert_eq!(shown["app"]["hidden"], false, "and the app");
+    assert_eq!(shown["session"]["app"]["app_hidden"], false, "and the record says so");
+    run.quit();
+}
+
+/// Failure: a new version that comes up and then crashes, every time, stays, as nothing after the first frame was watched, and the user can't use the app. **The real app, with a release that ends a moment after its first frame:** it comes up, so the installer's done, and then each run ends early; the launch after three in a row goes back by itself, and the state comes back as it was, the record as the new version left it.
+#[test]
+fn a_new_version_that_keeps_ending_goes_back_by_itself() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 30);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "12"]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["session", "save"]);
+    let before = run.report();
+    bed.release_of(NEW, Broken::EndsAfterFirstFrame);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let mut arrived = bed.wait_for_new_app_of(run, NEW);
+    // It's come up, for the installer, which has finished. And then it ends.
+    let began = Instant::now();
+    while local::process_counters(arrived.pid).is_some() {
+        assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    arrived.ended();
+    assert_eq!(bed.version(), NEW, "the installer took it as having come up");
+    let files = recto_update::plan::Files::in_state(&bed.state.root);
+    let mut launches = 0;
+    while bed.version() != OLD {
+        launches += 1;
+        assert!(launches <= recto_update::updater::EARLY_ENDS_LIMIT + 1, "it never went back: {}", bed.log());
+        bed.launch_until_it_ends();
+        // A launch that's going back has left the installer its plan, and the version before is in place a moment later.
+        let began = Instant::now();
+        while (files.plan().exists() || recto_update::plan::helper_alive(&files)) && bed.version() != OLD {
+            assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_eq!(launches, recto_update::updater::EARLY_ENDS_LIMIT, "the launch after three in a row goes back");
+    let run = bed.answering();
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let status = bed.wait_status(&run, "went_back");
+    assert_eq!(status["version"], OLD);
+    assert_eq!(status["failed_versions"], json!([NEW]), "not tried by itself again");
+    // The one difference, on purpose: it's still on offer, as by hand it can always be tried again.
+    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
+    let log = bed.log();
+    assert!(log.contains("ended early") && log.contains("went back to"), "{log}");
+    run.quit();
+}
+
+/// Failure: a new version that misreads the record and starts empty counts as having come up, as its first frame and its own page were fine, and stays, with the user's tabs gone and its empty record written over theirs. **The real app, with a release that starts empty:** it comes up with fewer tabs than were handed off, and the installer goes back with the record as it was, and says why.
+#[test]
+fn a_new_version_that_misreads_the_record_goes_back() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "9"]);
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["session", "save"]);
+    let before = run.report();
+    bed.release_of(NEW, Broken::MisreadsTheRecord);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let run = bed.wait_for_new_app_of(run, OLD);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    assert_eq!(bed.version(), OLD);
+    let status = bed.wait_status(&run, "went_back");
+    assert_eq!(status["failed_versions"], json!([NEW]));
+    let notice = crate::common::app::wait_for(&run, |state| state["app"]["copy_notice"]["text"].is_string());
+    let words = notice["app"]["copy_notice"]["text"].as_str().unwrap();
+    assert!(words.contains("didn't read your last session"), "{words}");
+    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
+    assert!(bed.log().contains("fewer tabs"), "{}", bed.log());
+    run.quit();
+}
+
+/// Failure (PLAN, "A check by hand with the window closed says its result only in Settings"): Check for Updates… chosen with the window closed says how it went nowhere the user can see. It's an alert, app-modal, in Rust's words, until it's answered; with the window open it's the margin's, as before.
+#[test]
+fn a_check_from_the_menu_with_no_window_says_so_in_an_alert() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    run.ok(&["qa", "window", "close"]);
+    bed.server.latest(
+        format!(
+            r#"{{"version":"{OLD}","tag":"v{OLD}","minimum_macos":"15.0","zip":"RectoPDF-{OLD}.zip","sha256":"{}"}}"#,
+            "a".repeat(64)
+        )
+        .into_bytes(),
+    );
+    run.ok(&["qa", "menu", "app.update"]);
+    let shown = crate::common::app::wait_for(&run, |state| state["app"]["sheet"]["kind"] == "update_alert");
+    let message = shown["app"]["sheet"]["message"].as_str().unwrap();
+    assert!(message.starts_with("You're up to date"), "{message}");
+    assert_eq!(shown["app"]["window_open"], false);
+    run.ok(&["qa", "sheet-answer", "first"]);
+    let answered = run.report();
+    assert!(answered["app"]["sheet"].get("kind").is_none(), "{answered}");
+    // With the window open, the margin says it, and nothing's put over the page.
+    run.ok(&["qa", "window", "open"]);
+    run.settled();
+    run.ok(&["qa", "menu", "app.update"]);
+    let noticed = crate::common::app::wait_for(&run, |state| state["app"]["copy_notice"]["text"].is_string());
+    assert!(noticed["app"]["sheet"].get("kind").is_none(), "{noticed}");
     run.quit();
 }
 

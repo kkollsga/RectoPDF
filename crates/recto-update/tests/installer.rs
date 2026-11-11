@@ -16,7 +16,12 @@ use std::time::{Duration, Instant};
 const HELPER: &str = env!("CARGO_BIN_EXE_recto-updater");
 
 fn bundle(at: &Path, version: &str) -> PathBuf {
-    let app = at.join(APP_BUNDLE);
+    bundle_at(&at.join(APP_BUNDLE), version)
+}
+
+/// The same, at this very path, as a staged or kept copy's name isn't the app's.
+fn bundle_at(app: &Path, version: &str) -> PathBuf {
+    let app = app.to_path_buf();
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos).unwrap();
     std::fs::write(app.join("Contents/Info.plist"), format!(r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string><key>CFBundleExecutable</key><string>RectoPDF</string><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>"#)).unwrap();
@@ -74,7 +79,7 @@ impl Bed {
         let app = bundle(&install, "0.1.0");
         let beside = beside_app(&app).unwrap();
         std::fs::create_dir_all(new_app_in(&beside).parent().unwrap()).unwrap();
-        bundle(new_app_in(&beside).parent().unwrap(), "0.2.0");
+        bundle_at(&new_app_in(&beside), "0.2.0");
         let cdhash = cdhash_of(&new_app_in(&beside));
         let test = TestLaunch {
             args: vec![
@@ -101,6 +106,8 @@ impl Bed {
             background: true,
             quit_limit_ms: 30_000,
             start_limit_ms: 60_000,
+            handed_off_tabs: None,
+            keep_record: false,
             test: Some(test),
         };
         Self { dir, files, app, plan }
@@ -481,7 +488,7 @@ fn what_it_swaps_in_is_what_was_verified() {
     let swapped_for_another = |bed: &Bed| {
         std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
         // Unsigned, says 9.9.9, and runs.
-        let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "9.9.9");
+        let app = bundle_at(&new_app_in(&bed.plan.beside), "9.9.9");
         assert!(
             Command::new("/usr/bin/codesign")
                 .arg("--remove-signature")
@@ -496,7 +503,7 @@ fn what_it_swaps_in_is_what_was_verified() {
     };
     let another_good_build = |bed: &Bed| {
         std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
-        let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "0.2.0");
+        let app = bundle_at(&new_app_in(&bed.plan.beside), "0.2.0");
         std::fs::write(app.join("Contents/Resources"), "not what was verified").unwrap();
         sign(&app);
     };
@@ -547,7 +554,7 @@ fn the_last_look_is_the_last_thing_before_the_swap() {
         bed.files.work.join("paused").exists()
     });
     std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
-    let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "9.9.9");
+    let app = bundle_at(&new_app_in(&bed.plan.beside), "9.9.9");
     assert!(
         Command::new("/usr/bin/codesign")
             .arg("--remove-signature")
@@ -582,7 +589,7 @@ fn a_changed_nested_program_is_refused_at_the_swap() {
 fn an_older_genuine_build_isnt_installed_as_a_newer_one() {
     let mut bed = Bed::new("older", "ok");
     std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
-    let older = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "0.1.5");
+    let older = bundle_at(&new_app_in(&bed.plan.beside), "0.1.5");
     bed.plan.cdhash = cdhash_of(&older);
     assert!(!bed.run(None).success());
     assert_eq!(bed.installed(), "0.1.0");
@@ -678,6 +685,63 @@ fn with_nothing_to_go_back_to_it_says_so() {
     });
     let notice = updater.notice().unwrap().text;
     assert!(notice.contains("no earlier version") && !notice.contains("came back"), "{notice}");
+}
+
+/// Failure: a new version that comes up having misread the record, starting empty and writing that over the user's, counts as having come up and stays, with their tabs gone. It says it restored fewer tabs than were handed off, and the installer goes back with the record as it was. One whose old app didn't say how many it handed off isn't held to it.
+#[test]
+fn a_new_app_that_comes_up_empty_goes_back_with_the_record_as_it_was() {
+    let mut bed = Bed::new("misreads", "misreads");
+    bed.plan.handed_off_tabs = Some(2);
+    let ended = bed.run(None);
+    assert!(!ended.success(), "{}", std::fs::read_to_string(&bed.files.log).unwrap());
+    assert_eq!(bed.installed(), "0.1.0", "the previous app is back");
+    assert_eq!(bed.record(), "the state", "and the record from before it, not the empty one");
+    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::WentBack, "misread"));
+    wait_until("the old app to be opened", Duration::from_secs(20), || bed.ran("0.1.0"));
+    let updater = Updater::new(&bed.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
+    updater.launched(Facts {
+        version: "0.1.0".into(),
+        app: bed.app.clone(),
+        system: "15.0".into(),
+    });
+    let notice = updater.notice().unwrap().text;
+    assert!(notice.contains("didn't read your last session") && notice.contains("came back"), "{notice}");
+
+    let mut bed = Bed::new("misreads-unsaid", "misreads");
+    bed.plan.handed_off_tabs = None;
+    assert!(bed.run(None).success());
+    assert_eq!(bed.installed(), "0.2.0", "nothing to hold it to");
+}
+
+/// Failure: a version that came up and was in use, and then kept ending, goes back with the record from before the update, throwing away whatever was done since. Going back for that leaves the record as it is, which the previous version reads, and says why.
+#[test]
+fn going_back_after_it_came_up_keeps_the_record_as_it_is() {
+    let mut bed = Bed::new("kept-ending", "ok");
+    assert!(bed.run(None).success());
+    assert_eq!(bed.installed(), "0.2.0");
+    std::fs::write(bed.files.session().join("record.a.json"), "a week's work on 0.2.0").unwrap();
+    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+    gone.wait().unwrap();
+    let plan = Plan {
+        id: "back".into(),
+        pid: gone.id(),
+        keep_record: true,
+        ..bed.plan.clone()
+    };
+    plan.write(&bed.files.plan()).unwrap();
+    let ended = Command::new(HELPER)
+        .arg("back")
+        .arg(bed.files.plan())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!ended.success(), "it went back");
+    assert_eq!(bed.installed(), "0.1.0");
+    assert_eq!(bed.record(), "a week's work on 0.2.0", "the record as it is");
+    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::WentBack, "kept_ending"));
 }
 
 /// Failure: the old app reopened in the gap, with an installer still at work, sits with its menu disabled and no timer until the next launch. The review found this could be left that way. It goes on as normal.

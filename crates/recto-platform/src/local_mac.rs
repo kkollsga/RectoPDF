@@ -462,6 +462,101 @@ pub fn process_exists(pid: u32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) }
 }
 
+/// What ended a [`wait_until_gone`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gone {
+    /// This process ended, or was never there.
+    Process(u32),
+    /// The path at this place in the list was deleted, renamed or taken away, or was never there.
+    Path(usize),
+    /// None of it, in the time given.
+    TimeUp,
+}
+
+/// Waits until one of these processes ends, one of these paths goes, or the time's up. Asleep in one `kevent` the whole time, with no wake-ups and no polling: a process by `NOTE_EXIT`, a path by `NOTE_DELETE`, `NOTE_RENAME` or `NOTE_REVOKE` on a descriptor opened only to watch it. Whatever's gone before it's watched counts at once. For a quiet run to end with what started it.
+pub fn wait_until_gone(pids: &[u32], paths: &[&Path], limit: Duration) -> Gone {
+    let began = std::time::Instant::now();
+    // SAFETY: no arguments, and the result is checked.
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        std::thread::sleep(limit);
+        return Gone::TimeUp;
+    }
+    let mut opened: Vec<RawFd> = Vec::new();
+    let gone = (|| {
+        let add = |ident: usize, filter: i16, fflags: u32, udata: usize| {
+            let event = libc::kevent {
+                ident,
+                filter,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags,
+                data: 0,
+                udata: udata as *mut libc::c_void,
+            };
+            // SAFETY: one live change, and no events asked for, so nothing's waited on.
+            unsafe { libc::kevent(queue, &raw const event, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0 }
+        };
+        for &pid in pids {
+            if libc::pid_t::try_from(pid).is_err() || !add(pid as usize, libc::EVFILT_PROC, libc::NOTE_EXIT, 0) {
+                return Some(Gone::Process(pid));
+            }
+        }
+        for (at, path) in paths.iter().enumerate() {
+            let Ok(name) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+                return Some(Gone::Path(at));
+            };
+            // SAFETY: a string that ends where it should; the descriptor, if any, is closed below.
+            let fd = unsafe { libc::open(name.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
+            if fd < 0 {
+                return Some(Gone::Path(at));
+            }
+            opened.push(fd);
+            if !add(fd as usize, libc::EVFILT_VNODE, libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_REVOKE, at) {
+                return Some(Gone::Path(at));
+            }
+        }
+        loop {
+            let left = limit.saturating_sub(began.elapsed());
+            if left.is_zero() {
+                return Some(Gone::TimeUp);
+            }
+            let timeout = libc::timespec {
+                tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
+                tv_nsec: libc::c_long::from(left.subsec_nanos()),
+            };
+            // SAFETY: a zeroed `kevent` is a valid buffer for the call to fill.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: a buffer of one and its length, no changes, and a timeout that lives through the call.
+            let count = unsafe { libc::kevent(queue, std::ptr::null(), 0, &raw mut event, 1, &raw const timeout) };
+            if count < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return None;
+            }
+            if count == 0 {
+                return Some(Gone::TimeUp);
+            }
+            return Some(if event.filter == libc::EVFILT_PROC {
+                Gone::Process(event.ident as u32)
+            } else {
+                Gone::Path(event.udata as usize)
+            });
+        }
+    })();
+    for fd in opened {
+        // SAFETY: each was opened above and is closed once.
+        unsafe { libc::close(fd) };
+    }
+    // SAFETY: opened above and closed once.
+    unsafe { libc::close(queue) };
+    gone.unwrap_or_else(|| {
+        // A queue that broke can't watch: the limit still holds.
+        std::thread::sleep(limit.saturating_sub(began.elapsed()));
+        Gone::TimeUp
+    })
+}
+
 /// Asks a process to end, or tells it to. Says whether it was there to be told.
 pub fn signal_process(pid: u32, kill: bool) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
@@ -801,6 +896,48 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("recto-local-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// Failure (PLAN, "A quiet QA app outlives a test or script"): a quiet run whose test was killed, or whose worktree was removed, runs on to its time limit, as nothing was watching for either. A watch ends when the process does, when a folder or file goes, or at the limit, and what's already gone counts at once.
+    #[test]
+    fn a_watch_ends_with_what_it_watches() {
+        let dir = temp("gone");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app");
+        std::fs::write(&file, "x").unwrap();
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let killer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            child.kill().unwrap();
+            child.wait().unwrap();
+        });
+        assert_eq!(wait_until_gone(&[pid], &[&dir, &file], Duration::from_secs(20)), Gone::Process(pid));
+        killer.join().unwrap();
+        assert_eq!(wait_until_gone(&[pid], &[], Duration::from_secs(20)), Gone::Process(pid), "already gone");
+        let me = std::process::id();
+        let remover = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                std::fs::remove_file(file).unwrap();
+            })
+        };
+        assert_eq!(wait_until_gone(&[me], &[&dir, &file], Duration::from_secs(20)), Gone::Path(1));
+        remover.join().unwrap();
+        assert_eq!(wait_until_gone(&[me], &[&file], Duration::from_secs(20)), Gone::Path(0), "never there");
+        let remover = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                std::fs::remove_dir_all(dir).unwrap();
+            })
+        };
+        assert_eq!(wait_until_gone(&[me], &[&dir], Duration::from_secs(20)), Gone::Path(0), "the folder went");
+        remover.join().unwrap();
+        let began = std::time::Instant::now();
+        assert_eq!(wait_until_gone(&[me], &[], Duration::from_millis(200)), Gone::TimeUp);
+        assert!(began.elapsed() >= Duration::from_millis(200));
     }
 
     /// Failure: the wait spins or misses a closed peer, so a dead client holds its slot until a deadline, or an idle server burns CPU.

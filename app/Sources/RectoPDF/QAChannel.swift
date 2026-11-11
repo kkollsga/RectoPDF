@@ -131,6 +131,11 @@ import QuartzCore
             controller?.appearanceChanged()
         case "full_screen":
             controller?.setQuietFullScreen(value == "on")
+        case "minimise":
+            guard let controller else { return fail(id, "The window is closed.") }
+            controller.setQuietMinimised(value == "on")
+        case "hide_app":
+            delegate.setQuietHidden(value == "on")
         case "focus":
             controller?.applyFocus(value)
         case "frontmost":
@@ -343,7 +348,7 @@ import QuartzCore
 
     private func state() -> [String: Any] {
         guard let controller = delegate.windowController else {
-            return ["window": NSNull(), "window_open": false, "is_active": NSApp.isActive, "activation": policyName()]
+            return ["window": NSNull(), "window_open": false, "is_active": NSApp.isActive, "activation": policyName(), "hidden": delegate.isAppHidden, "sheet": delegate.sheetShowing ?? [:]]
         }
         let reader = delegate.core.reader()
         let sidebar = controller.sidebar
@@ -353,8 +358,9 @@ import QuartzCore
         let frame = controller.window.frame
         return [
             "window_open": true,
-            "window": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height, "full_screen": controller.isFullScreen, "on_any_screen": NSScreen.screens.contains { $0.frame.intersects(frame) }, "is_visible": controller.window.isVisible],
+            "window": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height, "full_screen": controller.isFullScreen, "minimised": controller.isMinimised, "on_any_screen": NSScreen.screens.contains { $0.frame.intersects(frame) }, "is_visible": controller.window.isVisible],
             "is_active": NSApp.isActive,
+            "hidden": delegate.isAppHidden,
             "activation": policyName(),
             "appearance": Theme.isDark(controller.root) ? "dark" : "light",
             "sidebar_hidden": reader.sidebarHidden,

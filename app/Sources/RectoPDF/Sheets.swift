@@ -50,6 +50,29 @@ import AppKit
         held = (nil, completion)
     }
 
+    /// An alert of the app's own, with no window to hang it on, as when the window's closed. App-modal, after this call rather than in it.
+    func presentAppModal(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        guard held == nil, !appModalUp else { return }
+        guard quiet else {
+            appModalUp = true
+            DispatchQueue.main.async { [weak self] in
+                let response = alert.runModal()
+                self?.appModalUp = false
+                completion(response)
+            }
+            return
+        }
+        alert.layout()
+        alert.window.isOpaque = false
+        alert.window.backgroundColor = .clear
+        held = (alert.window, completion)
+    }
+
+    /// Whether one of the app's own alerts is up, shown or held.
+    var appModalShowing: Bool { appModalUp || held != nil }
+
+    private var appModalUp = false
+
     /// Ends the sheet over the window as its button would, through the same completion. False with none up.
     func answer(_ response: NSApplication.ModalResponse, over window: NSWindow?) -> Bool {
         if let held {

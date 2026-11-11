@@ -155,3 +155,45 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     assert!(looks > 5 && samples > 50, "{looks} reports, {samples} looks");
     assert!(seen.is_empty(), "a quiet run's windows were on screen: {:?}", &seen[..seen.len().min(8)]);
 }
+
+/// Waits for a run's process to be gone, and fails with what it was waiting for.
+fn ends(pid: u32, why: &str) {
+    let began = std::time::Instant::now();
+    while super::still_running(pid) {
+        assert!(began.elapsed() < Duration::from_secs(15), "the quiet run didn't end when {why}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Failure (PLAN, "A quiet QA app outlives a test or script that stopped without saying so"): three quiet runs ran on, orphaned, for up to their limit after their tests had gone and their worktrees been removed, using memory on the shared Mac. A run started for a process ends when that process does, whatever ended it, and any run ends when its state folder goes. A process that isn't running is refused as an owner, as the run would end as it starts.
+#[test]
+fn a_quiet_run_ends_with_what_started_it() {
+    let Some(app) = app_path() else { return };
+    let app = app.to_str().unwrap().to_owned();
+    let mut owner = std::process::Command::new("/bin/sleep").arg("120").spawn().unwrap();
+    let state = super::common::State::new();
+    let owner_pid = owner.id().to_string();
+    let (reply, code) = state.json(&["qa", "start", "--app", &app, "--time-limit", "2m", "--owner", &owner_pid]);
+    assert_eq!(code, 0, "{reply}");
+    assert_eq!(reply["data"]["owner"].as_u64(), Some(u64::from(owner.id())));
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    ends(pid, "the process it was started for was killed");
+
+    // Started by a test, by the test's own number, which `State::command` gives every run: its state folder going ends it too, as a worktree's removal takes the folder or the program.
+    let state = super::common::State::new();
+    let (reply, code) = state.json(&["qa", "start", "--app", &app, "--time-limit", "2m"]);
+    assert_eq!(code, 0, "{reply}");
+    assert_eq!(reply["data"]["owner"].as_u64(), Some(u64::from(std::process::id())), "{reply}");
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    let moved = state.root.with_extension("gone");
+    std::fs::rename(&state.root, &moved).unwrap();
+    ends(pid, "its state folder went");
+    let _ = std::fs::remove_dir_all(&moved);
+
+    let state = super::common::State::new();
+    let (reply, code) = state.json(&["qa", "start", "--app", &app, "--owner", "999999"]);
+    assert_ne!(code, 0);
+    assert_eq!(reply["error"]["code"], "owner_gone", "{reply}");
+}

@@ -11,6 +11,8 @@ recto="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/recto"
 mkdir -p "$out"
 root="$(mktemp -d)"
 trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+# A quiet run this starts ends with this script, however it ends.
+export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
 r() { "$recto" "$@" >/dev/null; }
 settle() { r qa wait-settled --timeout 60s; }

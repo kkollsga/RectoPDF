@@ -97,7 +97,8 @@ def main():
     recto = sys.argv[sys.argv.index("--recto") + 1] if "--recto" in sys.argv else os.path.join(ROOT, "target/release/recto")
     app = os.path.join(ROOT, "app/build/RectoPDF.app/Contents/MacOS/RectoPDF")
     work = tempfile.mkdtemp(prefix="recto-corpus-")
-    env = dict(os.environ, RECTO_STATE_DIR=os.path.join(work, "state"))
+    # The quiet run ends with this script, however it ends.
+    env = dict(os.environ, RECTO_STATE_DIR=os.path.join(work, "state"), RECTO_QA_OWNER_PID=str(os.getpid()))
     try:
         # A quiet run sets its throwaway state folder to Full; `recto local` then runs on that folder with no app.
         subprocess.run([recto, "qa", "start", "--app", app, "--time-limit", "1m"], env=env, check=True, capture_output=True)
