@@ -123,3 +123,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Product rules from the owner, before the first release (2026-11-08)
 - The contents helper (Generate contents, through distillPDF) reads untrusted PDFs outside the renderer's sandbox. Asked what 0.1.0 should do: "Turn its image decoding off". Headings come from text.
 - The ✦ agent icon does nothing until the agent sidebar ships. Asked what 0.1.0 should do with it: "Keep it as it is".
+
+## Product rules from the owner, development builds (2026-11-11)
+- "Im seeing two rectopdf installs in macos. Can you check? We should only ever have one. We should enable dev updates (similar to the seedwell feature)." The one install is `/Applications/RectoPDF.app`; development builds go in through the updater (SPEC decision 28, `tools/dev-build.sh`, `recto update install <zip>`).
+- "Do we need to sign dev copies? Is it possible to only sign when we push to git?" and "The reason why it slows down dev is because I need to approve the use of the keychain, that in some cases takes hours". So dev builds never touch the keychain: ad hoc, with the bundle identifier as the designated requirement. Developer ID and notarizing only in CI on a release tag.

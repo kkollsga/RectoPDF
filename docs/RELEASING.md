@@ -48,7 +48,7 @@ Read the draft on GitHub and press **Publish**. That's the moment every installe
 ## A check on this Mac (not a release)
 
 ```sh
-tools/sysguard/heavy.sh app/release-zip.sh --allow-dirty   # full LTO, into app/build/release/
+tools/sysguard/heavy.sh app/release-zip.sh --allow-dirty   # full LTO, into app/build.noindex/release/
 ```
 
 Without `--signed` it signs ad hoc and doesn't notarize, whatever the environment says. It checks everything else, including that the real binaries read no override with every override set.
@@ -61,7 +61,25 @@ One source: `version` under `[workspace.package]` in `Cargo.toml`. `app/build.sh
 
 The app reads `<repo>/releases/latest/download/latest.json` once a day: `version`, `tag`, `minimum_macos`, `zip`, `sha256`, all written by `release-zip.sh`. See `docs/ENGINEERING.md`, "Updates", for the rest.
 
-**A release build is whatever `RECTO_RELEASE=1` compiled.** `app/build.sh` on its own makes a development build, which checks only when asked and never replaces itself, so your own dev builds are safe from it. Keep it that way: don't set `RECTO_RELEASE` by hand.
+**A release build is whatever `RECTO_RELEASE=1` compiled.** `app/build.sh` on its own makes a local build, for tests and QA, which checks only when asked and never replaces itself. `app/release-zip.sh` and `tools/dev-build.sh` are the only two that set it. Don't set it by hand.
+
+## Development builds
+
+SPEC decision 28, with Seedwell's as the model. The owner's one RectoPDF is `/Applications/RectoPDF.app`, and it runs development builds between releases: `X.Y.Z.N`, Cargo.toml's version and a number counted from 1 for each, so `0.1.0` < `0.1.0.1` < `0.1.1`. A release never has a fourth part.
+
+```sh
+tools/sysguard/heavy.sh tools/dev-build.sh --first-install     # once, to start: builds and puts it in /Applications
+tools/sysguard/heavy.sh tools/dev-build.sh                     # each time: app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip
+recto update install app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip          # goes in once the app hasn't been used for 5 minutes
+recto update install app/build.noindex/dev/RectoPDF-X.Y.Z.N.zip --now    # at once
+recto update status                                            # build_ready, installing, updated, went_back
+```
+
+- **The owner's switch:** Settings › Allow development builds, off until they turn it on (`recto update dev-builds on|off` needs Full). On, it's also their consent to `update install <zip>` at any agent level, Off included, from this user over the control socket (a coordinator's default awaiting the owner). Off, only releases go in, and a development build goes back to the latest release by itself once there is one, after 30 quiet minutes.
+- **Never the keychain.** Owner, 2026-11-11: "I need to approve the use of the keychain, that in some cases takes hours." A dev build is ad hoc, with no Developer ID, `security`, timestamp or notarizing, and its designated requirement is its identifier alone (`designated => identifier "io.github.kkollsga.RectoPDF"`; the helper's is its own), so macOS takes each build as the same app and keeps the folders it was given. `codesign -d -r- /Applications/RectoPDF.app` shows it. Developer ID and notarizing are for a release, in CI, on a pushed tag.
+- **What's checked before it goes in:** the switch, the bundle id, the version its name says, and `codesign --verify --deep --strict`, ad hoc or not. It goes through the same hand-off as a release: the whole state, the old app kept beside it, and back to that if the build doesn't come up.
+- **Builds:** the `dev-release` profile where `app/build.sh --dev-release` exists, else `--release`, into `app/build.noindex/dev/app`, so the tests' own build (a local one, in `app/build.noindex`) is left as it is. `tools/dev-build.sh --package <app>` is the last step alone, seconds, on an app already built.
+- **One install:** build folders end in `.noindex`, so Spotlight doesn't index them; a quiet run forgets its own copy with Launch Services when it ends, and the tests forget every copy they made; `tools/check.sh --full` ends with a check that nothing of this tree's is left registered.
 
 **What's unproven until the first real signed release:** that a real Developer ID build passes the team and Gatekeeper checks, that a notarized bundle survives the updater's unpacking and the swap with its ticket and signature, what a background reopen does to a real screen (the code sends the window behind everything and waits to go into full screen, and nothing here has seen it on a desktop), how long a first launch takes under Gatekeeper, and the `--signed` and workflow steps themselves. `docs/PLAN.md` carries the item. The refusal side is tested.
 

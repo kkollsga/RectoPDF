@@ -4,6 +4,8 @@
 #
 #   app/render-helper.sh --layout <Contents> <worker> <libpdfium>   Puts the helper in <Contents>/Helpers/RectoRender.app and signs it ad hoc, always.
 #   app/render-helper.sh --sign <Contents>                          Signs it again: with RECTO_SIGN_IDENTITY if it's set, else ad hoc.
+#   app/render-helper.sh --sign-dev <Contents>                      Signs it ad hoc, whatever's set, with a designated requirement of its identifier alone: a development build's,
+#                                                                   so macOS takes each one as the same helper. Never the keychain (owner, 2026-11-11).
 #   app/render-helper.sh --check <RectoPDF.app or RectoRender.app>  Fails unless the helper is sandboxed and signed as it should be, and nothing can run unsandboxed in its place.
 #   app/render-helper.sh --key <identity>                           Prints the keychain's SHA-1 for a signing identity's name, or the SHA-1 itself, for codesign.
 #
@@ -53,9 +55,11 @@ key() {
     fail "the identity isn't in the keychain: $identity"
 }
 
-# sign <Contents>: writes the identifier this signature calls for, then signs the library and the helper.
+# sign <Contents> [stable]: writes the identifier this signature calls for, then signs the library and the helper. With `stable`, ad hoc with the identifier as the
+# designated requirement, where ad hoc's own is the code's hash, which every build changes.
 sign() {
-    local helper="$1/Helpers/$HELPER_NAME" identity="${RECTO_SIGN_IDENTITY:--}" id args
+    local helper="$1/Helpers/$HELPER_NAME" identity="${RECTO_SIGN_IDENTITY:--}" id args requirement=()
+    [ "${2:-}" != stable ] || identity=-
     [ -x "$helper/Contents/MacOS/$WORKER" ] || fail "no helper to sign in $1"
     if [ "$identity" = - ]; then id=$ADHOC_ID; args=(--force --sign -); else id=$RELEASE_ID; args=(--force --sign "$(key "$identity")" --options runtime --timestamp); fi
     local version
@@ -76,8 +80,9 @@ sign() {
 </dict>
 </plist>
 PLIST
+    [ "${2:-}" != stable ] || requirement=(-r="designated => identifier \"$id\"")
     codesign "${args[@]}" "$helper/Contents/Frameworks/$LIBRARY"
-    codesign "${args[@]}" --entitlements "$ENTITLEMENTS" "$helper"
+    codesign "${args[@]}" "${requirement[@]+"${requirement[@]}"}" --entitlements "$ENTITLEMENTS" "$helper"
 }
 
 # What `codesign -d` says of a file: the value of one of its lines.
@@ -150,6 +155,10 @@ case "${1:-}" in
         [ $# -eq 2 ] || fail "--sign <Contents>"
         sign "$2"
         ;;
+    --sign-dev)
+        [ $# -eq 2 ] || fail "--sign-dev <Contents>"
+        sign "$2" stable
+        ;;
     --check)
         [ $# -eq 2 ] || fail "--check <RectoPDF.app or $HELPER_NAME>"
         check "$2"
@@ -158,5 +167,5 @@ case "${1:-}" in
         [ $# -eq 2 ] || fail "--key <identity>"
         key "$2"
         ;;
-    *) sed -n '2,9p' "$0"; exit 2 ;;
+    *) sed -n '2,11p' "$0"; exit 2 ;;
 esac
