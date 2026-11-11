@@ -15,7 +15,7 @@
 use std::ffi::{CString, OsStr, c_int};
 use std::fs::File;
 use std::io;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -54,6 +54,9 @@ pub struct Spawned {
 pub struct Helper {
     pid: libc::pid_t,
     ended: Option<ExitStatus>,
+    /// `waitpid` said this isn't a child of this process (`ECHILD`): something else collected it. The number may already be another process's, so
+    /// it's never signalled.
+    lost: bool,
 }
 
 fn check(rc: c_int) -> io::Result<c_int> {
@@ -64,19 +67,32 @@ fn check_spawn(rc: c_int) -> io::Result<()> {
     if rc == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(rc)) }
 }
 
-/// A pipe as two files, read end first, both close-on-exec. Between `pipe` and the flags, a fork elsewhere in this process could take a copy, as with
-/// the standard library's own pipes on macOS; every spawn here closes everything it isn't given.
+/// A pipe as two files, read end first, both close-on-exec and numbered above 2. Between `pipe` and the flags, a fork elsewhere in this process could
+/// take a copy, as with the standard library's own pipes on macOS; every spawn here closes everything it isn't given.
+///
+/// Above 2, because a process started with its standard input or output closed (`recto <&-`) gets 0 or 1 from `pipe`, and then putting one end on
+/// the child's 0 would overwrite the other before it's put on 1, or the child would be given an end it should never have.
 fn pipe() -> io::Result<(File, File)> {
     let mut fds: [RawFd; 2] = [-1; 2];
     // SAFETY: `fds` has room for the two descriptors the call writes.
     check(unsafe { libc::pipe(fds.as_mut_ptr()) })?;
-    // SAFETY: both are fresh descriptors that nothing else owns.
+    // SAFETY: both are fresh descriptors that nothing else owns, and each `File` closes its own.
     let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
-    for fd in fds {
-        // SAFETY: plain flag changes on descriptors this owns.
+    Ok((above_stdio(read)?, above_stdio(write)?))
+}
+
+/// The same file, close-on-exec, at a number above 2: moved there if it isn't, and the low number closed.
+fn above_stdio(file: File) -> io::Result<File> {
+    let fd = file.as_raw_fd();
+    if fd > 2 {
+        // SAFETY: a flag change on a descriptor this owns.
         check(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+        return Ok(file);
     }
-    Ok((read, write))
+    // SAFETY: duplicates a descriptor this owns onto the lowest free number from 3, close-on-exec. `file` closes the old one as it goes.
+    let moved = check(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) })?;
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { File::from_raw_fd(moved) })
 }
 
 /// Starts `exe` with no arguments, only `env` for its environment, its standard input and output on pipes to this process, its standard error on
@@ -93,7 +109,6 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
     envp.push(std::ptr::null_mut());
     let (child_in, stdin) = pipe()?;
     let (stdout, child_out) = pipe()?;
-    use std::os::fd::AsRawFd;
     // SAFETY: a flag change on a descriptor this owns.
     check(unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_SETNOSIGPIPE, 1) })?;
     let dev_null = c"/dev/null";
@@ -109,10 +124,18 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
             return Err(error);
         }
         let prepared = (|| {
-            // Nothing is inherited unless named below, whatever else in this process forgot to mark close-on-exec.
+            // Nothing is inherited unless named below, whatever else in this process forgot to mark close-on-exec. And no signal state either: the
+            // spawning thread's blocked signals and anything this process ignores would otherwise carry over, so a helper could start unable to
+            // be told to stop. Every signal starts at its default and none is blocked, as the standard library's own spawn does.
+            let mut none: libc::sigset_t = std::mem::zeroed();
+            let mut all: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&raw mut none);
+            libc::sigfillset(&raw mut all);
+            check_spawn(libc::posix_spawnattr_setsigmask(&raw mut attr, &raw const none))?;
+            check_spawn(libc::posix_spawnattr_setsigdefault(&raw mut attr, &raw const all))?;
             check_spawn(libc::posix_spawnattr_setflags(
                 &raw mut attr,
-                libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short,
+                (libc::POSIX_SPAWN_CLOEXEC_DEFAULT | libc::POSIX_SPAWN_SETSIGMASK | libc::POSIX_SPAWN_SETSIGDEF) as libc::c_short,
             ))?;
             if priority == Priority::Utility {
                 check_spawn(posix_spawnattr_set_qos_class_np(&raw mut attr, QOS_CLASS_UTILITY))?;
@@ -142,7 +165,7 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
     // The child's ends close here, so the helper's end of input is this process's `stdin` and nobody else's.
     drop((child_in, child_out));
     Ok(Spawned {
-        child: Helper { pid, ended: None },
+        child: Helper { pid, ended: None, lost: false },
         stdin,
         stdout,
     })
@@ -157,6 +180,9 @@ impl Helper {
         if let Some(status) = self.ended {
             return Ok(Some(status));
         }
+        if self.lost {
+            return Err(io::Error::from_raw_os_error(libc::ECHILD));
+        }
         let mut status: c_int = 0;
         loop {
             // SAFETY: `status` is live for the call, and the pid is this child's until it's collected, which only this does.
@@ -169,6 +195,9 @@ impl Helper {
                 return Ok(None);
             }
             let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                self.lost = true;
+            }
             if error.kind() != io::ErrorKind::Interrupted {
                 return Err(error);
             }
@@ -185,9 +214,9 @@ impl Helper {
         self.collect(0)?.ok_or_else(|| io::Error::other("waitpid returned without a status"))
     }
 
-    /// Sends the kill, unless it's already been collected, so a number given to another process is never signalled.
+    /// Sends the kill, unless it's already been collected or lost, so a number given to another process is never signalled.
     pub fn kill(&mut self) -> io::Result<()> {
-        if self.ended.is_none() {
+        if self.ended.is_none() && !self.lost {
             // SAFETY: not yet collected, so the pid is still this child.
             check(unsafe { libc::kill(self.pid, libc::SIGKILL) })?;
         }
@@ -196,12 +225,14 @@ impl Helper {
 }
 
 impl Drop for Helper {
-    /// A helper nobody waited for is killed, and collected if it's gone at once. It never blocks: one stuck in a read from a dead volume stays a zombie
-    /// until that read returns.
+    /// Whoever starts a helper waits for it, on every path. One dropped without that is a bug: it's killed, and collected only if it's already gone,
+    /// as this never blocks, so **otherwise it stays a zombie** until this process ends. A debug build says so by panicking, unless it's already
+    /// unwinding from a panic of its own.
     fn drop(&mut self) {
-        if self.ended.is_none() {
+        if self.ended.is_none() && !self.lost {
             let _ = self.kill();
             let _ = self.collect(libc::WNOHANG);
+            debug_assert!(std::thread::panicking(), "a helper (pid {}) was dropped without a wait", self.pid);
         }
     }
 }
@@ -277,29 +308,33 @@ mod tests {
         unsafe { libc::close(77) };
     }
 
-    /// Failure: a helper that's gone makes the next write raise `SIGPIPE`, which ends a host that doesn't ignore it (a Swift app doesn't), or one
-    /// nobody waited for is left running.
+    /// Failure: a helper dropped without a wait is left running, or a debug build doesn't say that a caller forgot to wait. Callers wait: this checks
+    /// the path that catches one that doesn't, without collecting the helper itself, so what the drop did is what's seen.
     #[test]
-    fn a_helper_thats_gone_is_an_error_not_a_signal_and_one_dropped_is_killed() {
-        let Spawned { mut child, mut stdin, stdout } = spawn(Path::new("/usr/bin/true"), &[], Priority::Utility).unwrap();
-        child.wait().unwrap();
-        drop(stdout);
-        let wrote = (0..64).try_for_each(|_| stdin.write_all(&[0u8; 4096]));
-        assert!(wrote.is_err(), "a closed pipe is an error");
+    fn a_helper_dropped_without_a_wait_is_killed_and_said_to_be_a_bug() {
         // A shell waiting on its input stands in for a stuck helper. Its input stays open, so only the kill can end it.
         let Spawned { child, stdin, .. } = spawn(Path::new("/bin/sh"), &[], Priority::Inherited).unwrap();
-        let stuck = child.id() as libc::pid_t;
-        drop(child);
+        let stuck = child.id();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(child)));
+        assert_eq!(
+            dropped.is_err(),
+            cfg!(debug_assertions),
+            "a debug build says a helper was dropped without a wait"
+        );
+        // Killed: gone, or a zombie nobody's collected, which `ps` shows as `Z`.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        // SAFETY: signal 0 only asks whether the process is there.
-        while unsafe { libc::kill(stuck, 0) } == 0 && std::time::Instant::now() < deadline {
-            let mut status = 0;
-            // SAFETY: collects the killed child, if this test's drop didn't get to.
-            unsafe { libc::waitpid(stuck, &raw mut status, libc::WNOHANG) };
+        let state = loop {
+            let out = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &stuck.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if state.is_empty() || state.contains('Z') || std::time::Instant::now() > deadline {
+                break state;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        // SAFETY: as above.
-        assert!(unsafe { libc::kill(stuck, 0) } != 0, "a dropped helper is killed");
+        };
+        assert!(state.is_empty() || state.contains('Z'), "a dropped helper is killed, and it's {state:?}");
         drop(stdin);
     }
 }

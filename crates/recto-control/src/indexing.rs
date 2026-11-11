@@ -1,6 +1,6 @@
 //! Builds search indexes on demand, one at a time, whatever's open. **What triggers it is someone asking,** through `search`, `index` or `wait indexing-done`: never opening a tab or switching to one, so 200 open tabs cost nothing here. A tab holds nothing about its index: where a corpus stands is on disk under the file's key, and this holds only what's waiting and what's running.
 //!
-//! The work is in a helper process, `recto-indexer`, at [`crate::HELPER_PRIORITY`], utility. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
+//! The work is in a helper process, `recto-indexer`, at [`crate::helpers::HELPER_PRIORITY`], utility. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
 
 use recto_agent::Event;
 use recto_agent::index::{Indexing, JobState};
@@ -77,7 +77,7 @@ impl Indexer {
         let indexer = Self::with_runner(
             root,
             Box::new(HelperProcess {
-                priority: crate::HELPER_PRIORITY,
+                priority: crate::helpers::HELPER_PRIORITY,
             }),
         );
         // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
@@ -274,7 +274,7 @@ fn helper_exe() -> Option<PathBuf> {
 /// The real thing.
 #[derive(Clone, Copy, Debug)]
 pub struct HelperProcess {
-    /// [`crate::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
+    /// [`crate::helpers::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
     pub priority: Priority,
 }
 
@@ -286,7 +286,7 @@ impl Runner for HelperProcess {
             return failed("path_not_text");
         };
         // It inherits nothing it doesn't need.
-        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::spawn_helper(&exe, &[], self.priority) else {
+        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[], self.priority) else {
             return failed("indexer_wouldnt_start");
         };
         // On stdin, so a file's name stays out of `ps`.

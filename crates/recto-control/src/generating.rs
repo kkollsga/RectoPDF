@@ -1,6 +1,6 @@
 //! Makes generated contents on demand, one document at a time, whatever's open. **What starts it is someone asking:** `recto contents --generated`, `recto wait contents-generated`, or the reader tapping the sidebar's offer. Never opening a tab or switching to one (SPEC decision 22's rule).
 //!
-//! The work is in a helper process, `recto-headings`, at [`crate::HELPER_PRIORITY`], utility, with `MallocLargeCache=0` in its environment. **It's watched from outside:** its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], or past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. What it says is read as hostile, capped at [`MAX_REPORT_BYTES`], through the same reader as the kept file, and only then written to disk, by this process. The one thread here exists only while there's something to make.
+//! The work is in a helper process, `recto-headings`, at [`crate::helpers::HELPER_PRIORITY`], utility, with `MallocLargeCache=0` in its environment. **It's watched from outside:** its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], or past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. What it says is read as hostile, capped at [`MAX_REPORT_BYTES`], through the same reader as the kept file, and only then written to disk, by this process. The one thread here exists only while there's something to make.
 
 use recto_agent::Event;
 use recto_agent::generated::{GenState, Generating};
@@ -93,7 +93,7 @@ impl Generator {
         Self::with_runner(
             root,
             Box::new(HelperProcess {
-                priority: crate::HELPER_PRIORITY,
+                priority: crate::helpers::HELPER_PRIORITY,
             }),
         )
     }
@@ -328,7 +328,7 @@ fn helper_exe() -> Option<PathBuf> {
 /// The real thing.
 #[derive(Clone, Copy, Debug)]
 pub struct HelperProcess {
-    /// [`crate::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
+    /// [`crate::helpers::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
     pub priority: Priority,
 }
 
@@ -340,7 +340,7 @@ impl Runner for HelperProcess {
             return (Outcome::Refused("couldnt_read".into()), Value::Null);
         };
         // Nothing inherited but what it needs. `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
-        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::spawn_helper(&exe, &[("MallocLargeCache", OsStr::new("0"))], self.priority) else {
+        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[("MallocLargeCache", OsStr::new("0"))], self.priority) else {
             return failed("helper_missing");
         };
         let pid = child.id();
@@ -363,12 +363,15 @@ impl Runner for HelperProcess {
         let limit = time_limit(job.pages);
         let mut peak = 0u64;
         let mut stopped_for = None;
+        // `try_wait` failed: the helper isn't this process's to signal any more, so it's never killed.
+        let mut lost = false;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {}
                 Err(_) => {
                     stopped_for = Some("helper_stopped");
+                    lost = true;
                     break;
                 }
             }
@@ -388,7 +391,7 @@ impl Runner for HelperProcess {
             }
             std::thread::sleep(WATCH_EVERY);
         }
-        if stopped_for.is_some() {
+        if stopped_for.is_some() && !lost {
             let _ = child.kill();
         }
         drop(stdin);

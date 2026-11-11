@@ -523,7 +523,16 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         recto_platform::local::system_temp_dir().ok_or_else(|| AgentError::new("write_failed", "This Mac's temp folder couldn't be found.", exit::FAILED))?;
     let root = temp.join(format!("recto-budget-{}.noindex", std::process::id()));
     let result = (|| {
-        let build = recto_control::indexing::build_now(&file, key, &root, if foreground { Priority::Inherited } else { recto_control::HELPER_PRIORITY });
+        let build = recto_control::indexing::build_now(
+            &file,
+            key,
+            &root,
+            if foreground {
+                Priority::Inherited
+            } else {
+                recto_control::helpers::HELPER_PRIORITY
+            },
+        );
         if build["state"] != "ready" {
             let code = build["code"].as_str().unwrap_or("unknown");
             return Err(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED));
