@@ -1,6 +1,7 @@
 //! What's remembered between launches: `updates.json` in the state folder. A few dozen bytes, read when the app starts and written when something's happened. A damaged one is the same as none: the next check puts it right.
 
 use crate::rules::{parse_version, retry_after};
+use crate::version;
 use recto_platform::local;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -35,6 +36,10 @@ pub struct Saved {
     pub last_update: Option<LastUpdate>,
     /// *Update automatically*, if it's been chosen. Here and not with the session, so losing a record can't turn it back on against what the user chose.
     pub auto_update: Option<bool>,
+    /// *Allow development builds*, if it's been chosen. Off until the owner turns it on: it's what lets a build that isn't a release replace the app.
+    pub dev_builds: Option<bool>,
+    /// Development builds were turned off while one was running, so the next release found goes in by itself, older or not, as the way back. Until a release is running, or they're turned on again.
+    pub back_to_release: bool,
     /// A new version that's come up, watched for a while in case it then keeps ending: see [`crate::updater::EARLY_END_MS`].
     pub probation: Option<Probation>,
 }
@@ -83,12 +88,13 @@ impl Saved {
             return unreadable;
         };
         saved.offered = saved.offered.filter(|version| parse_version(version).is_some());
-        saved.proven = saved.proven.filter(|version| parse_version(version).is_some());
-        saved.failed.retain(|version| parse_version(version).is_some());
-        saved.probation = saved.probation.filter(|probation| parse_version(&probation.version).is_some());
+        // An offer is a release's. What ran, failed, was installed or is watched may be a development build's too.
+        saved.proven = saved.proven.filter(|known| version::parse(known).is_some());
+        saved.failed.retain(|known| version::parse(known).is_some());
+        saved.probation = saved.probation.filter(|probation| version::parse(&probation.version).is_some());
         saved.last_update = saved
             .last_update
-            .filter(|update| parse_version(&update.from).is_some() && parse_version(&update.to).is_some());
+            .filter(|update| version::parse(&update.from).is_some() && version::parse(&update.to).is_some());
         saved
     }
 
@@ -145,14 +151,18 @@ mod tests {
         assert_eq!(Saved::read(&file), saved);
         local::write_private_file(
             &file,
-            br#"{"offered":"Update to <evil>","failed":["x","0.1.1"],"proven":"$(rm)","last_check_ms":7,"probation":{"version":"$(rm)","early_ends":9}}"#,
+            br#"{"offered":"Update to <evil>","failed":["x","0.1.1","0.1.0.2"],"proven":"$(rm)","last_check_ms":7,"probation":{"version":"$(rm)","early_ends":9}}"#,
         )
         .unwrap();
         let read = Saved::read(&file);
         assert_eq!(read.offered, None);
         assert_eq!(read.proven, None);
         assert_eq!(read.probation, None, "nothing's watched that isn't a version");
-        assert_eq!(read.failed, vec!["0.1.1".to_string()]);
+        assert_eq!(
+            read.failed,
+            vec!["0.1.1".to_string(), "0.1.0.2".to_string()],
+            "a development build can fail too"
+        );
         assert_eq!(read.last_check_ms, Some(7));
         for junk in [&b"not json"[..], b"[]", &[0xFF, 0x00]] {
             local::write_private_file(&file, junk).unwrap();
@@ -163,6 +173,7 @@ mod tests {
                 Some(false),
                 "what the user chose is unknown, so nothing's installed by itself"
             );
+            assert_eq!(read.dev_builds, None, "and development builds stay off");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

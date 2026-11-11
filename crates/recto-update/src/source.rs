@@ -21,7 +21,7 @@ pub enum Trust {
 pub enum Mode {
     /// Checks every day and replaces itself.
     Release,
-    /// Checks only when asked, and never replaces itself.
+    /// A local build, from `app/build.sh` for tests and QA: checks only when asked, and never replaces itself. Not a development build (`X.Y.Z.N`, [`crate::version`]), which is built as a release is and can.
     Development,
     /// Behaves as a release, against a test's own loopback server, on temp state.
     Test,

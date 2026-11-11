@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One command from a clean checkout: Rust core -> Swift bindings -> Swift app -> app/build/RectoPDF.app, ad-hoc signed.
+# One command from a clean checkout: Rust core -> Swift bindings -> Swift app -> app/build.noindex/RectoPDF.app, ad-hoc signed.
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
@@ -19,8 +19,10 @@ case "$mode" in
     --dev-release) CARGO_ARGS=(--profile dev-release); RUST_OUT="$REPO/target/dev-release"; SWIFT_ARGS=(-c release) ;;
     *) sed -n '2,9p' "$0"; exit 2 ;;
 esac
-BUILD="$APP_DIR/build"
-APP="$BUILD/RectoPDF.app"
+# `.noindex`, so Spotlight leaves what's built alone, and nothing finds an app in it to register (owner, 2026-11-11: only ever one install). The Rust library and the
+# bindings are always here, where Package.swift looks. The app goes in RECTO_APP_BUILD if it's set: tools/dev-build.sh's own, so the tests' build is left as it is.
+BUILD="$APP_DIR/build.noindex"
+APP="${RECTO_APP_BUILD:-$BUILD}/RectoPDF.app"
 # One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
 # The identity a release is signed with, read only by --sign-only, which `app/release-zip.sh --signed` runs. Every build is ad hoc, whatever the shell has set, so a build or a
@@ -76,6 +78,7 @@ BIN="$(cd "$APP_DIR" && swift build "${SWIFT_ARGS[@]}" --show-bin-path)/RectoPDF
 
 echo "==> $APP"
 rm -rf "$APP"
+mkdir -p "$(dirname "$APP")"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"

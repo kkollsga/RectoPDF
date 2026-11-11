@@ -130,7 +130,8 @@ fn refused(path: &Path) -> AgentError {
 }
 
 /// The user's own folder. Under the real home, whatever `$HOME` says.
-fn default_root() -> Result<PathBuf, AgentError> {
+/// The user's own state folder, with no override. `recto_update::real_state_root` is the same folder, for the installer, and a test holds them to each other.
+pub fn default_root() -> Result<PathBuf, AgentError> {
     local::real_home()
         .map(|home| default_root_in(&home))
         .ok_or_else(|| AgentError::new("state_refused", "This user's home folder couldn't be found.", exit::FAILED))

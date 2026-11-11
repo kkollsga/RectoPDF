@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 const OLD: &str = "0.1.0";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const NEW: &str = "0.1.99";
+/// A development build of the old version.
+const DEV: &str = "0.1.0.1";
 
 /// What differs between an old app and the new one, on purpose. Everything else is compared.
 const ACROSS_AN_UPDATE: &[&str] = &["app.settings.status"];
@@ -88,7 +90,7 @@ impl Server {
 
 /// The built app, cloned to a temp folder as this version, with a test's own signature. It's the same app with another number.
 fn copy_app(to_folder: &Path, version: &str) -> PathBuf {
-    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app");
+    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build.noindex/RectoPDF.app");
     std::fs::create_dir_all(to_folder).unwrap();
     let app = to_folder.join("RectoPDF.app");
     assert!(Command::new("/bin/cp").arg("-cR").arg(&built).arg(&app).status().unwrap().success());
@@ -165,7 +167,7 @@ impl Bed {
         let folder = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join(format!("recto-update-e2e-{}-{}", std::process::id(), wall_ms()));
+            .join(format!("recto-update-e2e-{}-{}.noindex", std::process::id(), wall_ms()));
         std::fs::create_dir_all(&folder).unwrap();
         let app = copy_app(&folder.join("install"), OLD);
         Some(Self {
@@ -218,6 +220,61 @@ impl Bed {
         let (zip, sha) = zip_of(&app);
         self.server.release(version, zip, &sha);
         let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// A development build of this version, made by `tools/dev-build.sh --package` from the test's copy, as the owner's are made: ad hoc, with its identifier as its designated requirement, and never the keychain, which a `security` that fails and says it was called stands guard over.
+    fn dev_build(&self, version: &str, broken: Broken) -> PathBuf {
+        let release = version.rsplit_once('.').unwrap().0;
+        let staging = self.folder.join(format!("dev-{version}"));
+        let app = copy_app(&staging, release);
+        if broken == Broken::DamagesTheRecordAndEnds {
+            let macos = app.join("Contents/MacOS");
+            std::fs::copy(macos.join("recto-updater"), macos.join("RectoPDF")).unwrap();
+        }
+        let guard = self.folder.join("no-keychain");
+        std::fs::create_dir_all(&guard).unwrap();
+        let called = guard.join("called");
+        std::fs::write(guard.join("security"), format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", called.display())).unwrap();
+        assert!(Command::new("/bin/chmod").arg("+x").arg(guard.join("security")).status().unwrap().success());
+        let tool = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/dev-build.sh");
+        let path = format!("{}:{}", guard.display(), std::env::var("PATH").unwrap_or_default());
+        let output = Command::new(tool)
+            .args(["--package"])
+            .arg(&app)
+            .arg("--out")
+            .arg(&staging)
+            .args(["--version", version])
+            .env("PATH", path)
+            .env_remove("RECTO_SIGN_IDENTITY")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            !called.exists(),
+            "a dev build touched the keychain: {}",
+            std::fs::read_to_string(&called).unwrap_or_default()
+        );
+        let zip = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().lines().last().unwrap());
+        // Ad hoc, the app and its helper, with no team: nothing of the keychain's was used.
+        let look = staging.join("signed");
+        assert!(
+            Command::new("/usr/bin/ditto")
+                .args(["-x", "-k"])
+                .arg(&zip)
+                .arg(&look)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for signed in [look.join("RectoPDF.app"), look.join("RectoPDF.app/Contents/Helpers/RectoRender.app")] {
+            let said = Command::new("/usr/bin/codesign").args(["-dv"]).arg(&signed).output().unwrap();
+            let said = String::from_utf8_lossy(&said.stderr).to_string();
+            assert!(said.lines().any(|line| line == "Signature=adhoc"), "{}: {said}", signed.display());
+            assert!(said.lines().any(|line| line == "TeamIdentifier=not set"), "no team: {said}");
+        }
+        let _ = std::fs::remove_dir_all(&look);
+        assert_eq!(zip.file_name().unwrap().to_str().unwrap(), format!("RectoPDF-{version}.zip"));
+        zip
     }
 
     fn start(&self) -> Run<'_> {
@@ -420,8 +477,8 @@ impl Drop for Bed {
         for pid in local::processes_running(&self.app.join("Contents/MacOS/RectoPDF")) {
             local::signal_process(pid, true);
         }
-        // `open` told the system about these. It forgets them again here, rather than at some later tidying.
-        let _ = Command::new(LSREGISTER).arg("-u").arg(&self.app).status();
+        // `open` told the system about these, and a scan may have found the kept copy and its helper. It forgets every one of them here, before they go, rather than at some later tidying.
+        recto_platform::registry::forget_all_under(&self.folder);
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
@@ -501,6 +558,161 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         "`frontmost off` means it reopens without taking the focus: {log}"
     );
     assert!(!log.contains("alpha") && !log.contains("gamma"), "no document's name in the log");
+    run.quit();
+}
+
+/// Failure: a development build doesn't go in as a release does, changes anything the user can see or has changed, or is taken from an agent below Full. **The owner's dev cycle, end to end:** `tools/dev-build.sh` makes the zip with no keychain, ad hoc with its identifier as its designated requirement; *Allow development builds* is hidden in Settings on a release and turned on by the command; the build's refused at agent access Off and Control, as anyone can sign ad hoc, and goes in at Full, by the same hand-off, swap and first frame as a release, with the whole of `qa state` compared before and after and the old app kept. On the build, Settings shows the switch.
+#[test]
+fn a_development_build_goes_in_by_the_same_hand_off() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), super::chaptered("gamma", 20, 8));
+    make_rich(&run, &[&a, &b, &c]);
+    run.settled();
+    let zip = bed.dev_build(DEV, Broken::Not);
+    // What it's signed with, from the zip itself.
+    let look = bed.folder.join("look");
+    assert!(
+        Command::new("/usr/bin/ditto")
+            .args(["-x", "-k"])
+            .arg(&zip)
+            .arg(&look)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let requirement = Command::new("/usr/bin/codesign")
+        .args(["-d", "-r-"])
+        .arg(look.join("RectoPDF.app"))
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&requirement.stderr).contains("designated => identifier \"io.github.kkollsga.RectoPDF.e2e\"")
+            || String::from_utf8_lossy(&requirement.stdout).contains("designated => identifier \"io.github.kkollsga.RectoPDF.e2e\""),
+        "every dev build is the same app to macOS: {requirement:?}"
+    );
+    // Off until the owner turns it on, and on a release, not in Settings at all.
+    let rows = |run: &Run<'_>| -> Vec<String> {
+        run.ok(&["qa", "state"])["app"]["settings"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    run.ok(&["qa", "menu", "app.settings"]);
+    assert_eq!(rows(&run), ["update.automatic"], "a release shows no switch for builds");
+    let (reply, _) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
+    assert_eq!(reply["error"]["code"], "dev_builds_off", "{reply}");
+    assert_eq!(run.ok(&["update", "dev-builds", "on"])["dev_builds"], true);
+    assert!(rows(&run).contains(&"update.dev_builds".to_owned()), "on, it's there to turn off");
+    run.ok(&["qa", "settings", "close"]);
+    let before = run.report();
+    // The switch isn't consent below Full: anyone can sign a build ad hoc.
+    for level in [recto_agent::Level::Off, recto_agent::Level::Control] {
+        bed.state.set_level(level);
+        let (refused, _) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
+        assert_eq!(refused["error"]["code"], "permission_denied", "{level:?}: {refused}");
+    }
+    bed.state.set_level(recto_agent::Level::Full);
+    let (answer, code) = bed.state.json(&["update", "install", zip.to_str().unwrap(), "--now"]);
+    assert_eq!((code, &answer["ok"]), (0, &json!(true)), "{answer}");
+    assert_eq!(answer["data"]["version"], DEV);
+    assert!(
+        answer["data"]["words"].as_str().unwrap().contains("folders"),
+        "signed ad hoc, and it says what that means: {answer}"
+    );
+    let run = bed.wait_for_new_app_of(run, DEV);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(bed.version(), DEV, "the build is at the app's path");
+    assert_eq!(bed.kept().as_deref(), Some(OLD), "the old one is kept");
+    assert_eq!(after["update"]["version"], DEV);
+    assert_same_but(&before, &after, &[], ACROSS_AN_UPDATE);
+    let log = bed.log();
+    assert!(log.contains(&format!("development build {DEV} checked, signed ad hoc")), "{log}");
+    run.ok(&["update", "dev-builds", "off"]);
+    run.ok(&["qa", "menu", "app.settings"]);
+    assert!(rows(&run).contains(&"update.dev_builds".to_owned()), "a development build shows it, on or off");
+    run.quit();
+}
+
+/// Failure: a development build that won't start strands the owner on it, or loses their work: it goes back to the version before, with the state as it was, as a release does.
+#[test]
+fn a_development_build_that_wont_start_goes_back() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 30);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "12"]);
+    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["session", "save"]);
+    run.ok(&["update", "dev-builds", "on"]);
+    let before = run.report();
+    let zip = bed.dev_build(DEV, Broken::DamagesTheRecordAndEnds);
+    run.ok(&["update", "install", zip.to_str().unwrap(), "--now"]);
+    let run = bed.wait_for_new_app(run);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    assert_eq!(bed.version(), OLD, "the old app is back at the app's path");
+    let status = bed.wait_status(&run, "went_back");
+    assert_eq!(status["failed_versions"], json!([DEV]));
+    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
+    run.quit();
+}
+
+/// Failure: a development build goes in while the owner is using the app, or never goes, or something that isn't this app's build gets in. The owner's rule for dev work: 5 minutes without use, by the app's own idle time, unless `--now`.
+#[test]
+fn a_development_build_waits_for_five_quiet_minutes() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "7"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["update", "dev-builds", "on"]);
+    // Another app's build: the bundle id isn't this app's.
+    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build.noindex/RectoPDF.app");
+    let other = bed.folder.join("other");
+    let tool = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/dev-build.sh");
+    let made = Command::new(tool)
+        .arg("--package")
+        .arg(&built)
+        .arg("--out")
+        .arg(&other)
+        .args(["--version", DEV])
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let (reply, _) = bed
+        .state
+        .json(&["update", "install", other.join(format!("RectoPDF-{DEV}.zip")).to_str().unwrap()]);
+    assert_eq!(reply["error"]["code"], "wrong_app", "{reply}");
+    let zip = bed.dev_build(DEV, Broken::Not);
+    run.ok(&["qa", "note-input", "now"]);
+    let answer = run.ok(&["update", "install", zip.to_str().unwrap()]);
+    let waits = answer["waits_ms"].as_u64().unwrap();
+    assert!(waits > 4 * 60_000 && waits <= 5 * 60_000, "5 minutes, not a release's 30: {answer}");
+    assert_eq!(bed.status(&run)["status"], "build_ready");
+    // Four minutes on, and they're back.
+    run.ok(&["qa", "update-clock", "240000"]);
+    run.ok(&["qa", "note-input", "now"]);
+    run.ok(&["qa", "update-tick", "now"]);
+    assert_eq!(bed.status(&run)["status"], "build_ready");
+    assert!(local::process_counters(run.pid).is_some(), "not while it's in use");
+    // Then five minutes with nobody there.
+    run.ok(&["qa", "update-clock", "560000"]);
+    run.ok(&["qa", "update-tick", "now"]);
+    let run = bed.wait_for_new_app_of(run, DEV);
+    run.settled();
+    assert_eq!(bed.version(), DEV);
+    assert_eq!(run.report()["session"]["tabs"][0]["page"], 6);
     run.quit();
 }
 

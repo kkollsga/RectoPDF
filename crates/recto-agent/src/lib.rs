@@ -616,8 +616,19 @@ pub enum Command {
     UpdateStatus {},
     /// Looks for a new version now, and says what it found.
     UpdateCheck {},
-    /// Starts installing what's on offer, with the app's state carried across.
-    UpdateInstall {},
+    /// Starts installing what's on offer, with the app's state carried across. With a zip, a development build handed over.
+    UpdateInstall {
+        #[serde(default)]
+        zip: Option<PathBuf>,
+        /// A development build goes at once, not after 5 minutes without use.
+        #[serde(default)]
+        now: bool,
+    },
+    /// *Allow development builds*. With a value, sets it.
+    UpdateDevBuilds {
+        #[serde(default)]
+        set: Option<String>,
+    },
     /// The app's settings. With a value, changes it.
     Settings {
         #[serde(default)]
@@ -694,7 +705,8 @@ impl Command {
             Self::SessionCheck {} => "session_check",
             Self::UpdateStatus {} => "update_status",
             Self::UpdateCheck {} => "update_check",
-            Self::UpdateInstall {} => "update_install",
+            Self::UpdateInstall { .. } => "update_install",
+            Self::UpdateDevBuilds { .. } => "update_dev_builds",
             Self::Settings { .. } => "settings",
         }
     }
@@ -723,6 +735,8 @@ impl Command {
             Self::Compare { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
+            // The same for development builds: the switch is what lets a build that isn't a release replace the app.
+            Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
             // Text comes back in the answer, as `copy` gives it. A file written is an export.
             Self::Snapshot { format, out: None, .. } if !extract::snapshot_writes(format) => Access::At(Level::ReadOnly),
             // A command with no row can't run: the table is the list.
@@ -841,6 +855,8 @@ impl Command {
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
+            Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
+            Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),
             Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
             Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
             // Not what's looked for: that's the document's business, as a search's words are.
@@ -867,8 +883,7 @@ impl Command {
             | Self::SessionRestore {}
             | Self::SessionCheck {}
             | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall {} => Value::Null,
+            | Self::UpdateCheck {} => Value::Null,
         }
     }
 }
@@ -1466,7 +1481,9 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Palette { .. } => Err(AgentError::new("palette_needs_app", "The palette lists the app's commands, and this session has no app.", exit::FAILED).then("It works when `recto` is talking to the app.")),
         Command::Find { query, next, previous, close, limit } => find::command(access, &find::Asked { query: query.as_deref(), next: *next, previous: *previous, close: *close, limit: *limit }, events),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
-        Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
+        Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
+            Err(update_needs_app())
+        }
         Command::Budget {} => Ok(json!({
             "tabs": access.with(|s| s.tabs().len()),
             "footprint_bytes": recto_platform::footprint_bytes(),
@@ -2846,7 +2863,8 @@ mod tests {
             Command::SessionCheck {},
             Command::UpdateStatus {},
             Command::UpdateCheck {},
-            Command::UpdateInstall {},
+            Command::UpdateInstall { zip: None, now: false },
+            Command::UpdateDevBuilds { set: None },
             Command::Settings { auto_update: None },
         ]
     }
@@ -2854,7 +2872,18 @@ mod tests {
     /// Failure: an agent below Full can install an update, or turn on what would install one for it, or can't read how things stand at Read-only. The owner's bar: installing needs Full. A session with no app says it's not a matter of level.
     #[test]
     fn installing_needs_full_and_reading_needs_only_read() {
-        assert_eq!(Command::UpdateInstall {}.access(), Access::At(Level::Full));
+        assert_eq!(Command::UpdateInstall { zip: None, now: false }.access(), Access::At(Level::Full));
+        assert_eq!(
+            Command::UpdateInstall {
+                zip: Some("/b/RectoPDF-0.1.0.1.zip".into()),
+                now: true
+            }
+            .access(),
+            Access::At(Level::Full),
+            "a build too: only the owner's switch lets one in below that, in the app"
+        );
+        assert_eq!(Command::UpdateDevBuilds { set: Some("on".into()) }.access(), Access::At(Level::Full));
+        assert_eq!(Command::UpdateDevBuilds { set: None }.access(), Access::At(Level::ReadOnly));
         assert_eq!(
             Command::Settings {
                 auto_update: Some("on".into())
@@ -2876,7 +2905,8 @@ mod tests {
         for command in [
             Command::UpdateStatus {},
             Command::UpdateCheck {},
-            Command::UpdateInstall {},
+            Command::UpdateInstall { zip: None, now: false },
+            Command::UpdateDevBuilds { set: None },
             Command::Settings { auto_update: None },
         ] {
             let error = run(&mut s, Level::Full, &command).unwrap_err();
@@ -2884,7 +2914,7 @@ mod tests {
             assert_ne!(error.exit, exit::PERMISSION);
         }
         assert!(
-            run(&mut s, Level::Control, &Command::UpdateInstall {}).unwrap_err().exit == exit::PERMISSION,
+            run(&mut s, Level::Control, &Command::UpdateInstall { zip: None, now: false }).unwrap_err().exit == exit::PERMISSION,
             "below the level, it's the level that's said"
         );
     }

@@ -76,8 +76,8 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^(clippy) .*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-tests registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
 
@@ -215,6 +215,23 @@ check "a layout off stops the run first" "1 1" "$rc $(ran)"
 check "and the ledger says so" "fail:fmt" "$(last_ledger_field 4)"
 STUB_FAIL="fmt --all --check" STUB_EXIT=1 tools/check.sh --quick > /dev/null 2>&1
 check "the quick check has it too" "1" "$?"
+: > "$CALLS"
+
+# Failure: the check that nothing of this tree's is left registered with Launch Services (owner, 2026-11-11: "We should only ever have one") is skipped by
+# a full run, runs where the app's tests can't have left anything, or fails without saying so.
+fresh_ledger
+commit_code registrations-fail
+out=$(STUB_FAIL="--test registrations" STUB_EXIT=100 full); rc=$?
+check "a stray registration fails the full run" "100" "$rc"
+check "and the ledger names the stage" "fail:registrations" "$(last_ledger_field 4)"
+: > "$CALLS"
+commit_code registrations-pass
+full > /dev/null
+check "it runs, last, in a full run that passes" "registrations" "$(grep -c -- '--test registrations' "$CALLS" | sed 's/^1$/registrations/')"
+check "and the run passes" "pass" "$(last_ledger_field 4)"
+: > "$CALLS"
+tools/check.sh --quick > /dev/null 2>&1
+check "the quick check skips it, as it builds no app" "0" "$(grep -c -- '--test registrations' "$CALLS")"
 : > "$CALLS"
 
 # Failure: a job stopped from outside held against the branch.

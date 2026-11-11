@@ -33,7 +33,7 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
         return Ok(beside);
     }
     for dir in here.ancestors() {
-        let built = dir.join("app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
+        let built = dir.join("app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF");
         if built.is_file() {
             return Ok(built);
         }

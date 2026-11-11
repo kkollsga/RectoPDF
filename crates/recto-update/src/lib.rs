@@ -7,7 +7,8 @@
 //! - [`stage`]: everything slow, done before the app quits: download, checksum, unpack, signature, team and Gatekeeper.
 //! - [`plan`]: what the app hands the installer, and what the installer leaves behind.
 //! - [`install`]: the `recto-updater` helper: waits for the old process, swaps the app in one step, and goes back if the new one doesn't start.
-//! - [`updater`]: all that together, for the app.
+//! - [`updater`]: all that together, for the app, with development builds in [`updater::builds`].
+//! - [`version`]: a release's `X.Y.Z` and a development build's `X.Y.Z.N`, and their order. Pure.
 
 pub mod fetch;
 pub mod install;
@@ -18,6 +19,7 @@ pub mod saved;
 pub mod source;
 pub mod stage;
 pub mod updater;
+pub mod version;
 pub mod zip;
 
 /// The project on GitHub. A release build's one and only source.
@@ -26,6 +28,14 @@ pub const REPO: &str = "https://github.com/kkollsga/RectoPDF";
 pub const TEAM_ID: &str = "6GND8Z2C7Z";
 /// The app's bundle id. A build with another isn't this app.
 pub const BUNDLE_ID: &str = "io.github.kkollsga.RectoPDF";
+/// The renderer helper's identifier when it's signed ad hoc, as every development build's is (`app/render-helper.sh`).
+pub const HELPER_ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
+
+/// The user's own state folder, where the real app keeps `updates.json`: what `recto-control`'s `StatePaths` uses with no override, and a test holds the two to each other. Never a folder a plan or a file names.
+#[must_use]
+pub fn real_state_root() -> Option<std::path::PathBuf> {
+    recto_platform::local::real_home().map(|home| home.join("Library").join("Application Support").join("RectoPDF").join("agent"))
+}
 pub const APP_NAME: &str = "RectoPDF";
 /// The bundle's folder name.
 pub const APP_BUNDLE: &str = "RectoPDF.app";

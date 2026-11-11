@@ -1,5 +1,6 @@
 /target
 /app/build
+/app/build.noindex
 .DS_Store
 tools/sysguard/local.env
 .worktrees/

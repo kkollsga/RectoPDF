@@ -3605,7 +3605,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_status",
         group: GROUP_APP,
         summary: "What version is running, what's on offer, how things stand, and how the last update went. Works while an update is under way. Only in the app.",
-        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, log }`. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`.",
+        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, dev_builds, back_to_release, build_waiting, log }`. `version` is `X.Y.Z.N` on a development build. `build` is `release` for a release and a development build alike, `development` for a local build from `app/build.sh`, and `test` for a test's. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`, `build_ready`.",
         examples: &["recto update status"],
         ..BASE
     },
@@ -3614,7 +3614,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_check",
         group: GROUP_APP,
         access: Access::At(Level::Control),
-        summary: "Looks for a new version now and waits for the answer, by what Check for Updates… does. It sends GitHub an ordinary download request with no document data. A development build checks too, and won't replace itself. Only in the app.",
+        summary: "Looks for a new version now and waits for the answer, by what Check for Updates… does. It sends GitHub an ordinary download request with no document data. A local build (`app/build.sh`, `build: development`) checks too, and won't replace itself. Only in the app.",
         data: "What `update status` gives.",
         examples: &["recto update check"],
         client_wait_s: 30,
@@ -3625,9 +3625,46 @@ pub static TABLE: &[Spec] = &[
         tag: "update_install",
         group: GROUP_APP,
         access: Access::At(Level::Full),
-        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. Only in the app.",
-        data: "`{ started, version, words }`.",
-        examples: &["recto update install"],
+        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way, once it's checked: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. Only in the app.",
+        args: &[
+            Arg {
+                key: "zip",
+                flag: None,
+                kind: Kind::Path,
+                required: false,
+                help: "A development build's zip, `RectoPDF-X.Y.Z.N.zip`. Left out, what's on offer from the releases.",
+            },
+            Arg {
+                key: "now",
+                flag: Some("--now"),
+                kind: Kind::Switch,
+                required: false,
+                help: "A development build goes at once, waiting only for anything in flight, not for 5 minutes without use.",
+            },
+        ],
+        data: "`{ started, version, words }`, and for a build `waits_ms`, until it can go.",
+        examples: &[
+            "recto update install",
+            "recto update install RectoPDF-0.1.0.3.zip",
+            "recto update install RectoPDF-0.1.0.3.zip --now",
+        ],
+        client_wait_s: 120,
+        ..BASE
+    },
+    Spec {
+        name: "update dev-builds",
+        tag: "update_dev_builds",
+        group: GROUP_APP,
+        summary: "Allow development builds, as Settings has it: off unless the owner's turned it on. On, `update install <zip>` takes a development build. Off, the app installs only releases, and on a development build goes back to the latest release by itself, once there is one and the app hasn't been touched for 30 minutes. Setting it needs Full. Only in the app.",
+        args: &[Arg {
+            key: "set",
+            flag: None,
+            kind: Kind::Choice(&["on", "off"]),
+            required: false,
+            help: "`on` or `off`. Left out, says how it is.",
+        }],
+        data: "`{ dev_builds, back_to_release, words }`.",
+        examples: &["recto update dev-builds", "recto update dev-builds on"],
         ..BASE
     },
     Spec {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The Mac's release assets: full-LTO build, signed app, zip, SHA256SUMS, latest.json and the release notes. Everything
-# lands in app/build/release/, and nothing is published.
+# lands in app/build.noindex/release/, and nothing is published.
 #
 #   app/release-zip.sh [--allow-dirty]            A local check: built, run, signed ad hoc, zipped and checked. Not distributable.
 #   app/release-zip.sh --signed [--allow-dirty]   The release on this Mac: all of that, Developer ID signed and notarized.
@@ -64,8 +64,8 @@ TAG="v$VERSION"
 
 # Compiled in: this is what makes it a release, and it can't be turned on or off afterwards.
 export RECTO_RELEASE=1
-APP="$APP_DIR/build/RectoPDF.app"
-OUT="$APP_DIR/build/release"
+APP="$APP_DIR/build.noindex/RectoPDF.app"
+OUT="$APP_DIR/build.noindex/release"
 ZIP="RectoPDF-$VERSION.zip"
 WORK="$(mktemp -d)"
 cleanup() {

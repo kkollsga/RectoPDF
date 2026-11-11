@@ -5,6 +5,7 @@ use crate::plan::{Files, beside_app, new_app_in};
 use crate::process::tool;
 use crate::rules::Latest;
 use crate::source::{Source, Trust};
+use crate::version;
 use crate::zip::{self, ZipError};
 use crate::{APP_BUNDLE, APP_EXECUTABLE, BUNDLE_ID, HELPER};
 use recto_platform::local;
@@ -12,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const CODESIGN: &str = "/usr/bin/codesign";
+/// The renderer helper, inside the app.
+const HELPER_BUNDLE: &str = "Contents/Helpers/RectoRender.app";
 const SPCTL: &str = "/usr/sbin/spctl";
 const PLIST_BUDDY: &str = "/usr/libexec/PlistBuddy";
 
@@ -100,6 +103,8 @@ pub struct Staged {
     pub app: PathBuf,
     /// The signature's hash of what was verified.
     pub cdhash: String,
+    /// The team that signed it, if any did. A development build signed ad hoc has none.
+    pub team: Option<String>,
 }
 
 /// Downloads, checks and unpacks a release beside the app. Comes back with the new app, or with why not, and the running app hasn't noticed. A version already staged and whole isn't downloaded again.
@@ -118,7 +123,8 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
     if std::fs::read_to_string(&marker).is_ok_and(|text| text == wanted) && new_app.is_dir() {
         say("already downloaded");
         let cdhash = verify_app(&new_app, stage.source.trust, version, &own_id)?;
-        return Ok(Staged { app: new_app, cdhash });
+        let team = team_of(&new_app);
+        return Ok(Staged { app: new_app, cdhash, team });
     }
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::remove_dir_all(beside.join("new"));
@@ -153,7 +159,95 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
         let _ = std::fs::remove_dir_all(beside.join("new"));
     })?;
     std::fs::write(&marker, wanted).map_err(|_| StageError::now("not_writable", "the update's folder can't be written"))?;
-    Ok(Staged { app: new_app, cdhash })
+    let team = team_of(&new_app);
+    Ok(Staged { app: new_app, cdhash, team })
+}
+
+/// A development build handed over as a zip on this Mac (`recto update install <zip>`): what [`prepare`] does with a release, but from the file, with no download and no checksum to hold it to. Unpacked by our own reader beside the app, then held to this app's bundle id, its version, and a signature that verifies whole (`codesign --verify --deep --strict`), ad hoc or not. Not to the team or Gatekeeper: owner, 2026-11-11, dev builds never touch the keychain, so they're signed ad hoc, and only a release is notarized. What lets it in is the owner's switch and the request coming from this user (SPEC decision 24). Refused, it leaves nothing staged.
+pub fn prepare_build(zip_file: &Path, version: &str, source: &Source, app: &Path, say: &mut dyn FnMut(&str)) -> Result<Staged, StageError> {
+    let beside = check_place(app)?;
+    let new_app = new_app_in(&beside);
+    let own_id = if source.mode == crate::source::Mode::Test {
+        plist_value(app, "CFBundleIdentifier").ok().flatten().unwrap_or_default()
+    } else {
+        BUNDLE_ID.to_owned()
+    };
+    let _ = std::fs::remove_file(beside.join("staged.json"));
+    let _ = std::fs::remove_dir_all(beside.join("new"));
+    if !std::fs::metadata(zip_file).is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_ZIP_BYTES) {
+        return Err(StageError::lasting("zip_bad", "that isn't a zip of a size an app could be"));
+    }
+    say("unpacking");
+    unpack(zip_file, &beside)?;
+    say("verifying");
+    if !version::is_development(version) {
+        return Err(StageError::lasting("not_a_build", "only a development build, X.Y.Z.N, is installed this way"));
+    }
+    let cdhash = verify_app_as(&new_app, Trust::AnySignature, version, &own_id, Notarized::NotAsked)
+        .and_then(|cdhash| {
+            // Signed ad hoc, which anyone can do: the identifiers are what say it's this app's.
+            if has_identifiers(&new_app, &own_id, false) {
+                Ok(cdhash)
+            } else {
+                Err(StageError::lasting("wrong_app", "the build's signature doesn't name this app"))
+            }
+        })
+        .inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(beside.join("new"));
+        })?;
+    let team = team_of(&new_app);
+    Ok(Staged { app: new_app, cdhash, team })
+}
+
+/// That an app's signature names this identifier, and its renderer helper's the helper's own, as a development build's designated requirements do. An ad-hoc signature is anyone's, so the identifier is what says whose app it is. A helper that isn't there passes only where `helper_required` doesn't hold it to one, as a test's stand-in has none.
+#[must_use]
+pub fn has_identifiers(app: &Path, identifier: &str, helper_required: bool) -> bool {
+    let names = |path: &Path, id: &str| {
+        let requirement = format!("=identifier \"{id}\"");
+        path.to_str()
+            .is_some_and(|path| tool(CODESIGN, &["--verify", "--strict", "-R", &requirement, path], QUICK_LIMIT, 64 * 1024).is_ok_and(|(fine, _, _)| fine))
+    };
+    if !names(app, identifier) {
+        return false;
+    }
+    let helper = app.join(HELPER_BUNDLE);
+    if helper.is_dir() {
+        names(&helper, crate::HELPER_ADHOC_ID) || names(&helper, &format!("{}.Render", crate::BUNDLE_ID))
+    } else {
+        !helper_required
+    }
+}
+
+/// Whether a kept copy may be gone back to by itself, with nobody there to say. Where releases are held to the team: whole, signed by it, or else a development build signed ad hoc only with *Allow development builds* on and this app's identifiers. So a copy that's no release and no build the owner allowed is never put in place by itself.
+#[must_use]
+pub fn may_go_back_to(app: &Path, team: Option<&str>, builds_allowed: bool, identifier: &str, helper_required: bool) -> bool {
+    // A test's build, whose releases aren't held to a team, isn't held here either, and costs a launch that's going back nothing: a check of seconds there is time for a version that ends at once to end first.
+    let Some(team) = team else { return true };
+    let Some(path) = app.to_str() else { return false };
+    let verifies = |extra: &[&str]| {
+        let mut args = vec!["--verify", "--deep", "--strict"];
+        args.extend_from_slice(extra);
+        args.push(path);
+        tool(CODESIGN, &args, TOOL_LIMIT, 1024 * 1024).is_ok_and(|(fine, _, _)| fine)
+    };
+    if !verifies(&[]) {
+        return false;
+    }
+    let requirement = format!("={}", developer_id_requirement(team));
+    verifies(&["-R", &requirement]) || (builds_allowed && has_identifiers(app, identifier, helper_required))
+}
+
+/// The team that signed an app, as `codesign` says it: nothing for one signed ad hoc.
+#[must_use]
+pub fn team_of(app: &Path) -> Option<String> {
+    let path = app.to_str()?;
+    let (_, _, ran) = tool(CODESIGN, &["-d", "-vvv", path], QUICK_LIMIT, 64 * 1024).ok()?;
+    String::from_utf8_lossy(&ran.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("TeamIdentifier="))
+        .map(str::trim)
+        .filter(|team| !team.is_empty() && *team != "not set" && team.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .map(str::to_owned)
 }
 
 /// Unpacks into a private folder, by our own reader, and moves it into place once it's whole. A bad zip is the release's fault. A disk that's full or a read that fails isn't, and it might go better later.
@@ -203,10 +297,18 @@ fn plist_value(app: &Path, key: &str) -> Result<Option<String>, StageError> {
     })
 }
 
-/// The version an app says it is.
+/// The bundle id an app says it has.
+#[must_use]
+pub fn bundle_id(app: &Path) -> Option<String> {
+    plist_value(app, "CFBundleIdentifier").ok().flatten()
+}
+
+/// The version an app says it is: its release, or its development build's version when it carries one that builds on that release ([`crate::version::running`]).
 #[must_use]
 pub fn app_version(app: &Path) -> Option<String> {
-    plist_value(app, "CFBundleShortVersionString").ok().flatten()
+    let short = plist_value(app, "CFBundleShortVersionString").ok().flatten()?;
+    let development = plist_value(app, crate::version::DEV_VERSION_KEY).ok().flatten();
+    Some(crate::version::running(&short, development.as_deref()))
 }
 
 /// The Developer ID rule: an Apple-issued certificate, of this team.
@@ -231,8 +333,22 @@ fn cdhash_of(app: &str) -> Result<String, StageError> {
         .ok_or_else(|| StageError::lasting("signature", "the app's signature doesn't verify"))
 }
 
+/// How far a download is held to the release's rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Notarized {
+    /// A release: Gatekeeper has to take it.
+    Required,
+    /// A development build handed over on this Mac: signed by the team, and never notarized, so Gatekeeper isn't asked. It doesn't come from a download, so it carries no quarantine for Gatekeeper to look at either.
+    NotAsked,
+}
+
 /// That this is this app, this version, signed, by this team, and that Gatekeeper takes it, and what its signature's hash is. An app that isn't never gets as far as the running app quitting. A tool that takes too long says nothing about the release.
 pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> Result<String, StageError> {
+    verify_app_as(app, trust, version, bundle_id, Notarized::Required)
+}
+
+/// [`verify_app`], saying whether Gatekeeper's asked.
+pub fn verify_app_as(app: &Path, trust: Trust, version: &str, bundle_id: &str, notarized: Notarized) -> Result<String, StageError> {
     let path = app.to_str().ok_or_else(|| StageError::lasting("zip_bad", "the app's path can't be read"))?;
     if !std::fs::symlink_metadata(app).is_ok_and(|meta| meta.is_dir()) || !std::fs::symlink_metadata(app.join(APP_EXECUTABLE)).is_ok_and(|meta| meta.is_file())
     {
@@ -241,7 +357,8 @@ pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> R
     if plist_value(app, "CFBundleIdentifier")?.as_deref() != Some(bundle_id) {
         return Err(StageError::lasting("wrong_app", "the release holds some other app"));
     }
-    if plist_value(app, "CFBundleShortVersionString")?.as_deref() != Some(version) {
+    plist_value(app, "CFBundleShortVersionString")?;
+    if app_version(app).as_deref() != Some(version) {
         return Err(StageError::lasting("wrong_version", "the release holds another version than it says"));
     }
     if matches!(ask_tool(CODESIGN, &["--verify", "--deep", "--strict", path], TOOL_LIMIT)?, Answer::No) {
@@ -258,7 +375,7 @@ pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> R
                 format!("the app isn't signed by RectoPDF's developer (team {team})"),
             ));
         }
-        if matches!(ask_tool(SPCTL, &["--assess", "--type", "execute", path], TOOL_LIMIT)?, Answer::No) {
+        if notarized == Notarized::Required && matches!(ask_tool(SPCTL, &["--assess", "--type", "execute", path], TOOL_LIMIT)?, Answer::No) {
             return Err(StageError::lasting("gatekeeper", "macOS's Gatekeeper doesn't accept the app"));
         }
     }
@@ -269,7 +386,7 @@ pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> R
 #[must_use]
 pub fn still_what_was_verified(app: &Path, cdhash: &str, version: &str, team: Option<&str>) -> bool {
     let Some(path) = app.to_str() else { return false };
-    if !plist_value(app, "CFBundleShortVersionString").is_ok_and(|said| said.as_deref() == Some(version)) {
+    if app_version(app).as_deref() != Some(version) {
         return false;
     }
     let requirement = team.map(|team| format!("={}", developer_id_requirement(team)));

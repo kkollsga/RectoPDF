@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The real worker. Failing here means `tools/pdfium.sh` hasn't run: a plain failure, because a skipped renderer test looks like a pass. `RECTO_TEST_WORKER` names another build of
-/// it, such as the one in a built app's sandboxed helper, to run this whole suite against: `RECTO_TEST_WORKER=app/build/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service`.
+/// it, such as the one in a built app's sandboxed helper, to run this whole suite against: `RECTO_TEST_WORKER=app/build.noindex/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service`.
 pub fn real_config() -> ServiceConfig {
     let worker = std::env::var_os("RECTO_TEST_WORKER").unwrap_or_else(|| env!("CARGO_BIN_EXE_recto-render-service").into());
     let mut config = ServiceConfig::for_worker(worker.into()).unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()));

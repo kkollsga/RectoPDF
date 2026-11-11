@@ -1,6 +1,6 @@
 //! What the app hands the installer, and what the installer leaves for the next launch. Files in the state folder's `update` folder, all private, each written whole.
 
-use crate::rules::parse_version;
+use crate::version::parse as parse_version;
 use recto_platform::local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -109,6 +109,15 @@ pub struct Plan {
     /// A test holding this to the real rule. A real build's installer holds to it whatever this says.
     #[serde(default)]
     pub team_required: bool,
+    /// Any other version, older included: a development build handed over, or the way back from one to the release. Never the same version. Otherwise only a newer one.
+    #[serde(default)]
+    pub any_version: bool,
+    /// A development build handed over on this Mac, which the installer holds to an intact signature and not to the team's, as a build is signed ad hoc (owner, 2026-11-11: dev builds never touch the keychain). Only while *Allow development builds* is on, which the installer reads again for itself.
+    #[serde(default)]
+    pub development_build: bool,
+    /// That build was signed by the team after all, for what's said when it arrives.
+    #[serde(default)]
+    pub team_signed: bool,
     /// The one process to wait for.
     pub pid: u32,
     pub app: PathBuf,
@@ -312,6 +321,9 @@ mod tests {
             id: "7-1".into(),
             cdhash: "a".repeat(40),
             team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
             from: "0.1.0".into(),
             to: "0.2.0".into(),
             pid: 7,

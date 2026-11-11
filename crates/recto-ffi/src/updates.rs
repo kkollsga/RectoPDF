@@ -53,6 +53,8 @@ pub struct UpdateAlert {
 
 /// The switch's id, in the window, in QA and nowhere else.
 pub(crate) const AUTO_UPDATE_ROW: &str = "update.automatic";
+/// *Allow development builds*.
+pub(crate) const DEV_BUILDS_ROW: &str = "update.dev_builds";
 
 /// How the updater reaches the app. Holds only a way back to it: it's made first, as the updater's a part of what it reaches.
 pub(crate) struct Hooks {
@@ -142,6 +144,15 @@ impl Host for Hooks {
     /// Asked on the thread that reads the state, before it does: so it waits for the lock as long as reading would, as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't a second copy.
     fn keeps_the_record(&self) -> bool {
         self.inner().is_some_and(|inner| inner.saver.store.wait_for_lock())
+    }
+
+    /// A build goes in only while agent access is Full, as it was when an agent handed it over: read from the level's file now.
+    fn may_take_a_build(&self) -> bool {
+        let Some(inner) = self.inner() else { return false };
+        inner
+            .paths
+            .as_ref()
+            .is_some_and(|paths| recto_control::levels::current(paths) == recto_agent::Level::Full)
     }
 
     fn can_draw(&self) -> bool {
@@ -271,7 +282,19 @@ impl Inner {
                 self.updates.check_here(Asked::ByHand);
                 Ok(self.updates.report())
             }
-            Command::UpdateInstall {} => match self.updates.install(Asked::ByHand) {
+            Command::UpdateInstall { zip: Some(zip), now } => self.install_build(zip, *now),
+            Command::UpdateDevBuilds { set } => {
+                if let Some(word) = set {
+                    let on = match word.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        _ => return Err(AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)),
+                    };
+                    self.set_dev_builds(on);
+                }
+                Ok(self.dev_builds_answer())
+            }
+            Command::UpdateInstall { zip: None, .. } => match self.updates.install(Asked::ByHand) {
                 Ok(version) => Ok(
                     json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
                 ),
@@ -284,12 +307,7 @@ impl Inner {
                 }
                 Err(InstallRefused::Underway) => Err(AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY)
                     .then("`recto update status` says how it's going.")),
-                Err(InstallRefused::AnotherCopy) => Err(AgentError::new(
-                    "another_copy",
-                    "Another copy of RectoPDF is keeping the state, and it's the one that can update.",
-                    exit::FAILED,
-                )
-                .then("Quit this copy, and use that one.")),
+                Err(refused) => Err(refused_words(&refused)),
             },
             Command::Settings { auto_update } => {
                 if let Some(word) = auto_update {
@@ -306,11 +324,47 @@ impl Inner {
         }
     }
 
+    /// `recto update install <zip>`: a development build handed over. Checked here, on the command's own thread, and then it waits for its moment.
+    fn install_build(&self, zip: &Path, now: bool) -> Result<Value, AgentError> {
+        let version = self.updates.install_build(zip, now).map_err(|refused| refused_words(&refused))?;
+        let report = self.updates.report();
+        let waits_ms = report["install_look_in_ms"].as_u64();
+        let team = report["build_team"].as_str().map(str::to_owned);
+        let signed = match &team {
+            Some(team) => format!("It's signed by RectoPDF's developer (team {team})."),
+            None => "It's signed on this Mac, not by RectoPDF's developer, so macOS may ask again for access to folders.".to_owned(),
+        };
+        let words = if now || waits_ms.is_none() {
+            format!("Installing development build {version} now. RectoPDF quits and reopens as it was. {signed} `recto update status` says how it's going.")
+        } else {
+            format!(
+                "Development build {version} is checked, and goes in once RectoPDF hasn't been used for 5 minutes, then reopens as it was. Choose Update to {version}… or add `--now` to go at once. {signed} `recto update status` says how it's going."
+            )
+        };
+        Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
+    }
+
+    fn set_dev_builds(&self, on: bool) {
+        self.updates.choose_dev_builds(on);
+        self.core.push(CoreCall::Reconcile);
+    }
+
+    fn dev_builds_answer(&self) -> Value {
+        let on = self.updates.dev_builds_on();
+        let back = self.updates.report()["back_to_release"] == true;
+        let words = match (on, back) {
+            (true, _) => "Allow development builds: on. `recto update install <zip>` installs one, once RectoPDF hasn't been used for 5 minutes.".to_owned(),
+            (false, true) => "Allow development builds: off. This is a development build, so the latest release goes in by itself once there is one and RectoPDF hasn't been touched for 30 minutes.".to_owned(),
+            (false, false) => "Allow development builds: off. RectoPDF installs only releases.".to_owned(),
+        };
+        json!({ "dev_builds": on, "back_to_release": back, "words": words })
+    }
+
     fn settings_answer(&self) -> Value {
         let on = self.updates.switch_on();
         let words = if self.updates.source().mode == Mode::Development {
             format!(
-                "Update automatically: {}. A development build checks only when asked, and doesn't replace itself.",
+                "Update automatically: {}. A local build checks only when asked, and doesn't replace itself.",
                 if on { "on" } else { "off" }
             )
         } else {
@@ -323,6 +377,15 @@ impl Inner {
     fn set_auto_update(&self, on: bool) {
         self.updates.choose_switch(on);
         self.core.push(CoreCall::Reconcile);
+    }
+
+    /// On the way out: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process.
+    pub(crate) fn forget_a_quiet_copy(&self) {
+        if let Some(app) = self.updates.app()
+            && forgets_on_quit(self.qa.is_some(), &app)
+        {
+            recto_platform::registry::forget_soon(&app);
+        }
     }
 
     pub(crate) fn update_report(&self) -> Value {
@@ -346,33 +409,50 @@ impl Inner {
     }
 
     pub(crate) fn has_setting(&self, id: &str) -> bool {
-        id == AUTO_UPDATE_ROW
+        id == AUTO_UPDATE_ROW || id == DEV_BUILDS_ROW
     }
 
     pub(crate) fn settings_model(&self) -> SettingsModel {
         let development = self.updates.source().mode == Mode::Development;
         let hint = if development {
-            "A development build checks only when you ask, and doesn't replace itself."
+            "A local build checks only when you ask, and doesn't replace itself."
         } else {
             "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it."
         };
+        let mut rows = vec![
+                SettingRow {
+                    id: AUTO_UPDATE_ROW.to_owned(),
+                    title: "Update automatically".to_owned(),
+                    hint: hint.to_owned(),
+                    on: self.updates.switch_on(),
+                    enabled: !development,
+                },
+                SettingRow {
+                    id: DEV_BUILDS_ROW.to_owned(),
+                    title: "Allow development builds".to_owned(),
+                    hint: "Lets a development build replace RectoPDF, once you haven't used it for 5 minutes. Off, only releases are installed, and a development build goes back to the latest release.".to_owned(),
+                    on: self.updates.dev_builds_on(),
+                    enabled: !development,
+                },
+        ];
+        // Rust's rule: only on a development build, or while it's on.
+        rows.retain(|row| row.id != DEV_BUILDS_ROW || self.updates.shows_dev_builds_switch());
         SettingsModel {
             title: "Settings".to_owned(),
-            rows: vec![SettingRow {
-                id: AUTO_UPDATE_ROW.to_owned(),
-                title: "Update automatically".to_owned(),
-                hint: hint.to_owned(),
-                on: self.updates.switch_on(),
-                enabled: !development,
-            }],
+            rows,
             status: self.updates.status_line(),
         }
     }
 
     pub(crate) fn setting_chosen(&self, id: &str, on: bool) {
         // Past a hand-off's last look, what's done here wouldn't come back.
-        if id == AUTO_UPDATE_ROW && !self.core.frozen.load(Ordering::SeqCst) {
-            self.set_auto_update(on);
+        if self.core.frozen.load(Ordering::SeqCst) {
+            return;
+        }
+        match id {
+            AUTO_UPDATE_ROW => self.set_auto_update(on),
+            DEV_BUILDS_ROW => self.set_dev_builds(on),
+            _ => {}
         }
     }
 
@@ -391,10 +471,10 @@ impl Inner {
         self.set_frozen(false);
     }
 
-    pub(crate) fn note_update_facts(&self, version: String, bundle_path: String, system_version: String) {
+    pub(crate) fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
         // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
         *lock(&self.update_facts) = Some(Facts {
-            version,
+            version: recto_update::version::running(&version, dev_version.as_deref()),
             app: PathBuf::from(bundle_path),
             system: system_version,
         });
@@ -456,6 +536,51 @@ pub(crate) fn draws_a_page(folder: &Path) -> bool {
     })();
     let _ = std::fs::remove_file(&file);
     drew == Some(true)
+}
+
+/// The one install, which nothing forgets.
+const THE_ONE_INSTALL: &str = "/Applications/RectoPDF.app";
+
+/// Whether a copy forgets itself with Launch Services when it quits: a quiet run's, and never the one install.
+pub(crate) fn forgets_on_quit(quiet: bool, app: &Path) -> bool {
+    quiet && app != Path::new(THE_ONE_INSTALL)
+}
+
+/// What a refusal to install comes to, for an agent: a code that doesn't change, our words, and what to do next.
+fn refused_words(refused: &InstallRefused) -> AgentError {
+    match refused {
+        InstallRefused::NotInThisBuild => AgentError::new("development_build", "A local build doesn't replace itself.", exit::FAILED)
+            .then("`recto update check` still says whether there's a new version. Install the app with `tools/dev-build.sh` to take builds."),
+        InstallRefused::NothingOnOffer => {
+            AgentError::new("nothing_on_offer", "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one.")
+        }
+        InstallRefused::Underway => {
+            AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY).then("`recto update status` says how it's going.")
+        }
+        InstallRefused::AnotherCopy => AgentError::new(
+            "another_copy",
+            "Another copy of RectoPDF is keeping the state, and it's the one that can update.",
+            exit::FAILED,
+        )
+        .then("Quit this copy, and use that one."),
+        InstallRefused::DevBuildsOff => AgentError::new("dev_builds_off", "Development builds are off, so only releases are installed.", exit::FAILED)
+            .then("The owner turns on Settings › Allow development builds."),
+        InstallRefused::NotABuild => {
+            AgentError::new("not_a_build", "That isn't a RectoPDF-X.Y.Z.N.zip.", exit::USAGE).then("`tools/dev-build.sh` makes one and prints its path.")
+        }
+        InstallRefused::SameVersion => {
+            AgentError::new("same_version", "That's the version that's running.", exit::FAILED).then("`tools/dev-build.sh` numbers the next one.")
+        }
+        InstallRefused::TeamSignedCopy => AgentError::new(
+            "release_copy",
+            "This copy is a release signed by RectoPDF's developer, and never takes a development build, which is signed ad hoc.",
+            exit::FAILED,
+        )
+        .then("The coordinator puts the first one in with `tools/dev-build.sh --first-install --replace-release`, which keeps this copy aside."),
+        InstallRefused::Refused { code, why } => {
+            AgentError::new(code, format!("That build wasn't installed: {why}."), exit::FAILED).then("`recto update status` has the log's path.")
+        }
+    }
 }
 
 /// Whether a launch comes up behind what the user's doing: an update arriving, with the app not having been frontmost. Any other launch was asked for by someone, and comes forward as usual.
@@ -591,6 +716,14 @@ mod tests {
         let table = text.rfind("xref\n0 5").unwrap();
         assert!(text.contains(&format!("startxref\n{table}\n")));
         assert!(text.contains("1 0 0 rg 0 0 64 64 re f"));
+    }
+
+    /// Failure: the owner's own app forgets itself with Launch Services at a quit, and drops out of Open With, or a quiet run's copy stays registered.
+    #[test]
+    fn only_a_quiet_copy_forgets_itself() {
+        assert!(forgets_on_quit(true, Path::new("/w/tree/app/build.noindex/RectoPDF.app")));
+        assert!(!forgets_on_quit(false, Path::new("/w/tree/app/build.noindex/RectoPDF.app")), "a normal run");
+        assert!(!forgets_on_quit(true, Path::new(THE_ONE_INSTALL)), "never the one install");
     }
 
     /// Failure: a time that's passed arms a timer that fires at once and again and again, or a time far off comes out as anything but itself. At rest it's one timer a day.

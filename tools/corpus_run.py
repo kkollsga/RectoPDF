@@ -95,7 +95,7 @@ def run(recto, env, args, timeout=600):
 def main():
     folder, out_path = sys.argv[1], sys.argv[2]
     recto = sys.argv[sys.argv.index("--recto") + 1] if "--recto" in sys.argv else os.path.join(ROOT, "target/release/recto")
-    app = os.path.join(ROOT, "app/build/RectoPDF.app/Contents/MacOS/RectoPDF")
+    app = os.path.join(ROOT, "app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF")
     work = tempfile.mkdtemp(prefix="recto-corpus-")
     # The quiet run ends with this script, however it ends.
     env = dict(os.environ, RECTO_STATE_DIR=os.path.join(work, "state"), RECTO_QA_OWNER_PID=str(os.getpid()))

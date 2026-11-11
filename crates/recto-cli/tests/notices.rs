@@ -126,7 +126,7 @@ fn built_bundle() -> Option<PathBuf> {
     if std::env::var_os("RECTO_SKIP_APP").is_some() {
         return None;
     }
-    let bundle = repo().join("app/build/RectoPDF.app/Contents");
+    let bundle = repo().join("app/build.noindex/RectoPDF.app/Contents");
     if !bundle.join("MacOS/RectoPDF").is_file() {
         assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
         eprintln!("skipped: the app isn't built");
