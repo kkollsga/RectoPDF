@@ -1250,7 +1250,8 @@ struct EngineHooks {
 
 impl EngineEvents for EngineHooks {
     fn ops_ready(&self) {
-        self.listener.ops_ready();
+        let listener = Arc::clone(&self.listener);
+        recto_platform::slow::later(recto_platform::slow::Seam::Draw, move || listener.ops_ready());
     }
 
     fn note_changed(&self) {
@@ -1863,6 +1864,7 @@ impl AppCore {
     pub fn start(args: Vec<String>, listener: Arc<dyn AppListener>) -> Result<Arc<Self>, StartError> {
         let refused = |message: String| StartError::Refused { message };
         let args = parse_args(&args).map_err(refused)?;
+        recto_platform::slow::arm(args.qa).map_err(refused)?;
         let paths = state_for(args.qa).map_err(refused)?;
         let server = match Server::bind(&paths) {
             Ok(server) => Some(server),
@@ -3076,9 +3078,7 @@ impl AppCore {
             {
                 std::process::exit(0);
             }
-            if let Some(delay) = qa::restore_delay(inner.qa.is_some()) {
-                std::thread::sleep(delay);
-            }
+            recto_platform::slow::pause(recto_platform::slow::Seam::State);
             let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
             let loaded = updates::fall_back_if_unreadable(&inner, loaded);
             updates::note_tabs_read(&loaded);
@@ -3644,6 +3644,7 @@ fn start_serving(inner: &Arc<Inner>) {
         }
         let Some(server) = server else { return };
         drop(inner);
+        recto_platform::slow::pause(recto_platform::slow::Seam::Socket);
         let _ = server.run(served, Limits::default());
         ending.session_ended();
     });
@@ -3726,16 +3727,12 @@ fn session_thread(inner: &Arc<Inner>) {
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
                 reconcile(inner, &mut synced, &mut events);
                 if first_time {
-                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it. Nothing outside a quiet run.
-                    match qa::remake_delay(inner.qa.is_some()).filter(|_| inner.shown_without_state.load(Ordering::SeqCst)) {
-                        Some(delay) => {
-                            let listener = Arc::clone(&inner.listener);
-                            let _ = std::thread::Builder::new().name("recto-qa-remake".into()).stack_size(64 * 1024).spawn(move || {
-                                std::thread::sleep(delay);
-                                listener.restore_ready();
-                            });
-                        }
-                        None => inner.listener.restore_ready(),
+                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
+                    let listener = Arc::clone(&inner.listener);
+                    if inner.shown_without_state.load(Ordering::SeqCst) {
+                        recto_platform::slow::later(recto_platform::slow::Seam::Remake, move || listener.restore_ready());
+                    } else {
+                        listener.restore_ready();
                     }
                 }
                 continue;

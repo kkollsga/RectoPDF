@@ -158,6 +158,7 @@ impl Shared {
             self.tell(Event::new("contents_generating", json!({ "file": job.key.short() })));
             let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.runner.run(&job, &stop)))
                 .unwrap_or_else(|_| (Outcome::Failed("helper_stopped".into()), Value::Null));
+            recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
             let cancelled = stop.load(Ordering::SeqCst);
             // Kept on disk where its key can be believed. Held here for this session where it can't be, or where it couldn't be written.
             let held = match &outcome {

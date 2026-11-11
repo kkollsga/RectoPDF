@@ -15,32 +15,16 @@ use std::time::{Duration, Instant};
 /// How long a quiet run lasts at most, if it isn't told.
 pub(crate) const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
 
-/// A test's slow disk: how long a quiet run waits before it reads the state, from `RECTO_QA_RESTORE_DELAY_MS`, so a restore can come after the window's gone up without it. Nothing outside a quiet run.
-pub(crate) fn restore_delay(quiet: bool) -> Option<Duration> {
-    if !quiet {
-        return None;
-    }
-    let ms: u64 = std::env::var("RECTO_QA_RESTORE_DELAY_MS").ok()?.parse().ok()?;
-    Some(Duration::from_millis(ms.min(30_000)))
-}
-
-/// A test's slow window: how long after the state comes in late the window's made again from it, from `RECTO_QA_REMAKE_DELAY_MS`. Nothing outside a quiet run.
-pub(crate) fn remake_delay(quiet: bool) -> Option<Duration> {
-    if !quiet {
-        return None;
-    }
-    let ms: u64 = std::env::var("RECTO_QA_REMAKE_DELAY_MS").ok()?.parse().ok()?;
-    Some(Duration::from_millis(ms.min(10_000)))
-}
-
-/// What a quiet run's relaunch by an update carries over of a test's slow disk, so the new version reads its state as late.
-pub(crate) fn relaunch_env() -> Vec<(String, String)> {
-    std::env::var("RECTO_QA_RESTORE_DELAY_MS")
-        .ok()
-        .filter(|ms| ms.parse::<u64>().is_ok())
-        .map(|ms| ("RECTO_QA_RESTORE_DELAY_MS".to_owned(), ms))
-        .into_iter()
-        .collect()
+/// What a test's slow mode has done in this run, for `qa state`: each seam's delay, how often it's been waited at and for how long in all. Null when it's off.
+fn slow_report() -> Value {
+    recto_platform::slow::report().map_or(Value::Null, |report| {
+        let seams: serde_json::Map<String, Value> = report
+            .seams
+            .iter()
+            .map(|seam| (seam.seam.to_owned(), json!({ "ms": seam.ms, "times": seam.times, "waited_ms": seam.waited_ms })))
+            .collect();
+        json!({ "seams": seams, "jitter": report.jitter, "ui_refusals": report.ui_refusals })
+    })
 }
 
 /// The process this quiet run ends with, if it was told one: what a relaunch by an update passes on.
@@ -526,6 +510,7 @@ impl QaBridge {
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
             "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.printing.busy(), "notice": inner.printing.notice(), "pid": std::process::id() })),
             "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tool.is_on(), "drawing": inner.tool.is_drawing(), "busy": inner.tool.busy(), "notice": inner.tool.notice().map(|notice| notice.text) })),
+            "slow": slow_report(),
         }))
     }
 

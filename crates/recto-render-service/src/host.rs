@@ -1693,6 +1693,7 @@ impl DocRenderer {
                         worker.jobs_done += 1;
                     }
                     self.after_job(page);
+                    recto_platform::slow::pause(recto_platform::slow::Seam::Worker);
                     return Ok(value);
                 }
                 Err(Stop::Refused(code)) => {

@@ -136,7 +136,7 @@ impl Host for Hooks {
         }
         let mut env = vec![("RECTO_STATE_DIR".to_owned(), root)];
         if inner.qa.is_some() {
-            env.extend(crate::qa::relaunch_env());
+            env.extend(recto_platform::slow::relaunch_env());
         }
         TestLaunch { args, env, direct: false }
     }

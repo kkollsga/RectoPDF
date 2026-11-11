@@ -54,6 +54,9 @@ mod icon;
 #[path = "app/accessibility.rs"]
 mod accessibility;
 
+#[path = "app/slow.rs"]
+mod slow;
+
 /// Failure: a QA run takes the screen, the focus or the Dock from the person using this Mac, or shows anything on a display. Every claim a quiet run makes, as the app itself reports it.
 #[test]
 fn a_quiet_run_stays_out_of_the_way() {
