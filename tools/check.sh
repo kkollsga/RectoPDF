@@ -274,8 +274,12 @@ run() {
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
     # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
     # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
-    stage slow
-    RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$SLOW_TESTS"
+    # Not on CI, which is the slow machine already: the profile on top of it doubled up, and two tests waited past their bounds there for slowness
+    # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
+    if [ -z "${CI:-}" ]; then
+      stage slow
+      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$SLOW_TESTS"
+    fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     stage registrations
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations

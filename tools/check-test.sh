@@ -9,7 +9,7 @@ X=$(mktemp -d "${TMPDIR:-/tmp}/check-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock" HEAVY_TESTING=1 MIN_FREE=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
-unset CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE
+unset CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE CI
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -397,6 +397,19 @@ git checkout -q main
 # The real output of an empty ledger.
 fresh_ledger
 check "--runs with nothing recorded says so" "No full runs recorded yet." "$(tools/check.sh --runs)"
+
+# Failure (CI run 43080381613): the slow stage ran on CI, the slow machine already, and its profile on top of CI's own slowness took two tests past their
+# bounds. With CI set, every other stage runs and the slow one doesn't.
+git checkout -qb on-ci
+commit_code ci-run
+: > "$CALLS"
+rm -f "$CALLS.slow"
+CI=true full >/dev/null; rc=$?
+check "on CI a full run passes" "0" "$rc"
+check "with nothing run slow" "0" "$( [ -f "$CALLS.slow" ] && wc -l < "$CALLS.slow" | tr -d ' ' || echo 0)"
+has "and the app tests still run" "-p recto-cli --test app --test restore --test compare --test long_session" "$(cat "$CALLS")"
+: > "$CALLS"
+rm -f "$CALLS.slow"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
