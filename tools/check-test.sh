@@ -766,5 +766,48 @@ got=$(printf 'app-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an
   APP_BINARIES='app restore' PROCESS_BINARIES='recto-cli::socket' times_summarise "$X/life" | grep -E '^(tier|slow)' | awk -F'\t' '{ printf "%s%s=%s ", $1, $2, $3 }')
 check "tests are put in their tier, the slow stage's apart" "tier1=1 tier2=1 tier3=1 tier4=1 slow9.0=9.0 " "$(printf '%s' "$got" | sed 's/slow1=/slow9.0=/')"
 
+# Failure: a part of a full run does the other part's work, or is remembered as a pass of everything, or CI's jobs overlap in what they run.
+branch_with parts
+echo p >> crates/alpha/src/lib.rs && git add . && git commit -qm parts-1
+check "a named part that doesn't exist is refused" "2" "$(CHECK_PART=bogus CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; echo $?)"
+check "and a part with --quick" "2" "$(CHECK_PART=core tools/check.sh --quick > /dev/null 2>&1; echo $?)"
+: > "$CALLS"
+CHECK_PART=core full > "$X/part.out"
+check "core has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
+: > "$CALLS"
+CI=true CHECK_PART=core CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1
+check "but on CI the tools' own tests run every time, in core only" "1 1" "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"
+check "the gate runs once in core" "1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS")"
+: > "$CALLS"
+CI=true CHECK_PART=window CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1
+check "and not in an app part" "0" "$(grep -c '^check-test$' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=core full > /dev/null
+check "core runs the gate and the workspace" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace\|--no-tests=pass -p\|--no-tests=pass' "$CALLS")"
+check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=window full > /dev/null
+check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
+check "with the notices, and no gate or workspace tests" "1 0 0" "$(grep -c -- '--test notices' "$CALLS") $(grep -c '^clippy' "$CALLS") $(grep -c -- '--workspace' "$CALLS")"
+check "and no tools' tests" "0" "$(grep -c '^check-test$' "$CALLS")"
+check "and no registrations" "0" "$(grep -c -- '--test registrations' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=lifecycle full > /dev/null
+check "lifecycle runs the lifecycle tier and the registrations" "1 1 0" "$(grep -c 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- '--test registrations' "$CALLS") $(grep -c 'window_test' "$CALLS")"
+check "and not the notices" "0" "$(grep -c -- '--test notices' "$CALLS")"
+check "no part is a ledger line, a pass, or a stamp for the push guard" "0 0 0" "$(runs_in_ledger) $([ -f "$PASSES" ] && wc -l < "$PASSES" | tr -d ' ' || echo 0) $([ -f "$CHECKED" ] && wc -l < "$CHECKED" | tr -d ' ' || echo 0)"
+: > "$CALLS"
+CHECK_PART=window full > /dev/null
+check "a part runs again on the same code: it is never remembered" "true" "$([ "$(wc -l < "$CALLS" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
+: > "$CALLS"
+# The three parts are what a run of everything is: the same commands, except that the app tests are split by tier (the window part's filter and the
+# lifecycle part's, which together are every test in the binaries) and the slow stage is split the same way.
+full > /dev/null
+all_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
+: > "$CALLS"
+for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; done
+parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
+check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
+check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session -j 4$' "$CALLS")"
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

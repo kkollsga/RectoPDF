@@ -10,6 +10,7 @@
 #   tools/check.sh --full --why "what this run decides"    A branch gets two full runs. A third needs a stated reason, which goes in the ledger.
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
+#   CHECK_PART=core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
 #
 # A pass counts for identical code: --full on a clean tree whose code has already passed says so, lets the push guard accept this commit and runs
 # nothing. Documents don't count as code, as in tools/hooks/pre-push. CHECK_AGAIN=1 runs it for real anyway. A dirty tree always runs and is never recorded.
@@ -22,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,15p' "$0"; exit 2; }
+usage() { sed -n '2,16p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
@@ -43,6 +44,16 @@ while [ $# -gt 0 ]; do
 done
 mode="${mode:---quick}"
 [ -z "$why_given" ] || [ "$mode" = --full ] || usage
+# A named part of a full run (CI runs the parts as jobs of their own): core is the gate, the workspace tests and the tools' tests, window and lifecycle the
+# app's two tiers (tools/check-scope.sh). The parts together are everything. A part is never remembered or counted as a run.
+part=${CHECK_PART:-all}
+case "$part" in
+  all) ;;
+  core | window | lifecycle)
+    [ "$mode" = --full ] || { echo "check: CHECK_PART=$part only goes with --full." >&2; exit 2; }
+    ;;
+  *) echo "check: CHECK_PART is core, window or lifecycle, not '$part'." >&2; exit 2 ;;
+esac
 # One line, because the ledger is one line per run.
 why=$(printf '%s' "$why" | tr '\t\n' '  ' | sed -E 's/^ +| +$//g' | cut -c1-200)
 if [ -n "$why_given" ] && [ -z "$why" ]; then
@@ -204,7 +215,7 @@ case "$mode" in
     names_or_stop
     select_scope --full
     echo "$scope_report"
-    if [ "${CHECK_AGAIN:-}" != 1 ] && tree_is_clean; then
+    if [ "${CHECK_AGAIN:-}" != 1 ] && [ "$part" = all ] && tree_is_clean; then
       # A pass of everything counts for any scope; a selective one only for the same selection (a different change, or main having moved, may need other tests).
       known=$(awk -F'\t' -v fp="$(code_fingerprint)" -v sc="$scope_key" '$1 == fp && ($4 == "" || $4 == "all" || $4 == sc) { line = $0 } END { print line }' "$passes" 2>/dev/null || true)
       if [ -n "$known" ]; then
@@ -223,7 +234,7 @@ case "$mode" in
     counted=$(counted_runs)
     count=0
     [ -z "$counted" ] || count=$(printf '%s\n' "$counted" | wc -l | tr -d ' ')
-    if [ "$count" -ge "$BUDGET" ] && [ -z "$why" ]; then
+    if [ "$part" = all ] && [ "$count" -ge "$BUDGET" ] && [ -z "$why" ]; then
       {
         echo "check: not started. $branch has had $count full runs $(scope_words), and the budget is $BUDGET: one for a hand-back, one after a review's fixes."
         printf '%s\n' "$counted"
@@ -260,6 +271,14 @@ case "$mode" in
       elif [ "$scope_lifecycle" = 1 ]; then app_mode=lifecycle
       fi
     fi
+    # A named part leaves out the other part's work: core has no app tests, and an app part has no workspace tests and no gate.
+    case "$part" in
+      core) app_mode=none ;;
+      window | lifecycle)
+        tests_first="" other_mode=none
+        case "$app_mode" in both | "$part") app_mode=$part ;; *) app_mode=none ;; esac
+        ;;
+    esac
     # The slow stage's tests (SLOW_TESTS) that are in a tier this run covers.
     slow_filter=$SLOW_TESTS
     case "$app_mode" in
@@ -329,7 +348,7 @@ run() {
   cargo build --locked -p recto-render-service -p recto-indexer
   cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --bin recto-headings
   stage headings-tests
-  cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
+  [ "$part" = window ] || [ "$part" = lifecycle ] || cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     stage changed-tests
@@ -350,7 +369,7 @@ run() {
     # The bundle just built, as it ships: its notices are this tree's, and nothing in it has an extended attribute, which a zip carries as a file the
     # signature doesn't cover. They ran only with RECTO_SKIP_APP above, so no run held a built app to them (icon worker, 2026-11-11). Seconds.
     stage app-bundle
-    RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
+    [ "$part" = lifecycle ] || RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
@@ -387,7 +406,7 @@ tools/ratchet.sh
 echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
 # The tools' own tests, when a change touched tools/ (a full run only): the tool is held by the tool and not by someone running its test by hand. Each
 # builds nothing and runs on a throwaway repository and lock, so nothing is queued for them.
-if [ "$mode" = --full ] && [ "$scope_tools" = 1 ]; then
+if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && { [ "$scope_tools" = 1 ] || [ -n "${CI:-}" ]; }; then
   tools_started=$(date +%s)
   for tool_test in tools/ratchet-test.sh tools/check-test.sh; do
     [ -f "$tool_test" ] || continue
@@ -410,13 +429,15 @@ if ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-heading
 fi
 export -f gate
 gate_status=0
-HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh$mode gate" || gate_status=$?
+if [ "$part" != window ] && [ "$part" != lifecycle ]; then
+  HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh$mode gate" || gate_status=$?
+fi
 if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
 export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree
-export check_mark mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
+export check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
@@ -430,7 +451,9 @@ case "$status" in
   *) result="fail:$(tail -1 "$check_mark")" ;;
 esac
 # The tests' durations are kept for every run that started, a part too (tools/check-times.sh, `check.sh --slow`). Not for one stopped from outside.
-[ "$result" = stopped ] || ( times_record "$started_commit" "$([ "$scope_key" = all ] && echo all || echo selective)" all "$result" ) || true
+[ "$result" = stopped ] || ( times_record "$started_commit" "$([ "$scope_key" = all ] && echo all || echo selective)" "$part" "$result" ) || true
+# A part is half a run: it is never remembered, stamped or counted.
+[ "$part" = all ] || exit "$status"
 # Only a commit that passed, with nothing uncommitted from start to end, counts for the push guard. A commit of documents only made while it ran (the
 # coordinator writing up while a check runs) doesn't undo that: the code tested is still the started commit's, and that's the commit stamped.
 ledger_commit="$started_commit+dirty"

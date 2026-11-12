@@ -13,7 +13,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  check:
+  # What a full check runs, in three jobs at once instead of one after the other (a run took 12 to 15 minutes in one job, 2026-11-12). The one definition of what runs
+  # is still tools/check.sh: CHECK_PART names the part (tools/check-scope.sh has the tiers), and together the parts are everything `tools/check.sh --full` runs
+  # with CI set. core: the compile gate, the workspace tests and the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh). window: the app, built, and
+  # the tests of drawing, AppKit, the bridge and restoring state. lifecycle: the app again, and the tests of updates, Launch Services, long sessions, a thousand
+  # tabs and what is left registered. Each builds the app itself: one build job to hand it over would make the other two wait for it (87 s) and then download it.
+  # The ratchet (tools/ratchet.sh) runs first in every part.
+  parts:
+    name: check (${{ matrix.part }})
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, window, lifecycle]
     runs-on: macos-26
     timeout-minutes: 30
     env:
@@ -22,6 +33,7 @@ jobs:
       # Every failure in one round trip, not only the first.
       NEXTEST_PROFILE: ci
       CARGO_TERM_COLOR: always
+      CHECK_PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,15 +53,18 @@ jobs:
         with:
           path: target/pdfium
           key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
+      # One cache a part: three jobs saving under one key would keep only the first's. The plain `check-` prefix is the old single job's, which a part falls back to.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: check-
-      - name: Full check
+          key: check-${{ matrix.part }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            check-${{ matrix.part }}-
+            check-
+      - name: Full check, this part
         run: tools/check.sh --full
         env:
           # A failing test's quiet-run logs are copied here before its state folder goes (crates/recto-cli/tests/common/mod.rs).
@@ -68,10 +83,31 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: check-logs-${{ github.run_attempt }}
+          name: check-logs-${{ matrix.part }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/recto-test-logs
           retention-days: 7
           if-no-files-found: ignore
+      # Per-test durations of this part (tools/check-times.sh), for a process review: `tools/check.sh --slow` reads the same files on a Mac.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-times-${{ matrix.part }}-${{ github.run_attempt }}
+          path: .git/recto-test-times
+          retention-days: 14
+          if-no-files-found: ignore
+  # The one name that stands for the whole check, as the single job was called: the three parts pass together or this fails. Nothing else to run, so a cheap runner.
+  check:
+    needs: parts
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All three parts passed
+        env:
+          RESULT: ${{ needs.parts.result }}
+        run: |
+          echo "check (core, window, lifecycle): $RESULT"
+          [ "$RESULT" = success ]
   # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
   # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
   # change in either between versions fails here, not on a user's Mac as a renderer that won't start.
