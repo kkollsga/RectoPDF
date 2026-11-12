@@ -1,0 +1,195 @@
+recto: control RectoPDF from the command line.
+
+Start with `recto status`. `recto help <command>` explains one. Every command takes `--json`. Flags take `--flag value` or `--flag=value`. `recto --version` gives the version.
+
+Start here:
+  status               Whether the session is running, and what access agents have.
+  help                 This list, or everything about one command.
+  version              This program's version, and the API version it speaks.
+
+Read a document:
+  tabs                 The open tabs, with each one's page, length and unsaved edits.
+  where                Where one tab is: its page, its length, and whether it has unsaved edits.
+  facts                A document's facts: pages, size, version, and whether it has contents.
+  contents             A document's table of contents, a piece at a time.
+  search               Finds words across a document.
+  index                Asks for the tab's search index to be built, in the background, if it isn't there, and says where it stands.
+  index status         Where the tab's search index stands.
+  index clear          Throws away the tab's search index and generated contents, or with `--all` every document's.
+  text                 One page's text, normalised for reading and search, with a flag for text that looks hidden.
+  select               What a click, a drag or a stretch of characters takes on a page: the text, in reading order, and where it shows.
+  copy                 The text ⌘C would copy for the same pick, as far as one copy goes: 16 MiB, 100,000 pages or 2 minutes.
+  render               Draws a page to a new PNG file, sharp or not at all.
+  export svg           Writes a page, or a box on it, to a new SVG file, whole or not at all.
+  images               Where a page's images are, numbered in the order the page draws them, with each one's own size and whether it's a JPEG.
+  image                One of a page's images to a new file, as itself, whole or not at all.
+  snapshot             A box on a page, as the snapshot tool takes it: a PNG or JPG drawn sharp at the scale asked for, an SVG cut to the box as `export svg --rect` writes it, or its text, by a copy's rules.
+  print                Prints pages to a new PDF, through the same drawing the app's File > Print uses: the real pages, drawn at print resolution, never the screen's, with no paper colour, and unsaved turns as the edits have them.
+  signatures           What the file says about signatures.
+  sidebar              The sidebar's rows, as the app would draw them.
+  links                A page's links and where each goes: a page of this document, a web or email address, or refused, as a script, a program or a file on the Mac always is.
+
+Open and move around:
+  open                 Opens a PDF as the active tab, or goes to its tab if it's already open.
+  goto                 Goes to a page.
+  goto label           Goes to the page the file calls this, such as `iv` or `A-3`, as the go-to field reads it: a label first, then a plain number no page is called.
+  back                 Goes back to where the tab was before its last jump, as ⌘[ does: a link, a contents entry or `goto`.
+  forward              Goes forward again after `back`, as ⌘] does.
+  follow               Follows a link within the document, as a click does, so `recto back` comes back.
+  recent               Files opened lately, newest first, as File > Open Recent lists them, with the tab each is open in and its whole path, which `recto open` can open.
+  recent clear         Empties the list of files opened lately, as Open Recent > Clear Menu does.
+  close                Closes a tab.
+  tap                  Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.
+  compare              Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same.
+  view                 How the app shows pages: the paper, the sidebar, the agent icon, the tab showing's layout and the zoom.
+  palette              ⌘K's command palette in the app: what a few letters find among its commands and open tabs, best first, worded and ranked as the palette shows them.
+  find                 The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does.
+
+Change pages, then save:
+  page rotate          Turns pages clockwise.
+  page move            Moves pages, so the first of them ends up at `--to`.
+  page delete          Removes pages from the edited document.
+  page insert          Adds every page of another PDF.
+  edits                A tab's unsaved edits, as runs of pages.
+  discard              Throws away a tab's edits, undone ones included.
+  undo                 Reverses the last page edit.
+  redo                 Repeats the last undone page edit.
+  clear-history        Clears a tab's edit history: every step undo or redo could take, and its file on disk.
+  save                 Saves a tab's edits into its file.
+  save-as              Saves a tab's document as a new file, and the tab goes over to it.
+
+Wait instead of polling:
+  wait tab-open        Blocks until a tab matching the selector is open.
+  wait tab-closed      Blocks until no tab matches the selector.
+  wait page-drawn      Blocks until a page has been drawn (by `render`, or by `text`'s check), or failed to be.
+  wait contents-generated Waits for the tab's generated contents to be made, asking for them if nobody has.
+  wait indexing-done   Waits for the tab's search index to be finished, asking for it to be built if nobody has.
+  watch                Prints events from now on, one per line.
+  watch stop           Ends every watch running on this session, each with its last line as usual.
+
+Access and history:
+  permission show      What access agents have now, and what each level allows.
+  permission request   Asks the user for more access.
+  log                  What agents have done: time, command, level and outcome, oldest first.
+  sign                 Signing isn't open to agents at any level.
+  permission set       For the user: sets what agents may do.
+
+The session:
+  serve                Runs the session, on a socket only this user can reach, with no network listener.
+  stop                 Ends the session.
+  local                For tests: runs one command in a throwaway session in this process, with one file open.
+  session              For QA scripts: a throwaway session in this process, with one JSON command per line on stdin and one reply per line.
+  session show         What the state record holds, and what's become of each tab's file: moved, changed, missing or needing its password again.
+  session sleep        Puts a tab to sleep now, as five minutes left alone would: its sleep file's written, its journal's compacted, and its contents, edits, worker and tiles leave memory.
+  session save         Writes the state record now and reads it back, returning an error if it doesn't match.
+  session restore      Puts the session back as the state record has it, with every tab cold but the active one.
+  session check        Whether this is a safe moment to hand off to a new version: no sheet open, no command or file read under way.
+
+The app itself:
+  update status        What version is running, what's on offer, how things stand, and how the last update went.
+  update check         Looks for a new version now and waits for the answer, by what Check for Updates… does.
+  update install       Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens.
+  update dev-builds    Allow development builds, as Settings has it: off unless the owner's turned it on.
+  settings             The app's settings, as the Settings window shows them.
+
+Skill files:
+  skill show           Prints the generated skill.
+  skill install        For the user: writes SKILL.md and REFERENCE.md into their agent's files, after a word typed back at a real terminal.
+
+Measuring:
+  budget               The session's own footprint, tabs and handles right now.
+  budget render        Measures a worker on a tab's document: idle, pages, peak and retirement.
+  budget viewport      Measures a reader's window: first view, one scroll step, one zoom step.
+  budget tabs          Opens one PDF as many tabs, through links in a temp folder, and reports memory and handles.
+  budget index         Builds one PDF's index in the system's temp folder and reports what that costs, and search times with and without it.
+
+Testing the app:
+  qa start             Starts the app in a quiet run on this state folder, which must be set with RECTO_STATE_DIR: off every screen, with no Dock icon and never active.
+  qa run               Runs a QA script against the running app, and prints PASS or FAIL for it and each line that fails.
+  qa budget            Measures the app against the budgets on a release build, starting and ending its own quiet runs: cold start, one document, scrolling, idle, a closed window, many tabs.
+  qa compare-budget    Measures comparison view against the budgets, starting and ending its own quiet runs: memory at rest and after scrolling, idle wake-ups, the UI thread's step in a sweep, and starts from the record with the comparison in it.
+  qa select-budget     Measures selecting on one file, starting and ending its own quiet run: a first double-click, a long drag over several pages, select all, and a copy of all of it, with the footprint before, during and after, and the UI thread's worst step.
+  qa state             What the app is showing, as it says itself: the window, the sidebar, the page, the tiles, memory and stalls.
+  qa shot              Writes a PNG of the window's content, drawn inside the app at 2x.
+  qa wait-settled      Blocks until everything visible is drawn and on its layers, or marked as it is, and nothing in the window is still moving: the sidebar contents' fade and slide, their drift to the place, a name about to show in full, a zoom about to go sharp.
+  qa appearance        Light or dark, for this app alone.
+  qa scroll            Scrolls by this many points, by what a scroll does.
+  qa zoom              Sets the zoom, by what the end of a pinch does.
+  qa hover             Shows a sidebar row as hovered, by what the pointer entering it does, with no pointer.
+  qa pane-scroll       Scrolls one pane of a comparison by what a scroll calls: the reader's own scroll, so it's the pane read and synced scroll follows it.
+  qa pane-context-menu Right-clicks a pane of a comparison, by what AppKit calls for a right-click, and chooses an item, as a person would: the pane is the one read, and the item acts on it.
+  qa pane-focus        Makes a pane of a comparison the one read, by what AppKit calls for a right-click on it, with the menu made and not shown.
+  qa compare-click     ⌘-clicks a sidebar row, by what that click calls, with no pointer or key: a tab goes side by side with what's showing, or leaves.
+  qa click-row         Clicks a sidebar row, by what a click calls, with no pointer.
+  qa contents-scroll   Scrolls the sidebar's contents so a row is showing, as the reader's own scroll does, with no pointer.
+  qa contents-pointer  Says the pointer has come into the sidebar's contents or left them, as the real one does, with no pointer.
+  qa corner-pointer    Says the pointer has come over a corner's mark or left it, as the corner's tracking area does, with no pointer: `top-left` the window's buttons and the sidebar's, `top-right` the zoom level, `lower-right` the page number.
+  qa reduce-motion     Acts as though the system's Reduce Motion setting were on or off, for this app alone.
+  qa accessibility     Does what the system does to the app's own views for VoiceOver and its display settings, by the same methods, with nothing posted: Increase Contrast on or off for this app alone, a scroll thumb's increment or decrement, a contents row's fold action, or an arrow key with the sidebar's list holding the keyboard.
+  qa reveal            Shows what hovering over a sidebar row reveals, by what the pointer resting there calls, with no pointer.
+  qa resize            Resizes the window, in points.
+  qa window            Closes the window or opens it again, by what the red button and the Dock icon do.
+  qa entry-points      Checks what AppKit reaches the app by, which the other verbs go round: that each owner answers the selector AppKit sends, and for those that can be, that going by it works.
+  qa scroller-style    Uses classic or overlay scrollers, as a Mac with a mouse connected or without one does.
+  qa menu              Chooses an item of the menu bar, through the menu item itself.
+  qa button            Clicks one of the window's own buttons, through the button itself: `sidebar` is the one beside the window's controls that shows and hides the sidebar, and `zoom` the zoom level beside it.
+  qa zoom-type         Types a zoom level into the field the zoom level opens, and presses Return, through the field's own action.
+  qa context-menu      Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All.
+  qa key-action        Does Undo or Redo as its key or menu item does with the window key: given to the first in the window's own chain that answers it, if that says it can be chosen.
+  qa password          Types a password into the sheet a protected PDF asks with, and presses Open, through the sheet's own ending.
+  qa page-type         Types into the go-to field the page number opens, and presses Return, through the field's own action: a page number, or what the document calls a page, such as `iv`.
+  qa page-escape       Presses Escape in the go-to field, by the method AppKit calls for it: the field closes and the page stays as it was.
+  qa swipe             Swipes on the page, by what the system's swipe calls, with its sideways amount: as in Safari, a positive one goes back and a negative one forward.
+  qa zoom-escape       Presses Escape in the zoom level's field, by the method AppKit calls for it: the field closes and the zoom stays as it was.
+  qa panel             Clicks the sidebar's panel button, or one of the panel's own, through the button itself.
+  qa mouse-down        Presses the mouse on a page, through what a real press calls, from the window's coordinates, at whatever the zoom is.
+  qa mouse-drag        Drags to a place, by what a real drag calls.
+  qa print-to-pdf      Prints the tab showing to a PDF through File > Print's own path, the pages Rust prepares handed to the system's printing, with no panel shown: on paper the first page's size, with no margins, so it lays page for page over the source.
+  qa mouse-up          Lets the mouse go, by what a real release calls.
+  qa pointer           Moves the pointer to a place, by what a real move calls.
+  qa copied            What the app's last copy put on the clipboard: its text, and every type on it in order, with each one's size and SHA-256.
+  qa paste             Asks for one type from the clipboard as another app's paste would, so a type the app only promised, as a snapshot's SVG, is made now.
+  qa services          Asks what the Services menu asks: whether the app has text to send, and writes it to a clipboard of this run's own.
+  qa notice-button     Clicks the button on the notice by the page, through the button itself: "Copy anyway", "Print anyway" or a print's "Stop", whatever Rust gave it.
+  qa stall             Blocks the app's UI thread on purpose, to show the hang watchdog works.
+  qa sweep             Scrolls steadily at a speed for a time, by what a scroll does, and measures the UI thread and memory meanwhile.
+  qa full-screen       Says the window went into full screen or came out of it, by what AppKit tells the app.
+  qa focus             Gives the keyboard to the page, the sidebar or Find, by what a click does.
+  qa frontmost         Says the app is the active one or not, by what AppKit tells it.
+  qa minimise          Says the window went into the Dock or came out of it, by what AppKit tells the app.
+  qa hide              Says the app was hidden (⌘H) or shown again, by what AppKit tells it.
+  qa sidebar-width     Sets the sidebar's width, by what dragging its edge does.
+  qa find              Opens or closes Find in the sidebar, by what ⌘F and Escape do.
+  qa find-query        Sets what Find has found for, leaving what's in the field as it is, as a record from before a restart does.
+  qa find-draft        Sets what's in Find's field without finding it, as text typed and not run that a record brings back.
+  qa find-type         Types into Find's field, by what a change in the field calls: it's found at once, the last query stopping.
+  qa find-key          Presses a key in Find's field, by what the field calls for it: Return goes to the next hit, ⇧Return to the one before, Escape closes Find.
+  qa find-click        Clicks a row of Find's list, by what a click calls: a hit's row goes to it and selects it on the page.
+  qa palette-type      Types into ⌘K's palette, by what a change in its field calls.
+  qa palette-key       Presses a key in ⌘K's palette, by what its field calls for it: ↑ and ↓ move the selection, Return runs it, Escape closes the palette.
+  qa edit-mode         Goes into edit mode or out.
+  qa view-rotation     Turns the active tab's view by quarter turns, as the state record carries it: every page is drawn turned on screen, and nothing about the file changes.
+  qa sheet-answer      Answers the sheet over the window, as its button does: the close prompt's `first` is Save, `second` Cancel and `third` Don't Save; a save problem's `first` is OK and `second` Save As; a link's `first` is Open, which a quiet run notes in `app.links.address_opened` and opens nothing, and `second` Cancel; `cancel` closes Save As's sheet.
+  qa save-as           What Save As's sheet does when it's answered with a new file's path: the window's save, off its thread, the tab going over to the new file.
+  qa save-from         A quiet run's test of what happens around a save's writing, with a file the caller has written in place of the save's own writer: keeps the pages undo needs, notes what's coming, puts the file in place of the active tab's, and confirms.
+  qa owner-edit        Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.
+  qa note-input        Says the user just touched the app, by what the event monitor calls.
+  qa open-file         Opens a file by the route a drop or the menu takes, which reads it off the session thread.
+  qa hold-reads        Holds files being read for opening where they are until it's told otherwise, as a slow disk would, for what's waiting on them to be seen.
+  qa hand-off-quit     Asks to quit for an update, by what the updater calls.
+  qa sheet             Says a sheet or panel opened or closed over the window, by what opening one does.
+  qa update-tick       Does what the update timer does when it goes off, by the same call, with no waiting for it.
+  qa update-clock      Moves the updater's clock on, in a test run with its own update server and nowhere else, so the once-a-day and 30-minute rules can be tested with no waiting.
+  qa settings          Opens or closes the Settings window, off every screen, or clicks one of its switches, or its privacy link, through the control itself.
+  qa shot-settings     Writes a PNG of the Settings window, drawn inside the app at 2x.
+  qa shot-menus        Writes a PNG of every menu of the menu bar side by side, each followed by any submenu of its items, such as File > Open Recent, drawn as `qa shot-menu` draws one.
+  qa shot-menu         Writes a PNG of a menu's real items, drawn inside the app at 2x in the menu's place.
+  qa quit              Quits the app, by what the Quit menu item does.
+  qa handoff           Hands off as an update does: flushes, reads back, and quits with no prompt.
+  qa dormant-after     How many seconds left alone makes a tab go dormant, in place of five minutes.
+  qa hold-drawing      Holds all drawing until it's told otherwise, so a tab's first frame stays to be looked at: `on` or `off`.
+  qa sleep-write-gap   How many seconds a tab that's only moving about waits for its next sleep file, in place of five minutes.
+  qa live-budget       How many MiB the documents off screen may hold, in place of 256.
+  qa memory-pressure   What the system saying memory's short calls: `warning` or `critical`.
+
+Exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 ambiguous, 5 permission denied, 6 not running, 7 timed out, 8 protected, 10 busy.

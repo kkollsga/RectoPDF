@@ -61,7 +61,7 @@ fn opened_and_activated_carry_the_name_on_both_paths() {
     assert_eq!(app, [event::tab_activated(&session, b)]);
     assert_eq!(app[0].to_json()["untrusted"]["name"], "beta");
     // A close says it and the tab that took its place, with its name.
-    let events = events_of(&mut session, Command::Close { tab: format!("#{}", b.0) });
+    let events = events_of(&mut session, Command::from(crate::commands::tabs::Close { tab: format!("#{}", b.0) }));
     assert_eq!(events, [Event::TabClosed { tab: b }, event::tab_activated(&session, a)]);
 }
 
@@ -148,11 +148,11 @@ fn page_changed_is_the_real_page_and_nothing_for_a_protected_document() {
     let (mut session, a, b) = two_tabs();
     let events = events_of(
         &mut session,
-        Command::Goto {
+        Command::from(crate::commands::linking::Goto {
             tab: format!("#{}", a.0),
             page: Some(10),
             label: None,
-        },
+        }),
     );
     assert_eq!(events, [Event::PageChanged { tab: a, page: Some(10) }]);
     assert_eq!(event::page_now(&session, a), events[0], "the app's jump says the same");

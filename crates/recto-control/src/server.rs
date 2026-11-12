@@ -9,6 +9,7 @@ use crate::host::{Host, unsaved_refusal};
 use crate::levels;
 use crate::log::{self, ActivityLog};
 use crate::state::StatePaths;
+use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session::Stop, sync::Wait, sync::Watch};
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
     AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed,
@@ -568,7 +569,7 @@ impl<H: Host> Loop<H> {
         if self.conns[index].overflow
             && !matches!(
                 command,
-                Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Stop {}
+                Command::Start(Start::Status(_)) | Command::Rights(Rights::LevelChanged(_) | Rights::PermissionShow(_)) | Command::Session(Session::Stop(_))
             )
         {
             self.answer(
@@ -583,14 +584,14 @@ impl<H: Host> Loop<H> {
         if self.stop_request.is_some()
             && !matches!(
                 command,
-                Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Log { .. }
+                Command::Start(Start::Status(_)) | Command::Rights(Rights::LevelChanged(_) | Rights::PermissionShow(_) | Rights::Log(_))
             )
         {
             self.answer(index, tag, &Err(stopping_now()));
             return;
         }
         match command {
-            Command::Stop {} => {
+            Command::Session(Session::Stop(_)) => {
                 self.conns[index].state = State::Busy;
                 let conn = self.conns[index].id;
                 self.stop_request = Some(StopRequest {
@@ -607,36 +608,35 @@ impl<H: Host> Loop<H> {
                     }
                 }
             }
-            Command::Status {} => {
+            Command::Start(Start::Status(_)) => {
                 let data = self.status(level);
                 self.log.record(tag, level, "ok", &Value::Null);
                 self.answer(index, tag, &Ok(data));
             }
-            Command::LevelChanged {} => self.answer(index, tag, &Ok(json!({ "level": level.name() }))),
-            Command::PermissionShow {} => {
+            Command::Rights(Rights::LevelChanged(_)) => self.answer(index, tag, &Ok(json!({ "level": level.name() }))),
+            Command::Rights(Rights::PermissionShow(_)) => {
                 let data = levels::show(&self.paths, self.pending);
                 self.log.record(tag, level, "ok", &Value::Null);
                 self.answer(index, tag, &Ok(data));
             }
-            Command::PermissionRequest { level: wanted, timeout_ms } => self.permission_request(index, level, wanted, timeout_ms),
-            Command::Wait { tab, .. } if tab.len() > MAX_SELECTOR_BYTES => {
+            Command::Rights(Rights::PermissionRequest(asked)) => self.permission_request(index, level, asked.level, asked.timeout_ms),
+            Command::Waits(Waits::Wait(Wait { tab, .. })) if tab.len() > MAX_SELECTOR_BYTES => {
                 self.answer(index, tag, &Err(AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND)));
             }
-            Command::Wait { .. } | Command::Watch { .. } if self.subscribers() >= self.limits.max_subscribers => {
+            Command::Waits(Waits::Wait(_) | Waits::Watch(_)) if self.subscribers() >= self.limits.max_subscribers => {
                 self.log.record(tag, level, "busy", &Value::Null);
                 self.answer(index, tag, &Err(too_many_waiting()));
             }
-            Command::Wait {
-                condition,
-                tab,
-                page,
-                timeout_ms,
-            } => {
-                let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
-                self.log.record(tag, level, "started", &json!({ "condition": format!("{condition:?}") }));
+            Command::Waits(Waits::Wait(wait)) => {
+                let deadline = Instant::now() + Duration::from_millis(wait.timeout_ms.min(MAX_WAIT_MS));
+                self.log.record(tag, level, "started", &json!({ "condition": format!("{:?}", wait.condition) }));
                 let generation = self.next_generation();
                 self.conns[index].state = State::Waiting {
-                    what: WaitFor::Condition { condition, tab, page },
+                    what: WaitFor::Condition {
+                        condition: wait.condition,
+                        tab: wait.tab,
+                        page: wait.page,
+                    },
                     tag,
                     deadline,
                     generation,
@@ -645,8 +645,8 @@ impl<H: Host> Loop<H> {
                 };
                 self.look(index);
             }
-            Command::Watch { events, timeout_ms, count } => self.watch(index, level, events, timeout_ms, count),
-            Command::WatchStop {} => {
+            Command::Waits(Waits::Watch(Watch { events, timeout_ms, count })) => self.watch(index, level, events, timeout_ms, count),
+            Command::Waits(Waits::WatchStop(_)) => {
                 let watching: Vec<(usize, u64)> = self
                     .conns
                     .iter()
@@ -663,7 +663,7 @@ impl<H: Host> Loop<H> {
                 self.log.record(tag, level, "ok", &json!({ "stopped": stopped }));
                 self.answer(index, tag, &Ok(json!({ "stopped": stopped })));
             }
-            Command::Log { last } => {
+            Command::Rights(Rights::Log(Log { last })) => {
                 self.log.flush();
                 let data = log::recent(&self.paths, last);
                 self.log.record(tag, level, "ok", &Value::Null);
@@ -1205,7 +1205,7 @@ impl<H: Host> Loop<H> {
         if self.running == 0 && !queued_commands {
             self.queue.push_front(Job::Command {
                 conn: request.conn,
-                command: Command::Stop {},
+                command: Command::from(Stop {}),
             });
             self.stop_request = Some(StopRequest { checking: true, ..request });
         } else if Instant::now() >= request.deadline {
@@ -1452,7 +1452,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                 if !allowed(level, command.access()) {
                     return Err(refusal(table::display_name(tag), level, command.access()));
                 }
-                if matches!(command, Command::Stop {}) {
+                if matches!(command, Command::Session(Session::Stop(_))) {
                     if let Some(refusal) = host.stop_refusal() {
                         return Err(refusal);
                     }
@@ -1468,7 +1468,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             .unwrap_or_else(|_| Err(internal()));
             let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");
             let details = recto_agent::with_acted_tab(command.log_details(), acted, &result, &command);
-            let stop = matches!(command, Command::Stop {}) && result.is_ok();
+            let stop = matches!(command, Command::Session(Session::Stop(_))) && result.is_ok();
             let mut line = reply(tag, &result).to_string();
             line.push('\n');
             // Build this here, off the socket's thread: a page's text can be large.

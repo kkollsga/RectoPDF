@@ -436,11 +436,11 @@ mod tests {
             run_command(
                 &mut session,
                 Level::Control,
-                &Command::PageInsert {
+                &Command::from(crate::commands::editing::PageInsert {
                     tab: "active".into(),
                     path: one.0.clone(),
                     at: 1,
-                },
+                }),
             )
             .unwrap();
         }
