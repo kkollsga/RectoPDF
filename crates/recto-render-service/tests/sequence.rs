@@ -431,25 +431,8 @@ fn a_region_goes_down_the_same_sequence() {
     );
 }
 
-/// Failure: a heavy worker that left by itself keeps the slot, so no other page can ever have it.
-#[test]
-fn a_heavy_worker_gone_idle_gives_the_slot_back() {
-    let slot = HeavySlot::new();
-    let quick = Policy {
-        idle_exit: Duration::from_millis(30),
-        idle_grace: Duration::from_millis(30),
-        ..policy()
-    };
-    let (mut doc, _file) = doc_with("fits_heavy", quick, &slot);
-    done(doc.render_tile(&request(0), &surface()));
-    assert!(slot.is_taken());
-    // Nobody touches the document, so this is the process going that frees the slot.
-    common::wait_until("the slot to free", || !slot.is_taken());
-    assert!(!doc.has_worker());
-}
-
 /// Failure: a worker counts as idle from the moment it's started, so one slower to say hello than its idle rule is killed while it starts, and the page fails as
-/// "couldn't be started". On a loaded CI runner a 60 ms rule did that to `a_heavy_worker_gone_idle_gives_the_slot_back`. In the app a heavy worker's rule is 8 s, under
+/// "couldn't be started". On a loaded CI runner a 60 ms rule did that to `a_heavy_worker_gone_idle_gives_the_slot_back`, since folded into `a_heavy_worker_lets_go_sooner_than_a_normal_one`. In the app a heavy worker's rule is 8 s, under
 /// the 10 s it may take to start. Starting isn't being idle: only `start_timeout` decides how long a start may take.
 #[test]
 fn a_worker_slow_to_start_isnt_killed_as_idle() {
@@ -567,8 +550,9 @@ fn an_export_waits_for_the_slot_then_draws_sharp() {
 #[test]
 fn an_idle_heavy_worker_lets_a_waiting_export_through_with_nobody_touching_it() {
     let slot = HeavySlot::new();
+    // A heavy worker's own idle time, which is what ends it: long enough for the export to be waiting first, and short of the default's 3 s.
     let quick = Policy {
-        idle_exit: Duration::from_millis(200),
+        heavy_idle_exit: Duration::from_secs(1),
         idle_grace: Duration::from_millis(50),
         ..policy()
     };
@@ -838,8 +822,9 @@ fn a_document_has_a_cap_on_kills() {
     assert_eq!(doc.page_characters(1, false, false).unwrap_err(), RenderFailure::DocumentStopped);
 }
 
-/// Failure: a heavy worker keeps its gigabyte and the slot for the normal idle time, so a page you've stopped looking at holds up everything else for half a minute. A normal idle time of an hour
-/// here means only the heavy worker's own shorter one can free the slot.
+/// Failure: a heavy worker keeps its gigabyte and the slot for the normal idle time, so a page you've stopped looking at holds up everything else for half a minute; or one that left by
+/// itself keeps the slot, so no other page can ever have it. A normal idle time of an hour here means only the heavy worker's own shorter one can free the slot, and nobody touches the
+/// document, so it's the process going that frees it.
 #[test]
 fn a_heavy_worker_lets_go_sooner_than_a_normal_one() {
     let slot = HeavySlot::new();
@@ -853,6 +838,7 @@ fn a_heavy_worker_lets_go_sooner_than_a_normal_one() {
     done(doc.render_tile(&request(0), &surface()));
     assert!(slot.is_taken());
     common::wait_until("the slot to free", || !slot.is_taken());
+    assert!(!doc.has_worker());
 }
 
 /// Failure: a job cancelled during a step goes on to the next: takes the slot and starts a heavy worker for a tile nobody wants.
