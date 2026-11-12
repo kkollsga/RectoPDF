@@ -108,6 +108,11 @@ branch=$(git symbolic-ref --short -q HEAD || echo detached)
 # (tools/push-main.sh --known, at most 7 days; PLAN R0.7e): merges went on over a red main four times, and one red went unseen (2026-11-12). The pass
 # is still remembered, so once CI is green or the red is marked, the same code stamps without running again. gh missing, signed out or offline is a
 # warning, never a wait: push-main.sh bounds every call.
+# Every run that builds or tests ends with this, on any branch: while main's CI is over its time budget, each agent is told so, sternly, as the last thing
+# it reads (owner, 2026-11-12: "It should be a stern warning so the agents knows it's something they need to take seriously and look at"). It reads a
+# local file and asks GitHub nothing; within the budget it says nothing.
+ci_budget_warning() { [ ! -x tools/push-main.sh ] || tools/push-main.sh --budget || true; }
+
 main_ci_allows_stamp() {
   [ "$branch" = main ] && [ -x tools/push-main.sh ] || return 0
   local said rc=0
@@ -462,7 +467,7 @@ run() {
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed"' EXIT
+trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed"; ci_budget_warning' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
 ratchet_started=$(date +%s)
 tools/ratchet.sh

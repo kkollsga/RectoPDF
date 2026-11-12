@@ -5,12 +5,13 @@
 #   tools/push-main.sh                 git push origin main (the pre-push hook still decides), then watch the pushed commit's CI run
 #   tools/push-main.sh --watch [sha]   watch a commit's run on main (default: origin/main)
 #   tools/push-main.sh --status        one line on the last pushed main commit's CI, for tools/check.sh: exit 0 green, running or marked known, 1 red, 2 unknown, 3 never ran
+#   tools/push-main.sh --budget        the warning when CI's check is over its time budget, from the kept times alone; `tools/check.sh` ends every run with it
 #   tools/push-main.sh --known <sha> --until YYYY-MM-DD --why "what is known"
 #                                      marks that commit's red CI as known until the date, at most 7 days ahead, so `check.sh --full` on main stamps again
 #
 # A finished watch prints the result, the failed jobs, the failed tests with their "failed N of M" lines (tools/check-rerun.sh) and the artifacts with how
 # to fetch them, and keeps the result in the git common dir (recto-ci-main). Every call to `gh` is bounded (PUSH_MAIN_GH_TIMEOUT, 20 s), and `gh` missing,
-# signed out or offline is said plainly, never waited on. A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
+# signed out or offline is said plainly, never waited on. A green run's check time is kept (recto-ci-times) and said against CI's budget (CI_BUDGET). A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GH=${PUSH_MAIN_GH:-gh}
@@ -21,6 +22,10 @@ WORKFLOW=CI
 common=$(git rev-parse --git-common-dir)
 results="$common/recto-ci-main"
 known="$common/recto-ci-known"
+# How long CI's check job may take, in seconds, and where each green run's time is kept. Owner, 2026-11-12: "Add a rule so the ci doesnt regress in the
+# future." The one place to edit the budget, and it only goes down: lower it when a merge makes CI faster (25 min on 2026-11-12, when runs took 18 to 33).
+CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1500}
+times="$common/recto-ci-times"
 
 # Runs gh with a bound. Its output on stdout; 124 if it took too long, 127 if there's no gh.
 gh_bounded() {
@@ -187,6 +192,43 @@ newer_run_than() {
   done < <(printf '%s' "$runs" | objects)
 }
 
+mins() { echo "$(($1 / 60)) min $(($1 % 60)) s"; }
+
+# A green run's check job against the budget: its seconds are kept, and the median of the last five green runs is what counts, as one slow runner says
+# little. Over the budget is said loudly and fails nothing: a runner's speed isn't the commit's fault, but a median over it is the next task (AGENTS.md).
+ci_time() {
+  local secs median n
+  secs=$(gh_bounded run view "$1" --json jobs --jq '[.jobs[] | select(.name == "check") | ((.completedAt | fromdate) - (.startedAt | fromdate))] | max // empty') || return 0
+  [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -gt 0 ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$secs" >> "$times"
+  n=$(tail -5 "$times" | wc -l | tr -d ' ')
+  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  echo "push-main: CI's check took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
+  budget_warning
+}
+
+# The warning every agent sees while CI is over its budget: from the kept times alone, so it asks GitHub nothing and costs nothing. `tools/check.sh` ends
+# every run with it. Owner, 2026-11-12: "It should be a stern warning so the agents knows it's something they need to take seriously and look at".
+# Nothing when CI is within its budget or no time is kept. Never fails: it is for reading and acting on.
+budget_warning() {
+  [ -s "$times" ] || return 0
+  local n median
+  n=$(tail -5 "$times" | wc -l | tr -d ' ')
+  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  [[ "$median" =~ ^[0-9]+$ ]] && [ "$median" -gt "$CI_BUDGET" ] || return 0
+  {
+    echo "==================== WARNING: CI IS OVER ITS TIME BUDGET ===================="
+    echo "main's CI check took a median of $(mins "$median") over its last $n green runs. The budget is $(mins "$CI_BUDGET"): over by $(mins $((median - CI_BUDGET)))."
+    echo "This is not background noise and it is not someone else's job. Read it, and act on it in this task:"
+    echo "  1. Add no test that launches the app, sleeps, or waits out a default. Test what Rust decides in process (recto-app's testkit)."
+    echo "  2. If your branch adds test seconds, take them out, or say how many and why in your hand-back. Silence about it is a defect."
+    echo "  3. If you see a test that costs more than its concern needs, say so in your hand-back with its name and seconds."
+    echo "  4. Coordinator: bringing CI back under its budget is the next task, before any other feature work."
+    echo "Where the time is: tools/check.sh --slow, and the 'check: ... took' lines in the last CI run's log. The rule: AGENTS.md, \"CI doesn't get slower\"."
+    echo "============================================================================="
+  } >&2
+}
+
 watch() {
   sha=$(git rev-parse "$1") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
   began=$(date +%s) reruns=0
@@ -221,6 +263,7 @@ watch_loop() {
   if [ "$conclusion" = success ]; then
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" success "$(($(date +%s) - began))" >> "$results"
     echo "push-main: CI is green on main $(printf '%s' "$sha" | cut -c1-12): $url"
+    ci_time "$id" "$sha"
     return 0
   fi
   # A newer push cancels an older commit's run. That says nothing of the older commit: the verdict on main is the newer run's, so the watch follows it.
@@ -292,6 +335,7 @@ case "${1:-}" in
     ;;
   --watch) watch "${2:-refs/remotes/origin/main}" ;;
   --status) status ;;
+  --budget) budget_warning ;;
   --known) shift; mark_known "$@" ;;
   *) sed -n '2,13p' "$0" >&2; exit 2 ;;
 esac

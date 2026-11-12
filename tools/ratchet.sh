@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ratchet: structure that may only shrink. Sizes of files, functions, structs, enums, impls and the binding crate, and fixed sleeps in tests,
+# ratchet: structure that may only shrink. Sizes of files, functions, structs, enums, impls and the binding crate, fixed sleeps in tests, and the
+# number of tests that launch the real app,
 # against tools/ratchet/baseline.txt. Pure python3, reads the tree, builds nothing, a few seconds.
 #
 #   tools/ratchet.sh                 check (what check.sh runs first)
