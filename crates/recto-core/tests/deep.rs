@@ -3,10 +3,13 @@
 
 mod support;
 
-use recto_core::{inspect, signatures};
+use recto_core::{MAX_TOC_ENTRIES, inspect, signatures};
 use support::{TempPdf, pdf, three_page_pdf};
 
 const DEEP: usize = 100_000;
+/// A chain of objects, each its own: deep enough that a walk that recursed would overflow a test thread's 2 MiB many times over (a debug frame is hundreds
+/// of bytes), and no deeper, as making each object is what these cost (100,000 took 12 s of CI for three tests).
+const DEEP_CHAIN: usize = 20_000;
 
 fn nested_array() -> String {
     format!("{}{}", "[".repeat(DEEP), "]".repeat(DEEP))
@@ -51,7 +54,7 @@ fn deep_nesting_in_any_object_returns() {
     }
 }
 
-/// Failure: a page tree a hundred thousand levels deep overflows the stack. The reader's own limit is 256 levels.
+/// Failure: a page tree twenty thousand levels deep overflows the stack. The reader's own limit is 256 levels.
 #[test]
 fn a_deep_page_tree_returns() {
     let mut objects = vec![
@@ -59,50 +62,45 @@ fn a_deep_page_tree_returns() {
         "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_string(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string(),
     ];
-    for i in 0..DEEP {
-        let kid = if i + 1 < DEEP { 5 + i } else { 3 };
+    for i in 0..DEEP_CHAIN {
+        let kid = if i + 1 < DEEP_CHAIN { 5 + i } else { 3 };
         objects.push(format!("<< /Type /Pages /Kids [{kid} 0 R] /Count 1 >>"));
     }
     read_all_of("page-tree.pdf", &pdf(&objects, "/Root 1 0 R"));
 }
 
-/// Failure: an outline chain as deep as a file can make overflows the stack. The walk keeps its own stack, for both ways an outline can go.
+/// Failure: an outline chain deep enough to overflow a walk that recursed does, by its children or its next ones: the walk keeps its own stack. And an
+/// outline past [`MAX_TOC_ENTRIES`] is read whole, or isn't said to be cut short.
 #[test]
 fn a_deep_outline_returns_and_is_capped() {
-    for link in ["First", "Next"] {
+    let chain = |link: &str, count: usize| {
         let mut extra = vec!["<< /First 7 0 R >>".to_string()];
-        for i in 0..DEEP {
-            let next = if i + 1 < DEEP { format!("/{link} {} 0 R", 8 + i) } else { String::new() };
+        for i in 0..count {
+            let next = if i + 1 < count { format!("/{link} {} 0 R", 8 + i) } else { String::new() };
             extra.push(format!("<< /Title (t) /Dest [3 0 R /Fit] {next} >>"));
         }
         let file = TempPdf::new(&format!("outline-{link}.pdf"), &three_page_pdf("/Outlines 6 0 R", &extra, ""));
-        let toc = inspect(&file.0).unwrap().toc;
-        assert!(!toc.is_empty(), "{link}");
+        inspect(&file.0).unwrap().toc
+    };
+    for link in ["First", "Next"] {
+        assert!(!chain(link, DEEP_CHAIN).is_empty(), "{link}");
     }
+    let past = chain("Next", MAX_TOC_ENTRIES + 1);
+    assert!(past.truncated, "past its cap, it must say the contents aren't whole");
+    assert!(past.entries().len() <= MAX_TOC_ENTRIES, "{}", past.entries().len());
 }
 
-/// Failure: a field tree as deep as a file can make overflows the stack, or a deep name tree does. Both keep their own stacks.
+/// Failure: a deep name tree overflows the stack: it keeps its own. (A deep field tree is `signatures`'s
+/// `a_deep_or_wide_tree_stops_at_its_caps_and_says_so`, which holds it to its depth cap.)
 #[test]
-fn deep_kids_and_a_deep_name_tree_return() {
-    let mut extra = vec!["<< /Fields [7 0 R] >>".to_string()];
-    for i in 0..DEEP {
-        let next = if i + 1 < DEEP {
-            format!("/Kids [{} 0 R]", 8 + i)
-        } else {
-            "/FT /Sig".to_string()
-        };
-        extra.push(format!("<< /T (n) {next} >>"));
-    }
-    let file = TempPdf::new("kids.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
-    assert!(signatures(&file.0).unwrap().truncated, "past its depth limit, it must say so");
-
+fn a_deep_name_tree_returns() {
     let mut extra = vec![
         "<< /First 7 0 R >>".to_string(),
         "<< /Title (t) /Dest (x) >>".to_string(),
         "<< /Dests 9 0 R >>".to_string(),
     ];
-    for i in 0..DEEP {
-        let next = if i + 1 < DEEP {
+    for i in 0..DEEP_CHAIN {
+        let next = if i + 1 < DEEP_CHAIN {
             format!("/Kids [{} 0 R]", 10 + i)
         } else {
             "/Names [(x) [3 0 R /Fit]]".to_string()
