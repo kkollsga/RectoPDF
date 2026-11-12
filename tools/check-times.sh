@@ -21,8 +21,22 @@ times_dir() { echo "$common_dir/recto-test-times"; }
 # When the stage fails, its failed tests run again CHECK_RERUN times (tools/check-rerun.sh), and the stage still fails.
 nt() {
   local rc=0 junit n kept=""
+  # Like CI (tools/check-like-ci.sh): the tests are built first at full speed, then run under the limits, which every app they start inherits.
+  if [ -n "${CHECK_LIKE_CI_WRAP:-}" ]; then
+    local build=() skip=0 a
+    for a in "$@"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in
+        -j | --test-threads | -E | --filterset) skip=1 ;;
+        --no-fail-fast | --no-tests=* | -j* | --test-threads=*) ;;
+        *) build+=("$a") ;;
+      esac
+    done
+    cargo nextest run --no-run "${build[@]}" || return $?
+  fi
+  # shellcheck disable=SC2086
   RECTO_EVIDENCE="${CHECK_EVIDENCE_ROOT:-${CARGO_TARGET_DIR:-target}/recto-evidence}/${stage_name:-run}" CHECK_STAGE="${stage_name:-run}" CHECK_STAGE_JOBS="$(nt_jobs "$@")" \
-    cargo nextest run "$@" || rc=$?
+    ${CHECK_LIKE_CI_WRAP:-} cargo nextest run "$@" || rc=$?
   junit="${CARGO_TARGET_DIR:-target}/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
   if [ -f "$junit" ]; then
     mkdir -p "$check_mark.junit"

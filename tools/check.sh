@@ -11,6 +11,7 @@
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
 #   CHECK_PART=core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
+#   tools/check.sh --like-ci <part or filter> [--times N]   CI's profile, concurrency and slower machine, by limits on the process (tools/check-like-ci.sh); never a pass.
 #
 # A pass counts for identical code: --full on a clean tree whose code has already passed says so, lets the push guard accept this commit and runs
 # nothing. Documents don't count as code, as in tools/hooks/pre-push. CHECK_AGAIN=1 runs it for real anyway. A dirty tree always runs and is never recorded.
@@ -23,10 +24,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,16p' "$0"; exit 2; }
+usage() { sed -n '2,17p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
+like_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --why)
@@ -36,6 +38,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     *)
+      if [ "$mode" = --like-ci ]; then like_args+=("$1"); shift; continue; fi
       [ -z "$mode" ] || usage
       mode=$1
       shift
@@ -184,6 +187,8 @@ crates_in() {
 . tools/check-times.sh
 # shellcheck source=tools/check-rerun.sh
 . tools/check-rerun.sh
+# shellcheck source=tools/check-like-ci.sh
+. tools/check-like-ci.sh
 # Where a failing test that started the app leaves its evidence, one folder a test under its stage's name (crates/recto-cli/tests/common/evidence.rs): the tree's
 # own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload. And how often a failed stage's tests run again to measure the failure:
 # CI 4 times (tools/check-rerun.sh has the bounds), here only when asked.
@@ -322,6 +327,13 @@ case "$mode" in
       lifecycle) slow_filter="($SLOW_TESTS) & ($LIFECYCLE_TESTS)" ;;
     esac
     ;;
+  --like-ci)
+    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_rounds like_ci_note
+    status=0
+    like_ci_main "${like_args[@]}" || status=$?
+    evidence_report "$status"
+    exit "$status"
+    ;;
   --failed)
     log=$(tools/sysguard/heavy.sh --last-failure) || exit 1
     names=$(sed -nE 's/^ *(FAIL|SIGKILL|SIGABRT|SIGSEGV|TIMEOUT|ABORT) +\[[^]]*\] +(\([^)]*\) +)?[^ ]+ +([^ ]+) *$/\3/p' "$log" | sort -u)
@@ -427,7 +439,7 @@ run() {
     # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
     # Not on CI, which is the slow machine already: the profile on top of it doubled up, and two tests waited past their bounds there for slowness
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
-    if [ -z "${CI:-}" ] && [ "$app_status" = 0 ]; then
+    if [ -z "${CI:-}" ] && [ -z "${CHECK_LIKE_CI:-}" ] && [ "$app_status" = 0 ]; then
       stage slow
       # The ci profile exactly, so the gate fails the same way each run; a seed for the profile's jitter only when asked (CHECK_SLOW_SEED), said either
       # way, so a failure's seams and seed are in its rerun line and the same seed gives the same delays (PLAN R0.7b).

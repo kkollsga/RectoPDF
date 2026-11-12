@@ -32,6 +32,8 @@ case "$*" in
   metadata*) echo '{"packages":[{"name":"alpha","dependencies":[]},{"name":"beta","dependencies":[{"name":"alpha","path":"/x"},{"name":"serde","path":null}]},{"name":"gamma","dependencies":[]}]}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
+# With STUB_LIST, `nextest list` lists those tests, `binary name` a line, as the real one does with -T oneline.
+if [ -n "${STUB_LIST:-}" ] && [[ "$*" == "nextest list "* ]]; then printf '%s\n' "$STUB_LIST"; exit 0; fi
 # With STUB_JUNIT, a nextest run writes the JUnit the real one does: a core test, a process test (alpha::proc) and, in the slow stage, the same process test.
 if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
   mkdir -p target/nextest/default
@@ -68,6 +70,13 @@ cat > "$X/bin/swift" <<'STUB'
 #!/usr/bin/env bash
 echo "swift ${STUB_SWIFT:-1}"
 STUB
+# taskpolicy, for --like-ci: says what it was asked, then runs the command after its options.
+cat > "$X/bin/taskpolicy" <<'STUB'
+#!/usr/bin/env bash
+echo "taskpolicy $* profile=${NEXTEST_PROFILE:-}" >> "$CALLS.policy"
+while [ $# -gt 0 ] && [ "$1" != cargo ]; do shift; done
+exec "$@"
+STUB
 # gh, for tools/push-main.sh, which check.sh asks about main's CI: runs from STUB_GH_RUNS (none by default), a failed run's jobs, log and artifacts;
 # STUB_GH_HANG never answers, STUB_GH_FAIL fails. Every case here uses it, so no case reaches GitHub.
 cat > "$X/bin/gh" <<'STUB'
@@ -96,6 +105,7 @@ cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
 cp "$SOURCE/tools/check-times.sh" tools/check-times.sh
 cp "$SOURCE/tools/check-rerun.sh" tools/check-rerun.sh
 cp "$SOURCE/tools/push-main.sh" tools/push-main.sh
+cp "$SOURCE/tools/check-like-ci.sh" tools/check-like-ci.sh
 echo "fn p1() {}" > crates/alpha/tests/proc.rs
 cat >> tools/check-scope.sh <<'SCOPE'
 GUARD_TESTS='test(~guard_one) | test(~stale::)'
@@ -1045,6 +1055,40 @@ out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH
 check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"
 out=$(PUSH_MAIN_GH=/nonexistent/gh tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a watch with no gh says so at once" "2 yes" "$rc $(printf '%s' "$out" | grep -q "gh isn't installed" && echo yes)"
+
+# Failure (PLAN R0.7d): a CI-like run isn't CI's profile, concurrency or limits, holds the build to the limits too, runs the slow stage CI doesn't, counts
+# as a pass for the push guard, or doesn't say what it can't give; or a test filter's rerun can't be repeated to give its rate here.
+git checkout -q main
+git checkout -qb like-ci-cases
+commit_code like-ci-part
+rm -f "$CALLS.policy" "$CALLS.slow"; : > "$CALLS"
+runs_before=$(runs_in_ledger); checked_before=$(wc -l < "$CHECKED" | tr -d ' ')
+out=$(tools/check.sh --like-ci lifecycle 2>&1); rc=$?
+check "a part like CI passes as the part does" "0" "$rc"
+has "it says what it can't give" "a clean user" "$out"
+has "and a clean Launch Services database" "clean Launch Services" "$out"
+check "it runs the part's tests, held by the limits, with CI's profile" "1" "$(grep -c -- '^taskpolicy -c background cargo nextest run .*long_session -j 4 -E test(~life_test) profile=ci$' "$CALLS.policy")"
+check "and builds them first without the limits (the app tests', the registrations')" "2 0" "$(grep -c -- '^nextest run --no-run' "$CALLS") $(grep -c -- '--no-run' "$CALLS.policy")"
+check "with no slow stage, as on CI" "no" "$([ -s "$CALLS.slow" ] && echo yes || echo no)"
+check "and it's never a run, a pass or a stamp" "$runs_before $checked_before" "$(runs_in_ledger) $(wc -l < "$CHECKED" | tr -d ' ')"
+check "an unknown option is refused" "2" "$(tools/check.sh --like-ci lifecycle --fast > /dev/null 2>&1; echo $?)"
+commit_code like-ci-filter
+rm -f "$CALLS.policy" "$CALLS.reruns"; : > "$CALLS"
+# This repository's app binaries are none; for this case, the real one's first.
+echo "APP_BINARIES='app'" >> tools/check-scope.sh
+out=$(STUB_LIST='recto-cli::app flaky_one' STUB_JUNIT_FAIL='binary_id(=recto-cli::app)' STUB_RERUN_FAILS=1 tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --times 3 2>&1); rc=$?
+check "a filter like CI, N times: the failure fails it" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "it builds the app for an app binary's test" "1" "$(grep -c '^app-build$' "$CALLS")"
+check "and runs it that many times under the limits, 4 at once for the app's tests" "3" "$(grep -c -- '-j 4 -E binary_id(=recto-cli::app) & test(=flaky_one) profile=ci$' "$CALLS.policy")"
+has "with its rate" "failed 1 of 3" "$(printf '%s' "$out" | tr -s ' ')"
+has "and its evidence, with the line that runs it again" "evidence of 1 failed test run(s)" "$out"
+git checkout -q -- tools/check-scope.sh
+commit_code like-ci-none
+out=$(STUB_LIST='' tools/check.sh --like-ci 'test(=nothing_here)' 2>&1); rc=$?
+check "a filter that matches nothing says so" "2 yes" "$rc $(printf '%s' "$out" | grep -q 'no test matches' && echo yes)"
+rm -f "$CALLS.policy"; : > "$CALLS"
+LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' > /dev/null 2>&1
+check "with the limits off (LIKE_CI_LIMITS=''), no taskpolicy, and 3 at once for a test that isn't the app's" "no 1" "$([ -s "$CALLS.policy" ] && echo yes || echo no) $(grep -c -- '--workspace -j 3 -E test(=t1)' "$CALLS")"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
