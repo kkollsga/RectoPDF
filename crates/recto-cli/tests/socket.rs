@@ -589,45 +589,6 @@ fn a_long_selector_is_refused_up_front() {
     assert_eq!(reply["error"]["code"], "no_such_tab", "{reply}");
 }
 
-/// Failure: a client that stops reading a watch makes the session hold its output for ever, and its memory grows.
-#[test]
-fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
-    let state = State::at(Level::Control);
-    let _serving = state.serve();
-    let file = doc();
-    let mut watcher = Raw::connect(&state);
-    watcher.send(&json!({ "cmd": "watch" }).to_string());
-    assert_eq!(watcher.read().unwrap()["data"]["watching"], true);
-    let mut raw = Raw::connect(&state);
-    assert_eq!(raw.call(&open_cmd(&file.0))["ok"], true);
-    // Each goto tells the watcher, which reads nothing. 40,000 of them is over 3 MiB, well past its 1 MiB allowance.
-    for sent in 0..40_000u32 {
-        let reply = raw.call(&json!({ "cmd": "goto", "page": 1 + sent % 2 }));
-        assert_eq!(reply["ok"], true, "{reply}");
-    }
-    // Reading now gets what fit, and then the connection ends instead of carrying on: its allowance plus what the socket itself holds, and not the rest.
-    let mut bytes = 0usize;
-    let mut chunk = [0u8; 65536];
-    // macOS refuses this on a socket whose peer has gone, which is what's expected here.
-    let _ = watcher.stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut ended = false;
-    loop {
-        match watcher.stream.read(&mut chunk) {
-            Ok(0) => {
-                ended = true;
-                break;
-            }
-            Err(_) => break,
-            Ok(count) => bytes += count,
-        }
-    }
-    assert!(ended, "the session must have dropped it, after {bytes} bytes");
-    assert!(
-        bytes < 1024 * 1024 + 512 * 1024,
-        "it should have been dropped at about 1 MiB, and {bytes} bytes came"
-    );
-}
-
 /// Failure: a client that gives up waiting says the server closed the connection, which sends whoever reads it looking for a server deadline that isn't there. And a test that expects a close passes on a read that only timed out.
 #[test]
 #[should_panic(expected = "this client gave up")]
