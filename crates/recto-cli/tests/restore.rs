@@ -964,7 +964,7 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     assert_eq!(run.ok(&["where"])["pages"], 2);
 }
 
-/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/ENGINEERING.md`.
+/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/engineering/state-record.md`.
 #[test]
 fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     let state = State::at(Level::Full);

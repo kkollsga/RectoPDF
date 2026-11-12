@@ -142,7 +142,7 @@ app/build.sh --release  # the optimised build the budgets are measured on
 
 `app/build.sh` runs `tools/pdfium.sh` first. That downloads PDFium (no V8, no XFA) from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) and checks it against pinned digests. A local build is signed ad hoc and never updates itself. `tools/check.sh --quick` runs the fast tests.
 
-The architecture and each crate are described in [`docs/ENGINEERING.md`](docs/ENGINEERING.md), the behaviour in [`SPEC.md`](SPEC.md), and how releases are signed and published in [`docs/RELEASING.md`](docs/RELEASING.md).
+The architecture and each crate are described in [`docs/engineering/README.md`](docs/engineering/README.md), the behaviour in [`SPEC.md`](SPEC.md), and how releases are signed and published in [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Privacy, license and credits
 

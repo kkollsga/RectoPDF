@@ -285,3 +285,20 @@ pub fn attribute(_path: &Path, _name: &str) -> Option<Vec<u8>> {
 pub fn set_attribute(_path: &Path, _name: &str, _value: &[u8]) -> io::Result<()> {
     unsupported()
 }
+
+pub fn open_untrusted(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
+pub fn owner_of(_file: &File) -> io::Result<u32> {
+    Ok(0)
+}
+
+pub fn clone_open_file(_from: &File, _to: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn interrupt_flag() -> &'static std::sync::atomic::AtomicBool {
+    static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &NEVER
+}

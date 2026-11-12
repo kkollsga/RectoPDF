@@ -1,6 +1,6 @@
 //! **Whether a file's own contents are missing or look bad,** which is when generated ones are offered (owner, 2026-11-07: "dont modify the bad toc, but offer a generated toc using distillpdf"). Told from what a warm tab already has, its contents and its page count, so nothing is read for it. It sorts the entries' pages once, so a caller keeps the answer with the contents rather than asking at every page.
 //!
-//! The rules and their evidence are in `docs/ENGINEERING.md`, "Generated contents": each was looked at across the 141 PDFs of bench100, with a sample of each verdict read by eye. What's flagged is only ever offered an alternative: the file's own stay, one tap away.
+//! The rules and their evidence are in `docs/engineering/generated-contents.md`: each was looked at across the 141 PDFs of bench100, with a sample of each verdict read by eye. What's flagged is only ever offered an alternative: the file's own stay, one tap away.
 
 use crate::{NONE, Toc};
 

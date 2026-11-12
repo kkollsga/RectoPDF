@@ -12,3 +12,10 @@ fail-fast = false
 [[profile.default.overrides]]
 filter = 'binary(installer) | binary(smoke) | binary(socket) | binary(engine) | binary(long_session)'
 priority = 50
+
+# JUnit for every run, which tools/check.sh reads after each stage to keep the per-test durations (tools/check-times.sh, `check.sh --slow`). Written to
+# target/nextest/<profile>/junit.xml, overwritten by the next run, so the check collects it after every stage. Failing output stays out: it is in the run's log.
+[profile.default.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = false

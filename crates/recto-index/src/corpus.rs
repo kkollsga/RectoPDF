@@ -31,7 +31,7 @@
 //!
 //! All that's against accident, and against what a hostile PDF could do, which is nothing here but supply text. Someone who can write to this folder is this same user, and could recompute a checksum. A forged corpus with its sums right is believed, as a forged PDF would be.
 //!
-//! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/ENGINEERING.md` for the numbers that say that's enough.
+//! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/engineering/search-index.md` for the numbers that say that's enough.
 
 use crate::{hidden_report, read_page};
 use recto_platform::local;

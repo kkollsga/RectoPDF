@@ -1,4 +1,4 @@
-//! What the session costs, in its own binary so other tests' servers can't disturb a count. The numbers on a release build are in `docs/ENGINEERING.md`.
+//! What the session costs, in its own binary so other tests' servers can't disturb a count. The numbers on a release build are in `docs/engineering/app-memory.md`.
 
 mod common;
 
