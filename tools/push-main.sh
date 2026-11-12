@@ -10,7 +10,7 @@
 #
 # A finished watch prints the result, the failed jobs, the failed tests with their "failed N of M" lines (tools/check-rerun.sh) and the artifacts with how
 # to fetch them, and keeps the result in the git common dir (recto-ci-main). Every call to `gh` is bounded (PUSH_MAIN_GH_TIMEOUT, 20 s), and `gh` missing,
-# signed out or offline is said plainly, never waited on. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
+# signed out or offline is said plainly, never waited on. A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GH=${PUSH_MAIN_GH:-gh}
@@ -172,6 +172,21 @@ report_failure() {
   fi
 }
 
+# The commit of the newest run on main that isn't cancelled and whose commit has $1 in its history and isn't $1: the run that replaced $1's cancelled
+# one. Nothing when there is none, or when gh can't say (the cancelled run is then reported as it is).
+newer_run_than() {
+  local runs line other
+  runs=$(gh_bounded run list --workflow "$WORKFLOW" --branch main -L 10 --json databaseId,headSha,status,conclusion,url) || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    other=$(field "$line" headSha)
+    [ -n "$other" ] && [ "$other" != "$1" ] && [ "$(field "$line" conclusion)" != cancelled ] || continue
+    git merge-base --is-ancestor "$1" "$other" 2>/dev/null || continue
+    printf '%s\n' "$other"
+    return 0
+  done < <(printf '%s' "$runs" | objects)
+}
+
 watch() {
   sha=$(git rev-parse "$1") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
   began=$(date +%s) reruns=0
@@ -207,6 +222,18 @@ watch_loop() {
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" success "$(($(date +%s) - began))" >> "$results"
     echo "push-main: CI is green on main $(printf '%s' "$sha" | cut -c1-12): $url"
     return 0
+  fi
+  # A newer push cancels an older commit's run. That says nothing of the older commit: the verdict on main is the newer run's, so the watch follows it.
+  if [ "$conclusion" = cancelled ]; then
+    local newer
+    newer=$(newer_run_than "$sha")
+    if [ -n "$newer" ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" superseded "$(($(date +%s) - began))" >> "$results"
+      echo "push-main: CI on main $(printf '%s' "$sha" | cut -c1-12) was superseded: a newer push ($(printf '%s' "$newer" | cut -c1-12)) cancelled its run ($url). Watching the newer run."
+      sha=$newer
+      watch_loop
+      return $?
+    fi
   fi
   local outcome
   outcome=$(run_outcome "$id")
