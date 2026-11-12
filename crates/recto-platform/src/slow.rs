@@ -2,7 +2,7 @@
 //!
 //! **Where it waits.** Each [`Seam`] is one waiting point, and each has a one-line call where it is: [`pause`] on a background thread that's about to hand on what it waited for, or [`later`] for a call to the host, which arrives late on a thread of this module's and blocks nobody. A [`pause`] on the UI thread is refused and counted, so a seam put in the wrong place can't hang the app (AGENTS rule 3): `ui_refusals` in the report says so.
 //!
-//! **When.** Never in a release build: [`RELEASE`] is compiled in, as `recto_update::RELEASE_BUILD` is, and [`arm`] does nothing there whatever the environment says. Elsewhere only in a quiet run, which [`arm`] is told about by the app, once, at its start: a normal launch of a test build reads none of this, and neither does `recto`. Unarmed, each seam is one load of a `OnceLock`.
+//! **When.** Never in a release build: [`RELEASE`] is compiled in, as `recto_update::RELEASE_BUILD` is, and [`arm`] does nothing there whatever the environment says. Elsewhere only in a quiet run, which [`arm`] is told about by the app, once, at its start: a normal launch of a test build reads none of this, and neither does `recto`. Unarmed, each seam is one load of a `OnceLock`, and one of an atomic for a test's [`gate`].
 //!
 //! **The switch.** `RECTO_QA_SLOW` is a list, read left to right, with commas between:
 //! - a number of milliseconds, for every seam;
@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
+
+pub mod gate;
 
 /// Compiled as a release by `app/release-zip.sh`. A release build is never slow, whatever's in its environment.
 pub const RELEASE: bool = crate::RELEASE_BUILD;
@@ -334,7 +336,7 @@ fn armed() -> Option<&'static Armed> {
 
 /// Whether this process is slow, for what decides by it.
 pub fn is_on() -> bool {
-    armed().is_some()
+    armed().is_some() || gate::any()
 }
 
 /// The next delay at a seam, for a caller that waits in its own way. `None` unless armed and that seam's slow.
@@ -344,6 +346,9 @@ pub fn delay(seam: Seam) -> Option<Duration> {
 
 /// **Waits here, at a seam,** on the background thread that's about to hand on what it waited for. Refused on the UI thread.
 pub fn pause(seam: Seam) {
+    if gate::pause(seam) {
+        return;
+    }
     let Some(armed) = armed() else { return };
     if armed.on_ui() {
         armed.ui_refusals.fetch_add(1, Ordering::Relaxed);
@@ -361,8 +366,12 @@ pub fn pause(seam: Seam) {
 
 /// **Runs `call` once the seam's delay is up,** on this module's one thread, so the call arrives late and nobody waits for it: a call to the host, from wherever. At once, here, when the seam isn't slow. Calls at the same seam arrive in the order they were made, as their delays don't shrink unless there's jitter.
 pub fn later(seam: Seam, call: impl FnOnce() + Send + 'static) {
+    let call: Call = match gate::later(seam, Box::new(call)) {
+        Ok(()) => return,
+        Err(call) => call,
+    };
     match delay(seam) {
-        Some(delay) => deliveries().push(Instant::now() + delay, Box::new(call)),
+        Some(delay) => deliveries().push(Instant::now() + delay, call),
         None => call(),
     }
 }

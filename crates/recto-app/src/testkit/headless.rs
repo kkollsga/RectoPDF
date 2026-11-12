@@ -23,6 +23,7 @@ use crate::reader_view::ReaderView;
 use recto_agent::{AgentError, Level};
 use recto_control::StatePaths;
 use recto_control::host::Host;
+use recto_platform::slow::Seam;
 use recto_testpdf::TempDir;
 use recto_update::plan::Plan;
 use serde_json::Value;
@@ -126,6 +127,7 @@ pub struct Builder {
     open: Vec<PathBuf>,
     update: Option<UpdateBed>,
     state_late: bool,
+    held: Vec<Seam>,
 }
 
 impl Builder {
@@ -166,6 +168,15 @@ impl Builder {
         self
     }
 
+    /// **These seams held from the launch on** ([`recto_platform::slow::gate`]): what arrives at each waits for [`HeadlessApp::let_through`], in the order it came,
+    /// with no sleep and no timing. With [`Seam::State`] held the launch goes on without the state, as past its patience, and [`HeadlessApp::let_state_in`] brings
+    /// it in.
+    #[must_use]
+    pub fn hold(mut self, seams: &[Seam]) -> Self {
+        self.held.extend_from_slice(seams);
+        self
+    }
+
     /// On a fresh disk.
     #[must_use]
     pub fn start(self) -> HeadlessApp {
@@ -175,6 +186,7 @@ impl Builder {
     /// **A launch, as the host makes it, with no window:** the core started, the state read on its thread and waited for, the window "opened" as the host does when
     /// the state's in, then `ready`, and everything that set going settled.
     fn start_on(self, disk: Disk) -> HeadlessApp {
+        recto_platform::slow::gate::hold(&self.held);
         let clock = Arc::new(FakeClock::at(self.clock_ms));
         let listener = Arc::new(FakeListener::default());
         let (update_source, update_seams) = match &self.update {
@@ -220,23 +232,27 @@ impl Builder {
             clock,
             listener,
             disk: Some(disk),
+            host: std::sync::Mutex::new(HostPlay::default()),
+            open: self.open.clone(),
         };
-        let mut host = HostPlay::default();
+        let state_held = self.held.contains(&Seam::State);
         // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
         // what the host hears first.
-        if self.state_late {
+        if self.state_late || state_held {
             app.clock.advance(u64::try_from(crate::core::RESTORE_PATIENCE.as_millis()).unwrap_or(u64::MAX));
             app.core().restore_patience_over();
             assert!(app.core().core.flush(WAIT_LIMIT), "the patience's call taken");
-            host.hears(&app, &self.open);
+            app.host_hears();
         }
         // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's own timer isn't armed: a test that wants the window up without the
         // state says so ([`Builder::state_late`]).
         app.core().begin_restore();
-        app.wait_until("the state to be read and taken in", || app.core().state_read());
-        assert!(app.core().core.flush(WAIT_LIMIT), "what came of the state taken");
-        host.hears(&app, &self.open);
-        app.settle();
+        if state_held {
+            app.wait_until("the state's read to wait at its seam", || recto_platform::slow::gate::waiting(Seam::State) > 0);
+            app.settle();
+            return app;
+        }
+        app.state_taken_in();
         app
     }
 }
@@ -317,6 +333,12 @@ impl DiskBuilder {
     }
 
     #[must_use]
+    pub fn hold(mut self, seams: &[Seam]) -> Self {
+        self.builder = self.builder.hold(seams);
+        self
+    }
+
+    #[must_use]
     pub fn start(self) -> HeadlessApp {
         self.builder.start_on(self.disk)
     }
@@ -330,9 +352,46 @@ pub struct HeadlessApp {
     clock_at_start: u64,
     listener: Arc<FakeListener>,
     disk: Option<Disk>,
+    /// What the host has made of what it's heard: `App.swift`'s part of a launch.
+    host: std::sync::Mutex<HostPlay>,
+    /// Files named at launch.
+    open: Vec<PathBuf>,
 }
 
 impl HeadlessApp {
+    /// What the host does with every `restore_ready` heard since it last looked.
+    fn host_hears(&self) {
+        let mut host = crate::lock(&self.host);
+        host.hears(self, &self.open);
+    }
+
+    /// The state read and taken in, the host's part of that done, and everything it set going settled.
+    fn state_taken_in(&self) {
+        self.wait_until("the state to be read and taken in", || self.core().state_read());
+        assert!(self.core().core.flush(WAIT_LIMIT), "what came of the state taken");
+        self.host_hears();
+        self.settle();
+    }
+
+    /// **The state comes in now,** held at its seam since the launch ([`Builder::hold`]): read, taken in, the window made again from it as the host makes it (once
+    /// the window's remake is let through, if that's held too), and settled.
+    pub fn let_state_in(&self) {
+        recto_platform::slow::gate::let_through(Seam::State, 1);
+        self.state_taken_in();
+    }
+
+    /// The next `n` arrivals at a held seam go, in the order they came; a call to the host kept there is made now, and the host does with it what it would.
+    pub fn let_through(&self, seam: Seam, n: u64) {
+        recto_platform::slow::gate::let_through(seam, n);
+        self.host_hears();
+    }
+
+    /// How many are waiting at a held seam now.
+    #[must_use]
+    pub fn waiting(&self, seam: Seam) -> u64 {
+        recto_platform::slow::gate::waiting(seam)
+    }
+
     /// On a fresh disk, with the defaults.
     #[must_use]
     pub fn start() -> Self {
@@ -615,20 +674,23 @@ impl HeadlessApp {
         self.end()
     }
 
-    /// **The app killed:** nothing more is written, and the disk is as the last write left it.
+    /// **The app killed:** nothing it was asked is taken, nothing more is written, nothing's drained or flushed, and the disk is as the last write left it.
     #[must_use]
     pub fn kill(mut self) -> Disk {
         self.end()
     }
 
-    /// Lets go of the core, as a process ending does: the page views end, the session thread returns once it's through what's queued, and every thread that held the
-    /// core has let go of it, so the record's lock goes with it.
+    /// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still
+    /// running; nothing queued for the session thread is taken; every held seam opens, so what waited there goes on to find it can't write; the page views end;
+    /// and every thread that held the core lets go of it.
     fn end(&mut self) -> Disk {
         if let Some(inner) = self.inner.take() {
+            inner.saver.store.let_go();
+            inner.core.abandon();
+            recto_platform::slow::gate::open_all();
             for engine in inner.panes.engines(&inner.engine) {
                 engine.shut_down();
             }
-            inner.core.end();
             let began = Instant::now();
             while Arc::strong_count(&inner) > 1 {
                 assert!(

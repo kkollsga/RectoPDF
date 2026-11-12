@@ -13,6 +13,8 @@
 //!
 //! **Versions.** A record from a newer app is never touched. This app works in a folder of its own version beside it, which is also what a migration keeps: going forward copies the old folder first, so going back finds it as it was.
 
+/// The record's lock: who keeps it, waiting for it, and letting go of it.
+mod lock;
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
@@ -28,7 +30,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The two slots.
 const SLOTS: [&str; 2] = ["record.a.json", "record.b.json"];
@@ -312,28 +314,6 @@ impl RecordStore {
             lock_path,
             progress: Mutex::new(Progress::default()),
             version,
-        }
-    }
-
-    /// Whether this process is the one keeping this record.
-    pub fn holds_the_record(&self) -> bool {
-        self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
-    }
-
-    /// Asks for the lock again, for a moment. An app that's just gone holds it until the kernel has finished with it, and starting empty beside its own record because of that would lose the very thing an update is for. On a thread that can wait.
-    pub fn wait_for_lock(&self) -> bool {
-        let began = Instant::now();
-        loop {
-            if self.holds_the_record() {
-                return true;
-            }
-            if began.elapsed() >= LOCK_PATIENCE {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            if let Some(file) = take_lock(&self.lock_path) {
-                *self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
-            }
         }
     }
 
