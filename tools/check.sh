@@ -396,6 +396,8 @@ run() {
   mkdir -p "$CHECK_EVIDENCE_ROOT"
   tracked_tree > "$check_mark.tree"
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
+  # Object files cargo leaves in deps make every test that makes a surface slow (tools/target-hygiene.sh, 2026-11-12). Skipped by a check-test stub tree.
+  if [ -x tools/target-hygiene.sh ]; then tools/target-hygiene.sh; fi
   stage workers
   cargo build --locked -p recto-render-service -p recto-indexer
   cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --bin recto-headings
@@ -474,7 +476,7 @@ fi
 if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 1 ]; then
   echo "check: the tools' tests run: $scope_tools_why."
   tools_started=$(date +%s)
-  for tool_test in tools/ratchet-test.sh tools/check-test.sh; do
+  for tool_test in tools/ratchet-test.sh tools/target-hygiene-test.sh tools/check-test.sh; do
     [ -f "$tool_test" ] || continue
     "$tool_test" > "${TMPDIR:-/tmp}/recto-tool-test.$$" 2>&1 || {
       echo "check: $tool_test failed, so nothing was queued:" >&2

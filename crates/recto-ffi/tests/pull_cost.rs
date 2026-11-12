@@ -4,18 +4,27 @@
 
 use recto_app as app;
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    /// This thread's allocations. Per thread, as the test harness's own threads allocate while a pull is measured: counted for the whole process, a run on CI
+    /// read 19.0003 allocations a pull over 10,000 pulls, three of them someone else's, and failed a bound of 19 (2026-11-12, failed 1 of 5).
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
 
-// SAFETY: forwards to the system allocator, counting each allocation.
+fn allocations() -> u64 {
+    ALLOCATIONS.with(Cell::get)
+}
+
+// SAFETY: forwards to the system allocator, counting each allocation on the thread that makes it.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // A thread on its way out has no counter any more; its allocations aren't the pull's.
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
         // SAFETY: the caller's layout, passed on.
         unsafe { System.alloc(layout) }
     }
@@ -31,13 +40,13 @@ static COUNTING: Counting = Counting;
 
 /// Allocations and nanoseconds per call of `pull`, over `rounds` calls.
 fn cost<T>(rounds: u32, pull: impl Fn() -> T) -> (f64, f64) {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = allocations();
     let started = Instant::now();
     for _ in 0..rounds {
         black_box(pull());
     }
     let nanos = started.elapsed().as_nanos() as f64 / f64::from(rounds);
-    let allocations = (ALLOCATIONS.load(Ordering::Relaxed) - before) as f64 / f64::from(rounds);
+    let allocations = (allocations() - before) as f64 / f64::from(rounds);
     (allocations, nanos)
 }
 
