@@ -147,4 +147,3 @@ fn headings_in_heavy_type_stay() {
         "{report}"
     );
 }
-
