@@ -29,6 +29,11 @@ case "$*" in
   metadata*) echo '{"packages":[{"name":"alpha","dependencies":[]},{"name":"beta","dependencies":[{"name":"alpha","path":"/x"},{"name":"serde","path":null}]},{"name":"gamma","dependencies":[]}]}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
+# With STUB_JUNIT, a nextest run writes the JUnit the real one does: a core test, a process test (alpha::proc) and, in the slow stage, the same process test.
+if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
+  mkdir -p target/nextest/default
+  printf '<testsuites>\n<testsuite name="alpha">\n<testcase name="t1" classname="alpha" timestamp="2026-11-12T10:00:00.000+01:00" time="0.500"/>\n<testcase name="p1" classname="alpha::proc" timestamp="2026-11-12T10:00:01.000+01:00" time="1.500"/>\n</testsuite>\n</testsuites>\n' > target/nextest/default/junit.xml
+fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
@@ -49,13 +54,16 @@ export PATH="$X/bin:$PATH" CALLS="$X/calls"
 git init -q --bare -b main "$X/origin.git"
 git init -q -b main "$X/repo"
 cd "$X/repo" || exit 1
-mkdir -p tools/sysguard tools/hooks app crates/alpha/src crates/beta/src crates/gamma/src docs
+mkdir -p tools/sysguard tools/hooks app crates/alpha/tests crates/alpha/src crates/beta/src crates/gamma/src docs
 cp "$SOURCE/tools/check.sh" tools/check.sh
 # The real rules, with this repository's own guards and tiers: alpha has a guard, gamma is what the lifecycle tier is about, beta is a window crate.
 cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
+cp "$SOURCE/tools/check-times.sh" tools/check-times.sh
+echo "fn p1() {}" > crates/alpha/tests/proc.rs
 cat >> tools/check-scope.sh <<'SCOPE'
 GUARD_TESTS='test(~guard_one) | test(~stale::)'
 APP_BINARIES=''
+PROCESS_BINARIES='alpha::proc'
 LIFECYCLE_TESTS='test(~life_test)'
 WINDOW_TESTS="test(~window_test) & !($LIFECYCLE_TESTS)"
 WINDOW_CRATES='beta'
@@ -688,5 +696,75 @@ check "dirty selective runs are in the ledger as dirty" "2 +dirty" "$(runs_in_le
 check "they count against the budget of two" "2" "$(tools/check.sh --runs | sed -n 's/^sel-dirty: \([0-9]*\) of.*/\1/p')"
 check "so a third needs a reason" "3" "$(sel)"
 git checkout -q -- crates/gamma/src/lib.rs
+
+# --- Test durations (tools/check-times.sh) and named parts of a full run ---------------------------------------------------------------------------------
+TIMES=.git/recto-test-times
+branch_with times
+echo t1 >> crates/alpha/src/lib.rs && git add . && git commit -qm times-1
+# Failure: durations lost between stages (nextest overwrites its JUnit), or not kept at all, so a process review has nothing to read.
+check "no durations before any run" "0" "$(ls $TIMES 2>/dev/null | wc -l | tr -d ' ')"
+STUB_JUNIT=1 full > /dev/null
+check "a full run keeps durations in one file" "1" "$(ls $TIMES | grep -c 'tsv$')"
+f=$(ls $TIMES/*.tsv | head -1)
+check "the file says commit, scope, part and result" "run	$(git rev-parse HEAD)	all	all	pass" "$(awk -F'\t' '$1 == "run" { print $1 "\t" $2 "\t" $4 "\t" $5 "\t" $6 }' "$f")"
+check "it has the wall time of the stages" "1" "$(grep -c '^stage	other-tests	' "$f")"
+check "a core test is in tier 1" "tier	1" "$(grep '^tier	1	' "$f" | cut -f1,2)"
+# Each stage that ran nextest wrote the same two tests, so every stage's JUnit is read when the tiers hold as many of each, and the slow stage's two are apart.
+check "every stage's JUnit is read, not only the last" "true" "$([ "$(grep '^tier	1	' "$f" | cut -f3)" -gt 1 ] && [ "$(grep '^tier	1	' "$f" | cut -f3)" = "$(grep '^tier	2	' "$f" | cut -f3)" ] && echo true || echo false)"
+check "the slow stage's tests are kept apart from the tiers" "slow	2" "$(grep '^slow	' "$f" | cut -f1,2)"
+check "the slowest tests are listed with their binary and seconds" "true" "$([ "$(grep -c '^test	2	[a-z-]*	alpha::proc	1.50	p1$' "$f")" -ge 1 ] && echo true || echo false)"
+check "and the full run is on the ledger as before" "pass" "$(last_ledger_field 4)"
+check "no scratch files are left in the repository's git dir" "0" "$(ls .git | grep -c 'part$')"
+# Failure: the folder grows for ever (a file a run, each with a few dozen lines), or the newest are the ones deleted.
+for n in $(seq 10 33); do printf 'run\told%s\t2020-01-01 00:00\tall\tall\tpass\n' "$n" > "$TIMES/202001010000$n-old$n.tsv"; done
+commit_code times-2
+STUB_JUNIT=1 full > /dev/null
+check "only the newest 20 runs are kept" "20" "$(ls $TIMES | grep -c 'tsv$')"
+check "the run just made is among them" "1" "$(grep -l "$(git rev-parse HEAD)" $TIMES/*.tsv | wc -l | tr -d ' ')"
+check "and the oldest are the ones gone, the newer old ones kept" "0 1" "$(ls $TIMES | grep -c 'old10\.\|old15\.') $(ls $TIMES | grep -c 'old33\.')"
+# Failure: a run stopped from outside, or one with no JUnit (a stub, a refusal), leaves a file that says nothing.
+rm -rf $TIMES
+commit_code times-3
+full > /dev/null
+check "a run that wrote no JUnit keeps nothing" "0" "$(ls $TIMES 2>/dev/null | wc -l | tr -d ' ')"
+
+# Failure: --slow cannot say which tier is over its budget, or hides it.
+rm -rf $TIMES; mkdir -p $TIMES
+printf 'run\taaaaaaaaaaaaaaaa\t2026-11-12 10:00\tall\tall\tpass\nstage\tother-tests\t100\nstage\tapp-tests\t300\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t200.0\ntier\t4\t8\t300.0\t200.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T100000-aaaaaaaaaaaa.tsv
+printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t130.0\ntier\t4\t8\t300.0\t200.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
+out=$(tools/check.sh --slow 2>&1); rc=$?
+check "--slow exits 0 even over budget" "0" "$rc"
+has "it lists the slowest tests with seconds and binary" "42.1 s  3     recto-cli::app  drawing_is_slow" "$out"
+has "a tier over its budget is named, with by how much" "OVER by 40 s" "$out"
+check "a tier within it is not" "0" "$(printf '%s\n' "$out" | grep -E '^  (1|2) ' | grep -c OVER)"
+has "the tier that wasn't in the run says so" "(no tests in this run)" "$(sed 's/^tier\t4.*/tier\t4\t0\t0.0\t0.0/' $TIMES/20261112T110000-bbbbbbbbbbbb.tsv > "$X/t.tsv"; rm $TIMES/20261112T110000-bbbbbbbbbbbb.tsv; cp "$X/t.tsv" $TIMES/20261112T110000-bbbbbbbbbbbb.tsv; tools/check.sh --slow 2>&1)"
+has "the slow stage's total is there" "25 tests, 400 test-seconds, 120 s wall" "$out"
+# The comparison needs the run of everything before the latest; it shows the change per stage.
+printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\ntier\t1\t1\t1.0\t1.0\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
+out=$(tools/check.sh --slow 2>&1)
+has "the latest run of everything is compared with the one before: slower" "other-tests 120 100 +20" "$(printf '%s' "$out" | tr -s ' ')"
+has "and faster" "app-tests 290 300 -10" "$(printf '%s' "$out" | tr -s ' ')"
+# A selective run or a part is newer but isn't a run of everything, so it isn't what the comparison goes by.
+printf 'run\tcccccccccccccccc\t2026-11-12 12:00\tselective\tall\tpass\nstage\tother-tests\t5\n' > $TIMES/20261112T120000-cccccccccccc.tsv
+has "a selective run is shown first but isn't compared" "Latest kept run: commit cccccccccccc" "$(tools/check.sh --slow 2>&1)"
+has "and the comparison skips it" "(bbbbbbbbbbbb against aaaaaaaaaaaa)" "$(tools/check.sh --slow 2>&1)"
+rm -rf $TIMES
+has "with nothing kept it says where they will be" "No test durations kept yet" "$(tools/check.sh --slow 2>&1)"
+
+# Failure: the tiers' lists drift from the tests, or a binary renamed drops its tests into tier 1 unseen.
+mv crates/alpha/tests/proc.rs crates/alpha/tests/proc2.rs
+: > "$CALLS"
+out=$(full); rc=$?
+check "a process binary that isn't there stops the check before anything runs" "2 0" "$rc $(ran)"
+has "and names it" "process binary alpha::proc" "$out"
+mv crates/alpha/tests/proc2.rs crates/alpha/tests/proc.rs
+: > "$CALLS"
+# The tier of an app test comes from nextest's own filterset: the lifecycle ones are named by it, the rest of the app binaries are the window's.
+. tools/check-scope.sh; . tools/check-times.sh
+printf 'recto-cli::restore update::an_update\n' > "$X/life"
+got=$(printf 'app-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an_update\napp-tests\t3.000\t100.000\t103.000\trecto-cli::app\ta_window_test\nother-tests\t0.100\t50.000\t50.100\trecto-cli::socket\ts\nother-tests\t0.100\t50.000\t50.100\trecto-core\tc\nslow\t9.000\t200.000\t209.000\trecto-cli::app\ta_window_test\n' |
+  APP_BINARIES='app restore' PROCESS_BINARIES='recto-cli::socket' times_summarise "$X/life" | grep -E '^(tier|slow)' | awk -F'\t' '{ printf "%s%s=%s ", $1, $2, $3 }')
+check "tests are put in their tier, the slow stage's apart" "tier1=1 tier2=1 tier3=1 tier4=1 slow9.0=9.0 " "$(printf '%s' "$got" | sed 's/slow1=/slow9.0=/')"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

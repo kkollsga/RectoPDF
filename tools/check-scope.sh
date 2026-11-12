@@ -24,6 +24,15 @@ LIFECYCLE_TESTS='(binary(=restore) & test(~update::)) | (binary(=app) & test(~qu
 # Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state. The rest by construction, so a test is in exactly
 # one tier: the one its name puts it in, or this.
 WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare)) & !($LIFECYCLE_TESTS)"
+# --- Tiers by time ---------------------------------------------------------------------------------------------------------------------------------------
+# The test system's four tiers (docs/reviews/2026-11-12-development-speed.md §5), as `check.sh --slow` reports them against a budget. Tier 1 (core) is every
+# test that is in none of the lists below, in a single process; tier 3 is the window tier and tier 4 the lifecycle tier above; tier 2 (process) is these
+# binaries, whose tests spawn `recto`, the render worker, the helpers or the installer. A binary is `crate::file` (a test file, or a folder with a main.rs) as
+# nextest names it; `scope_names_missing` fails when one is not there, so a rename can't quietly move its tests into tier 1.
+PROCESS_BINARIES='recto-cli::corpus recto-cli::dev_build recto-cli::export_svg recto-cli::extract recto-cli::find recto-cli::generated recto-cli::index recto-cli::levels recto-cli::memory recto-cli::missing_marks recto-cli::notices recto-cli::print recto-cli::render recto-cli::save recto-cli::select recto-cli::session recto-cli::socket recto-update::installer recto-platform::helper recto-platform::walls recto-reader::engine recto-render-service::corpus recto-render-service::hostile recto-render-service::memory recto-render-service::sandbox recto-render-service::sequence recto-render-service::surfaces recto-render-service::worker'
+# Wall-clock budget in seconds for each tier, the one place to edit them. Over budget is reported by `check.sh --slow`, plainly: it is read in a process review.
+TIER_BUDGETS='1:60 2:60 3:90 4:240'
+
 # The crates whose change (or whose dependencies' change) can change what the window shows or does.
 WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
@@ -57,6 +66,10 @@ scope_names_missing() {
   done
   for name in $APP_BINARIES; do
     [ -f "$root/crates/recto-cli/tests/$name.rs" ] || echo "app binary $name"
+  done
+  # crate::file for tier 2: a file, or a folder with a main.rs, in that crate's tests.
+  for name in $PROCESS_BINARIES; do
+    [ -f "$root/crates/${name%%::*}/tests/${name##*::}.rs" ] || [ -f "$root/crates/${name%%::*}/tests/${name##*::}/main.rs" ] || echo "process binary $name"
   done
   # A test file that starts the app and isn't in APP_BINARIES runs in no tier.
   local file bin

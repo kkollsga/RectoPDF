@@ -9,6 +9,7 @@
 #                             Only a pass of everything lets `main` be pushed.
 #   tools/check.sh --full --why "what this run decides"    A branch gets two full runs. A third needs a stated reason, which goes in the ledger.
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
+#   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
 #
 # A pass counts for identical code: --full on a clean tree whose code has already passed says so, lets the push guard accept this commit and runs
 # nothing. Documents don't count as code, as in tools/hooks/pre-push. CHECK_AGAIN=1 runs it for real anyway. A dirty tree always runs and is never recorded.
@@ -21,7 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,14p' "$0"; exit 2; }
+usage() { sed -n '2,15p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
@@ -146,6 +147,12 @@ crates_in() {
 # What the rules in tools/check-scope.sh select and the names it relies on. A name no test has any more stops the check here, before anything is queued.
 # shellcheck source=tools/check-scope.sh
 . tools/check-scope.sh
+# shellcheck source=tools/check-times.sh
+. tools/check-times.sh
+if [ "$mode" = --slow ]; then
+  times_report
+  exit 0
+fi
 names_or_stop() {
   local missing
   missing=$(scope_names_missing .)
@@ -289,6 +296,7 @@ stage() {
   local at
   at=$(date +%s)
   [ -z "${stage_name:-}" ] || echo "check: $stage_name took $((at - stage_started)) s"
+  [ -z "${stage_name:-}" ] || echo "$stage_name $((at - stage_started))" >> "$check_mark.stages"
   stage_name=$1
   stage_started=$at
   [ "$1" = done ] || echo "$1" >> "$check_mark"
@@ -326,14 +334,14 @@ run() {
   if [ -n "$tests_first" ]; then
     stage changed-tests
     # shellcheck disable=SC2086
-    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast $tests_first
+    RECTO_SKIP_APP=1 nt --locked --no-fail-fast $tests_first
   fi
   if [ "$other_mode" = all ]; then
     stage other-tests
-    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass "${tests[@]}"
+    RECTO_SKIP_APP=1 nt --locked --no-fail-fast --no-tests=pass "${tests[@]}"
   elif [ "$other_mode" = filter ]; then
     stage other-tests
-    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass --workspace -E "$other_filter"
+    RECTO_SKIP_APP=1 nt --locked --no-fail-fast --no-tests=pass --workspace -E "$other_filter"
   fi
   # Only --full: no Xcode needed for --quick, and no minutes spent on Swift. And only when a tier of tests that launch the app is selected.
   if [ "$mode" = "--full" ] && [ "$app_mode" != none ]; then
@@ -342,15 +350,15 @@ run() {
     # The bundle just built, as it ships: its notices are this tree's, and nothing in it has an extended attribute, which a zip carries as a file the
     # signature doesn't cover. They ran only with RECTO_SKIP_APP above, so no run held a built app to them (icon worker, 2026-11-11). Seconds.
     stage app-bundle
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
+    RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
     stage app-tests
     case "$app_mode" in
-      both) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 ;;
-      window) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare -j 4 -E "$WINDOW_TESTS" ;;
-      lifecycle) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
+      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 ;;
+      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare -j 4 -E "$WINDOW_TESTS" ;;
+      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
     esac
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
     # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
@@ -359,12 +367,12 @@ run() {
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
     if [ -z "${CI:-}" ]; then
       stage slow
-      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
+      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
     fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     if [ "$app_mode" = both ] || [ "$app_mode" = lifecycle ]; then
       stage registrations
-      RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations
+      RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test registrations
     fi
   fi
   stage done
@@ -372,7 +380,7 @@ run() {
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -f "$check_mark" "$check_mark.tree"' EXIT
+trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit"' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
@@ -407,7 +415,7 @@ if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f run stage code_state untracked_that_counts tracked_code tracked_tree
+export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree
 export check_mark mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
@@ -421,6 +429,8 @@ case "$status" in
   130|137|143) result=stopped ;;
   *) result="fail:$(tail -1 "$check_mark")" ;;
 esac
+# The tests' durations are kept for every run that started, a part too (tools/check-times.sh, `check.sh --slow`). Not for one stopped from outside.
+[ "$result" = stopped ] || ( times_record "$started_commit" "$([ "$scope_key" = all ] && echo all || echo selective)" all "$result" ) || true
 # Only a commit that passed, with nothing uncommitted from start to end, counts for the push guard. A commit of documents only made while it ran (the
 # coordinator writing up while a check runs) doesn't undo that: the code tested is still the started commit's, and that's the commit stamped.
 ledger_commit="$started_commit+dirty"
