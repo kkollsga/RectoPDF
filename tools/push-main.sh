@@ -77,11 +77,12 @@ known_for() {
 
 # How a finished run that didn't pass ended: `failed` when one of its parts ran a step that failed or was cut off (cancelled, timed out), `never` when
 # none did: its jobs got no runner, or no step (run 43248252599, 2026-11-12: three macos-26 jobs never acquired a runner in 15 minutes and were
-# cancelled, and the aggregate `check` failed for it). The aggregate job is left out, as it fails whenever a part didn't pass, and so is the runner's own
-# `Set up job`. When gh can't say, `failed`, the safe side. Also prints, after a tab, the jobs that never ran with GitHub's annotation for each.
+# cancelled, and the aggregate `check` of the three-part layout failed for it). Steps that say nothing of the code are left out: the runner's own `Set up
+# job`, and that aggregate's `All three parts passed`, which failed whenever a part didn't pass (the one `check` job since then is a real one, and its
+# `Full check` counts). When gh can't say, `failed`, the safe side. Also prints, after a tab, the jobs that never ran with GitHub's annotation for each.
 run_outcome() {
   local jobs rc=0 bad never="" name conclusion steps failed jid note
-  jobs=$(gh_bounded run view "$1" --json jobs --jq '.jobs[] | select(.name != "check") | "\(.name)\t\(.conclusion)\t\(.steps | length)\t\([.steps[] | select(.name != "Set up job") | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] | length)\t\(.databaseId)"') || rc=$?
+  jobs=$(gh_bounded run view "$1" --json jobs --jq '.jobs[] | "\(.name)\t\(.conclusion)\t\(.steps | length)\t\([.steps[] | select(.name != "Set up job" and .name != "All three parts passed") | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] | length)\t\(.databaseId)"') || rc=$?
   [ "$rc" = 0 ] || { echo failed; return 0; }
   bad=$(printf '%s\n' "$jobs" | awk -F'\t' '$4 > 0' | head -1)
   if [ -n "$bad" ]; then echo failed; return 0; fi
@@ -166,7 +167,7 @@ report_failure() {
   local artifacts
   artifacts=$(gh_bounded api "repos/{owner}/{repo}/actions/runs/$id/artifacts" --jq '.artifacts[] | "\(.name) \(.size_in_bytes)"') || rc=$?
   if [ "$rc" = 0 ] && [ -n "$artifacts" ]; then
-    echo "push-main: artifacts (each failed test's evidence is under evidence/ in check-logs-<part>):"
+    echo "push-main: artifacts (each failed test's evidence is under evidence/ in check-logs-<attempt>):"
     printf '%s\n' "$artifacts" | while read -r name size; do echo "  $name ($((size / 1024)) KiB): gh run download $id -n $name -D target/ci-$id/$name"; done
   fi
 }

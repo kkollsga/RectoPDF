@@ -6,9 +6,11 @@
 # unless asked), each round with its own evidence folder (crates/recto-cli/tests/common/evidence.rs), and prints "test, failed N of M" counting the first
 # run. The stage still fails, whatever the reruns say: a test that passes four times of five is a bug, not a pass.
 #
-# Bounds, so a failing part can't run on: at most CHECK_RERUN_TESTS tests (8) are rerun, and a round starts only while the reruns have taken less than
-# CHECK_RERUN_SECONDS (240 s). A round can't take longer than the slowest test's nextest limit (.config/nextest.toml: 60 s, ended at 300 s), so the most a
-# failing stage adds is 240 + 300 s, 9 minutes; a failed test of 20 s adds four rounds of about 25 s, under 2 minutes.
+# Bounds, so a failing run can't go on: at most CHECK_RERUN_TESTS tests (8) a stage are rerun, a stage's round starts only while its reruns have taken
+# less than CHECK_RERUN_SECONDS (240 s), and no round starts once the whole run's reruns have taken CHECK_RERUN_TOTAL_SECONDS (360 s, kept in the evidence
+# root), so a badly broken branch with several failed stages can't burn an hour. A round can't take longer than the slowest test's nextest limit
+# (.config/nextest.toml: 60 s, ended at 300 s), so the most a failing run adds is 360 + 300 s, 11 minutes; a failed test of 20 s adds four rounds of about
+# 25 s, under 2 minutes.
 
 # The failed tests in a nextest JUnit file, as `<binary id> <test name>` a line: a testcase with a <failure> or <error> in it.
 junit_failed() {
@@ -61,10 +63,16 @@ rerun_failed() {
   echo "check: running the $(printf '%s\n' "$failed" | wc -l | tr -d ' ') failed test(s) again, up to $rounds times, with their evidence (CHECK_RERUN=$rounds; at most ${budget} s of rounds)."
   began=$(date +%s)
   local out_junit="${CARGO_TARGET_DIR:-target}/nextest/${NEXTEST_PROFILE:-default}/junit.xml" done_rounds=0
+  local spent_file="$evidence/.rerun-seconds" total=${CHECK_RERUN_TOTAL_SECONDS:-360} spent
   for round in $(seq 1 "$rounds"); do
     elapsed=$(($(date +%s) - began))
     if [ "$elapsed" -ge "$budget" ]; then
       echo "check: reruns stopped after $done_rounds of $rounds rounds: ${elapsed} s, past CHECK_RERUN_SECONDS=$budget."
+      break
+    fi
+    spent=$(( $(cat "$spent_file" 2>/dev/null || echo 0) + elapsed ))
+    if [ "$spent" -ge "$total" ]; then
+      echo "check: reruns stopped after $done_rounds of $rounds rounds: the run's reruns have taken ${spent} s, past CHECK_RERUN_TOTAL_SECONDS=$total."
       break
     fi
     rm -f "$out_junit"
@@ -83,6 +91,7 @@ rerun_failed() {
     done <<< "$failed"
     rm -f "$out_junit"
   done
+  echo $(( $(cat "$spent_file" 2>/dev/null || echo 0) + $(date +%s) - began )) > "$spent_file"
   rerun_table "$failed" "$results" "$done_rounds"
   rerun_table "$failed" "$results" "$done_rounds" > "$evidence/$stage-reruns.txt"
   echo "check: each round's output and evidence are in $evidence/$stage-rerun-<round>/, the table in $evidence/$stage-reruns.txt. The stage still fails."
