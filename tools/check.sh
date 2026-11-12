@@ -160,6 +160,11 @@ crates_in() {
 . tools/check-scope.sh
 # shellcheck source=tools/check-times.sh
 . tools/check-times.sh
+# Where a failing test that started the app leaves its evidence, one folder a test under its stage's name (crates/recto-cli/tests/common/evidence.rs): the tree's
+# own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload.
+CHECK_EVIDENCE_ROOT=${RECTO_EVIDENCE:-$PWD/${CARGO_TARGET_DIR:-target}/recto-evidence}
+case "$CHECK_EVIDENCE_ROOT" in /*) ;; *) CHECK_EVIDENCE_ROOT=$PWD/$CHECK_EVIDENCE_ROOT ;; esac
+export CHECK_EVIDENCE_ROOT
 if [ "$mode" = --slow ]; then
   times_report
   exit 0
@@ -342,6 +347,9 @@ run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
+  # This run's evidence only: what the last run left in the tree's own folder goes (one given in RECTO_EVIDENCE, such as CI's, is never emptied).
+  [ -n "${RECTO_EVIDENCE:-}" ] || rm -rf "$CHECK_EVIDENCE_ROOT"
+  mkdir -p "$CHECK_EVIDENCE_ROOT"
   tracked_tree > "$check_mark.tree"
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   stage workers
@@ -375,8 +383,8 @@ run() {
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
     stage app-tests
     case "$app_mode" in
-      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 ;;
-      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare -j 4 -E "$WINDOW_TESTS" ;;
+      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 ;;
+      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test evidence -j 4 -E "$WINDOW_TESTS" ;;
       lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
     esac
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
@@ -441,11 +449,14 @@ if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree
+export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree nt_jobs
 export check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
+if [ "$status" != 0 ] && [ -n "$(find "$CHECK_EVIDENCE_ROOT" -mindepth 2 -maxdepth 2 -type d -name '*--*' 2>/dev/null)" ]; then
+  echo "check: evidence of the failed tests that started the app, a folder each: $CHECK_EVIDENCE_ROOT" >&2
+fi
 [ "$mode" = --full ] || exit "$status"
 # Nothing ran: the queue refused it, or it was stopped while waiting. So there's no run to count.
 read -r started started_commit started_state < "$check_mark" || exit "$status"

@@ -3,6 +3,7 @@
 //! The app has to be built, and these skip if it isn't, so `tools/check.sh --quick` stays fast and works for anyone without it. `--full` builds it and sets `RECTO_REQUIRE_APP`, so there a missing app is a failure.
 
 use super::State;
+use super::evidence;
 use recto_platform::local::process_counters;
 use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
 use serde_json::{Value, json};
@@ -216,18 +217,22 @@ impl<'a> Run<'a> {
         for (name, value) in env {
             command.env(name, value);
         }
+        let launch = evidence::launching(state);
         let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
         let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output.status.code(), Some(0), "{reply}");
+        let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+        evidence::launched(launch, pid);
         Some(Self {
             state: Held::Lent(state),
-            pid: reply["data"]["pid"].as_u64().unwrap() as u32,
+            pid,
             done: false,
         })
     }
 
     /// A run some other way started on that state folder, such as the app an update put in place, by its process.
     pub fn attach(state: &'a State, pid: u32) -> Self {
+        evidence::met(state, pid, "attached");
         Self {
             state: Held::Lent(state),
             pid,
@@ -243,6 +248,9 @@ impl<'a> Run<'a> {
     pub fn ok(&self, args: &[&str]) -> Value {
         let began = Instant::now();
         let (reply, code) = self.state.json(args);
+        if args == ["qa", "state"] && code == 0 {
+            evidence::read_state(self.pid, &reply["data"]);
+        }
         if std::env::var_os("RECTO_STEP_TRACE").is_some() {
             eprintln!("step {:>6} ms  {}", began.elapsed().as_millis(), args.join(" "));
         }
@@ -305,15 +313,22 @@ impl<'a> Run<'a> {
 }
 
 fn launch(state: &State, args: &[&str]) -> u32 {
+    let launch = evidence::launching(state);
     let (reply, code) = state.json(args);
     assert_eq!(code, 0, "{reply}");
-    reply["data"]["pid"].as_u64().unwrap() as u32
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    evidence::launched(launch, pid);
+    pid
 }
 
 impl Drop for Run<'_> {
     fn drop(&mut self) {
         if self.done {
             return;
+        }
+        // A failing test's run, still there: what only it can say, before it's stopped (PLAN R0.7a).
+        if std::thread::panicking() {
+            evidence::while_running(&self.state, self.pid);
         }
         let _ = self.state.json(&["stop"]);
         let began = Instant::now();

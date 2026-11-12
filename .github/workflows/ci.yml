@@ -82,6 +82,10 @@ jobs:
         env:
           # A failing test's quiet-run logs are copied here before its state folder goes (crates/recto-cli/tests/common/mod.rs).
           RECTO_TEST_LOGS: ${{ runner.temp }}/recto-test-logs
+          # And its evidence, one folder a failed test and a folder a rerun round (crates/recto-cli/tests/common/evidence.rs, tools/check-rerun.sh): every
+          # launch's messages, `qa state`, threads, a sample, the slow seams, the machine, Launch Services and the command that runs it again on a Mac. Uploaded
+          # with the logs below. A failed stage's tests run again 4 times here (CHECK_RERUN, set by tools/check.sh on CI) and the log has "failed N of M".
+          RECTO_EVIDENCE: ${{ runner.temp }}/recto-test-logs/evidence
       # What CI saw, when it fails: run 43054237265 said only that the app had gone, so a crash, a time limit and a test looking too late
       # couldn't be told apart (2026-11-11). The quiet runs' logs above, and the system's crash reports for the app and its helpers.
       # Before the logs and artifacts, so a failure there can't lose it. The second app part to get here finds the key taken and only says so.

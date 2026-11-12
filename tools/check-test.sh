@@ -611,7 +611,7 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-only
 check "a change to a window crate passes selectively" "0" "$(sel)"
 has "the start says what was selected" "selective" "$(cat "$X/sel.out")"
 has "and what was skipped" "skipped: lifecycle tier" "$(cat "$X/sel.out")"
-check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare -j 4 -E test(~window_test)')"
+check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare --test evidence -j 4 -E test(~window_test)')"
 check "the lifecycle tier doesn't" "0" "$(sel_has 'long_session')"
 check "nor the stage that checks what is left registered" "0" "$(sel_has '--test registrations')"
 check "the slow stage runs only what is in the window tier" "1" "$(grep -c 'window_test' "$CALLS.slow" | tr -d ' ')"
@@ -657,14 +657,14 @@ check "without the lifecycle tier" "0" "$(sel_has 'long_session')"
 branch_with sel-app
 echo a > app/x.swift && git add . && git commit -qm app-only
 sel > /dev/null
-check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 check "but no crate's tests, the guards only" "0" "$(sel_has 'package(=')"
 branch_with sel-tools
 echo t > tools/note.txt && git add . && git commit -qm tools
 sel > /dev/null
 has "a change to the tools says why it runs everything" "everything runs" "$(cat "$X/sel.out")"
 check "it runs every crate's tests" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 check "that pass is of everything, so the guard has it" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
 branch_with sel-docs
 echo d >> docs/notes.md && git add . && git commit -qm docs-only
@@ -676,7 +676,7 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-ci
 CI=true sel_full > "$X/sel.out"; cp "$CALLS" "$X/sel.calls"
 has "on CI the same change runs everything" "CI runs everything" "$(cat "$X/sel.out")"
 check "every crate" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 # main runs everything, whatever changed since it: it is what gets pushed.
 git checkout -q main
 echo mm >> crates/beta/src/lib.rs && git add . && git commit -qm beta-on-main
@@ -815,7 +815,7 @@ check "core runs the gate and the workspace" "1 1" "$(grep -c '^clippy --workspa
 check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$CALLS")"
 : > "$CALLS"
 CHECK_PART=window full > /dev/null
-check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
+check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
 check "with the notices, and no gate or workspace tests" "1 0 0" "$(grep -c -- '--test notices' "$CALLS") $(grep -c '^clippy' "$CALLS") $(grep -c -- '--workspace' "$CALLS")"
 check "and no tools' tests" "0" "$(grep -c '^check-test$' "$CALLS")"
 check "and no registrations" "0" "$(grep -c -- '--test registrations' "$CALLS")"
@@ -836,7 +836,7 @@ all_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; done
 parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
-check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session -j 4$' "$CALLS")"
+check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session --test evidence -j 4$' "$CALLS")"
 
 # Failure: CI ran the tools' own tests on every run, 173 s of core whatever changed (run 43195226598), or skips them when what they test changed since CI's
 # base, or when that base can't be worked out. The base: on main the commit the push came after, on a branch where it left origin/main. What they test is

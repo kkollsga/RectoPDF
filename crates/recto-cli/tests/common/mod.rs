@@ -3,6 +3,8 @@
 
 /// The real app in a quiet run.
 pub mod app;
+/// What a failing test that started the app leaves behind, and how to run it again.
+pub mod evidence;
 /// A process's threads by name, for a count's failure to say which they were.
 pub mod threads;
 
@@ -205,6 +207,7 @@ impl Drop for State {
     fn drop(&mut self) {
         if std::thread::panicking() {
             self.keep_logs();
+            evidence::at_failure(self);
         }
         let _ = std::fs::remove_file(&self.paths.socket);
         let _ = std::fs::remove_dir_all(&self.root);

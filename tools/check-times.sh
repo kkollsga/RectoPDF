@@ -16,15 +16,18 @@ TIMES_TOP=40
 
 times_dir() { echo "$common_dir/recto-test-times"; }
 
-# Runs nextest and keeps the JUnit it wrote for the stage that is running, whether it passed or not.
+# Runs nextest and keeps the JUnit it wrote for the stage that is running, whether it passed or not. A failing test that started the app leaves its evidence
+# under the stage's name (RECTO_EVIDENCE, crates/recto-cli/tests/common/evidence.rs), and says how to run it again with the stage's concurrency (CHECK_STAGE_JOBS).
 nt() {
-  local rc=0 junit n
-  cargo nextest run "$@" || rc=$?
+  local rc=0 junit n kept
+  RECTO_EVIDENCE="${CHECK_EVIDENCE_ROOT:-${CARGO_TARGET_DIR:-target}/recto-evidence}/${stage_name:-run}" CHECK_STAGE="${stage_name:-run}" CHECK_STAGE_JOBS="$(nt_jobs "$@")" \
+    cargo nextest run "$@" || rc=$?
   junit="${CARGO_TARGET_DIR:-target}/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
   if [ -f "$junit" ]; then
     mkdir -p "$check_mark.junit"
-    n=$(find "$check_mark.junit" -type f | wc -l | tr -d ' ')
-    cp "$junit" "$check_mark.junit/$(printf '%02d' "$n")-${stage_name:-run}.xml"
+    n=$(find "$check_mark.junit" -type f -name '*.xml' | wc -l | tr -d ' ')
+    kept="$check_mark.junit/$(printf '%02d' "$n")-${stage_name:-run}.xml"
+    cp "$junit" "$kept"
     rm -f "$junit"
   fi
   return "$rc"
@@ -203,4 +206,17 @@ times_report() {
         printf "  %-14s %8s %8s %8s\n", s, a, p, d
       }
     }' $all
+}
+
+# The concurrency a nextest run was given (-j N, --test-threads N), or nothing.
+nt_jobs() {
+  local next=0 a
+  for a in "$@"; do
+    if [ "$next" = 1 ]; then printf '%s' "$a"; return; fi
+    case "$a" in
+      -j | --test-threads | --jobs) next=1 ;;
+      -j* ) printf '%s' "${a#-j}"; return ;;
+      --test-threads=* | --jobs=*) printf '%s' "${a#*=}"; return ;;
+    esac
+  done
 }

@@ -17,13 +17,13 @@ GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::
 # --- Tiers of the tests that launch the app --------------------------------------------------------------------------------------------------------------
 # Every test in these binaries (recto-cli's) starts the real app in a quiet run. APP_BINARIES is all of them: `scope_names_missing` fails when a test file
 # that drives the app is not named here, so a new one can't run in no tier.
-APP_BINARIES='app restore compare long_session registrations'
+APP_BINARIES='app restore compare long_session registrations evidence'
 # Lifecycle: the app starting, updating, being killed and found by Launch Services: every update test end to end, the quiet-run and Launch Services
 # tests, long sessions, a thousand tabs, tabs leaving in bulk, comparisons that leave no views behind, and what is registered afterwards.
 LIFECYCLE_TESTS='(binary(=restore) & test(~update::)) | (binary(=app) & test(~quiet::)) | binary(=long_session) | binary(=registrations) | (binary(=compare) & test(~comparisons_leave_no_views_behind)) | (binary(=restore) & test(~a_thousand_tabs_come_back_cold))'
-# Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state. The rest by construction, so a test is in exactly
+# Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state, and the proof that a failure leaves its evidence. The rest by construction, so a test is in exactly
 # one tier: the one its name puts it in, or this.
-WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare)) & !($LIFECYCLE_TESTS)"
+WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare) | binary(=evidence)) & !($LIFECYCLE_TESTS)"
 # --- Tiers by time ---------------------------------------------------------------------------------------------------------------------------------------
 # The test system's four tiers (docs/reviews/2026-11-12-development-speed.md §5), as `check.sh --slow` reports them against a budget. Tier 1 (core) is every
 # test that is in none of the lists below, in a single process; tier 3 is the window tier and tier 4 the lifecycle tier above; tier 2 (process) is these
