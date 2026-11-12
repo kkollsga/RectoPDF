@@ -510,6 +510,9 @@ impl Drop for Bed {
     }
 }
 
+#[path = "update/slow.rs"]
+mod slow;
+
 /// Failure: an update loses or changes anything the user can see or has changed: tabs, focus, pixel scroll, zoom, unsaved edits and their undo history, Find, Settings. **The test that matters most.** A rich state, then a real update: real zip, real server, real installer and a real swap. The whole of `qa state` is compared before and after by restore's own comparison, and the gap from quit to first correct frame is measured.
 #[test]
 fn an_update_in_the_middle_of_things_changes_nothing() {

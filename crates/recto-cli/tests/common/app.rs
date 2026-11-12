@@ -241,7 +241,11 @@ impl<'a> Run<'a> {
     }
 
     pub fn ok(&self, args: &[&str]) -> Value {
+        let began = Instant::now();
         let (reply, code) = self.state.json(args);
+        if std::env::var_os("RECTO_STEP_TRACE").is_some() {
+            eprintln!("step {:>6} ms  {}", began.elapsed().as_millis(), args.join(" "));
+        }
         assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}{}", self.if_gone(&reply));
         reply["data"].clone()
     }

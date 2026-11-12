@@ -99,11 +99,13 @@ fn every_test_the_slow_stage_names_is_there() {
     let names: Vec<&str> = line.split("test(=").skip(1).filter_map(|part| part.split(')').next()).collect();
     assert!(names.len() >= 20, "{names:?}");
     for name in names {
-        let (files, function) = match name.split_once("::") {
+        // The module is the last one before the function (`update::slow::x` is in `restore/update/slow.rs`).
+        let (files, function) = match name.rsplit_once("::") {
             Some((module, function)) => (
                 vec![
                     tests.join("app").join(format!("{module}.rs")),
                     tests.join("restore").join(format!("{module}.rs")),
+                    tests.join("restore").join(format!("{}.rs", module.replace("::", "/"))),
                 ],
                 function,
             ),
