@@ -247,7 +247,6 @@ pub fn render(tag: &str, data: &Value) -> String {
             }
             out
         }
-        "page_rotate" | "undo" | "redo" | "clear_history" => edit_state(data),
         "permission_set" => format!("Agent access is now {} (was {}).", text(&data["label"]), text(&data["was_label"])),
         "serve" => {
             let word = if data["already"] == true { "already running" } else { "running" };

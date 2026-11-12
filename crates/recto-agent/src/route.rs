@@ -37,16 +37,7 @@ impl Command {
             | Self::UpdateDevBuilds { .. }
             | Self::Settings { .. }
             | Self::View { zoom: Some(_), .. } => Runs::App,
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { zoom: None, .. }
-            | Self::Find { .. }
-            | Self::Compare { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::Save { .. } => Runs::Session,
+            Self::Open { .. } | Self::Tap { .. } | Self::View { zoom: None, .. } | Self::Find { .. } | Self::Compare { .. } => Runs::Session,
         }
     }
 }

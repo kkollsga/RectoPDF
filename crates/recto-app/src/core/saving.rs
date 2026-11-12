@@ -102,11 +102,11 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
         Some(Ok(replace)) => replace,
         None => false,
     };
-    let command = recto_agent::Command::Save {
+    let command = recto_agent::Command::from(recto_agent::commands::saving::Save {
         tab: format!("#{}", id.0),
         out,
         replace,
-    };
+    });
     let mut events = Vec::new();
     match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
         Ok(data) => {

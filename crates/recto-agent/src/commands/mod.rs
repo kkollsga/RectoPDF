@@ -10,6 +10,7 @@ pub mod export;
 pub mod linking;
 pub mod measure;
 pub mod reading;
+pub mod saving;
 pub mod session;
 pub mod sync;
 pub mod tabs;
@@ -226,13 +227,18 @@ family! {
 }
 
 family! {
-    /// Changing pages: `page move`, `page delete`, `page insert`, `edits` and `discard`. Rotate, undo, redo, clear-history and save join when the app's own code stops naming them.
+    /// Changing pages and saving them: rotate, move, delete, insert, the edits, discard, undo, redo, clear-history and save.
     pub enum Edit {
+        PageRotate(editing::PageRotate),
         PageMove(editing::PageMove),
         PageDelete(editing::PageDelete),
         PageInsert(editing::PageInsert),
         Edits(editing::Edits),
         Discard(editing::Discard),
+        Undo(editing::Undo),
+        Redo(editing::Redo),
+        ClearHistory(editing::ClearHistory),
+        Save(saving::Save),
     }
 }
 
@@ -341,9 +347,7 @@ const PARTS: &[&[&[Spec]]] = &[
     &[table::ROWS_OPEN],
     Move::ROWS,
     &[table::ROWS_TAP, table::ROWS_COMPARE, table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
-    &[table::ROWS_PAGE_ROTATE],
     Edit::ROWS,
-    &[table::ROWS_UNDO, table::ROWS_REDO, table::ROWS_CLEAR_HISTORY, table::ROWS_SAVE],
     Waits::ROWS,
     Rights::ROWS,
     &[table::CLI_PERMISSION_SET, table::CLI_SERVE],

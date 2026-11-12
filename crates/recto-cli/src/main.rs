@@ -6,7 +6,7 @@ mod qa;
 
 use recto_agent::commands::access::{Log, PermissionRequest};
 use recto_agent::commands::sync::{Wait, Watch};
-use recto_agent::commands::{Rights, Waits};
+use recto_agent::commands::{Edit, Rights, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -155,7 +155,7 @@ fn through_session(invocation: &Invocation) -> i32 {
                     Err(recto_agent::refusal("log", level, command.access()))
                 }
             }
-            (Command::Save { .. } | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
+            (Command::Edit(Edit::Save(_)) | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 // These always refuse. Saying why is more use than saying nothing's running.
                 let mut session = Session::new(DrawableLoader);
                 local::run_here(&mut session, &paths, &mut ActivityLog::new(&paths), &command).map(Answer::Here)

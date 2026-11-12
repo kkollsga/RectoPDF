@@ -288,14 +288,14 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             sync: Some("on".into()),
             off: false,
         },
-        "edit.undo" => Command::Undo { tab: active() },
-        "edit.redo" => Command::Redo { tab: active() },
-        "edit.clear_history" => Command::ClearHistory { tab: active() },
-        "file.save" => Command::Save {
+        "edit.undo" => Command::from(recto_agent::commands::editing::Undo { tab: active() }),
+        "edit.redo" => Command::from(recto_agent::commands::editing::Redo { tab: active() }),
+        "edit.clear_history" => Command::from(recto_agent::commands::editing::ClearHistory { tab: active() }),
+        "file.save" => Command::from(recto_agent::commands::saving::Save {
             tab: active(),
             out: None,
             replace: false,
-        },
+        }),
         "find.next" | "find.previous" => Command::Find {
             query: None,
             next: id == "find.next",
@@ -303,16 +303,16 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             close: false,
             limit: None,
         },
-        "rotate.left" if !reader.edit_mode => Command::PageRotate {
+        "rotate.left" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),
             pages: "all".into(),
             degrees: -90,
-        },
-        "rotate.right" if !reader.edit_mode => Command::PageRotate {
+        }),
+        "rotate.right" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),
             pages: "all".into(),
             degrees: 90,
-        },
+        }),
         file if file.starts_with(RECENT) => Command::Open {
             path: recent.iter().find(|(key, _)| *key == &file[RECENT.len()..])?.1.into(),
             page: None,

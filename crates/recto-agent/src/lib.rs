@@ -251,40 +251,10 @@ pub enum Command {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    PageRotate {
-        #[serde(default = "active_tab")]
-        tab: String,
-        pages: String,
-        degrees: i32,
-    },
-    Undo {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    Redo {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
     /// Puts a tab to sleep now, as being left alone for five minutes would.
     SessionSleep {
         #[serde(default = "active_tab")]
         tab: String,
-    },
-    /// Clears a tab's edit history: every step undo or redo could take, and its file. Unsaved edits stay. Below Full it refuses if any are the user's.
-    ClearHistory {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// Doesn't exist yet, and says so.
-    Save {
-        #[serde(default = "active_tab")]
-        tab: String,
-        /// Save As: the new file. Without it, the file itself.
-        #[serde(default)]
-        out: Option<PathBuf>,
-        /// Save As over a file that's there, which the person chose to replace.
-        #[serde(default)]
-        replace: bool,
     },
     /// What the state record holds and what's become of it.
     SessionShow {},
@@ -758,71 +728,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
             Err(update_needs_app())
-        }
-        Command::PageRotate { tab, pages, degrees } => {
-            let turns = quarter_turns(*degrees)?;
-            // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
-            if pages == "all" {
-                return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| {
-                    e.rotate(0, e.len(), turns)
-                });
-            }
-            let (start, len) = parse_pages(pages, false)?;
-            edit(
-                access,
-                level,
-                tab,
-                events,
-                format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")),
-                |e| e.rotate(start, len, turns),
-            )
-        }
-        Command::Undo { tab } => access.with(|s| {
-            let id = select(s, tab)?;
-            s.set_agent_at_full(level >= Level::Full);
-            if !s.undo_edit_as(id, Author::Agent)? {
-                return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
-            }
-            events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
-            data["did"] = json!("Undid the last edit.");
-            Ok(with_place_note(s, id, data))
-        }),
-        Command::Redo { tab } => access.with(|s| {
-            let id = select(s, tab)?;
-            s.set_agent_at_full(level >= Level::Full);
-            if !s.redo_edit_as(id, Author::Agent)? {
-                return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
-            }
-            events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
-            data["did"] = json!("Redid the last undone edit.");
-            Ok(with_place_note(s, id, data))
-        }),
-        Command::ClearHistory { tab } => access.with(|s| {
-            let id = select(s, tab)?;
-            refuse_discard_of_owners_edits(s, id, level)?;
-            let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
-            s.clear_history(id, recto_session::ClearReason::UserAsked);
-            events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
-            data["did"] = json!(if had_any {
-                "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now."
-            } else {
-                "There was no edit history to clear."
-            });
-            Ok(with_place_note(s, id, data))
-        }),
-        Command::Save { tab, out, replace } => {
-            let to = match out {
-                Some(out) => saving::SaveTo::As {
-                    out: out.clone(),
-                    replace: *replace,
-                },
-                None if *replace => return Err(AgentError::new("usage", "`--replace` goes with Save As's `--out`.", exit::USAGE)),
-                None => saving::SaveTo::Same,
-            };
-            saving::save(access, level, tab, &to, events)
         }
         Command::Start(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
@@ -1946,27 +1851,27 @@ mod tests {
                 pages: "1".into(),
                 to: 1,
             }),
-            Command::PageRotate {
+            Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "1".into(),
                 degrees: 90,
-            },
+            }),
             Command::from(crate::commands::editing::PageDelete { tab: tab(), pages: "1".into() }),
             Command::from(crate::commands::editing::PageInsert {
                 tab: tab(),
                 path: "/d/b.pdf".into(),
                 at: 1,
             }),
-            Command::Undo { tab: tab() },
-            Command::Redo { tab: tab() },
+            Command::from(crate::commands::editing::Undo { tab: tab() }),
+            Command::from(crate::commands::editing::Redo { tab: tab() }),
             Command::from(crate::commands::editing::Discard { tab: tab() }),
-            Command::ClearHistory { tab: tab() },
+            Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
             Command::SessionSleep { tab: tab() },
-            Command::Save {
+            Command::from(crate::commands::saving::Save {
                 tab: tab(),
                 out: None,
                 replace: false,
-            },
+            }),
             Command::from(commands::access::Sign {}),
             Command::from(commands::session::Status {}),
             Command::from(commands::access::PermissionShow {}),
@@ -2376,11 +2281,11 @@ mod tests {
         run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: "active".into(),
                 pages: "2-3".into(),
                 degrees: -90,
-            },
+            }),
         )
         .unwrap();
         assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
@@ -2389,11 +2294,11 @@ mod tests {
         run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: "active".into(),
                 pages: "all".into(),
                 degrees: 90,
-            },
+            }),
         )
         .unwrap();
         assert!(
@@ -2432,9 +2337,9 @@ mod tests {
         .unwrap();
         assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["added"], true);
         assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["untrusted"]["added_file"], "b.pdf");
-        run(&mut s, Level::Control, &Command::Undo { tab: "active".into() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: "active".into() })).unwrap();
         assert_eq!(s.pages_in(id), 9);
-        let redone = run(&mut s, Level::Control, &Command::Redo { tab: "active".into() }).unwrap();
+        let redone = run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: "active".into() })).unwrap();
         assert_eq!((&redone["pages"], &redone["can_redo"]), (&json!(19), &json!(false)));
     }
 
@@ -2460,11 +2365,11 @@ mod tests {
         let far = run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "11".into(),
                 degrees: 90,
-            },
+            }),
         )
         .unwrap_err();
         assert_eq!((far.code, far.exit), ("page_out_of_range", exit::NOT_FOUND));
@@ -2472,11 +2377,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::PageRotate {
+                &Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "1".into(),
                     degrees: 45
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -2486,11 +2391,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::PageRotate {
+                &Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "1".into(),
                     degrees: 720
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -2529,11 +2434,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::PageRotate {
+                &Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "4-".into(),
                     degrees: 90
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -2544,11 +2449,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::PageRotate {
+                &Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "4-x-".into(),
                     degrees: 90
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -2582,8 +2487,18 @@ mod tests {
             .code,
             "bad_path"
         );
-        assert_eq!(run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap_err().code, "nothing_to_undo");
-        assert_eq!(run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap_err().code, "nothing_to_redo");
+        assert_eq!(
+            run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() }))
+                .unwrap_err()
+                .code,
+            "nothing_to_undo"
+        );
+        assert_eq!(
+            run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() }))
+                .unwrap_err()
+                .code,
+            "nothing_to_redo"
+        );
         assert!(!s.is_edited(id));
         assert_eq!(s.pages_in(id), 10);
     }
@@ -2595,22 +2510,22 @@ mod tests {
         run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: "#1".into(),
                 pages: "1".into(),
                 degrees: 90,
-            },
+            }),
         )
         .unwrap();
         assert_eq!(
             run(
                 &mut s,
                 Level::ReadOnly,
-                &Command::Save {
+                &Command::from(crate::commands::saving::Save {
                     tab: "#1".into(),
                     out: None,
                     replace: false
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -2619,11 +2534,11 @@ mod tests {
         let save = run(
             &mut s,
             Level::Full,
-            &Command::Save {
+            &Command::from(crate::commands::saving::Save {
                 tab: "#1".into(),
                 out: None,
                 replace: false,
-            },
+            }),
         )
         .unwrap_err();
         assert!(
@@ -2635,11 +2550,11 @@ mod tests {
         let replace = run(
             &mut s,
             Level::Control,
-            &Command::Save {
+            &Command::from(crate::commands::saving::Save {
                 tab: "#1".into(),
                 out: Some("/nowhere/x.pdf".into()),
                 replace: true,
-            },
+            }),
         )
         .unwrap_err();
         assert_eq!(replace.code, "permission_denied", "replacing another file is Full's");
@@ -2674,11 +2589,11 @@ mod tests {
     fn agent_attempts() -> Vec<Command> {
         let tab = || "#1".to_string();
         vec![
-            Command::PageRotate {
+            Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "9".into(),
                 degrees: 90,
-            },
+            }),
             Command::from(crate::commands::editing::PageDelete {
                 tab: tab(),
                 pages: "10".into(),
@@ -2726,7 +2641,7 @@ mod tests {
         check_still_there(&s, "before any undo");
         // Undone, one at a time. Undoing is allowed, since it can be redone. Nothing that clears them is, at any point.
         for left in [1, 0] {
-            run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+            run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
             for attempt in agent_attempts() {
                 let refused = run(&mut s, Level::Control, &attempt).unwrap_err();
                 assert_eq!(
@@ -2749,21 +2664,21 @@ mod tests {
             "with both undone there's nothing unsaved, and that's when a close would have got through"
         );
         // And redo gets back all of it, exactly.
-        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
         assert_eq!(turned_pages(&s), users);
         // The agent's own work on top: edit, undo, edit again, all fine, and the user's stay under it.
         run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "9".into(),
                 degrees: 90,
-            },
+            }),
         )
         .unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         run(
             &mut s,
             Level::Control,
@@ -2773,7 +2688,7 @@ mod tests {
             }),
         )
         .expect("only the agent's own undone step goes");
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         // Closing with the agent's own step undone still can't happen, because the user's edits are unsaved.
         let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(close.code, "unsaved_changes");
@@ -2796,7 +2711,7 @@ mod tests {
         let id = TabId(1);
         let tab = || "#1".to_string();
         owners_rotation(&mut s, 0);
-        let undone = run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        let undone = run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         assert_eq!(
             (&undone["edited"], &undone["saved"], &undone["user_edits_undone"], &undone["can_redo"]),
             (&json!(false), &json!(false), &json!(true), &json!(true)),
@@ -2837,7 +2752,7 @@ mod tests {
             }),
         )
         .unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         run(
             &mut s,
             Level::Control,
@@ -2859,14 +2774,14 @@ mod tests {
         run(
             &mut s,
             Level::Control,
-            &Command::PageRotate {
+            &Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "1".into(),
                 degrees: 90,
-            },
+            }),
         )
         .unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         assert!(s.page_edits(id).unwrap().can_redo());
         run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).expect("nothing of the user's is at stake");
         assert!(s.tabs().is_empty());
@@ -2886,22 +2801,22 @@ mod tests {
         assert_eq!(
             said(
                 &mut s,
-                Command::PageRotate {
+                Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "4".into(),
                     degrees: 270
-                }
+                })
             )["did"],
             "Rotated page 4 by 270 degrees."
         );
         assert_eq!(
             said(
                 &mut s,
-                Command::PageRotate {
+                Command::from(crate::commands::editing::PageRotate {
                     tab: tab(),
                     pages: "1-2".into(),
                     degrees: -90
-                }
+                })
             )["did"],
             "Rotated pages 1-2 by -90 degrees."
         );
@@ -2942,8 +2857,14 @@ mod tests {
             )["did"],
             "Added 10 pages at page 2."
         );
-        assert_eq!(said(&mut s, Command::Undo { tab: tab() })["did"], "Undid the last edit.");
-        assert_eq!(said(&mut s, Command::Redo { tab: tab() })["did"], "Redid the last undone edit.");
+        assert_eq!(
+            said(&mut s, Command::from(crate::commands::editing::Undo { tab: tab() }))["did"],
+            "Undid the last edit."
+        );
+        assert_eq!(
+            said(&mut s, Command::from(crate::commands::editing::Redo { tab: tab() }))["did"],
+            "Redid the last undone edit."
+        );
         let shown = human::render(
             "page_delete",
             &run(
@@ -3007,11 +2928,11 @@ mod tests {
         let mut s = edit_session();
         let tab = || "#1".to_string();
         for command in [
-            Command::PageRotate {
+            Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
                 pages: "1".into(),
                 degrees: 90,
-            },
+            }),
             Command::from(crate::commands::editing::PageMove {
                 tab: tab(),
                 pages: "1".into(),
@@ -3027,8 +2948,8 @@ mod tests {
             run(&mut s, Level::Control, &command).unwrap();
             assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "{}", command.tag());
         }
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
         assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
     }
 
@@ -3082,7 +3003,7 @@ mod tests {
         );
         assert_eq!(turned_pages(&s)[0], 1, "the user's edit is still there");
         // The cap isn't an agent erasing anything: all the agent's steps can come off, and undo isn't refused.
-        while run(&mut s, Level::Control, &Command::Undo { tab: tab() }).is_ok() {}
+        while run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).is_ok() {}
         assert!(s.is_edited(TabId(1)), "it still differs from the file, and says so");
         let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert!(
@@ -3115,7 +3036,7 @@ mod tests {
         let tab = || "#1".to_string();
         owners_rotation(&mut s, 0);
         owners_rotation(&mut s, 1);
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
 
         let both = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(
@@ -3149,13 +3070,13 @@ mod tests {
         );
         assert!(!at_full.next.contains("needs Full"), "{}", at_full.next);
 
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         let only_undone = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(only_undone.code, "would_clear_redo");
         assert!(!only_undone.message.contains("unsaved"), "nothing's unsaved now: {}", only_undone.message);
 
-        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
+        run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
         let only_unsaved = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(only_unsaved.code, "unsaved_changes");
         assert!(!only_unsaved.next.contains("recto redo"), "there's nothing to redo: {}", only_unsaved.next);

@@ -1,7 +1,7 @@
 //! The top-level command: a family's, or one of the commands the app's own code still builds and matches by their fields (`recto-ffi`, `recto-app`). Those move into families when the window runs commands itself (step R2.2's next slice, then R2.3). Every list here is spelled out for every command, with no default arm, so a command can't be left out of one.
 
 use crate::table::{self, Access};
-use crate::{Command, Level, clean_range, file_label};
+use crate::{Command, Level, file_label};
 use serde_json::{Value, json};
 
 impl Command {
@@ -24,12 +24,7 @@ impl Command {
             Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
-            Self::PageRotate { .. } => "page_rotate",
-            Self::Undo { .. } => "undo",
-            Self::Redo { .. } => "redo",
-            Self::ClearHistory { .. } => "clear_history",
             Self::SessionSleep { .. } => "session_sleep",
-            Self::Save { .. } => "save",
             Self::SessionShow {} => "session_show",
             Self::SessionSave {} => "session_save",
             Self::SessionRestore {} => "session_restore",
@@ -84,12 +79,7 @@ impl Command {
             | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
             | Self::SessionSleep { .. }
-            | Self::Save { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -119,12 +109,7 @@ impl Command {
             | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
             | Self::SessionSleep { .. }
-            | Self::Save { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -156,12 +141,7 @@ impl Command {
             | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
             | Self::SessionSleep { .. }
-            | Self::Save { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -193,12 +173,7 @@ impl Command {
             | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
             | Self::SessionSleep { .. }
-            | Self::Save { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -222,13 +197,7 @@ impl Command {
             Self::Waits(command) => command.tab(),
             Self::Rights(command) => command.tab(),
             Self::Session(command) => command.tab(),
-            Self::Tap { tab }
-            | Self::PageRotate { tab, .. }
-            | Self::Undo { tab }
-            | Self::Redo { tab }
-            | Self::ClearHistory { tab }
-            | Self::SessionSleep { tab }
-            | Self::Save { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::SessionSleep { tab } => Some(tab),
             Self::Open { .. }
             | Self::View { .. }
             | Self::Compare { .. }
@@ -262,14 +231,7 @@ impl Command {
             Self::Rights(command) => command.log_details(),
             Self::Session(command) => command.log_details(),
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
-            Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
-            Self::Tap { tab }
-            | Self::Undo { tab }
-            | Self::Redo { tab }
-            | Self::ClearHistory { tab }
-            | Self::SessionSleep { tab }
-            | Self::Save { tab, out: None, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::SessionSleep { tab } => json!({ "tab": tab_of(tab) }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
