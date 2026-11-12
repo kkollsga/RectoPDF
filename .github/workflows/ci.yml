@@ -102,12 +102,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # `needs.parts.result` is success only when every part of the matrix succeeded; failure, cancelled and skipped all fail this job, so a required
+      # check named `check` can never read as passing because a part didn't run.
       - name: All three parts passed
         env:
           RESULT: ${{ needs.parts.result }}
         run: |
           echo "check (core, window, lifecycle): $RESULT"
-          [ "$RESULT" = success ]
+          [ "$RESULT" = success ] || { echo "A part did not succeed ($RESULT), so check fails." >&2; exit 1; }
   # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
   # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
   # change in either between versions fails here, not on a user's Mac as a renderer that won't start.
