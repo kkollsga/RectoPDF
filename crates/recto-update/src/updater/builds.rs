@@ -176,7 +176,7 @@ impl Updater {
         self.ready_folder();
         self.log(&format!("development build {version} handed over"));
         let log_file = self.files.log.clone();
-        let staged = stage::prepare_build(&mut file, &version, &self.source, &facts.app, &mut |step| {
+        let staged = self.seams.releases.stage_build(&mut file, &version, &self.source, &facts.app, &mut |step| {
             crate::plan::log(&log_file, &format!("{version}: {step}"));
         });
         drop(file);

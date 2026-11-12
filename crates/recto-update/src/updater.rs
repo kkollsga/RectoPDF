@@ -2,9 +2,9 @@
 //!
 //! Every word and rule's here, and the host only draws. What it needs of the app, it asks through [`Host`], which is all a test needs to stand in for.
 
-use crate::fetch::{self, FetchError};
+use crate::fetch::FetchError;
 use crate::plan::{Files, Outcome, OutcomeKind, Plan, TestLaunch, beside_app, helper_alive, log, new_app_in, previous_app_in};
-use crate::rules::{self, AutoLook, AutoStep, Latest, MAX_LATEST_BYTES, is_newer, parse_latest};
+use crate::rules::{self, AutoLook, AutoStep, Latest, is_newer};
 use crate::saved::{LastUpdate, Probation, Saved};
 use crate::source::{Mode, Source};
 use crate::stage::{self, Stage, StageError};
@@ -14,14 +14,17 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub mod builds;
 mod now;
 mod said;
+pub mod seams;
 mod words;
 pub use now::UpdateAction;
 pub use said::{Said, SaidKind};
+use seams::duration_ms;
+pub use seams::{Releases, Seams, WallClock};
 
 /// How long a hand-off gets to write and read back the state.
 const HAND_OFF_LIMIT: Duration = Duration::from_secs(5);
@@ -262,6 +265,8 @@ pub struct Updater {
     clock_ahead_ms: AtomicI64,
     /// Stops an install thread waiting on something, when the app's going anyway.
     stopping: AtomicBool,
+    /// The wall clock and the releases: the real ones, but in a test.
+    seams: Seams,
 }
 
 /// What became of the last install, as a launch finds it.
@@ -313,55 +318,6 @@ fn ago(at_ms: u64, now_ms: u64) -> String {
 }
 
 impl Updater {
-    #[must_use]
-    pub fn new(root: &Path, source: Source, host: Arc<dyn Host>) -> Arc<Self> {
-        let st = St {
-            status: Status::Idle,
-            saved: Saved::default(),
-            launched_ms: crate::wall_ms(),
-            facts: None,
-            second_copy: false,
-            notice: None,
-            install_look_at: None,
-            arrived: None,
-            reopened_by_update: false,
-            fall_back: None,
-            first_frame_done: false,
-            first_frame_early: None,
-            build: None,
-            from_menu: false,
-            alert: None,
-        };
-        Arc::new(Self {
-            files: Files::in_state(root),
-            source,
-            host,
-            st: Mutex::new(st),
-            writing: Mutex::new(()),
-            clock_ahead_ms: AtomicI64::new(0),
-            stopping: AtomicBool::new(false),
-        })
-    }
-
-    /// Now, by this updater's clock.
-    #[must_use]
-    pub fn now_ms(&self) -> u64 {
-        crate::wall_ms().saturating_add_signed(self.clock_ahead_ms.load(Ordering::SeqCst))
-    }
-
-    /// Moves a test's clock on. Says whether it did: only a test run's clock moves.
-    pub fn set_test_clock(&self, ahead_ms: i64) -> bool {
-        if self.source.mode != Mode::Test {
-            return false;
-        }
-        self.clock_ahead_ms.store(ahead_ms, Ordering::SeqCst);
-        true
-    }
-
-    fn since_input(&self, look: &Look) -> u64 {
-        look.since_input_ms.saturating_add_signed(self.clock_ahead_ms.load(Ordering::SeqCst))
-    }
-
     #[must_use]
     pub fn source(&self) -> &Source {
         &self.source
@@ -1108,8 +1064,7 @@ impl Updater {
             return Err(FetchError::Failed("a test run reaches no update server"));
         }
         let user_agent = format!("{APP_NAME}/{version}");
-        let body = fetch::get_small(&self.source, &self.source.latest_url(), &user_agent, MAX_LATEST_BYTES, fetch::CHECK_LIMIT)?;
-        parse_latest(&body).ok_or(FetchError::Failed("the release's description can't be read"))
+        self.seams.releases.latest(&self.source, &user_agent)
     }
 
     fn finish_check(self: &Arc<Self>, asked: Asked) {
@@ -1309,7 +1264,7 @@ impl Updater {
             user_agent: &user_agent,
         };
         let log_file = self.files.log.clone();
-        let staged = match stage::prepare(&stage_in, &mut |step| log(&log_file, &format!("{version}: {step}"))) {
+        let staged = match self.seams.releases.stage(&stage_in, &mut |step| log(&log_file, &format!("{version}: {step}"))) {
             Ok(staged) => staged,
             Err(StageError { code, why, lasting }) => {
                 self.log(&format!("{version} was refused: {code}"));
@@ -1334,7 +1289,7 @@ impl Updater {
     /// The download's good. What's in flight finishes first, and the user's told if they're waiting on it. Then the hand-off and the quit: from here, what's written is what comes back.
     fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>) {
         let version = to.version;
-        let began = Instant::now();
+        let began = self.wall_ms();
         loop {
             // The user's quitting by other means, and this doesn't turn that into a reopening.
             if self.stopping.load(Ordering::SeqCst) {
@@ -1394,7 +1349,7 @@ impl Updater {
                     self.host.changed();
                 }
             }
-            if began.elapsed() >= WAIT_LIMIT {
+            if self.wall_ms().saturating_sub(began) >= duration_ms(WAIT_LIMIT) {
                 self.failed(asked, version, &format!("it waited too long: {for_what}"), false);
                 return;
             }
@@ -1446,7 +1401,7 @@ impl Updater {
             app: facts.app.clone(),
             beside,
             root: self.files.root.clone(),
-            quit_at_ms: crate::wall_ms(),
+            quit_at_ms: self.wall_ms(),
             background: !self.host.frontmost(),
             quit_limit_ms: crate::plan::QUIT_LIMIT_MS,
             start_limit_ms,
@@ -1476,8 +1431,11 @@ impl Updater {
             give_up("the app couldn't be asked to quit");
             return;
         }
-        // Past here this process should be gone. If it isn't, the plan goes, so the installer stands down, and the app's given back.
-        std::thread::sleep(QUIT_PATIENCE);
+        // Past here this process should be gone. If it isn't, the plan goes, so the installer stands down, and the app's given back. By this updater's clock, a step at a time: a test's process that hands off goes on, and its clock doesn't, so this never gives up under it.
+        let told = self.wall_ms();
+        while self.wall_ms().saturating_sub(told) < duration_ms(QUIT_PATIENCE) {
+            std::thread::sleep(WAIT_STEP);
+        }
         give_up("the app didn't quit");
     }
 
@@ -1625,6 +1583,7 @@ mod tests {
     use crate::fetch::tests::{Answer, Server};
     use crate::stage::tests::{fake_app, fake_app_at, latest_json, temp_dir, zip_of};
     use std::sync::atomic::AtomicU32;
+    use std::time::Instant;
 
     #[derive(Default)]
     struct Fake {

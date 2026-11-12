@@ -2,6 +2,7 @@
 //! what it heard, and a page view's hooks that hear nothing. The headless app of step R1.3 is built from these.
 
 pub mod headless;
+pub mod update_bed;
 
 use crate::clock::Clock;
 use crate::listener::{Listener, QuitAnswer};

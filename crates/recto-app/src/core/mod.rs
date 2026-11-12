@@ -193,7 +193,10 @@ pub struct Inner {
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state.
     pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>,
+    /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
     pub started: Instant,
+    /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
+    pub(crate) clock: Arc<dyn crate::clock::Clock>,
     /// The record's been read and applied, whatever it said.
     pub restored: AtomicBool,
     /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
@@ -212,7 +215,7 @@ pub struct Lifecycle {
     pub(crate) others_looking: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
     pub sheets: AtomicU32,
-    /// When the user last touched the app, in milliseconds of `started`. One number, set by what the event monitor calls, with no timer.
+    /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
     pub(crate) last_input_ms: AtomicU64,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
@@ -267,9 +270,10 @@ pub struct Tools {
 #[allow(clippy::new_without_default)]
 impl Lifecycle {
     /// At launch: nothing read, nothing shown, no hand-off.
-    pub fn new() -> Self {
+    pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self {
         Self {
             started: Instant::now(),
+            clock,
             restored: AtomicBool::new(false),
             shown_with_state: AtomicBool::new(false),
             shown_without_state: AtomicBool::new(false),
@@ -283,6 +287,16 @@ impl Lifecycle {
             sheets: AtomicU32::new(0),
             qa_hold_reads: AtomicBool::new(false),
         }
+    }
+
+    /// Now, by the clock, in its milliseconds.
+    pub(crate) fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// How long since the launch, by the clock.
+    pub(crate) fn since_start(&self) -> Duration {
+        Duration::from_millis(self.now_ms())
     }
 }
 
@@ -411,7 +425,7 @@ impl Inner {
             self.tools.printing.busy(),
         );
         let last = self.life.last_input_ms.load(Ordering::Relaxed);
-        let now = u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let now = self.life.now_ms();
         HandOffCheck {
             safe: busy.is_empty(),
             busy,
@@ -718,15 +732,11 @@ impl Inner {
     }
 
     pub fn note_nearby(&self) {
-        self.life
-            .last_input_ms
-            .store(u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
     }
 
     pub fn note_input(&self) {
-        self.life
-            .last_input_ms
-            .store(u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }

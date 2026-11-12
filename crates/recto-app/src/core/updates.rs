@@ -24,14 +24,54 @@ pub const DEV_BUILDS_ROW: &str = "update.dev_builds";
 /// The button that installs a waiting update now.
 pub const UPDATE_NOW_ROW: &str = "update.now";
 
+/// **What starts the installer:** a process of its own, detached, that outlives this one. A test's records the plan instead (step R1.4).
+pub trait Installer: Send + Sync {
+    /// Starts it on the plan, logging to `log`. Says its process number.
+    ///
+    /// # Errors
+    ///
+    /// It couldn't be started.
+    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32>;
+}
+
+/// The real installer, `recto-updater install <plan>`, as the updater has always started it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RealInstaller;
+
+impl Installer for RealInstaller {
+    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        recto_platform::local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
+    }
+}
+
+/// What an update is made with that a test gives otherwise: the updater's wall clock and releases, and what starts the installer. The real ones by default.
+#[derive(Clone)]
+pub struct UpdateSeams {
+    pub updater: recto_update::updater::Seams,
+    pub installer: Arc<dyn Installer>,
+}
+
+impl Default for UpdateSeams {
+    fn default() -> Self {
+        Self {
+            updater: recto_update::updater::Seams::default(),
+            installer: Arc::new(RealInstaller),
+        }
+    }
+}
+
 /// How the updater reaches the app. Holds only a way back to it: it's made first, as the updater's a part of what it reaches.
 pub struct Hooks {
     inner: OnceLock<Weak<Inner>>,
+    installer: Arc<dyn Installer>,
 }
 
 impl Hooks {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { inner: OnceLock::new() })
+    pub fn new(installer: Arc<dyn Installer>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: OnceLock::new(),
+            installer,
+        })
     }
 
     pub fn attach(&self, inner: Weak<Inner>) {
@@ -139,11 +179,15 @@ impl Host for Hooks {
     fn documents_asked_for(&self) -> Vec<PathBuf> {
         lock(&ASKED_TO_OPEN).clone()
     }
+
+    fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        self.installer.start(helper, plan, log)
+    }
 }
 
 /// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on. Then a test's broken release ends here, as a new version that crashes once it's up would.
 pub fn first_frame_shown(updates: &recto_update::updater::Updater) {
-    updates.first_frame(recto_update::wall_ms());
+    updates.first_frame(updates.wall_ms());
     let Some(app) = updates.app() else { return };
     if recto_update::test_breakage(&app, recto_update::TestBreakage::EndsAfterFirstFrame) {
         std::thread::sleep(Duration::from_millis(300));
