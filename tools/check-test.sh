@@ -12,7 +12,10 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # Everything check.sh and the queue read from the environment, so a run on CI (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*) or in a shell of someone's own makes no
 # difference: the first full run of the three-part CI layout failed 119 cases because CHECK_PART=core leaked in. A case below runs a slice with them all set.
 unset CHECK_ALL CHECK_BASE CHECK_AGAIN CHECK_PART HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS CARGO_TARGET_DIR NEXTEST_PROFILE CI TMPDIR_CHECK
-for name in $(env | sed -n 's/^\(GITHUB_[A-Z0-9_]*\|NEXTEST_[A-Z0-9_]*\|CHECK_[A-Z0-9_]*\)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
+# ERE, as macOS's sed has no `\|` in a basic expression: written that way this loop unset nothing, and a run of this inside `check.sh --full` took its
+# CHECK_RERUN=0 (2026-11-12), as one on CI would take its 4. What check.sh exports to its children is unset by name too.
+unset CHECK_RERUN CHECK_RERUN_TESTS CHECK_RERUN_SECONDS CHECK_SLOW_SEED CHECK_EVIDENCE_ROOT CHECK_LIKE_CI CHECK_LIKE_CI_WRAP CHECK_STAGE CHECK_STAGE_JOBS LIKE_CI_LIMITS
+for name in $(env | sed -nE 's/^((GITHUB|NEXTEST|CHECK|PUSH_MAIN|LIKE)_[A-Z0-9_]*)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
