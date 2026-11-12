@@ -161,7 +161,7 @@ impl Shared {
                 inner.running = Some((job.key, Arc::clone(&stop), job.path.clone()));
                 (job, stop)
             };
-            self.tell(Event::new("contents_generating", json!({ "file": job.key.short() })));
+            self.tell(Event::ContentsGenerating { file: job.key.short() });
             let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.runner.run(&job, &stop)))
                 .unwrap_or_else(|_| (Outcome::Failed("helper_stopped".into()), Value::Null));
             recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
@@ -205,7 +205,13 @@ impl Shared {
                 }
             };
             // What it took, for whoever's watching: numbers only.
-            self.tell(Event::new("contents_generated", json!({ "file": job.key.short(), "state": state, "code": outcome.code(), "elapsed_ms": report["elapsed_ms"], "helper_peak_bytes": report["helper_peak_watched_bytes"] })));
+            self.tell(Event::ContentsGenerated {
+                file: job.key.short(),
+                state,
+                code: outcome.code().map(str::to_string),
+                elapsed_ms: report["elapsed_ms"].clone(),
+                helper_peak_bytes: report["helper_peak_watched_bytes"].clone(),
+            });
         }
     }
 }

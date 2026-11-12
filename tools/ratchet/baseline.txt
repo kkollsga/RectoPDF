@@ -1,11 +1,11 @@
 enum crates/recto-agent/src/lib.rs::Command 68
-ffi crates/recto-ffi/src 11970
-file crates/recto-agent/src/lib.rs 2460
+ffi crates/recto-ffi/src 11956
+file crates/recto-agent/src/lib.rs 2403
 file crates/recto-agent/src/table.rs 4530
 file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 5089
+file crates/recto-ffi/src/lib.rs 5075
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
@@ -14,10 +14,10 @@ file crates/recto-session/src/lib.rs 3722
 file crates/recto-session/src/record.rs 1561
 file crates/recto-update/src/updater.rs 2858
 fn crates/recto-agent/src/human.rs::render 231
-fn crates/recto-agent/src/lib.rs::execute_held 300
+fn crates/recto-agent/src/lib.rs::execute_held 291
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
-fn crates/recto-agent/src/saving.rs::save 152
+fn crates/recto-agent/src/saving.rs::save 151
 fn crates/recto-agent/src/selecting.rs::run_counted 157
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
@@ -26,7 +26,7 @@ fn crates/recto-core/src/save.rs::save 213
 fn crates/recto-ffi/src/lib.rs::AppCore::start 210
 fn crates/recto-ffi/src/lib.rs::AppHost::run_counted 156
 fn crates/recto-ffi/src/lib.rs::reconcile 500
-fn crates/recto-ffi/src/lib.rs::session_thread 353
+fn crates/recto-ffi/src/lib.rs::session_thread 350
 fn crates/recto-fuzz/src/targets/pdf.rs::build_tree 250
 fn crates/recto-index/src/select.rs::PageText::find_edges 181
 fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162

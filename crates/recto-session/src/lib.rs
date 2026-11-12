@@ -4,6 +4,7 @@
 //! reads a PDF's facts and closes it. Only the active tab and the most recent others keep their contents, up to
 //! [`MAX_WARM`], and anything evicted is rebuilt from disk when it's needed again.
 
+pub mod change;
 pub mod compare;
 pub mod edit;
 pub mod palette;
@@ -11,6 +12,7 @@ pub mod record;
 pub mod sleep;
 pub mod trail;
 
+pub use change::Closed;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 use record::{
@@ -1335,23 +1337,21 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
-    pub fn tap(&mut self, id: TabId) -> Result<(), SessionError> {
+    pub fn tap(&mut self, id: TabId) -> Result<Option<TabId>, SessionError> {
         if self.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
         }
+        let before = self.active;
         // A plain click on a tab during a comparison returns to one, that one (owner, 2026-11-08: comparison is by ⌘-click).
-        if self.comparison.take().is_some() {
-            self.activate(id);
-            return Ok(());
-        }
-        if self.active == Some(id) {
+        let comparing = self.comparison.take().is_some();
+        if self.active == Some(id) && !comparing {
             if let Some(tab) = self.tab_mut(id) {
                 tab.toc_open = !tab.toc_open;
             }
         } else {
             self.activate(id);
         }
-        Ok(())
+        Ok(change::switched(before, self.active))
     }
 
     /// Moves a tab to a zero-based page, clamped to the document.
@@ -2351,15 +2351,15 @@ impl<L: DocLoader> Session<L> {
         self.journals.get(&id).map(|name| &**name)
     }
 
-    /// **The close a prompt's Save asked for, once the save is done.** If an edit or an undo came in since, the file doesn't have it, so the tab stays open and this says `false`: nothing is lost unasked. Otherwise it closes, letting go of undone steps, as the prompt said they would go.
-    pub fn close_after_save(&mut self, id: TabId) -> Result<bool, SessionError> {
+    /// **The close a prompt's Save asked for, once the save is done.** If an edit or an undo came in since, the file doesn't have it, so the tab stays open and this says `None`: nothing is lost unasked. Otherwise it closes, letting go of undone steps, as the prompt said they would go.
+    pub fn close_after_save(&mut self, id: TabId) -> Result<Option<Closed>, SessionError> {
         if self.is_edited(id) {
-            return Ok(false);
+            return Ok(None);
         }
         if self.has_undone_owner_steps(id) {
             self.discard_edits(id);
         }
-        self.close(id).map(|()| true)
+        self.close(id).map(Some)
     }
 
     /// Whether a save of this tab is under way.
@@ -3093,9 +3093,10 @@ impl<L: DocLoader> Session<L> {
         self.clear_history(id, ClearReason::Discard);
     }
 
-    /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
+    /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active, and the answer says which.
     /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
-    pub fn close(&mut self, id: TabId) -> Result<(), SessionError> {
+    pub fn close(&mut self, id: TabId) -> Result<Closed, SessionError> {
+        let before = self.active;
         if self.is_saving(id) {
             return Err(SessionError::Saving);
         }
@@ -3156,7 +3157,7 @@ impl<L: DocLoader> Session<L> {
                 self.activate(next);
             }
         }
-        Ok(())
+        Ok(Closed::after(id, before, self.active))
     }
 
     /// Builds the sidebar. Cost depends on the visible rows and the active tab's contents, never on idle tabs' PDFs.
@@ -3333,11 +3334,12 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.
-    pub fn compare(&mut self, tabs: &[TabId], reading: Option<TabId>) -> Result<(), compare::CompareError> {
+    pub fn compare(&mut self, tabs: &[TabId], reading: Option<TabId>) -> Result<bool, compare::CompareError> {
         if tabs.iter().any(|id| self.tab(*id).is_none()) {
             return Err(compare::CompareError::NoSuchTab);
         }
         let comparison = compare::Comparison::new(tabs.to_vec())?;
+        let was = self.comparison.clone();
         for id in tabs {
             self.wake_list(*id);
         }
@@ -3359,7 +3361,7 @@ impl<L: DocLoader> Session<L> {
             self.activate(id);
         }
         self.activate(reading);
-        Ok(())
+        Ok(self.comparison != was)
     }
 
     /// What a ⌘-click on this tab would wake from cold, and its file, to read with the session free: the tab joining, or the pane read next if the one being read leaves. `None` if nothing needs reading.
@@ -3431,16 +3433,14 @@ impl<L: DocLoader> Session<L> {
         self.comparison.take().is_some()
     }
 
-    /// Synced scroll on, from where each pane is now, or separate. Says whether there was a comparison to set.
-    pub fn set_compare_synced(&mut self, on: bool) -> bool {
+    /// Synced scroll on, from where each pane is now, or separate. Says nothing if there was no comparison to set, and otherwise whether it changed.
+    pub fn set_compare_synced(&mut self, on: bool) -> Option<bool> {
         let pages: HashMap<TabId, u32> = self.tabs.iter().map(|tab| (tab.id, tab.page)).collect();
-        match &mut self.comparison {
-            Some(comparison) => {
-                comparison.set_synced(on, |id| pages.get(&id).copied().unwrap_or(0));
-                true
-            }
-            None => false,
-        }
+        self.comparison.as_mut().map(|comparison| {
+            let was = comparison.clone();
+            comparison.set_synced(on, |id| pages.get(&id).copied().unwrap_or(0));
+            *comparison != was
+        })
     }
 
     /// The reader's moved into another pane: it's the one read now, for the contents and the page number. Nothing changes on screen.
@@ -3769,15 +3769,19 @@ mod tests {
             None,
         );
         s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
-        assert_eq!(s.close_after_save(id), Ok(false), "an edit since: it stays");
+        assert_eq!(s.close_after_save(id).map(|closed| closed.is_some()), Ok(false), "an edit since: it stays");
         assert!(s.tab(id).is_some() && s.is_edited(id), "and the edit stands");
         s.undo_edit(id);
         s.undo_edit(id);
         assert!(s.is_edited(id), "an undo past the save is a change from the file too");
-        assert_eq!(s.close_after_save(id), Ok(false));
+        assert_eq!(s.close_after_save(id).map(|closed| closed.is_some()), Ok(false));
         s.redo_edit(id);
         assert!(!s.is_edited(id) && s.has_undone_owner_steps(id), "back at the saved point, with a step undone");
-        assert_eq!(s.close_after_save(id), Ok(true), "closes over the undone step, as the prompt said");
+        assert_eq!(
+            s.close_after_save(id).map(|closed| closed.is_some()),
+            Ok(true),
+            "closes over the undone step, as the prompt said"
+        );
         assert!(s.tab(id).is_none());
     }
 
@@ -5823,7 +5827,9 @@ mod tests {
         // Each way in.
         type Route = fn(&mut Session<FakeLoader>, TabId);
         let routes: [(&str, Route); 9] = [
-            ("tap", |s, a| s.tap(a).unwrap()),
+            ("tap", |s, a| {
+                s.tap(a).unwrap();
+            }),
             ("edit", |s, a| s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap()),
             ("undo", |s, a| assert!(s.undo_edit(a))),
             ("redo", |s, a| assert!(s.redo_edit(a))),
@@ -6650,7 +6656,7 @@ mod tests {
         s.go_to(ids[2], 7).unwrap();
         s.go_to(ids[0], 3).unwrap();
         s.compare(&[ids[2], ids[0]], Some(ids[0])).unwrap();
-        assert!(s.set_compare_synced(true));
+        assert!(s.set_compare_synced(true).is_some());
         let bytes = record::encode_record(&s.to_record(), 3);
         let read = record::decode_record(&bytes, record::CURRENT_VERSION).unwrap();
         let mut back = session(40);

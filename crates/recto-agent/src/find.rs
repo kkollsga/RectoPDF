@@ -695,7 +695,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     let deadline = Instant::now() + COMMAND_WAIT;
     if asked.close {
         close(access);
-        events.push(crate::Event::new("find_changed", serde_json::json!({ "open": false })));
+        events.push(crate::Event::FindClosed);
         return Ok(answer(access, finding, listed, None));
     }
     // A step needs the hits of what's in the field, for the document being read: found again if they're of something else, as after a restart.
@@ -728,15 +728,15 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
             results.finish(generation, end, progress);
             here.with_results(&mut |kept| *kept = std::mem::take(&mut results));
         }
-        events.push(crate::Event::new("find_changed", serde_json::json!({ "open": true })));
+        events.push(crate::Event::FindOpened { page: None });
     }
     let mut went = None;
     if asked.next || asked.previous {
         let Some((tab, hit)) = step_waiting(access, finding, asked.next, Going::Step, deadline.saturating_duration_since(Instant::now())) else {
             return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
         };
-        events.push(crate::Event::new("page_changed", serde_json::json!({ "tab": tab, "page": hit.page + 1 })));
-        events.push(crate::Event::new("find_changed", serde_json::json!({ "open": true, "page": hit.page + 1 })));
+        events.push(access.with(|s| crate::page_changed(s, recto_session::TabId(tab), hit.page + 1)));
+        events.push(crate::Event::FindOpened { page: Some(hit.page + 1) });
         went = Some((tab, hit));
     }
     Ok(answer(access, finding, listed, went))
