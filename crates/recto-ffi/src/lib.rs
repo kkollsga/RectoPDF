@@ -2078,7 +2078,7 @@ impl AppCore {
             .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
         if args.qa {
             let state = inner.paths.as_ref().map(|paths| paths.root.clone());
-            qa::end_with_starter(args.time_limit.unwrap_or(qa::QUIET_RUN_LIMIT), args.owner_pid, state);
+            qa::end_with_starter(args.time_limit.unwrap_or(qa::QUIET_RUN_LIMIT), args.owner_pid, state, Arc::downgrade(&inner));
         }
         Ok(Arc::new(Self {
             inner,

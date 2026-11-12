@@ -20,6 +20,14 @@ pub const IDLE_BEFORE_BUILD_MS: u64 = 5 * 60 * 1000;
 const _: () = assert!(IDLE_BEFORE_BUILD_MS < IDLE_BEFORE_INSTALL_MS);
 /// How soon an automatic install looks again when something's in flight. Only while one's waiting, so never at rest.
 pub const BUSY_RETRY_MS: u64 = 60 * 1000;
+/// The one install, which nothing forgets with Launch Services (owner, 2026-11-11: "We should only ever have one").
+pub const THE_ONE_INSTALL: &str = "/Applications/RectoPDF.app";
+
+/// Whether a copy forgets itself with Launch Services when it ends, at a quit or as a quiet run ends with what started it: a quiet run's, and never the one install.
+#[must_use]
+pub fn forgets_itself(quiet: bool, app: &std::path::Path) -> bool {
+    quiet && app != std::path::Path::new(THE_ONE_INSTALL)
+}
 
 /// A plain `MAJOR.MINOR.PATCH`. No `v`, no suffix, no fourth part, no leading zeros.
 #[must_use]
@@ -196,6 +204,15 @@ pub fn auto_step(look: AutoLook) -> AutoStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: the owner's own app forgets itself with Launch Services as it ends, and drops out of Open With, or a quiet run's copy stays registered.
+    #[test]
+    fn only_a_quiet_copy_forgets_itself() {
+        let built = std::path::Path::new("/w/tree/app/build.noindex/RectoPDF.app");
+        assert!(forgets_itself(true, built));
+        assert!(!forgets_itself(false, built), "a normal run");
+        assert!(!forgets_itself(true, std::path::Path::new(THE_ONE_INSTALL)), "never the one install");
+    }
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 

@@ -81,8 +81,8 @@ pub(crate) fn owner_args() -> Vec<String> {
     OWNER.get().map(|pid| vec!["--qa-owner-pid".to_owned(), pid.to_string()]).unwrap_or_default()
 }
 
-/// **A quiet run ends with what started it** (PLAN: three ran on, orphaned, for up to their limit after their worktrees were gone). One thread, asleep in one `kevent` with no wake-ups, until the soonest of: the test or script it was started for ends (`--qa-owner-pid`, from `RECTO_QA_OWNER_PID` or `recto qa start --owner`), its temp state folder goes, its own program is deleted, as a worktree's removal or a rebuild does, or its time limit is up. A run started by hand with no owner, as an agent does one command at a time, lasts until one of the others.
-pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::path::PathBuf>) {
+/// **A quiet run ends with what started it** (PLAN: three ran on, orphaned, for up to their limit after their worktrees were gone). One thread, asleep in one `kevent` with no wake-ups, until the soonest of: the test or script it was started for ends (`--qa-owner-pid`, from `RECTO_QA_OWNER_PID` or `recto qa start --owner`), its temp state folder goes, its own program is deleted, as a worktree's removal or a rebuild does, or its time limit is up. A run started by hand with no owner, as an agent does one command at a time, lasts until one of the others. Its copy forgets itself with Launch Services before it exits, as a quit does, or it stays a second RectoPDF in Open With (CI run 43195226598: two runs of the built app ended so by `a_quiet_run_ends_with_what_started_it` left it registered).
+pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::path::PathBuf>, ending: Weak<Inner>) {
     if let Some(pid) = owner {
         let _ = OWNER.set(pid);
     }
@@ -97,6 +97,9 @@ pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Optio
             recto_platform::local::Gone::TimeUp => "its time limit was up",
         };
         eprintln!("recto: this quiet run ended, as {why}.");
+        if let Some(inner) = ending.upgrade() {
+            inner.forget_a_quiet_copy();
+        }
         std::process::exit(124);
     });
 }
