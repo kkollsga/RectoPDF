@@ -88,6 +88,8 @@ echo "gh $*" >> "$CALLS.gh"
 [ -z "${STUB_GH_HANG:-}" ] || exec sleep 30
 [ -z "${STUB_GH_FAIL:-}" ] || exit 1
 case "$*" in
+  # A commit's own runs when the case set them (STUB_GH_COMMITS/<sha>), for a watch that moves from one commit's run to another's.
+  "run list"*"--commit"*) c=$(printf '%s' "$*" | sed -E 's/.*--commit ([0-9a-f]+).*/\1/'); if [ -n "${STUB_GH_COMMITS:-}" ] && [ -f "$STUB_GH_COMMITS/$c" ]; then cat "$STUB_GH_COMMITS/$c"; elif [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
   "run list"*) if [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
   # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
   "run view"*"--json jobs"*"steps"*) printf "${STUB_GH_JOBS:-check (core)\tsuccess\t15\t0\t1\ncheck (lifecycle)\tfailure\t15\t1\t2\n}" ;;
@@ -1081,7 +1083,25 @@ out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t15\t1\t2\n' STUB_GH_RUNS="$(run_
 check "a run where a part ran and failed is red, not rerun" "1 no" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes || echo no)"
 out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t9\t1\t2\n' STUB_GH_RUNS="$(run_of timed_out 20 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "and so is one whose part was cut off mid-step (a hang to the job's limit)" "1" "$rc"
+# Failure (coordinator, 2026-11-12): a run cancelled by a newer push was reported as "CI is RED (cancelled)" and kept as a result, though nothing
+# failed; the verdict was the newer run's, which nobody was then watching. It's superseded, and the watch goes on to the newer run and ends as it ends.
 git checkout -q main
+older=$(git rev-parse HEAD)
+commit_code superseding
+newer=$(git rev-parse HEAD)
+mkdir -p "$X/gh-commits"
+run_of cancelled 21 "$older" > "$X/gh-commits/$older"
+run_of success 22 "$newer" > "$X/gh-commits/$newer"
+both="[$(run_of success 22 "$newer" | sed -E 's/^\[//; s/\]$//'),$(run_of cancelled 21 "$older" | sed -E 's/^\[//; s/\]$//')]"
+out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS=$both PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+has "a run cancelled by a newer push is superseded, with both commits" "CI on main $(printf '%s' "$older" | cut -c1-12) was superseded: a newer push ($(printf '%s' "$newer" | cut -c1-12)) cancelled its run" "$out"
+check "it's never called red, and the watch ends as the newer run does" "0 no yes" "$rc $(printf '%s' "$out" | grep -q "RED" && echo yes || echo no) $(printf '%s' "$out" | grep -q "CI is green on main $(printf '%s' "$newer" | cut -c1-12)" && echo yes)"
+check "and is kept as superseded, not as a failure" "superseded" "$(grep "$older" .git/recto-ci-main | tail -1 | cut -f4)"
+run_of failure 22 "$newer" > "$X/gh-commits/$newer"
+out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS="[$(run_of failure 22 "$newer" | sed -E 's/^\[//; s/\]$//'),$(run_of cancelled 21 "$older" | sed -E 's/^\[//; s/\]$//')]" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+check "a newer run that fails is the red one, by its own commit" "1 yes" "$rc $(printf '%s' "$out" | grep -q "CI is RED on main $(printf '%s' "$newer" | cut -c1-12)" && echo yes)"
+out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS="$(run_of cancelled 21 "$older")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+check "a cancelled run with no newer one is still reported as it ended, never as superseded" "no" "$(printf '%s' "$out" | grep -q superseded && echo yes || echo no)"
 commit_code after-never
 out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 21 "$pushed")" full --why "never ran"); rc=$?
 check "on main, a run that never ran doesn't hold the stamp" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
