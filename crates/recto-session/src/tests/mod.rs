@@ -2,8 +2,7 @@ use super::*;
 use recto_core::TocLine;
 use std::cell::Cell;
 
-mod password;
-mod recent;
+mod tabs;
 mod trail_tests;
 
 struct FakeLoader {
@@ -134,38 +133,6 @@ fn nothing_changes_a_tab_while_it_is_saved() {
     assert!(s.page_edits(id).unwrap().saving().is_none(), "what a failed save noted goes");
     assert!(s.is_edited(id), "and the edits stand");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
-}
-
-/// Failure: a downloaded file's name carries tag characters or a line break, and they reach the sidebar, `tabs` and error candidates: an instruction no eye can see. The path must
-/// stay exact, or the file couldn't be opened again.
-#[test]
-fn tab_names_are_cleaned_and_paths_stay_exact() {
-    let mut session = Session::new(NameLoader);
-    let hidden: String = "ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
-    let raw = format!("/d/Report{hidden}\n2026\u{202E}.pdf");
-    let id = session.open(Path::new(&raw)).unwrap();
-    let tab = session.tab(id).unwrap();
-    assert_eq!(&*tab.name, "Report 2026");
-    assert_eq!(session.path_of(id).unwrap(), PathBuf::from(&raw));
-    assert_eq!(session.sidebar().rows[0].text, "Report 2026");
-    let invisible = session.open(Path::new("/d/\u{200B}.pdf")).unwrap();
-    assert_eq!(&*session.tab(invisible).unwrap().name, "Untitled", "a name of nothing still needs a row");
-}
-
-struct NameLoader;
-
-impl DocLoader for NameLoader {
-    fn load(&self, _path: &Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
-        Ok(recto_core::DocFacts {
-            page_count: 1,
-            byte_len: 1,
-            encrypted: false,
-            version: "1.7".into(),
-            title: None,
-            toc: recto_core::Toc::default(),
-            renderer_only: false,
-        })
-    }
 }
 
 /// Failure: warm paper is too dim to read on, by WCAG AA, or it's lost its warmth and reads as white, or gone yellow or orange. Holds the value: text at the page's usual dark greys stays above AA, and each channel falls a little more than the last without a big drop in blue.
@@ -783,12 +750,6 @@ fn rows_changing_above_carry_the_move_with_them() {
     assert!((path.last().unwrap() - (anchor_y(115) - 112.0)).abs() < 1.0, "{path:?}");
 }
 
-/// Failure: a field added carelessly raises the cost of every idle tab.
-#[test]
-fn tab_record_stays_small() {
-    assert!(std::mem::size_of::<TabRecord>() <= 256);
-}
-
 /// Failure: a field added carelessly raises the cost of every remembered draw.
 #[test]
 fn draw_note_stays_small() {
@@ -1220,32 +1181,6 @@ fn sidebar_row_stays_small() {
     assert!(std::mem::size_of::<SidebarRow<'_>>() <= 64);
 }
 
-/// Failure: tapping the active PDF switches tabs or does nothing, instead of folding its contents.
-#[test]
-fn tapping_the_active_pdf_toggles_contents() {
-    let mut s = session(10);
-    let id = s.open(Path::new("/d/a.pdf")).unwrap();
-    assert!(s.tab(id).unwrap().toc_open);
-    s.tap(id).unwrap();
-    assert!(!s.tab(id).unwrap().toc_open);
-    assert_eq!(s.active(), Some(id));
-    s.tap(id).unwrap();
-    assert!(s.tab(id).unwrap().toc_open);
-}
-
-/// Failure: tapping another PDF folds the current one instead of switching, or forgets its folded state.
-#[test]
-fn tapping_another_pdf_switches_and_keeps_each_fold_state() {
-    let mut s = session(10);
-    let a = s.open(Path::new("/d/a.pdf")).unwrap();
-    s.tap(a).unwrap();
-    let b = s.open(Path::new("/d/b.pdf")).unwrap();
-    s.tap(a).unwrap();
-    assert_eq!(s.active(), Some(a));
-    assert!(!s.tab(a).unwrap().toc_open);
-    assert!(s.tab(b).unwrap().toc_open);
-}
-
 /// Failure: contents stay in memory for every tab, so many large PDFs cost memory while idle.
 #[test]
 fn only_a_few_tabs_stay_warm() {
@@ -1269,17 +1204,6 @@ fn switching_rebuilds_only_cold_tabs() {
     assert_eq!(s.loader.loads.get(), before + 1, "cold tab wasn't rebuilt");
 }
 
-/// Failure: opening the same file twice makes a second tab rather than going to the first.
-#[test]
-fn opening_a_file_twice_reuses_its_tab() {
-    let mut s = session(10);
-    let a = s.open(Path::new("/d/a.pdf")).unwrap();
-    s.open(Path::new("/d/b.pdf")).unwrap();
-    assert_eq!(s.open(Path::new("/d/a.pdf")).unwrap(), a);
-    assert_eq!(s.tabs().len(), 2);
-    assert_eq!(s.active(), Some(a));
-}
-
 /// Failure: a page past the end leaves the reader nowhere, or a zero-page file underflows.
 #[test]
 fn going_to_a_page_clamps_to_the_document() {
@@ -1292,42 +1216,6 @@ fn going_to_a_page_clamps_to_the_document() {
     let id = empty.open(Path::new("/d/empty.pdf")).unwrap();
     empty.go_to(id, 3).unwrap();
     assert_eq!(empty.tab(id).unwrap().page, 0);
-}
-
-/// Failure: closing the active tab leaves nothing active while others are open, or leaves its contents in memory.
-#[test]
-fn closing_the_active_tab_activates_a_neighbour() {
-    let mut s = session(10);
-    let a = s.open(Path::new("/d/a.pdf")).unwrap();
-    let b = s.open(Path::new("/d/b.pdf")).unwrap();
-    s.close(b).unwrap();
-    assert_eq!(s.active(), Some(a));
-    assert!(s.warm.iter().all(|(id, _)| *id != b));
-    s.close(a).unwrap();
-    assert_eq!(s.active(), None);
-    assert_eq!(s.sidebar().place, "");
-}
-
-/// Failure: closing a tab loses page edits without warning.
-#[test]
-fn closing_refuses_while_there_are_unsaved_edits() {
-    let mut s = session(5);
-    let id = s.open(Path::new("/d/a.pdf")).unwrap();
-    s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
-    assert_eq!(s.close(id), Err(SessionError::UnsavedChanges));
-    assert!(s.sidebar().edited);
-    assert!(s.undo_edit(id));
-    assert!(!s.sidebar().edited);
-    // Failure: an agent's `undo` takes the owner's edit off the page, so the dot goes and this close goes through with no prompt, and the edit is gone for good.
-    assert!(s.sidebar().undone_owner_steps, "the app must be able to show it");
-    assert_eq!(
-        s.close(id),
-        Err(SessionError::UnsavedChanges),
-        "the owner's edit can still be redone, so closing would lose it"
-    );
-    s.discard_edits(id);
-    assert!(!s.sidebar().undone_owner_steps);
-    assert!(s.close(id).is_ok());
 }
 
 /// Failure: undone steps of an agent's own hold up the app's close, or read as the owner's. They're an agent's to lose.
@@ -2530,90 +2418,6 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Failure (decision 26): a link to an open PDF, or a file moved and opened by its new name, makes a second tab. A copy is another file, and a PDF added as pages isn't a tab. Each case on real files, as what's the same is the file on disk.
-#[test]
-fn a_pdf_can_only_be_opened_once() {
-    let dir = recto_testpdf::TempDir::new("recto-once-");
-    std::fs::create_dir_all(&dir).unwrap();
-    let (file, link, hard, copy, moved) = (
-        dir.join("a.pdf"),
-        dir.join("link.pdf"),
-        dir.join("hard.pdf"),
-        dir.join("copy.pdf"),
-        dir.join("moved.pdf"),
-    );
-    std::fs::write(&file, b"one").unwrap();
-    std::os::unix::fs::symlink(&file, &link).unwrap();
-    std::fs::hard_link(&file, &hard).unwrap();
-    std::fs::write(&copy, b"one").unwrap();
-    let mut s = session(5);
-    let a = s.open(&file).unwrap();
-    let other = s.open(&copy).unwrap();
-    assert_ne!(a, other, "a copy is another file");
-    assert_eq!(s.open(&link).unwrap(), a, "a link is the same PDF");
-    assert_eq!(s.open(&hard).unwrap(), a, "so is a hard link");
-    assert_eq!(s.active(), Some(a), "and it goes there");
-    assert_eq!(s.path_of(a).unwrap(), file, "still there under its name, so that stays");
-    assert_eq!(s.tabs().len(), 2);
-    // From facts read off the session, as the app's route has them.
-    s.tap(other).unwrap();
-    let stamp = file_stamp(&link).ok();
-    let facts = FakeLoader { pages: 5, loads: Cell::new(0) }.load(&link).unwrap();
-    assert_eq!(s.open_with_facts(&link, facts, stamp, None).unwrap(), a);
-    assert_eq!(s.tabs().len(), 2);
-    // Moved, and every other name gone: the tab goes with it.
-    std::fs::remove_file(&link).unwrap();
-    std::fs::remove_file(&hard).unwrap();
-    std::fs::rename(&file, &moved).unwrap();
-    assert_eq!(s.open(&moved).unwrap(), a);
-    assert_eq!(s.path_of(a).unwrap(), moved);
-    assert_eq!(&*s.tab(a).unwrap().name, "moved");
-    // As pages of another document, it's allowed.
-    let stamp = file_stamp(&moved).ok();
-    let facts = FakeLoader { pages: 5, loads: Cell::new(0) }.load(&moved).unwrap();
-    s.insert_pdf_with_facts(other, Author::Owner, 0, &moved, &facts, stamp).unwrap();
-    assert_eq!(s.pages_in(other), 10);
-    assert_eq!(s.tabs().len(), 2);
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-/// Failure (final review N2): a different PDF with the inode a tab remembers took the tab over: after a move and a rewrite in place, or on another volume under the same device number. The tab's path became the other file, with edits for 6 pages on one of 3 and no notice. The number alone isn't the file: it's a different one, and gets its own tab, and the edits stay. A file changed in place at the tab's own path is still that tab. And (final review) a file replaced under a tab, with a new inode, is reached through a link all the same.
-#[test]
-fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
-    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-hijack-");
-    std::fs::create_dir_all(&dir).unwrap();
-    let (y, z) = (dir.join("y.pdf"), dir.join("z.pdf"));
-    std::fs::write(&y, b"six pages").unwrap();
-    let mut s = session(6);
-    let tab = s.open(&y).unwrap();
-    s.edit_pages(tab, |e| e.delete(0, 1)).unwrap();
-    // Moved, and written over in place: the same inode, and not what the edits are about.
-    std::fs::rename(&y, &z).unwrap();
-    std::fs::write(&z, b"three, and longer than it was").unwrap();
-    let opened = s.open(&z).unwrap();
-    assert_ne!(opened, tab, "it's another PDF");
-    assert_eq!(s.path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
-    assert!(s.is_edited(tab));
-    assert_eq!(s.pages_in(opened), 6, "nothing of the edits on it");
-    assert!(!s.is_edited(opened));
-    // Changed in place under its own name, by a link: that's still the tab.
-    let (own, link) = (dir.join("own.pdf"), dir.join("link.pdf"));
-    std::fs::write(&own, b"before").unwrap();
-    std::os::unix::fs::symlink(&own, &link).unwrap();
-    let mut s = session(6);
-    let tab = s.open(&own).unwrap();
-    std::fs::write(&own, b"after, and longer").unwrap();
-    assert_eq!(s.open(&link).unwrap(), tab, "the same file, changed");
-    assert_eq!(s.tabs().len(), 1);
-    // Replaced under the tab with a new inode, as a save from another app does.
-    let fresh = dir.join("fresh.pdf");
-    std::fs::write(&fresh, b"replaced").unwrap();
-    std::fs::rename(&fresh, &own).unwrap();
-    assert_eq!(s.open(&link).unwrap(), tab, "the link leads to the tab's own path");
-    assert_eq!(s.tabs().len(), 1);
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
 /// Failure (review B9): a file claiming 50 million pages makes a list of that many at its first edit, 400 MiB. It's refused.
 #[test]
 fn a_huge_claim_of_pages_makes_no_list() {
@@ -2689,14 +2493,6 @@ fn a_checkpoint_keeps_a_save_in_progress() {
     assert_eq!(header.keeping, Some(keeping.to_record()), "nor what it kept");
     let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
     assert_eq!(parsed.header.saving, Some(target.into()));
-}
-
-/// Failure (review T17): the next tab number wraps round, and a tab comes up with a number already in use.
-#[test]
-fn tab_numbers_dont_wrap() {
-    let mut s = session(5);
-    s.next_id = MAX_TAB_ID;
-    assert_eq!(s.open(Path::new("/d/a.pdf")), Err(SessionError::TooManyTabs));
 }
 
 /// Failure: restoring a thousand tabs reads a file for each, or holds their contents, or a restored tab costs what an opened one doesn't. Every one of them comes back cold with no load at all.
@@ -2819,27 +2615,6 @@ fn a_tab_whose_journal_cant_be_read_says_so() {
     partly.restore(&s.to_record(), torn).unwrap();
     assert_eq!(partly.tab_notice(a).unwrap().code(), "edits_unreadable");
     assert!(partly.is_edited(a), "what could be read is here");
-}
-
-/// Failure: a protected PDF just says it needs a password, with nothing to say why it's asking again, or a password is written down. The words say it isn't kept, and nothing in a record's fields could hold one.
-#[test]
-fn a_protected_pdf_asks_again() {
-    struct Protected;
-    impl DocLoader for Protected {
-        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
-            Err(OpenError::PasswordNeeded)
-        }
-    }
-    let mut record = session(5);
-    let a = record.open(Path::new("/d/a.pdf")).unwrap();
-    let saved = record.to_record();
-    let text = serde_json::to_string(&saved).unwrap();
-    assert!(!text.contains("password"), "{text}");
-    let mut back = Session::new(Protected);
-    back.restore(&saved, HashMap::new()).unwrap();
-    back.wake_active();
-    assert_eq!(back.tab(a).unwrap().problem, Some(OpenError::PasswordNeeded));
-    assert!(back.tab_notice_message(a).unwrap().contains("password"));
 }
 
 /// Failure: restoring turns a hostile record into something that panics later: a page past the end, or an active tab that isn't there. Or a record's tabs with no journal cost it a tab.
