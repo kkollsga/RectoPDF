@@ -185,6 +185,10 @@ pub fn process_counters(_pid: u32) -> Option<ProcessCounters> {
     None
 }
 
+pub fn thread_names(_pid: u32) -> Option<Vec<String>> {
+    None
+}
+
 /// Replaces a file and syncs. There's no folder sync here yet: not used at run time on this platform.
 pub fn write_private_file_durably(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_private_file(path, bytes)

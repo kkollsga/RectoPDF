@@ -191,12 +191,17 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         run.settled();
     }
     let (threads_full, footprint_full, _) = sample(&run);
-    let (mut peak_threads, mut peak_footprint) = (threads_full, footprint_full);
+    let full_named = common::threads::named(run.pid);
+    let (mut peak_threads, mut peak_footprint, mut peak_named) = (threads_full, footprint_full, full_named.clone());
     let began = std::time::Instant::now();
     for at in recto_session::MAX_WARM..TABS {
         run.ok(&["open", link(at).to_str().unwrap()]);
         run.settled();
         let (threads, footprint, _) = sample(&run);
+        if threads > peak_threads {
+            // Which they were, read as soon as the count was: a CI log can say a thread per tab from a command's on its way out.
+            peak_named = common::threads::named(run.pid);
+        }
         peak_threads = peak_threads.max(threads);
         peak_footprint = peak_footprint.max(footprint);
     }
@@ -217,7 +222,8 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     // One writer, and a command's thread or a look at a file at the moment of asking.
     assert!(
         peak_threads <= threads_full + 3,
-        "threads grew with the tabs leaving: {threads_full} then {peak_threads}"
+        "threads grew with the tabs leaving: {threads_full} then {peak_threads}\nwith the warm ones full, just after: {full_named}\nat the most, just after: {peak_named}\nsleep: {}",
+        report["record"]["sleep"]
     );
     let leaving = &sleep["leaving"];
     assert!(

@@ -3,6 +3,8 @@
 
 /// The real app in a quiet run.
 pub mod app;
+/// A process's threads by name, for a count's failure to say which they were.
+pub mod threads;
 
 use recto_agent::Level;
 use recto_control::state::STATE_ENV;
