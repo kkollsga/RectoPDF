@@ -13,7 +13,7 @@ Last updated 2026-11-12. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
-| **R. Restructuring** | Fast checks that reach the app's logic, one implementation for the window and the CLI, every feature in its own compartment (`docs/reviews/2026-11-12-development-speed.md`) | **Planned 2026-11-12, waiting on the owner's go-ahead.** Before any other phase 4–6 work | 45–62 |
+| **R. Restructuring** | Fast checks that reach the app's logic, one implementation for the window and the CLI, every feature in its own compartment (`docs/reviews/2026-11-12-development-speed.md`) | **Under way** (owner, 2026-11-12: "Yes you have the goahead"). Before any other phase 4–6 work | 45–62 |
 | **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
@@ -392,6 +392,11 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ---
 
+## Bugs from the owner, 2026-11-12 (fixed alongside phase R, each with its test)
+
+- [ ] **Window controls with the sidebar hidden.** Owner: "when sidebar is hidden the traffic light buttons and sidebar toggle doesn't appear at all, they should appear when hovering over the the left corner." The 2026-11-08 rule (hide, then show on hover) only half works: they hide and never come back.
+- [ ] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
+
 ## Phase R: Restructuring, after the first release and before any other new feature
 
 Owner, 2026-11-08: "add the large restructuring into the plan before we start on the other features". Owner, 2026-11-12: "The idea is that after this project is done the codebase is easily maintainable and coding projects are efficient and fast. Leading to rapid and robust development and making it easy and cheap to expand features."
@@ -471,7 +476,6 @@ Real digital signatures to the official standards, signature trust checks, Windo
 
 ## Decisions waiting on you
 
-From the restructuring plan (2026-11-12, `docs/reviews/2026-11-12-development-speed.md`):
-1. **Go-ahead for phase R as planned,** R0 first, then three tracks.
-2. **May a local full check run only the tests a change can affect** (R0.2)? CI would still run everything on every branch before it merges and on `main`. The push guard would accept such a pass. Recommended: yes.
-3. **The pilot feature** for R4.3. Recommended: highlight annotations from phase 4, as it crosses every layer (a command, session state, Save, drawing, a sidebar entry).
+None right now.
+
+- **Phase R, 2026-11-12:** go-ahead given ("Yes you have the goahead"). Taken as the coordinator's recommendations, not the owner's own words, and open to change: a local full check may run only the tests a change can affect, with CI still running everything on every branch before it merges (R0.2); the pilot feature for R4.3 is highlight annotations.
