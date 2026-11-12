@@ -691,7 +691,7 @@ fn a_page_with_no_text_counts_as_checked() {
     assert!(page.hidden_checked);
 }
 
-/// Failure: the page can't be drawn for the hidden-text check and the page's text is lost with it, though ENGINEERING promises the text back, marked as not
+/// Failure: the page can't be drawn for the hidden-text check and the page's text is lost with it, though `docs/engineering/hidden-text.md` promises the text back, marked as not
 /// checked. A page under a pixel across can't be drawn at any scale the check uses.
 #[test]
 fn text_survives_a_page_the_check_cant_draw() {

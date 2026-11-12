@@ -2,7 +2,7 @@
 //!
 //! Lowering needs nothing: anyone may make things safer. Raising needs a real terminal on stdin and on `/dev/tty`, and a word typed back that's different every time, read from the terminal rather than
 //! stdin. That shuts out every ordinary way an agent runs commands. What it can't do is stop a process of this same user that goes to the length of faking a terminal, or writes the file itself. That
-//! process is inside the trust boundary, as `docs/ENGINEERING.md` says. The app's settings, behind a human gesture, are the stronger answer.
+//! process is inside the trust boundary, as `docs/engineering/agent-interface.md` says. The app's settings, behind a human gesture, are the stronger answer.
 
 use crate::client::Client;
 use crate::log::ActivityLog;

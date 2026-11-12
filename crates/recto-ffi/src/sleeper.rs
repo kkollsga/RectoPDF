@@ -5,7 +5,6 @@
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
 use crate::{CoreCall, Inner, lock};
-use recto_platform::FileStamp;
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
@@ -575,10 +574,7 @@ fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
     Some(surface)
 }
 
-/// A file's stamp as it says which version of the file this is: not the disk it's on, whose number can change while the file doesn't.
-pub(crate) fn version_of(stamp: FileStamp) -> FileStamp {
-    FileStamp { device: 0, ..stamp }
-}
+pub(crate) use recto_app::version_of;
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {

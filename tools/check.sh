@@ -173,7 +173,7 @@ names_or_stop() {
     exit 2
   }
 }
-# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/ENGINEERING.md, "Slow mode"): whole-state comparisons across a quit and
+# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/engineering/slow-mode.md): whole-state comparisons across a quit and
 # updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
 # copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
 # that did (2026-11-11). Left out as covered here: quitting twice (every whole-state test here crosses a quit), a launch from a sleep file (the dormant

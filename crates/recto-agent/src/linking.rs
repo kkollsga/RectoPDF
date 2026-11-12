@@ -2,7 +2,7 @@
 //!
 //! An agent sees where a link goes and can follow one within the document, as a click does. It never opens a web address: only the person can, in the app, after the app has asked them and shown the real address. A link's address comes from the file, so it goes under `untrusted`, and nothing about a link is ever run.
 
-use crate::{AgentError, Event, SessionAccess, exit, locate, select, where_json};
+use crate::{AgentError, Event, SessionAccess, exit, locate, page_now, select, where_json};
 use recto_core::nav::{LinkTarget, PageLinks};
 use recto_session::{Author, DocLoader, Session, TabId};
 use serde_json::{Value, json};
@@ -125,8 +125,7 @@ pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, eve
             LinkTarget::Refused(why) => return Err(AgentError::new("link_refused", why.message(), exit::FAILED).then("Nothing happened, and nothing will: RectoPDF never does this.")),
             LinkTarget::Nowhere => return Err(AgentError::new("link_goes_nowhere", "This link names a place that isn't in this document.", exit::FAILED)),
         };
-        let now = s.tab(id).map_or(0, |tab| tab.page);
-        events.push(Event::new("page_changed", json!({ "tab": id.0, "page": now + 1 })));
+        events.push(page_now(s, id));
         let mut answer = where_json(s, id);
         answer["went"] = json!(went);
         Ok(answer)
@@ -151,8 +150,7 @@ pub fn step<A: SessionAccess>(access: &A, tab: &str, back: bool, events: &mut Ve
         if !moved {
             return Err(nothing_that_way(back));
         }
-        let now = s.tab(id).map_or(0, |tab| tab.page);
-        events.push(Event::new("page_changed", json!({ "tab": id.0, "page": now + 1 })));
+        events.push(page_now(s, id));
         Ok(where_json(s, id))
     })
 }
@@ -166,7 +164,7 @@ pub fn goto_label<A: SessionAccess>(access: &A, tab: &str, label: &str, events: 
                 .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
         })?;
         s.jump_as(id, page, 0.0, Author::Agent)?;
-        events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
+        events.push(page_now(s, id));
         Ok(where_json(s, id))
     })
 }

@@ -1,6 +1,6 @@
 //! Fuzzing what handles untrusted input. Each check in [`targets`] is a plain function on bytes, run three ways: by the seeded smoke run in this crate's tests, which is short and on stable, so it's part of every `tools/check.sh`; by libFuzzer through `fuzz/`, which needs nightly and stays out of the workspace; and by a regression test, on the input that once broke it.
 //!
-//! `docs/ENGINEERING.md` says how to run a campaign. PDFium isn't a target: it runs in a worker that can be killed, and what comes back from it is what's checked here.
+//! `docs/engineering/crates/recto-fuzz.md` says how to run a campaign. PDFium isn't a target: it runs in a worker that can be killed, and what comes back from it is what's checked here.
 
 pub mod guard;
 pub mod input;

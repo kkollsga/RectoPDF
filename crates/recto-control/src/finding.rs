@@ -6,7 +6,6 @@ use crate::indexing::{Indexer, Notifier};
 use recto_agent::Event;
 use recto_agent::find::{self, FindPlan, Finding, Results};
 use recto_agent::index::Indexing;
-use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -123,7 +122,7 @@ impl Shared {
                     // The first hits are said at once, so the list starts as soon as there's something in it.
                     if said.elapsed() >= SAY_EVERY || (had_hits && progress.pages_with_hits == 1) {
                         said = Instant::now();
-                        self.say(vec![Event::new("find_changed", json!({ "running": true }))]);
+                        self.say(vec![Event::FindRunning]);
                     }
                 })
             }));
@@ -140,7 +139,7 @@ impl Shared {
                 inner.results.generation == generation
             };
             if current {
-                self.say(vec![Event::new("find_finished", json!({ "hits": progress.total }))]);
+                self.say(vec![Event::FindFinished { hits: progress.total }]);
             }
         }
     }

@@ -653,6 +653,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "recto-app"
+version = "0.1.0"
+dependencies = [
+ "recto-core",
+ "recto-platform",
+ "recto-reader",
+ "recto-session",
+]
+
+[[package]]
 name = "recto-cli"
 version = "0.1.0"
 dependencies = [
@@ -702,6 +712,7 @@ name = "recto-ffi"
 version = "0.1.0"
 dependencies = [
  "recto-agent",
+ "recto-app",
  "recto-control",
  "recto-core",
  "recto-index",

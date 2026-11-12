@@ -262,7 +262,7 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
     match call {
         FindCall::Typed(text) => {
             find_typed(inner, &text);
-            events.push(Event::new("find_changed", json!({ "open": true })));
+            events.push(Event::FindOpened { page: None });
         }
         FindCall::Open => {
             open_find(inner, events);
@@ -271,12 +271,12 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             if query.is_empty() && !draft.is_empty() {
                 find_typed(inner, &draft);
             }
-            events.push(Event::new("find_changed", json!({ "open": true })));
+            events.push(Event::FindOpened { page: None });
         }
         FindCall::Close => {
             session.find_close();
             lock(&inner.find_field).pending_step = None;
-            events.push(Event::new("find_changed", json!({ "open": false })));
+            events.push(Event::FindClosed);
         }
         FindCall::Step(forward, going) => {
             // ⌘G with Find closed opens it with what was typed last, as on a Mac.

@@ -31,7 +31,7 @@ Phase 7's release item "Fuzzing on every parser of untrusted input" (`docs/PLAN.
 | `recto_control::indexing` (the search indexer's one-line report) | the indexer helper's stdout | none | **None**, and a bug: see below |
 | `recto_session::record` (record, journal, places log), `sleep::decode_sleep`, `RecordStore::load` and writes | state files on disk | `record` | Real |
 | `recto_control::record_store` kept-pages files (`kept-*.keptpages`): stamps, roll-off, carrying over an unconfirmed save, pruning, names in journals | files in the journals' folder; journals that name them | none | **None**: `record` writes no kept file |
-| `recto_control::log::recent` (`recto log`) | the activity logs on disk | none | **None** (noted as such in ENGINEERING) |
+| `recto_control::log::recent` (`recto log`) | the activity logs on disk | none | **None** (noted as such in `docs/engineering/crates/recto-fuzz.md`) |
 | `recto_session::edit` (edit sequences, undo, redo) | owner's and agents' commands | `edits` | Real |
 | `recto_agent::{parse, parse_cli, execute}`, selectors, page specs, `duration_ms`, `Level::parse` | socket lines, CLI words | `agent` | Real |
 | `recto_control::levels::parse_stored` | the level file | `agent` | Real |
@@ -52,7 +52,7 @@ Phase 7's release item "Fuzzing on every parser of untrusted input" (`docs/PLAN.
 | `recto-ffi` | Calls from the app's own Swift side. The one file it reads, the old paper setting, is at most 16 bytes matched against a list of names. |
 | `recto-agent`'s PNG and JPEG writers (`render`, snapshots) | Encoders of pixels the worker drew, whose size and stride the host has already checked (`proto`). Any bytes are valid pixels. |
 | `recto-cli`'s QA scripts and stdin password | Development tools; the password line is capped and checked as UTF-8. |
-| The lopdf fork's `/Prev` chain | Slow in proportion rather than a hang, as ENGINEERING notes. |
+| The lopdf fork's `/Prev` chain | Slow in proportion rather than a hang, as `docs/engineering/crates/recto-fuzz.md` notes. |
 
 ## What changed
 
