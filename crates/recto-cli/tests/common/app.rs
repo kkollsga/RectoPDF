@@ -292,10 +292,11 @@ impl<'a> Run<'a> {
         reply["data"].clone()
     }
 
-    /// What a crash does.
+    /// What a crash does. A killed run can't forget its copy, so this does, as the drop of a run that had to be killed does.
     pub fn kill(mut self) {
         let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
         self.wait_gone();
+        forget_the_built_app();
     }
 }
 

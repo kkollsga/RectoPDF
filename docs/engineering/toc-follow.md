@@ -1,0 +1,20 @@
+# The contents follow the reader
+
+> Part of the engineering notes: [`README.md`](README.md).
+
+**Reposition and rest.** Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit." `ContentsFollow` in `recto-session` is the whole rule, and the host only draws where it says. Inside the dead zone, 12% to 75% of the area's height, nothing moves. Leaving it starts one move, to put the place 30% of the way down. Its shape comes from a third-order chain, a lag into a critically damped spring, so speed starts and ends at about zero with no step when the target changes on the way. It takes 0.6 to 1.1 s by distance. While a move runs it's the move's target that counts, so sections going by fast are one long move and not a row of them. The reader's own scroll stops it, right where it is, and following comes back when the pointer's out, 3 s have passed and the section next changes. With Reduce Motion it goes straight there, and only if the place has left the view. Frames come from a display link on a screen and a timer off one, started for a move and stopped when it's over, so nothing runs at rest, and passing a section costs one comparison.
+
+**A chapter closing makes no second move.** As you leave a chapter it closes and the next opens. If its rows were above the place, the place would drop up the list by that many rows, past the dead zone, and the contents would move straight back, opposite to the move before. So Rust works out how far a change carried the place (`place_shift`, from the two lists), and the scroll takes it up in the same transaction: the place doesn't move on screen, and rows going in the view fade over in 0.15 s. Rows that change only below the place still move in view: they fade over, a layer transition over the list, and not by the table's own row animations, which on macOS 27 keep every row view they animate, with its cell, for good (an observer AppKit gives each view holds it; `comparisons_leave_no_views_behind`). With the reader in the contents themselves it's the top of the view that stays, and rows in the view fade over. **Before and after,** `rfc9110` at 6 pages a second, 10 s, by `qa sweep`: before, a move forward at each change of chapter was followed about 0.1 s later by a move back of 196 to 223 points. After, 6 moves all forward, 690 ms each, at least 0.31 s apart.
+
+**What the moves come to,** `qa sweep`, release, this Mac with other agents' builds running, at load about 8, a window off every screen, so path and timing, not frames seen. Peak speed is taken over 25 ms, since steps aren't evenly spaced.
+
+| Sweep | Moves | Each | Peak | Rests | Place in view |
+|---|---|---|---|---|---|
+| `rfc9110`, 1 page a second, 30 s | 4 | 690 ms, about 340 points | 2,028 points/s | 3.3 s to 10 s | every step |
+| `rfc9110`, 6 pages a second, 10 s | 6 | 690 ms, 310 to 340 points | 2,059 | 0.31 s to 1.1 s | every step |
+| `rfc9110`, 40 pages a second, 4 s | 1 | carries on: 3,599 ms, 5,208 points | 8,691 | | 473 of 480 steps, from 431 of 478 before a trailing move could catch up |
+| 10,000 entries, 1 page a second, 25 s | 1 | 654 ms, 364 points | 2,370 | 12 s | every step |
+| 10,000 entries, 6 pages a second, 10 s | 4 | 650 ms, 364 points | 2,148 | 1.5 s | every step |
+| 10,000 entries, 40 pages a second, 6 s | 1 | carries on: 5,660 ms | 5,280 | | every step |
+
+All forward. A 10,000-entry outline holds 28 row views, and the app 16.7 MiB. The outline's runs were at load 42, which took the UI step's p99 to 12.8 ms at 40 pages a second, from 0.65 at load 8 on `rfc9110`: it wasn't measured at a lower load on this build. The move back of 168 points in one earlier run at 1 page a second, 6 rows, didn't come again, and a test with chapters on a real outline holds that reading forward never moves back. How it feels can't be judged from any of this.

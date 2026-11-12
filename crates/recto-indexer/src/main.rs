@@ -12,7 +12,7 @@ use std::time::Duration;
 
 /// Longest job line. A path or two and some numbers.
 const MAX_JOB_BYTES: u64 = 128 * 1024;
-/// A worker's limit while indexing. Half of what a reader's page gets. Only the check for hidden text needs to draw, and a page that can't be drawn under this is marked as not checked, and is drawn if a search ever finds something on it. By `docs/ENGINEERING.md`, 17 of 5,872 real pages pass this at 2x.
+/// A worker's limit while indexing. Half of what a reader's page gets. Only the check for hidden text needs to draw, and a page that can't be drawn under this is marked as not checked, and is drawn if a search ever finds something on it. By `docs/engineering/search-index.md`, 17 of 5,872 real pages pass this at 2x.
 const MEMORY_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 /// A page's time. Twice a reader's, as this runs at utility, below what the person is looking at.
 const PAGE_DEADLINE: Duration = Duration::from_secs(10);

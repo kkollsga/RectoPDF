@@ -24,6 +24,15 @@ LIFECYCLE_TESTS='(binary(=restore) & test(~update::)) | (binary(=app) & test(~qu
 # Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state. The rest by construction, so a test is in exactly
 # one tier: the one its name puts it in, or this.
 WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare)) & !($LIFECYCLE_TESTS)"
+# --- Tiers by time ---------------------------------------------------------------------------------------------------------------------------------------
+# The test system's four tiers (docs/reviews/2026-11-12-development-speed.md §5), as `check.sh --slow` reports them against a budget. Tier 1 (core) is every
+# test that is in none of the lists below, in a single process; tier 3 is the window tier and tier 4 the lifecycle tier above; tier 2 (process) is these
+# binaries, whose tests spawn `recto`, the render worker, the helpers or the installer. A binary is `crate::file` (a test file, or a folder with a main.rs) as
+# nextest names it; `scope_names_missing` fails when one is not there, so a rename can't quietly move its tests into tier 1.
+PROCESS_BINARIES='recto-cli::corpus recto-cli::dev_build recto-cli::export_svg recto-cli::extract recto-cli::find recto-cli::generated recto-cli::index recto-cli::levels recto-cli::memory recto-cli::missing_marks recto-cli::notices recto-cli::print recto-cli::render recto-cli::save recto-cli::select recto-cli::session recto-cli::socket recto-update::installer recto-platform::helper recto-platform::walls recto-reader::engine recto-render-service::corpus recto-render-service::hostile recto-render-service::memory recto-render-service::sandbox recto-render-service::sequence recto-render-service::surfaces recto-render-service::worker'
+# Wall-clock budget in seconds for each tier, the one place to edit them. Over budget is reported by `check.sh --slow`, plainly: it is read in a process review.
+TIER_BUDGETS='1:60 2:60 3:90 4:240'
+
 # The crates whose change (or whose dependencies' change) can change what the window shows or does.
 WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
@@ -58,6 +67,10 @@ scope_names_missing() {
   for name in $APP_BINARIES; do
     [ -f "$root/crates/recto-cli/tests/$name.rs" ] || echo "app binary $name"
   done
+  # crate::file for tier 2: a file, or a folder with a main.rs, in that crate's tests.
+  for name in $PROCESS_BINARIES; do
+    [ -f "$root/crates/${name%%::*}/tests/${name##*::}.rs" ] || [ -f "$root/crates/${name%%::*}/tests/${name##*::}/main.rs" ] || echo "process binary $name"
+  done
   # A test file that starts the app and isn't in APP_BINARIES runs in no tier.
   local file bin
   for file in "$root"/crates/recto-cli/tests/*.rs "$root"/crates/recto-cli/tests/*/*.rs; do
@@ -82,15 +95,40 @@ affected_crates() {
     /dev/stdin <(printf '%s\n' "$edges") | sort -u
 }
 
-# Chooses what a run covers, from what changed since the branch left main (or $CHECK_BASE) and what isn't committed. Arguments: the mode (--quick or --full).
-# Sets: scope_all (1 when everything runs), scope_changed (crates changed), scope_affected (those and their dependents), scope_window, scope_lifecycle
-# (1 when the tier runs), scope_app (1 when app/ changed), scope_key ("all" or a short hash of the selection, for the memory of a pass) and scope_report
-# (the lines the run prints at its start, saying what it selected and why, and what it skipped).
+# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh) are about: the tools, the hooks in tools/hooks, nextest's profiles and CI's workflow.
+# A change to any of these since the base runs them in a full run, here and on CI; nothing else does.
+TOOLS_PATHS='^(tools|\.config|\.github)/'
+
+# The commit CI compares with, for what the tools' tests are about: on main, the commit the push came after, which CI checked last; on any other branch,
+# where it left origin/main, so every push of a branch that changed the tools runs them. Prints it, or fails when it can't be worked out (a manual run, a
+# first push, a `before` that isn't in HEAD's history, history not fetched, no jq), and the caller then runs what it would have skipped.
+ci_base() {
+  local base=""
+  if [ "${GITHUB_REF_NAME:-}" = main ]; then
+    [ "${GITHUB_EVENT_NAME:-}" = push ] && [ -f "${GITHUB_EVENT_PATH:-}" ] || return 1
+    base=$(jq -r '.before // empty' "$GITHUB_EVENT_PATH" 2>/dev/null) || return 1
+  else
+    base=$(git merge-base origin/main HEAD 2>/dev/null) || return 1
+  fi
+  case "$base" in '' | *[!0-9a-f]* | 0000000000000000000000000000000000000000) return 1 ;; esac
+  git cat-file -e "$base^{commit}" 2>/dev/null && git merge-base --is-ancestor "$base" HEAD 2>/dev/null || return 1
+  printf '%s\n' "$base"
+}
+
+# Chooses what a run covers, from what changed since the branch left main (or $CHECK_BASE, or on CI `ci_base`) and what isn't committed. Arguments: the mode
+# (--quick or --full). Sets: scope_tools (1 when the tools' tests run) and scope_tools_why (why, or why not), scope_all (1 when everything runs),
+# scope_changed (crates changed), scope_affected (those and their dependents), scope_window, scope_lifecycle (1 when the tier runs), scope_app (1 when app/
+# changed), scope_key ("all" or a short hash of the selection, for the memory of a pass) and scope_report (the lines the run prints at its start, saying what
+# it selected and why, and what it skipped).
 select_scope() {
   local mode=$1 base files file c all_crates affected="" reasons="" skipped=""
-  scope_tools=0 scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
+  scope_tools=0 scope_tools_why="" scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
   all_crates=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
-  base=${CHECK_BASE:-$(git merge-base main HEAD 2>/dev/null || true)}
+  base=${CHECK_BASE:-}
+  if [ -z "$base" ] && [ -n "${CI:-}" ]; then
+    base=$(ci_base) || { base="" scope_tools=1 scope_tools_why="CI's base couldn't be worked out, so they run"; }
+  fi
+  [ -n "$base" ] || base=$(git merge-base main HEAD 2>/dev/null || true)
   if [ "$mode" = --full ]; then
     if [ -n "${CI:-}" ]; then scope_all=1 reasons="CI runs everything"
     elif [ "${CHECK_ALL:-}" = 1 ]; then scope_all=1 reasons="CHECK_ALL=1"
@@ -103,7 +141,9 @@ select_scope() {
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    case "$file" in tools/*) scope_tools=1 ;; esac
+    if [ "$scope_tools" = 0 ] && [[ $file =~ $TOOLS_PATHS ]]; then
+      scope_tools=1 scope_tools_why="$file changed since $(printf '%s' "$base" | cut -c1-12)"
+    fi
     case "$file" in
       crates/recto-headings/*) headings=1 ;;
       crates/*/*)
@@ -120,6 +160,7 @@ select_scope() {
     esac
     if printf '%s\n' "$file" | grep -qE "$LIFECYCLE_PATHS"; then scope_lifecycle=1; fi
   done <<< "$files"
+  [ "$scope_tools" = 1 ] || scope_tools_why="nothing under tools/, .config/ or .github/ changed since $(printf '%s' "$base" | cut -c1-12)"
   if [ -n "$other" ] && [ "$scope_all" = 0 ]; then
     scope_all=1
     reasons="changed outside crates/ and app/, so it can affect anything:$(printf '%s' "$other" | tr ' ' '\n' | head -3 | tr '\n' ' ')"

@@ -176,7 +176,7 @@ impl Shared {
                 inner.running = Some(job.key);
                 job
             };
-            self.tell(Event::new("indexing_started", json!({ "corpus": job.key.short() })));
+            self.tell(Event::IndexingStarted { corpus: job.key.short() });
             let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.runner.run(&job, &self.root, &mut |stop| {
                     let mut inner = self.lock();
@@ -207,10 +207,12 @@ impl Shared {
             }
             // However it ended. A helper that stopped before it got as far as a build, cancelled or finding its file changed, made nothing room for.
             let _ = corpus::evict(&self.root, &self.limits, Some(job.key));
-            self.tell(Event::new(
-                "indexing_finished",
-                json!({ "corpus": job.key.short(), "state": state, "code": report["code"], "pages": report["pages"] }),
-            ));
+            self.tell(Event::IndexingFinished {
+                corpus: job.key.short(),
+                state,
+                code: report["code"].clone(),
+                pages: report["pages"].clone(),
+            });
         }
     }
 

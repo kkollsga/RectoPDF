@@ -5,6 +5,7 @@
 //! What's waiting is held in memory: a quit before its moment drops it, and the next launch tidies what was staged.
 
 use super::{Asked, Going, InstallRefused, Status, Updater, lock};
+use crate::handover;
 use crate::rules::{self, AutoStep};
 use crate::saved::Saved;
 use crate::stage::{self, StageError};
@@ -119,7 +120,10 @@ impl Updater {
 
     /// A development build handed over: `recto update install <zip> [--now]`. Checks it here, which takes seconds, so never on the UI thread: a command's job thread is where it's meant to be. Then it waits for 5 minutes without use, or with `now` goes at once, by hand. Another build handed over while one waits takes its place.
     pub fn install_build(self: &Arc<Self>, zip: &Path, now: bool) -> Result<String, InstallRefused> {
-        self.install_build_then(zip, now, |_| {})
+        let answer = self.install_build_then(zip, now, |_| {});
+        // Whatever it came to, the copy in the hand-over folder is done with.
+        handover::discard(zip, &handover::folder_of(&self.files));
+        answer
     }
 
     /// [`Self::install_build`], with what happens while it's checked, for a test of what's looked at again after.
@@ -153,6 +157,11 @@ impl Updater {
         if !takes_builds_over(stage::team_of(&facts.app).as_deref()) {
             return Err(InstallRefused::TeamSignedCopy);
         }
+        // The only place a path an agent named is opened: once, in the hand-over folder, without waiting, and read from that descriptor alone.
+        let mut file = handover::open_inside(zip, &handover::folder_of(&self.files)).map_err(|refusal| InstallRefused::Refused {
+            code: refusal.code(),
+            why: refusal.words(),
+        })?;
         {
             let mut st = lock(&self.st);
             if st.status.is_under_way() {
@@ -160,16 +169,18 @@ impl Updater {
             }
             st.build = None;
             st.install_look_at = None;
-            st.status = Status::Preparing(version.clone());
+            st.status = Status::PreparingBuild(version.clone());
         }
         self.stopping.store(false, Ordering::SeqCst);
         self.host.changed();
         self.ready_folder();
         self.log(&format!("development build {version} handed over"));
         let log_file = self.files.log.clone();
-        let staged = stage::prepare_build(zip, &version, &self.source, &facts.app, &mut |step| {
+        let staged = stage::prepare_build(&mut file, &version, &self.source, &facts.app, &mut |step| {
             crate::plan::log(&log_file, &format!("{version}: {step}"));
         });
+        drop(file);
+        handover::discard(zip, &handover::folder_of(&self.files));
         meanwhile(self);
         // The switch is asked again once the slow part's done: turned off meanwhile, the build goes, and nothing's left staged.
         let staged = match staged {
@@ -230,6 +241,14 @@ impl Updater {
             return crate::BUNDLE_ID.to_owned();
         }
         stage::bundle_id(installed).unwrap_or_else(|| crate::BUNDLE_ID.to_owned())
+    }
+
+    /// For a test: what a finished build left, gone.
+    #[cfg(test)]
+    fn clear_build_for_test(&self) {
+        let mut st = lock(&self.st);
+        st.build = None;
+        st.status = Status::Idle;
     }
 
     /// The 5-minute rule for the build that's waiting, now: it goes, or the timer's set for when it could.
@@ -388,10 +407,17 @@ mod tests {
             let built = self.dir.join(format!("built-{named}-{inside}-{}", bundle_id.len()));
             std::fs::create_dir_all(&built).unwrap();
             let app = app_of(&built, inside, bundle_id);
-            let zip = self.dir.join(format!("RectoPDF-{named}.zip"));
+            let zip = self.handover().join(format!("RectoPDF-{named}.zip"));
             let _ = std::fs::remove_file(&zip);
             zip_of(&app, &zip);
             zip
+        }
+
+        /// The app's hand-over folder, which is the only place it opens a zip from.
+        fn handover(&self) -> PathBuf {
+            let folder = handover::folder_of(&self.updater.files);
+            local::ensure_private_dir(&folder).unwrap();
+            folder
         }
 
         fn status(&self) -> Status {
@@ -466,6 +492,8 @@ mod tests {
         assert!(!bed.updater.takes_builds());
         let zip = bed.zip("0.1.0.1", "0.1.0.1", crate::BUNDLE_ID);
         assert_eq!(bed.updater.install_build(&zip, true), Err(InstallRefused::DevBuildsOff));
+        assert!(!zip.exists(), "a refused hand-over's copy is deleted");
+        let zip = bed.zip("0.1.0.1", "0.1.0.1", crate::BUNDLE_ID);
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
         bed.updater.choose_dev_builds(true);
         assert!(bed.updater.takes_builds());
@@ -550,7 +578,7 @@ mod tests {
         ));
         let same = bed.zip("0.1.0.4", "0.1.0.4", crate::BUNDLE_ID);
         assert_eq!(bed.updater.install_build(&same, true), Err(InstallRefused::SameVersion));
-        let junk = bed.dir.join("RectoPDF-0.1.0.9.zip");
+        let junk = bed.handover().join("RectoPDF-0.1.0.9.zip");
         std::fs::write(&junk, b"not a zip").unwrap();
         assert!(matches!(
             bed.updater.install_build(&junk, true),
@@ -570,6 +598,147 @@ mod tests {
         let release_numbered = bed.zip("0.1.1", "0.1.1", crate::BUNDLE_ID);
         assert_eq!(bed.updater.install_build(&release_numbered, true), Err(InstallRefused::NotABuild));
         assert_eq!(version_of_zip("RectoPDF-../0.1.0.1.zip"), None);
+    }
+
+    /// Failure: the app opens a path an agent named, or one that is no ordinary file in its folder (a link, a FIFO no one writes to), or leaves the copy behind. The first is how a removable volume's question held the updater thread for 14 minutes.
+    #[test]
+    fn the_app_opens_only_its_own_copy_and_deletes_it() {
+        let bed = Bed::new("handover", "0.1.0.4");
+        bed.updater.choose_dev_builds(true);
+        // Outside the folder: refused with the next step, whatever it is.
+        let outside = bed.dir.join("RectoPDF-0.1.0.5.zip");
+        std::fs::copy(bed.zip("0.1.0.5", "0.1.0.5", crate::BUNDLE_ID), &outside).unwrap();
+        let answer = bed.updater.install_build(&outside, true);
+        let Err(InstallRefused::Refused { code, why }) = answer else {
+            panic!("{answer:?}")
+        };
+        assert_eq!(code, "not_handed_over");
+        assert!(why.contains("recto update install"), "{why}");
+        assert!(outside.exists(), "not the app's to delete");
+        // A FIFO with no writer, and a link, in the folder: refused, and the status is not left on checking.
+        let fifo = bed.handover().join("RectoPDF-0.1.0.6.zip");
+        assert!(Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap().success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (updater, fifo_copy) = (Arc::clone(&bed.updater), fifo.clone());
+        std::thread::spawn(move || {
+            let _ = sender.send(updater.install_build(&fifo_copy, true));
+        });
+        let answer = receiver.recv_timeout(Duration::from_secs(10)).expect("a FIFO held the install");
+        assert!(matches!(answer, Err(InstallRefused::Refused { code: "zip_not_a_file", .. })), "{answer:?}");
+        assert!(!fifo.exists(), "deleted after a refusal");
+        assert!(!matches!(bed.status(), Status::PreparingBuild(_)), "{:?}", bed.status());
+        let link = bed.handover().join("RectoPDF-0.1.0.7.zip");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(matches!(
+            bed.updater.install_build(&link, true),
+            Err(InstallRefused::Refused { code: "zip_not_a_file", .. })
+        ));
+        // A good one goes in, and its copy is gone once it has been unpacked.
+        let good = bed.zip("0.1.0.8", "0.1.0.8", crate::BUNDLE_ID);
+        assert_eq!(bed.updater.install_build(&good, false), Ok("0.1.0.8".to_owned()));
+        assert!(!good.exists(), "deleted after the install");
+        // A refused one too (not a zip at all).
+        let junk = bed.handover().join("RectoPDF-0.1.0.9.zip");
+        std::fs::write(&junk, b"nope").unwrap();
+        bed.updater.clear_build_for_test();
+        assert!(matches!(
+            bed.updater.install_build(&junk, false),
+            Err(InstallRefused::Refused { code: "zip_bad", .. })
+        ));
+        assert!(!junk.exists(), "deleted after a failure");
+    }
+
+    /// Failure: while a build is checked from the copy, the status and the menu say "Downloading" or "Updating to", as for a download that is going on, and the menu item can't be told from the install itself.
+    #[test]
+    fn the_words_while_a_build_is_checked_say_so() {
+        let bed = Bed::new("words", "0.1.0.1");
+        lock(&bed.updater.st).status = Status::PreparingBuild("0.1.0.2".into());
+        assert_eq!(bed.updater.status_line(), "Checking development build 0.1.0.2…");
+        let item = bed.updater.menu_item();
+        assert_eq!((item.title.as_str(), item.enabled), ("Checking development build 0.1.0.2…", false));
+        assert_eq!(bed.updater.report()["status"], "preparing");
+    }
+
+    /// Failure: a launch trusts what a run left in the hand-over folder.
+    #[test]
+    fn a_launch_clears_the_handover_folder() {
+        let bed = Bed::new("leftovers", "0.1.0.1");
+        let left = bed.handover().join("RectoPDF-0.1.0.2.zip");
+        std::fs::write(&left, b"left").unwrap();
+        let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        let app = bed.updater.app().unwrap();
+        again.launched(Facts {
+            version: "0.1.0.1".into(),
+            app,
+            system: "15.0".into(),
+        });
+        assert!(!left.exists());
+    }
+
+    /// Failure: Settings offers no way to install a waiting build, shows a button when nothing waits, or lets a second press start a second install. And the menu item, which the owner could not use, isn't enabled and titled for the build once it is ready.
+    #[test]
+    fn settings_shows_a_waiting_update_with_a_working_button() {
+        let bed = Bed::new("now-model", "0.1.0.1");
+        assert_eq!(bed.updater.settings_action(), None, "nothing waits");
+        assert_eq!(bed.updater.update_now(), Err(InstallRefused::NothingOnOffer));
+        bed.updater.choose_dev_builds(true);
+        let zip = bed.zip("0.1.0.2", "0.1.0.2", crate::BUNDLE_ID);
+        bed.updater.install_build(&zip, false).unwrap();
+        let action = bed.updater.settings_action().expect("a build waits");
+        assert_eq!(action.title, "Development build 0.1.0.2 is ready");
+        assert!(action.hint.contains("5 minutes") && action.enabled, "{action:?}");
+        assert_eq!(action.button, "Update now");
+        let item = bed.updater.menu_item();
+        assert_eq!((item.title.as_str(), item.enabled), ("Update to 0.1.0.2…", true), "the menu says the same");
+        // The plain command starts nothing and says what it waits for.
+        let (version, words) = bed.updater.waiting_build_words().expect("waiting");
+        assert_eq!(version, "0.1.0.2");
+        assert!(
+            words.contains("Nothing was started") && words.contains("--now") && words.contains("5 minutes"),
+            "{words}"
+        );
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
+        assert!(matches!(bed.status(), Status::BuildReady(_)));
+        // The button is the one call: it goes at once, by hand, without the 5 minutes.
+        assert_eq!(bed.updater.update_now(), Ok("0.1.0.2".to_owned()));
+        bed.wait_for("the hand-off at once", |bed| bed.handed_off().is_some());
+        let under_way = bed.updater.settings_action().expect("under way");
+        assert!(!under_way.enabled && under_way.title.starts_with("Updating to 0.1.0.2"), "{under_way:?}");
+        assert_eq!(bed.updater.waiting_build_words(), None, "nothing waits once it is going");
+    }
+
+    /// Failure: choosing the menu item with a build waiting does something other than what the button and `--now` do, or waits for the idle minutes.
+    #[test]
+    fn the_menu_item_goes_at_once_like_the_button() {
+        let bed = Bed::new("now-menu", "0.1.0.1");
+        bed.updater.choose_dev_builds(true);
+        let zip = bed.zip("0.1.0.2", "0.1.0.2", crate::BUNDLE_ID);
+        bed.updater.install_build(&zip, false).unwrap();
+        bed.idle_for(1000);
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "the 5 minutes aren't up");
+        bed.updater.menu_chosen();
+        bed.wait_for("the hand-off at once", |bed| bed.handed_off().is_some());
+    }
+
+    /// Failure: an offered release has no button, or says it goes by itself when the switch is off.
+    #[test]
+    fn an_offered_release_has_a_button_and_says_how_it_goes() {
+        let bed = Bed::new("now-release", "0.1.0");
+        {
+            let mut st = lock(&bed.updater.st);
+            st.saved.offered = Some("0.2.0".into());
+            st.status = Status::Available("0.2.0".into());
+        }
+        let action = bed.updater.settings_action().expect("on offer");
+        assert_eq!(action.title, "RectoPDF 0.2.0 is available");
+        assert!(action.enabled && action.button == "Update now");
+        bed.updater.choose_switch(false);
+        assert!(bed.updater.settings_action().unwrap().hint.contains("Update automatically is off"));
+        bed.updater.choose_switch(true);
+        assert!(bed.updater.settings_action().unwrap().hint.contains("30 minutes"));
+        lock(&bed.updater.st).status = Status::Installing("0.2.0".into());
+        assert!(!bed.updater.settings_action().unwrap().enabled, "under way");
+        assert_eq!(bed.updater.update_now(), Err(InstallRefused::Underway), "a second press starts nothing");
     }
 
     /// Failure: a development build signed ad hoc, which is what every dev build is (owner, 2026-11-11: dev builds never touch the keychain), is refused where releases are held to the team, or one whose signature doesn't verify whole gets in. The gate for a build is the owner's switch, the bundle id and an intact signature. And what's said when it arrives tells the owner macOS may ask again for folders.

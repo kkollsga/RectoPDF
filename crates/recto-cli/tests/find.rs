@@ -213,11 +213,11 @@ fn a_query_started_mid_run_stops_the_first() {
         let (host_for_news, finished, started_second, seen) = (Arc::clone(&host), Arc::clone(&finished), Arc::clone(&started_second), Arc::clone(&seen));
         host.attach(Arc::new(move |events: Vec<Event>| {
             for event in events {
-                seen.lock().unwrap().push(event.name.to_string());
-                if event.name == "find_finished" {
+                seen.lock().unwrap().push(event.name().to_string());
+                if event.name() == "find_finished" {
                     finished.fetch_add(1, Ordering::SeqCst);
                 }
-                if event.name == "find_changed" && event.data["running"] == true && !started_second.swap(true, Ordering::SeqCst) {
+                if matches!(event, recto_agent::Event::FindRunning) && !started_second.swap(true, Ordering::SeqCst) {
                     host_for_news.find_begin("page 7 of").unwrap();
                 }
             }

@@ -1,4 +1,4 @@
-//! The verdict on each PDF's own contents, with the numbers it goes by, for the evidence in `docs/ENGINEERING.md`.
+//! The verdict on each PDF's own contents, with the numbers it goes by, for the evidence in `docs/engineering/generated-contents.md`.
 //!
 //! `cargo run --release -p recto-core --example contents_verdicts -- FILE...`
 

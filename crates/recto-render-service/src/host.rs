@@ -65,7 +65,7 @@ impl<'a> From<&'a PixelSurface> for Target<'a> {
     }
 }
 
-/// What a worker may do. Defaults are the decisions from the spike; see `docs/ENGINEERING.md`.
+/// What a worker may do. Defaults are the decisions from the spike; see `docs/engineering/crates/recto-render-service.md`.
 #[derive(Clone, Debug)]
 pub struct Policy {
     /// Past this footprint during a job, the worker is killed.
@@ -1185,7 +1185,7 @@ impl DocRenderer {
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
-    /// `docs/ENGINEERING.md`. Goes down the same sequence as a tile, is cancelled by generation like one, and is limited to [`recto_proto::MAX_REGION_BYTES`], so its surface is
+    /// `docs/engineering/crates/recto-render-service.md`. Goes down the same sequence as a tile, is cancelled by generation like one, and is limited to [`recto_proto::MAX_REGION_BYTES`], so its surface is
     /// part of what the worker's memory limit sees. Rows sit `request.stride` apart in `surface`.
     pub fn render_region<'a>(&mut self, request: &TileRequest, tile_edge: u32, surface: impl Into<Target<'a>>) -> Result<TileResult, RenderFailure> {
         if tile_edge == 0 {

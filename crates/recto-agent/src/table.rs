@@ -3382,7 +3382,7 @@ pub static TABLE: &[Spec] = &[
             flag: None,
             kind: Kind::Text,
             required: true,
-            help: "`open`, `close`, `privacy` for the link to the privacy statement, or a switch's id as `qa state` lists it.",
+            help: "`open`, `close`, `privacy` for the link to the privacy statement, or a switch's or button's id as `qa state` lists it (`update.now` is Settings' Update now button, which installs a waiting update by the very call the menu makes; only a test build has `qa`).",
         }],
         fixed: &[("verb", "settings")],
         data: "`qa state`'s `app`.",
@@ -3628,7 +3628,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_status",
         group: GROUP_APP,
         summary: "What version is running, what's on offer, how things stand, and how the last update went. Works while an update is under way. Only in the app.",
-        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, dev_builds, back_to_release, build_waiting, log }`. `version` is `X.Y.Z.N` on a development build. `build` is `release` for a release and a development build alike, `development` for a local build from `app/build.sh`, and `test` for a test's. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`, `build_ready`.",
+        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, dev_builds, back_to_release, build_waiting, log, handover_dir }`. `version` is `X.Y.Z.N` on a development build. `build` is `release` for a release and a development build alike, `development` for a local build from `app/build.sh`, and `test` for a test's. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`, `build_ready`.",
         examples: &["recto update status"],
         ..BASE
     },
@@ -3648,7 +3648,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_install",
         group: GROUP_APP,
         access: Access::At(Level::Full),
-        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way, once it's checked: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. Only in the app.",
+        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way. **`recto` itself opens the zip** (a link, a device or a file over 512 MiB is refused; if macOS is asking about a removable volume it says \"Waiting for macOS to allow access to …\" after 5 seconds and gives up after 2 minutes, Ctrl-C ends it cleanly) and hands the app a copy in the app's own folder, a clone on the same volume, so the app never opens a path an agent names; a client that skips `recto` and names another path gets `not_handed_over`. It is checked once the app has the copy: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. **With no zip and no `--now` while a build already waits, nothing starts:** it answers with the build, what it waits for and how to go at once (`started: false`); the five idle minutes are the owner's rule. `--now` (with or without a zip), the menu's Update to X.Y.Z… and Settings' Update now button are the one call that goes. Only in the app.",
         args: &[
             Arg {
                 key: "zip",
@@ -3662,10 +3662,10 @@ pub static TABLE: &[Spec] = &[
                 flag: Some("--now"),
                 kind: Kind::Switch,
                 required: false,
-                help: "A development build goes at once, waiting only for anything in flight, not for 5 minutes without use.",
+                help: "A development build goes at once, waiting only for anything in flight, not for 5 minutes without use. With no zip, it installs the build that waits.",
             },
         ],
-        data: "`{ started, version, words }`, and for a build `waits_ms`, until it can go.",
+        data: "`{ started, version, words }`, and for a build `waits_ms`, until it can go. `started` is false when a plain install found a build waiting and started nothing.",
         examples: &[
             "recto update install",
             "recto update install RectoPDF-0.1.0.3.zip",
@@ -3722,7 +3722,7 @@ pub static TABLE: &[Spec] = &[
 /// What `watch --events` can ask for.
 pub const EVENT_GROUPS: &[&str] = &["tabs", "pages", "edits", "draws", "indexing", "contents", "access", "view", "find"];
 
-/// Every event a session tells watchers of, with the `watch --events` group it's in, in the order of [`EVENT_GROUPS`]. **No default** (review C6): an event that isn't here has no group, so `--events` can't select it, and a test reads the code for every `Event::new` and holds it to this list.
+/// Every event a session tells watchers of, with the `watch --events` group it's in, in the order of [`EVENT_GROUPS`]. **No default** (review C6): the `Event` type names every event's group in an exhaustive `match`, and a test holds this list to the type.
 pub const EVENTS: &[(&str, &str)] = &[
     ("tab_opened", "tabs"),
     ("tab_closed", "tabs"),
@@ -5265,94 +5265,5 @@ mod tests {
             assert!(skill::reference_md().contains(&format!("`{group}`")), "{group}");
         }
         let _ = Command::Stop {};
-    }
-
-    /// The event names in the first argument of each `Event::new(` in some code, with the line of each, and the lines whose name isn't a literal at all.
-    fn emitted_names(code: &str) -> (Vec<(String, usize)>, Vec<usize>) {
-        let (mut names, mut unnamed) = (Vec::new(), Vec::new());
-        // Comment lines blanked, keeping the count, as rustfmt puts an argument on a line of its own.
-        let text: String = code
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with("//") {
-                    "\n".to_string()
-                } else {
-                    format!("{line}\n")
-                }
-            })
-            .collect();
-        let mut from = 0;
-        while let Some(at) = text[from..].find("Event::new(") {
-            let start = from + at + "Event::new(".len();
-            let line = text[..start].matches('\n').count() + 1;
-            let rest = &text[start..];
-            // The first argument: up to the comma at depth 0.
-            let mut depth = 0i32;
-            let end = rest
-                .char_indices()
-                .find(|&(_, c)| {
-                    match c {
-                        '(' | '{' | '[' => depth += 1,
-                        ')' | '}' | ']' => depth -= 1,
-                        _ => {}
-                    }
-                    depth < 0 || (depth == 0 && c == ',')
-                })
-                .map_or(rest.len(), |(at, _)| at);
-            let literals: Vec<&str> = rest[..end].split('"').skip(1).step_by(2).collect();
-            if literals.is_empty() {
-                unnamed.push(line);
-            }
-            names.extend(literals.into_iter().map(|name| (name.to_string(), line)));
-            from = start;
-        }
-        (names, unnamed)
-    }
-
-    /// Failure (review C6): an event made somewhere isn't listed, so it fell into the `access` group, and `watch --events` never selected it where a watcher would look. Every `Event::new` in every crate names its event with a literal, and each one is listed with a group `--events` takes. The reference lists every group's events from the same list.
-    #[test]
-    fn every_emitted_event_is_listed() {
-        let (names, unnamed) = emitted_names(
-            "x.push(Event::new(if a { \"tab_opened\" } else { \"tab_activated\" }, json!({ \"tab\": 1 }))); Event::new(\"saved\", v)\n// Event::new(name, v)\nEvent::new(\n    \"page_changed\",\n    v,\n)",
-        );
-        assert_eq!(
-            names.iter().map(|(name, line)| (name.as_str(), *line)).collect::<Vec<_>>(),
-            [("tab_opened", 1), ("tab_activated", 1), ("saved", 1), ("page_changed", 3)],
-            "an argument on a line of its own, as rustfmt lays one out, is read too, and a comment isn't"
-        );
-        assert!(unnamed.is_empty());
-        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-        let mut folders = vec![crates];
-        let mut seen = 0;
-        while let Some(folder) = folders.pop() {
-            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
-                let path = entry.path();
-                if path.is_dir() && path.file_name().is_some_and(|name| name != "target") {
-                    folders.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "rs") && !path.ends_with("recto-agent/src/table.rs") {
-                    // This file makes no events, and this test's own code would read as if it did.
-                    let code = std::fs::read_to_string(&path).unwrap();
-                    let (names, unnamed) = emitted_names(&code);
-                    assert!(
-                        unnamed.is_empty(),
-                        "{}:{unnamed:?}: an event is named with a literal, so it can be checked",
-                        path.display()
-                    );
-                    for (name, line) in names {
-                        seen += 1;
-                        let group = event_group(&name).unwrap_or_else(|| panic!("{}:{line}: `{name}` isn't in `EVENTS`, so it has no group", path.display()));
-                        assert!(EVENT_GROUPS.contains(&group), "{name}: {group}");
-                    }
-                }
-            }
-        }
-        assert!(seen > 30, "the code was read: {seen} events found");
-        for group in EVENT_GROUPS {
-            assert!(EVENTS.iter().any(|(_, listed)| listed == group), "{group} has no events");
-        }
-        let reference = skill::reference_md();
-        for (event, _) in EVENTS {
-            assert!(reference.contains(&format!("`{event}`")), "{event} is in the reference");
-        }
     }
 }

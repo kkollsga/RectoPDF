@@ -150,7 +150,10 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
             return Err(StageError::lasting("checksum", "the download isn't the file the release describes"));
         }
         say("checksum good, unpacking");
-        unpack(&zip, &beside)
+        unpack(
+            &mut std::fs::File::open(&zip).map_err(|_| StageError::now("unpack_failed", "unpacking failed"))?,
+            &beside,
+        )
     })();
     let _ = std::fs::remove_file(&zip);
     unpacked?;
@@ -164,7 +167,7 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
 }
 
 /// A development build handed over as a zip on this Mac (`recto update install <zip>`): what [`prepare`] does with a release, but from the file, with no download and no checksum to hold it to. Unpacked by our own reader beside the app, then held to this app's bundle id, its version, and a signature that verifies whole (`codesign --verify --deep --strict`), ad hoc or not. Not to the team or Gatekeeper: owner, 2026-11-11, dev builds never touch the keychain, so they're signed ad hoc, and only a release is notarized. What lets it in is the owner's switch and the request coming from this user (SPEC decision 24). Refused, it leaves nothing staged.
-pub fn prepare_build(zip_file: &Path, version: &str, source: &Source, app: &Path, say: &mut dyn FnMut(&str)) -> Result<Staged, StageError> {
+pub fn prepare_build(zip_file: &mut std::fs::File, version: &str, source: &Source, app: &Path, say: &mut dyn FnMut(&str)) -> Result<Staged, StageError> {
     let beside = check_place(app)?;
     let new_app = new_app_in(&beside);
     let own_id = if source.mode == crate::source::Mode::Test {
@@ -174,7 +177,8 @@ pub fn prepare_build(zip_file: &Path, version: &str, source: &Source, app: &Path
     };
     let _ = std::fs::remove_file(beside.join("staged.json"));
     let _ = std::fs::remove_dir_all(beside.join("new"));
-    if !std::fs::metadata(zip_file).is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_ZIP_BYTES) {
+    // The one descriptor was looked at when it was opened ([`crate::handover::open_inside`]); a file that has grown since is looked at again here.
+    if !zip_file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_ZIP_BYTES) {
         return Err(StageError::lasting("zip_bad", "that isn't a zip of a size an app could be"));
     }
     say("unpacking");
@@ -251,13 +255,13 @@ pub fn team_of(app: &Path) -> Option<String> {
 }
 
 /// Unpacks into a private folder, by our own reader, and moves it into place once it's whole. A bad zip is the release's fault. A disk that's full or a read that fails isn't, and it might go better later.
-fn unpack(zip_file: &Path, beside: &Path) -> Result<(), StageError> {
+fn unpack(zip_file: &mut std::fs::File, beside: &Path) -> Result<(), StageError> {
     let cant_write = |_| StageError::now("not_writable", "the update's folder can't be written");
     let unpacking = beside.join("unpacking");
     let _ = std::fs::remove_dir_all(&unpacking);
     std::fs::create_dir_all(&unpacking).map_err(cant_write)?;
     let result = (|| {
-        zip::unpack(zip_file, APP_BUNDLE, &unpacking, std::time::Instant::now() + TOOL_LIMIT).map_err(|error| match error {
+        zip::unpack_open(zip_file, APP_BUNDLE, &unpacking, std::time::Instant::now() + TOOL_LIMIT).map_err(|error| match error {
             ZipError::Bad(why) => StageError::lasting("zip_bad", format!("the release's zip is no good: {why}")),
             ZipError::TooSlow => StageError::now("unpack_slow", "unpacking took too long"),
             ZipError::Io(error) if error.kind() == std::io::ErrorKind::StorageFull => StageError::now("disk_full", "the disk is full"),
@@ -826,10 +830,10 @@ pub(crate) mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o500)).unwrap();
         let error = unpack(
-            &{
+            &mut {
                 let zip = bed.dir.join("z.zip");
                 std::fs::write(&zip, make_zip(&[Made::file("RectoPDF.app/x", b"x")])).unwrap();
-                zip
+                std::fs::File::open(&zip).unwrap()
             },
             &beside,
         );
