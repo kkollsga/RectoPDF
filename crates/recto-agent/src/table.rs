@@ -3579,7 +3579,7 @@ pub static TABLE: &[Spec] = &[
         tag: "qa_drive",
         group: GROUP_QA,
         access: Access::At(Level::Control),
-        summary: "What the system saying memory's short calls: `warning` or `critical`. Or `discard`: the system taking back every surface marked discardable, as it does without a word when it needs the pages.",
+        summary: "What the system saying memory's short calls: `warning` or `critical`. `system-warning` or `system-critical` come in as the system's own do, which a quiet run only counts (`record.sleep.system_pressure`). Or `discard`: the system taking back every surface marked discardable, as it does without a word when it needs the pages.",
         args: &[Arg {
             key: "value",
             flag: None,

@@ -11,10 +11,8 @@ mod generated_contents;
 pub mod linking;
 mod menus;
 mod palette;
-mod panes;
 pub mod passwords;
 mod printing;
-mod privacy;
 mod qa;
 mod records;
 mod saver;
@@ -29,7 +27,7 @@ mod watchdog;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
-use recto_app::{ContentsEntry, PaneSnapshot};
+use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
@@ -928,7 +926,7 @@ impl AppHost {
             };
             let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
             // A tab's name is the file's, so it's marked as the document's words.
-            let row_json = |row: &palette::PaletteRow| {
+            let row_json = |row: &recto_app::palette::PaletteRow| {
                 if row.from_file {
                     json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } })
                 } else {
@@ -945,7 +943,7 @@ impl AppHost {
                 // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
                 let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
                     Some(direct) => {
-                        palette::close(&core.inner);
+                        core.inner.palette.close();
                         self.run_counted(level, &direct, events)?;
                         HostAction::None
                     }
@@ -1364,24 +1362,20 @@ struct Inner {
     action_notice: Mutex<Option<String>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     keys: Arc<recto_reader::engine::Keyring>,
-    /// Passwords being asked for, in turn, on the system's sheet, and what each file's tries have come to.
-    password_asks: Mutex<passwords::Asks>,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
     notice_tab: AtomicU32,
-    /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
-    link_prompt: Mutex<Option<linking::LinkPrompt>>,
-    /// Link sheets asked so far, which numbers each.
-    link_prompts_made: AtomicU64,
+    /// The sheets that ask: a password, or whether to open a link.
+    prompts: recto_app::prompts::Prompts,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     tool: snapshot_tool::Tool,
-    folds: sidebar_access::Folds,
-    chrome: chrome::Chrome,
+    folds: recto_app::sidebar_access::Folds,
+    chrome: recto_app::chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
     printing: printing::Printing,
     /// ⌘K's palette, on the UI thread.
-    palette: Mutex<palette::State>,
+    palette: recto_app::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
     find_field: Mutex<find::Field>,
 }
@@ -1657,6 +1651,11 @@ impl Inner {
             "memory_pressure" => match value {
                 "warning" | "critical" => {
                     self.core.push(CoreCall::MemoryPressure(value == "critical"));
+                    Ok(())
+                }
+                // What the host's dispatch source calls, through the same method, which in a quiet run only counts it.
+                "system-warning" | "system-critical" => {
+                    self.system_pressure(value == "system-critical");
                     Ok(())
                 }
                 // The system taking back what's marked discardable, which it does without a word whenever it needs the pages.
@@ -2026,16 +2025,14 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             tool: snapshot_tool::Tool::default(),
-            folds: sidebar_access::Folds::default(),
-            chrome: chrome::Chrome::default(),
+            folds: recto_app::sidebar_access::Folds::default(),
+            chrome: recto_app::chrome::Chrome::default(),
             printing: printing::Printing::default(),
             keys,
-            password_asks: Mutex::new(passwords::Asks::default()),
             notice_tab: AtomicU32::new(0),
-            link_prompt: Mutex::new(None),
-            link_prompts_made: AtomicU64::new(0),
+            prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
-            palette: Mutex::new(palette::State::default()),
+            palette: recto_app::palette::Palette::default(),
             find_field: Mutex::new(find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -2411,32 +2408,12 @@ impl AppCore {
 
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
-        let reader = lock(&self.inner.published).reader.clone();
-        let recent = Arc::clone(&lock(&self.inner.published).recent);
-        let items: Vec<menus::RecentItem> = recent
-            .iter()
-            .map(|file| menus::RecentItem {
-                key: &file.key,
-                name: &file.name,
-            })
-            .collect();
-        let mut bar = menus::menu_bar_with(
-            ViewSettings {
-                paper: Paper::from_name(&reader.paper),
-                sidebar_hidden: reader.sidebar_hidden,
-                agent_icon_hidden: reader.agent_icon_hidden,
-            },
-            record::Spread::from_name(&reader.layout),
-            &self.inner.updates.menu_item().title,
-            &items,
-        );
-        bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
-        bar
+        menus::bar_now(self).into_iter().map(Into::into).collect()
     }
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        let mut asks = lock(&self.inner.password_asks);
+        let mut asks = lock(&self.inner.prompts.passwords);
         let Some(typed) = password else {
             asks.cancel(id);
             drop(asks);
@@ -2463,7 +2440,7 @@ impl AppCore {
             core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
         });
         if spawned.is_err() {
-            lock(&self.inner.password_asks).failed(id);
+            lock(&self.inner.prompts.passwords).failed(id);
         }
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -2489,8 +2466,8 @@ impl AppCore {
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
-        snapshot_tool::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
-        panel
+        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
+        panel.into()
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -2509,7 +2486,7 @@ impl AppCore {
         }
         let Some(action) = menus::action(&id) else { return HostAction::None };
         match action {
-            menus::Action::Host(host) => return host,
+            menus::Action::Host(host) => return host.into(),
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
@@ -2518,7 +2495,7 @@ impl AppCore {
                 if lock(&self.inner.published).reader.sidebar_hidden {
                     self.inner.core.push(CoreCall::SetSidebarHidden(false));
                 }
-                palette::open(&self.inner);
+                self.inner.palette.open();
                 self.inner.listener.model_changed();
                 return HostAction::FocusPalette;
             }
@@ -2587,7 +2564,7 @@ impl AppCore {
 
     /// What's in the palette's field now, as it's typed.
     pub fn palette_typed(&self, text: String) {
-        palette::typed(&self.inner, &text);
+        self.inner.palette.typed(&text);
     }
 
     /// ↑ (-1) and ↓ (1) in the palette.
@@ -2602,7 +2579,7 @@ impl AppCore {
 
     /// Escape, or the keyboard going elsewhere.
     pub fn palette_close(&self) {
-        palette::close(&self.inner);
+        self.inner.palette.close();
         self.inner.listener.model_changed();
     }
 
@@ -2690,7 +2667,7 @@ impl AppCore {
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
     pub fn memory_pressure(&self, critical: bool) {
-        self.inner.core.push(CoreCall::MemoryPressure(critical));
+        self.inner.system_pressure(critical);
     }
 
     /// What a right-click on a page offers.
@@ -2699,6 +2676,9 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let layout = reader.panes.get(pane as usize).map_or(reader.layout.as_str(), |view| view.layout.as_str());
         menus::context_menu(record::Spread::from_name(layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
@@ -2784,7 +2764,7 @@ impl AppCore {
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        let mut asked = lock(&self.inner.link_prompt);
+        let mut asked = lock(&self.inner.prompts.link);
         // An answer is to the sheet that was shown: a later link's asking is left for its own answer.
         if asked.as_ref().is_none_or(|prompt| prompt.id != id) {
             return None;
@@ -2883,7 +2863,7 @@ impl AppCore {
 
     /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.
     pub fn zoom_label(&self, magnification: f64, fit: f64) -> menus::ZoomLabel {
-        menus::zoom_label(magnification, fit)
+        menus::zoom_label(magnification, fit).into()
     }
 
     /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
@@ -3683,11 +3663,11 @@ fn session_thread(inner: &Arc<Inner>) {
                     let identity = stamp.map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0));
                     match identity {
                         None => {
-                            lock(&inner.password_asks).failed(ask.id);
+                            lock(&inner.prompts.passwords).failed(ask.id);
                             *lock(&inner.open_failure) = Some(passwords::CANT_KEEP.to_string());
                         }
                         Some(identity) => {
-                            lock(&inner.password_asks).opened(ask.id);
+                            lock(&inner.prompts.passwords).opened(ask.id);
                             inner.keys.set(identity, password);
                             for engine in inner.panes.engines(&inner.engine) {
                                 engine.key_given(&ask.path);
@@ -3703,12 +3683,12 @@ fn session_thread(inner: &Arc<Inner>) {
                     }
                 }
                 Err(OpenError::PasswordNeeded) => {
-                    if lock(&inner.password_asks).wrong(ask.id) == passwords::Wrong::Stopped {
+                    if lock(&inner.prompts.passwords).wrong(ask.id) == passwords::Wrong::Stopped {
                         *lock(&inner.action_notice) = Some(passwords::stopped_asking());
                     }
                 }
                 Err(error) => {
-                    lock(&inner.password_asks).failed(ask.id);
+                    lock(&inner.prompts.passwords).failed(ask.id);
                     *lock(&inner.open_failure) = Some(error.message().to_string());
                 }
             },
@@ -3807,7 +3787,7 @@ fn session_thread(inner: &Arc<Inner>) {
                     let tab = session.tab_for_path(&path);
                     (tab, tab.and_then(|id| session.path_of(id)))
                 });
-                lock(&inner.password_asks).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
+                lock(&inner.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
                 let cold = host
                     .session
                     .with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
@@ -4217,7 +4197,7 @@ impl FileReads {
                 }
                 // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
                 Err(SessionError::Open(OpenError::PasswordNeeded)) => {
-                    lock(&inner.password_asks).ask(passwords::Target::File, &path);
+                    lock(&inner.prompts.passwords).ask(passwords::Target::File, &path);
                 }
                 Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
             },
@@ -4289,7 +4269,7 @@ fn follow_link(inner: &Inner, pane: usize, engine: &Engine, hit: recto_reader::l
         },
         recto_core::nav::LinkTarget::History { back } => inner.core.push(CoreCall::Step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
-            *lock(&inner.link_prompt) = Some(linking::prompt_for(inner.link_prompts_made.fetch_add(1, Ordering::SeqCst) + 1, &address));
+            inner.prompts.ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
         recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
@@ -4524,7 +4504,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             active,
         )
     });
-    let asked = lock(&inner.password_asks).tabs_asked();
+    let asked = lock(&inner.prompts.passwords).tabs_asked();
     let closed: Vec<TabId> = if asked.is_empty() {
         Vec::new()
     } else {
@@ -4534,14 +4514,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             .with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect())
     };
     let password_prompt = {
-        let mut asks = lock(&inner.password_asks);
+        let mut asks = lock(&inner.prompts.passwords);
         asks.showing_tab(active_tab, &closed);
         if let Some((id, path)) = wants
             && !asks.declined(id)
         {
             asks.ask(passwords::Target::Tab(id), &path);
         }
-        asks.prompt()
+        asks.prompt().map(Into::into)
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
@@ -4605,7 +4585,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
     reader.save_problem = inner.save_ui.problem();
-    reader.link_prompt = lock(&inner.link_prompt).clone();
+    reader.link_prompt = lock(&inner.prompts.link).clone().map(Into::into);
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
     let recto_app::SidebarParts {

@@ -57,6 +57,9 @@ struct Counts {
     writes_skipped_busy: AtomicU64,
     woken_from_file: AtomicU64,
     pressure_events: AtomicU64,
+    /// The system's own pressure in a quiet run, counted and not acted on: warnings, and critical.
+    system_warning: AtomicU64,
+    system_critical: AtomicU64,
 }
 
 pub(crate) struct Sleeper {
@@ -234,6 +237,7 @@ impl Sleeper {
             "sleep_bytes_written": count(&counts.sleep_bytes),
             "woken_from_file": count(&counts.woken_from_file),
             "pressure_events": count(&counts.pressure_events),
+            "system_pressure": { "warning": count(&counts.system_warning), "critical": count(&counts.system_critical) },
             "looks_running": self.looks.running(),
             "leaving": lock(&self.leaving).report(),
         })
@@ -526,6 +530,18 @@ impl Inner {
         }
         if !over.is_empty() {
             self.core.push(CoreCall::SleepTabs(over, Why::Budget));
+        }
+    }
+
+    /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`recto_app::pressure::heard`]). A quiet run is the one with a QA bridge.
+    pub(crate) fn system_pressure(&self, critical: bool) {
+        match recto_app::pressure::heard(self.qa.is_some(), recto_app::pressure::Source::System) {
+            recto_app::pressure::Heard::Act => self.core.push(CoreCall::MemoryPressure(critical)),
+            recto_app::pressure::Heard::Count => {
+                let counts = &self.sleeper.counts;
+                let counter = if critical { &counts.system_critical } else { &counts.system_warning };
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

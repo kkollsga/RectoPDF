@@ -449,7 +449,7 @@ impl QaBridge {
             | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
-                if !self.inner().is_some_and(|inner| inner.palette_open()) {
+                if !self.inner().is_some_and(|inner| inner.palette.is_open()) {
                     return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
                 }
             }
@@ -457,7 +457,7 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.password_asks)
+                let path = lock(&inner.prompts.passwords)
                     .showing()
                     .map(|ask| ask.path.clone())
                     .ok_or_else(|| bad("No password sheet is open."))?;
@@ -760,7 +760,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
             "lower-right:out",
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => crate::sidebar_access::is_qa_value(value),
+        "accessibility" => recto_app::sidebar_access::is_qa_value(value),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),

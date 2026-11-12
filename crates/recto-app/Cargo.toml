@@ -6,11 +6,21 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# The fakes in `testkit`, for other crates' tests.
+testkit = []
+
 [lints]
 workspace = true
 
 [dependencies]
+recto-agent.workspace = true
 recto-core.workspace = true
 recto-platform.workspace = true
 recto-reader.workspace = true
 recto-session.workspace = true
+recto-update.workspace = true
+
+[dev-dependencies]
+recto-control.workspace = true
+recto-index.workspace = true
