@@ -17,6 +17,7 @@ pub mod pressure;
 pub mod privacy;
 pub mod prompts;
 pub mod queue;
+pub mod reader_view;
 pub mod saver;
 pub mod saving;
 pub mod sidebar_access;

@@ -2,7 +2,7 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, QuitAnswer, ReaderView, RowKind, SidebarRow, SidebarView};
+use crate::{AppListener, QuitAnswer, RowKind, SidebarRow, SidebarView};
 use recto_app as app;
 use std::sync::Arc;
 
@@ -103,49 +103,6 @@ impl From<app::SidebarView> for SidebarView {
             edited: view.edited,
             undone_owner_steps: view.undone_owner_steps,
             contents_note: view.contents_note.map(Into::into),
-        }
-    }
-}
-
-/// The reader model with its sheets empty: the caller sets the bridge's own.
-impl From<app::ReaderModel> for ReaderView {
-    fn from(model: app::ReaderModel) -> Self {
-        Self {
-            panes: model.panes,
-            compare_synced: model.window.compare_synced,
-            home: model.window.home,
-            note: model.note,
-            sidebar_hidden: model.window.sidebar_hidden,
-            layout: model.document.layout,
-            edited: model.edit.edited,
-            can_undo: model.edit.can_undo,
-            can_redo: model.edit.can_redo,
-            edit_mode: model.edit.edit_mode,
-            can_rotate: model.edit.can_rotate,
-            place: model.document.place,
-            paper: model.paper.name,
-            paper_rgb: model.paper.rgb,
-            agent_icon_hidden: model.window.agent_icon_hidden,
-            page_tint: model.paper.tint,
-            sidebar_width: model.window.sidebar_width,
-            highlight_dark_colour: model.paper.highlight_dark_colour,
-            highlight_lighten: model.paper.highlight_lighten,
-            selection_notice: model.selection_notice,
-            saving: model.save.saving,
-            save_tooltip: model.save.tooltip,
-            save_problem: None,
-            save_as_note: model.save.as_note,
-            shown_tab: model.document.shown_tab,
-            document_name: model.document.name,
-            document_folder: model.document.folder,
-            save_button: model.save.button,
-            print_ready: model.window.print_ready,
-            password_prompt: None,
-            save_enabled: model.save.enabled,
-            can_go_back: model.edit.can_go_back,
-            can_go_forward: model.edit.can_go_forward,
-            link_prompt: None,
-            page_text: model.document.page_text,
         }
     }
 }

@@ -29,6 +29,7 @@ pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
 use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
+pub use recto_app::reader_view::ReaderView;
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
@@ -362,7 +363,7 @@ pub struct PaneView {
 }
 
 /// What the page area shows.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ReaderView {
     /// Tabs side by side, left to right, a pane each. Empty with one tab showing, which is one pane with no label.
     pub panes: Vec<PaneView>,
@@ -1090,43 +1091,7 @@ impl Published {
             rail_filled: 0,
             tabs: Arc::new(Vec::new()),
             sidebar: Arc::new(recto_app::empty_sidebar()),
-            reader: ReaderView {
-                panes: Vec::new(),
-                compare_synced: false,
-                home: true,
-                note: None,
-                sidebar_hidden: false,
-                layout: String::new(),
-                edited: false,
-                can_undo: false,
-                can_redo: false,
-                edit_mode: false,
-                can_rotate: false,
-                place: String::new(),
-                paper: Paper::White.name().to_string(),
-                paper_rgb: PaperKind::White.rgb(),
-                page_tint: None,
-                agent_icon_hidden: false,
-                sidebar_width: record::SIDEBAR_WIDTH,
-                highlight_dark_colour: false,
-                highlight_lighten: false,
-                selection_notice: None,
-                saving: false,
-                save_tooltip: String::new(),
-                save_problem: None,
-                save_as_note: None,
-                shown_tab: 0,
-                document_name: String::new(),
-                document_folder: String::new(),
-                save_button: false,
-                save_enabled: false,
-                print_ready: false,
-                can_go_back: false,
-                can_go_forward: false,
-                link_prompt: None,
-                page_text: String::new(),
-                password_prompt: None,
-            },
+            reader: ReaderView::home(),
         }
     }
 }
