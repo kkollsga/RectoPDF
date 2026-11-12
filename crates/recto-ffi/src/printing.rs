@@ -231,11 +231,11 @@ pub(crate) fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selecti
 /// What a menu item or notice button does, if it's printing's: Stop, or a notice's "Print anyway", which asks again only what that notice refused. Says whether it was printing's.
 pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if id == STOP_ID {
-        inner.printing.cancel();
+        inner.tools.printing.cancel();
         return true;
     }
     let Some(serial) = id.strip_prefix(ANYWAY_PREFIX) else { return false };
-    if let Some(request) = serial.parse().ok().and_then(|serial| inner.printing.take_refused(serial)) {
+    if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
         start(inner, Request { anyway: true, ..request });
     }
     inner.core.push(CoreCall::Reconcile);
@@ -244,7 +244,7 @@ pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.
 fn start(inner: &Arc<Inner>, request: Request) -> bool {
-    let printing = &inner.printing;
+    let printing = &inner.tools.printing;
     if printing.running.swap(true, Ordering::SeqCst) {
         printing.say("A print is already being prepared.", false);
         return false;
@@ -259,7 +259,7 @@ fn start(inner: &Arc<Inner>, request: Request) -> bool {
     inner.core.push(CoreCall::Reconcile);
     let runner = Arc::clone(inner);
     let spawned = std::thread::Builder::new().name("recto-print".into()).stack_size(STACK).spawn(move || {
-        let printing = &runner.printing;
+        let printing = &runner.tools.printing;
         let pages = format!("{first}-{last}");
         let tab = request.tab;
         let listed = runner
@@ -372,31 +372,31 @@ impl AppCore {
         let written = folder.join(format!(
             ".recto-print-{}-{}.pdf",
             std::process::id(),
-            self.inner.printing.generation.load(Ordering::SeqCst) + 1
+            self.inner.tools.printing.generation.load(Ordering::SeqCst) + 1
         ));
         if std::fs::symlink_metadata(&written).is_ok() {
             return None;
         }
-        *lock(&self.inner.printing.qa_target) = Some((written.clone(), out));
+        *lock(&self.inner.tools.printing.qa_target) = Some((written.clone(), out));
         Some(written.to_string_lossy().into_owned())
     }
 
     /// The file a print's pages are in, once, for the host to hand to the system's printing.
     pub fn take_print(&self) -> Option<String> {
-        let path = self.inner.printing.take_ready().map(|path| path.to_string_lossy().into_owned());
+        let path = self.inner.tools.printing.take_ready().map(|path| path.to_string_lossy().into_owned());
         self.inner.core.push(CoreCall::Reconcile);
         path
     }
 
     /// The system's printing is done with a file, however it went: it goes.
     pub fn print_finished(&self, path: String) {
-        self.inner.printing.finished(&path);
+        self.inner.tools.printing.finished(&path);
         self.inner.core.push(CoreCall::Reconcile);
     }
 
     /// Stops a print being prepared, at the next page: the notice's Stop.
     pub fn print_cancel(&self) {
-        self.inner.printing.cancel();
+        self.inner.tools.printing.cancel();
     }
 }
 

@@ -306,21 +306,21 @@ impl Tool {
 
 /// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
 pub(crate) fn tab_came_forward(inner: &crate::Inner) {
-    if inner.tool.is_on() {
-        inner.tool.toggle();
+    if inner.tools.tool.is_on() {
+        inner.tools.tool.toggle();
     }
 }
 
 /// What a menu item, panel button or notice button does, if it's the tool's: toggling it, or a notice's "Copy anyway", which takes again only what that notice refused. Says whether it was the tool's.
 pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if id == TOGGLE_ID {
-        inner.tool.toggle();
+        inner.tools.tool.toggle();
         inner.core.push(crate::CoreCall::Reconcile);
         inner.listener.model_changed();
         return true;
     }
     let Some(serial) = id.strip_prefix(ANYWAY_PREFIX) else { return false };
-    if let Some(job) = serial.parse().ok().and_then(|serial| inner.tool.take_refused(serial)) {
+    if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
         start(inner, Job { anyway: true, ..job });
     }
     inner.core.push(crate::CoreCall::Reconcile);
@@ -340,7 +340,7 @@ fn words_for(outcome: &ClipOutcome) -> (String, bool) {
 
 /// Takes a job off the UI thread: now, on a thread of its own, or after the one running, which it stops.
 fn start(inner: &Arc<Inner>, job: Job) {
-    let tool = &inner.tool;
+    let tool = &inner.tools.tool;
     // A box on a heavy page can take seconds, so the reader is told it's on its way, until the answer replaces this.
     tool.say("Copying…", false);
     lock(&tool.refused).take();
@@ -355,13 +355,13 @@ fn start(inner: &Arc<Inner>, job: Job) {
         while let Some((job, stop)) = next {
             let (outcome, source) = take(&runner, job, &stop);
             // Under the slot's lock, so a release now either waits for this thread or finds the slot free after the answer is in. Nothing here takes the session's lock.
-            let mut jobs = lock(&runner.tool.jobs);
+            let mut jobs = lock(&runner.tools.tool.jobs);
             next = jobs.next();
             if next.is_none() {
                 publish(&runner, job, outcome, source);
             }
         }
-        runner.tool.running.fetch_sub(1, Ordering::SeqCst);
+        runner.tools.tool.running.fetch_sub(1, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
         runner.core.push(crate::CoreCall::Reconcile);
     });
@@ -376,7 +376,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
 
 /// The newest job's answer: the notice, and what's for the clipboard.
 fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBuf, u32)>) {
-    let tool = &inner.tool;
+    let tool = &inner.tools.tool;
     if matches!(outcome, ClipOutcome::Stopped) {
         lock(&tool.notice).take();
         return;
@@ -440,7 +440,7 @@ enum Data {
 impl AppCore {
     /// What a copy has for the clipboard, a snapshot's or the selection's text, as one offer: the types in order, and which are made only when a paste asks. `copy_ready` says when. The bytes come one type at a time from `clipboard_data`, so no more than one is copied across at once.
     pub fn take_clipboard(&self) -> Option<ClipboardOffer> {
-        let tool = &self.inner.tool;
+        let tool = &self.inner.tools.tool;
         let mut offered = lock(&tool.ready).take().or_else(|| {
             self.inner
                 .panes
@@ -469,7 +469,7 @@ impl AppCore {
 
     /// One type's bytes for the offer with this number, once. A type made with the copy is handed over and dropped from here. A promised one is made now, as a paste asks for it, which takes a worker and can take seconds: the system asks on the UI thread and waits for the answer, which is the one time the UI thread waits here, and only for a paste of that type from another app. Nothing for an offer replaced since, or on the way out.
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
-        match self.inner.tool.data(serial, &uti)? {
+        match self.inner.tools.tool.data(serial, &uti)? {
             Data::Ready(bytes) => Some(bytes),
             Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, cap).ok(),
         }
@@ -477,7 +477,7 @@ impl AppCore {
 
     /// The clipboard has something else on it now: what this offer promised is let go.
     pub fn clipboard_released(&self, serial: u64) {
-        let mut offered = lock(&self.inner.tool.offered);
+        let mut offered = lock(&self.inner.tools.tool.offered);
         if offered.as_ref().is_some_and(|offered| offered.serial == serial) {
             offered.take();
         }

@@ -89,7 +89,7 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn recto_app::Lis
     let set_view = |events: &mut Vec<Event>, change: fn(&mut recto_session::ViewSettings)| crate::set_view(inner, events, change);
     step(&FindHandle {
         session: &inner.host.session,
-        field: &inner.find_field,
+        field: &inner.tools.find_field,
         frozen: &inner.core.frozen,
         panes: &inner.panes,
         engine: &inner.engine,
@@ -99,7 +99,7 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn recto_app::Lis
 }
 
 pub(crate) fn is_open(inner: &Inner) -> bool {
-    app::is_open(&inner.find_field)
+    app::is_open(&inner.tools.find_field)
 }
 
 pub(crate) fn view(inner: &Inner) -> FindView {

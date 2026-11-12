@@ -235,7 +235,7 @@ impl Inner {
 
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
     pub(crate) fn dormancy_due(&self) -> Option<Vec<TabId>> {
-        if self.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
+        if self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
             self.sleeper
                 .due
                 .store(self.sleeper.millis() + u64::try_from(BUSY_RETRY.as_millis()).unwrap_or(5000), Ordering::SeqCst);

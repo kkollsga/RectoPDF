@@ -98,7 +98,7 @@ fn items(core: &AppCore) -> Vec<app::PaletteRow> {
 pub(crate) fn found_for(core: &AppCore, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
     let version = lock(&core.inner.published).sidebar.tabs_version;
     app::found_for(
-        &core.inner.palette,
+        &core.inner.tools.palette,
         query,
         version,
         || tab_rows(core),
@@ -121,18 +121,18 @@ pub(crate) fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -
 
 /// What the host draws now.
 pub(crate) fn view(core: &AppCore) -> PaletteView {
-    core.inner.palette.view(|text| found_for(core, text, &ForWhom::person())).into()
+    core.inner.tools.palette.view(|text| found_for(core, text, &ForWhom::person())).into()
 }
 
 /// ↑ and ↓: the selection moves, stopping at either end.
 pub(crate) fn step(core: &AppCore, by: i32) {
-    let count = core.inner.palette.view(|text| found_for(core, text, &ForWhom::person())).rows.len();
-    core.inner.palette.step(count, by);
+    let count = core.inner.tools.palette.view(|text| found_for(core, text, &ForWhom::person())).rows.len();
+    core.inner.tools.palette.step(count, by);
 }
 
 /// Runs a row, closing the palette first, and says what's left for the host.
 pub(crate) fn run(core: &AppCore, id: &str) -> HostAction {
-    core.inner.palette.close();
+    core.inner.tools.palette.close();
     let frozen = core.inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
     match app::route(id, crate::find::is_open(&core.inner), frozen) {
         app::Run::Tap(tab) => {

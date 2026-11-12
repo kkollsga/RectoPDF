@@ -180,19 +180,19 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std:
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
     let inner = Arc::clone(inner);
-    inner.save_ui.running.fetch_add(1, Ordering::SeqCst);
+    inner.tools.save_ui.running.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
         let inner = Arc::clone(&inner);
         move || {
             run_save(&inner, tab, out, close_after, answered);
-            inner.save_ui.running.fetch_sub(1, Ordering::SeqCst);
-            inner.save_ui.step.store(0, Ordering::SeqCst);
+            inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
+            inner.tools.save_ui.step.store(0, Ordering::SeqCst);
             inner.core.push(crate::CoreCall::Reconcile);
         }
     });
     if spawned.is_err() {
-        inner.save_ui.running.fetch_sub(1, Ordering::SeqCst);
-        inner.save_ui.set_problem(Some(app::not_started()));
+        inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
+        inner.tools.save_ui.set_problem(Some(app::not_started()));
         inner.core.push(crate::CoreCall::Reconcile);
     }
 }
@@ -203,7 +203,7 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
-            inner.save_ui.set_problem(Some(app::appeared_after_answer()));
+            inner.tools.save_ui.set_problem(Some(app::appeared_after_answer()));
             return;
         }
         Some(Ok(replace)) => replace,
@@ -221,15 +221,15 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
                 .as_array()
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
-            *crate::lock(&inner.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
-            inner.save_ui.set_problem(None);
+            *crate::lock(&inner.window.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
+            inner.tools.save_ui.set_problem(None);
             // Watchers hear it was saved before they hear it closed.
             inner.core.push(crate::CoreCall::Events(std::mem::take(&mut events)));
             if close_after {
                 inner.core.push(crate::CoreCall::CloseAfterSave(id));
             }
         }
-        Err(error) => inner.save_ui.set_problem(Some(app::problem_for(&error))),
+        Err(error) => inner.tools.save_ui.set_problem(Some(app::problem_for(&error))),
     }
     inner.core.push(crate::CoreCall::Events(events));
 }

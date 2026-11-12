@@ -53,25 +53,25 @@ impl From<app::ChromeLook> for ChromeLook {
 impl AppCore {
     /// **A mark changed:** the zoom level's words, or the page number's, which the reader's own scroll counts as. What shows is `chrome_look`.
     pub fn chrome_changed(&self, mark: ChromeMark) -> ChromeLook {
-        self.inner.chrome.changed(mark.into());
+        self.inner.tools.chrome.changed(mark.into());
         self.chrome_look()
     }
 
     /// **The pointer came over a mark's corner, or left it.** What a tracking area calls, and `recto qa corner-pointer`.
     pub fn chrome_pointer(&self, mark: ChromeMark, inside: bool) -> ChromeLook {
-        self.inner.chrome.pointer(mark.into(), inside);
+        self.inner.tools.chrome.pointer(mark.into(), inside);
         self.chrome_look()
     }
 
     /// **A field opened over a mark, or closed:** the zoom level's, or the go-to page's.
     pub fn chrome_held(&self, mark: ChromeMark, held: bool) -> ChromeLook {
-        self.inner.chrome.held(mark.into(), held);
+        self.inner.tools.chrome.held(mark.into(), held);
         self.chrome_look()
     }
 
     /// **What shows now,** and when to ask again. Cheap: a lock and a comparison or two.
     pub fn chrome_look(&self) -> ChromeLook {
         let sidebar_hidden = lock(&self.inner.published).reader.sidebar_hidden;
-        self.inner.chrome.look(sidebar_hidden).into()
+        self.inner.tools.chrome.look(sidebar_hidden).into()
     }
 }

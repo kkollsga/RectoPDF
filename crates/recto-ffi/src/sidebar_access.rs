@@ -99,7 +99,7 @@ impl AppCore {
             .contents
             .get(first as usize)
             .map(|entry| (entry.tab, entry.entry, entry.expanded));
-        self.inner.folds.acted(entry);
+        self.inner.tools.folds.acted(entry);
         self.toggle_contents_section(first);
     }
 
@@ -112,7 +112,7 @@ impl AppCore {
         }
         let (contents, current) = (std::sync::Arc::clone(&published.contents), published.sidebar.contents_current);
         drop(published);
-        let Some(target) = self.inner.folds.key_target(key, &contents, current) else {
+        let Some(target) = self.inner.tools.folds.key_target(key, &contents, current) else {
             return false;
         };
         self.toggle_contents_section(u32::try_from(target).unwrap_or(u32::MAX));
