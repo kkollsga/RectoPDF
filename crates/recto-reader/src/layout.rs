@@ -519,10 +519,7 @@ impl PageLayout {
                 if second.is_some() {
                     shift = (left - right) / 2.0;
                 }
-                (
-                    self.side() + left + PAGE_GAP / 2.0,
-                    self.frame_width - self.side() - right - PAGE_GAP / 2.0,
-                )
+                (self.side() + left + PAGE_GAP / 2.0, self.frame_width - self.side() - right - PAGE_GAP / 2.0)
             }
         };
         (half + shift).min(highest).max(lowest)
@@ -1017,7 +1014,12 @@ mod tests {
     fn every_row_has_equal_gutters_at_any_width_and_layout() {
         let sizes: [(f32, f32); 6] = [(612.0, 792.0), (595.0, 842.0), (842.0, 595.0), (300.0, 400.0), (1190.0, 842.0), (432.0, 648.0)];
         for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
-            for margins in [(MIN_SIDE_MARGIN, CORNER_MARGIN), (PANE_MARGIN, PANE_MARGIN), (PANE_MARGIN, CORNER_MARGIN), (0.0, 0.0)] {
+            for margins in [
+                (MIN_SIDE_MARGIN, CORNER_MARGIN),
+                (PANE_MARGIN, PANE_MARGIN),
+                (PANE_MARGIN, CORNER_MARGIN),
+                (0.0, 0.0),
+            ] {
                 for frame in [300.0, 480.0, 560.0, 740.0, 951.0, 1000.0, 1180.0, 1440.0, 2200.0, 3400.0] {
                     for first in 0..sizes.len() {
                         let mut layout = PageLayout::with_spread(12, spread);

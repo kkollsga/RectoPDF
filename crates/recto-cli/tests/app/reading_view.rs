@@ -152,7 +152,11 @@ fn pages_are_centred_in_the_page_area_with_the_sidebar_shown_and_hidden() {
         assert!(gutters.len() >= 2, "{when}: pages showing: {state}");
         for page in &gutters {
             let (left, right) = (page["left"].as_f64().unwrap(), page["right"].as_f64().unwrap());
-            assert!((left - right).abs() < 1.0, "{when}: page {} has {left} to its left and {right} to its right", page["page"]);
+            assert!(
+                (left - right).abs() < 1.0,
+                "{when}: page {} has {left} to its left and {right} to its right",
+                page["page"]
+            );
         }
     };
     centred(&run, "sidebar shown, level and number showing");
