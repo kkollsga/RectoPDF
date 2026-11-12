@@ -543,7 +543,7 @@ impl QaBridge {
                 "disk_bytes_written": counters.map(|counters| counters.disk_bytes_written),
                 "open_handles": recto_platform::open_handle_count(),
             },
-            "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
+            "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed() },
             "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing.busy(), "notice": inner.tools.printing.notice(), "pid": std::process::id() })),
             "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool.is_on(), "drawing": inner.tools.tool.is_drawing(), "busy": inner.tools.tool.busy(), "notice": inner.tools.tool.notice().map(|notice| notice.text) })),
             "slow": slow_report(),
