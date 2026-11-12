@@ -28,7 +28,6 @@ mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
-mod view;
 pub use route::{Runs, qa_needs_app, update_needs_app};
 #[cfg(test)]
 mod registry_golden;
@@ -178,42 +177,6 @@ pub enum Command {
     Move(commands::Move),
     #[serde(skip)]
     Read(commands::Read),
-    /// How the app shows pages.
-    View {
-        #[serde(default)]
-        paper: Option<String>,
-        #[serde(default)]
-        sidebar: Option<String>,
-        #[serde(default)]
-        agent_icon: Option<String>,
-        #[serde(default)]
-        zoom: Option<String>,
-        /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
-        #[serde(default)]
-        layout: Option<String>,
-    },
-    /// ⌘K's palette: what a query finds among the app's commands and tabs, best first, and running the first.
-    Palette {
-        #[serde(default)]
-        query: Option<String>,
-        #[serde(default)]
-        run: bool,
-        #[serde(default)]
-        limit: Option<u32>,
-    },
-    /// The app's Find, in the document being read: a query, a step to the next or previous hit, or closing. With nothing, only says.
-    Find {
-        #[serde(default)]
-        query: Option<String>,
-        #[serde(default)]
-        next: bool,
-        #[serde(default)]
-        previous: bool,
-        #[serde(default)]
-        close: bool,
-        #[serde(default)]
-        limit: Option<u32>,
-    },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
         verb: String,
@@ -615,7 +578,9 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
-    let about = command.tab_selector().or_else(|| matches!(command, Command::Find { .. }).then_some("active"));
+    let about = command
+        .tab_selector()
+        .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some("active"));
     if let Some(selector) = about
         && !command.protected_ok()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
@@ -655,42 +620,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::View { zoom: Some(_), .. } => {
-            Err(
-                AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED)
-                    .then("It works when `recto` is talking to the app."),
-            )
-        }
-        Command::View {
-            paper,
-            sidebar,
-            agent_icon,
-            zoom: None,
-            layout,
-        } => view::set(access, [paper, sidebar, agent_icon, layout], events),
-        Command::Palette { .. } => Err(AgentError::new(
-            "palette_needs_app",
-            "The palette lists the app's commands, and this session has no app.",
-            exit::FAILED,
-        )
-        .then("It works when `recto` is talking to the app.")),
-        Command::Find {
-            query,
-            next,
-            previous,
-            close,
-            limit,
-        } => find::command(
-            access,
-            &find::Asked {
-                query: query.as_deref(),
-                next: *next,
-                previous: *previous,
-                close: *close,
-                limit: *limit,
-            },
-            events,
-        ),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
             Err(update_needs_app())
@@ -1686,19 +1615,19 @@ mod tests {
                 rank: false,
                 context: None,
             }),
-            Command::Find {
+            Command::from(crate::commands::finding::Find {
                 query: Some("x".into()),
                 next: false,
                 previous: false,
                 close: false,
                 limit: None,
-            },
+            }),
             Command::from(crate::commands::text::Index { tab: tab(), agent: false }),
-            Command::Palette {
+            Command::from(crate::commands::view::Palette {
                 query: Some("zoom".into()),
                 run: false,
                 limit: None,
-            },
+            }),
             Command::from(crate::commands::text::IndexStatus { tab: tab() }),
             Command::from(crate::commands::text::IndexClear { tab: tab(), all: false }),
             Command::from(crate::commands::reading::Signatures { tab: tab() }),
@@ -1750,13 +1679,13 @@ mod tests {
             }),
             Command::from(commands::sync::WatchStop {}),
             Command::from(commands::access::Log { last: None }),
-            Command::View {
+            Command::from(crate::commands::view::View {
                 paper: None,
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
                 layout: None,
-            },
+            }),
             Command::QaRead {
                 verb: "state".into(),
                 out: None,
@@ -1834,35 +1763,35 @@ mod tests {
     #[test]
     fn view_asks_at_read_only_and_changes_at_control() {
         assert_eq!(
-            Command::View {
+            Command::from(crate::commands::view::View {
                 paper: None,
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
                 layout: None
-            }
+            })
             .access(),
             Access::At(Level::ReadOnly)
         );
         assert_eq!(
-            Command::View {
+            Command::from(crate::commands::view::View {
                 paper: Some("white".into()),
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
                 layout: None
-            }
+            })
             .access(),
             Access::At(Level::Control)
         );
         assert_eq!(
-            Command::View {
+            Command::from(crate::commands::view::View {
                 paper: None,
                 sidebar: Some("off".into()),
                 agent_icon: None,
                 zoom: None,
                 layout: None
-            }
+            })
             .access(),
             Access::At(Level::Control)
         );
@@ -3345,27 +3274,27 @@ mod protected_tests {
                 }),
                 Command::from(crate::commands::linking::Back { tab: tab.clone() }),
                 Command::from(crate::commands::linking::Forward { tab: tab.clone() }),
-                Command::Find {
+                Command::from(crate::commands::finding::Find {
                     query: Some("Secret".into()),
                     next: false,
                     previous: false,
                     close: false,
                     limit: None,
-                },
-                Command::Find {
+                }),
+                Command::from(crate::commands::finding::Find {
                     query: None,
                     next: true,
                     previous: false,
                     close: false,
                     limit: None,
-                },
-                Command::Find {
+                }),
+                Command::from(crate::commands::finding::Find {
                     query: None,
                     next: false,
                     previous: false,
                     close: false,
                     limit: None,
-                },
+                }),
                 Command::from(crate::commands::editing::Edits { tab: tab.clone() }),
                 Command::from(crate::commands::reading::Signatures { tab: tab.clone() }),
                 Command::from(crate::commands::tabs::Open {

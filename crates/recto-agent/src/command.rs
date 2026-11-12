@@ -16,9 +16,6 @@ impl Command {
             Self::Waits(command) => command.tag(),
             Self::Rights(command) => command.tag(),
             Self::Session(command) => command.tag(),
-            Self::View { .. } => "view",
-            Self::Palette { .. } => "palette",
-            Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
             Self::SessionSleep { .. } => "session_sleep",
@@ -47,25 +44,12 @@ impl Command {
             Self::Waits(command) => command.access(),
             Self::Rights(command) => command.access(),
             Self::Session(command) => command.access(),
-            // Asking how things are shown changes nothing. Changing it is moving around.
-            Self::View {
-                paper: None,
-                sidebar: None,
-                agent_icon: None,
-                zoom: None,
-                layout: None,
-            } => row(),
-            Self::View { .. } => Access::At(Level::Control),
-            // Running a command is doing it, as its menu item would.
-            Self::Palette { run: true, .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // The same for development builds: the switch is what lets a build that isn't a release replace the app.
             Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
-            Self::Palette { .. }
-            | Self::Settings { .. }
+            Self::Settings { .. }
             | Self::UpdateDevBuilds { .. }
-            | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
             | Self::SessionSleep { .. }
@@ -90,10 +74,7 @@ impl Command {
             Self::Waits(command) => command.draws(),
             Self::Rights(command) => command.draws(),
             Self::Session(command) => command.draws(),
-            Self::View { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
+            Self::QaRead { .. }
             | Self::QaDrive { .. }
             | Self::SessionSleep { .. }
             | Self::SessionShow {}
@@ -119,10 +100,7 @@ impl Command {
             Self::Waits(command) => command.reads_pages(),
             Self::Rights(command) => command.reads_pages(),
             Self::Session(command) => command.reads_pages(),
-            Self::View { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
+            Self::QaRead { .. }
             | Self::QaDrive { .. }
             | Self::SessionSleep { .. }
             | Self::SessionShow {}
@@ -148,10 +126,7 @@ impl Command {
             Self::Waits(command) => command.protected_ok(),
             Self::Rights(command) => command.protected_ok(),
             Self::Session(command) => command.protected_ok(),
-            Self::View { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
+            Self::QaRead { .. }
             | Self::QaDrive { .. }
             | Self::SessionSleep { .. }
             | Self::SessionShow {}
@@ -178,10 +153,7 @@ impl Command {
             Self::Rights(command) => command.tab(),
             Self::Session(command) => command.tab(),
             Self::SessionSleep { tab } => Some(tab),
-            Self::View { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
+            Self::QaRead { .. }
             | Self::QaDrive { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
@@ -212,18 +184,9 @@ impl Command {
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
             Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),
-            Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
-            // Not what's looked for: that's the document's business, as a search's words are.
-            Self::Find {
-                query, next, previous, close, ..
-            } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
-            Self::View { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {} => Value::Null,
+            Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} => {
+                Value::Null
+            }
         }
     }
 }

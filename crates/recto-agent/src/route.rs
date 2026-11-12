@@ -30,14 +30,11 @@ impl Command {
             Self::SessionSleep { .. } | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Runs::Record,
             Self::QaRead { .. }
             | Self::QaDrive { .. }
-            | Self::Palette { .. }
             | Self::UpdateStatus {}
             | Self::UpdateCheck {}
             | Self::UpdateInstall { .. }
             | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. }
-            | Self::View { zoom: Some(_), .. } => Runs::App,
-            Self::View { zoom: None, .. } | Self::Find { .. } => Runs::Session,
+            | Self::Settings { .. } => Runs::App,
         }
     }
 }

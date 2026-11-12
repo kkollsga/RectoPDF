@@ -8,6 +8,7 @@ pub mod access;
 pub mod compare;
 pub mod editing;
 pub mod export;
+pub mod finding;
 pub mod linking;
 pub mod measure;
 pub mod reading;
@@ -16,6 +17,7 @@ pub mod session;
 pub mod sync;
 pub mod tabs;
 pub mod text;
+pub mod view;
 
 use crate::table::{self, Access, Spec};
 use crate::{AgentError, Command, Event, Level, Runs, SessionAccess};
@@ -227,6 +229,9 @@ family! {
         Close(tabs::Close),
         Tap(tabs::Tap),
         Compare(compare::Compare),
+        View(view::View),
+        Palette(view::Palette),
+        Find(finding::Find),
     }
 }
 
@@ -349,7 +354,6 @@ const PARTS: &[&[&[Spec]]] = &[
     &[table::CLI_HELP],
     Read::ROWS,
     Move::ROWS,
-    &[table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
     Edit::ROWS,
     Waits::ROWS,
     Rights::ROWS,

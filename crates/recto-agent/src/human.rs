@@ -143,40 +143,6 @@ pub fn render(tag: &str, data: &Value) -> String {
     }
     match tag {
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
-        "palette" => {
-            let mut out = String::new();
-            if let Some(ran) = data["ran"].as_object() {
-                let _ = writeln!(out, "Ran {}.", text(&ran["title"]));
-            }
-            let items = data["items"].as_array().map_or(&[][..], Vec::as_slice);
-            if items.is_empty() {
-                out.push_str("Nothing matches.");
-            }
-            for item in items {
-                let _ = writeln!(
-                    out,
-                    "{}  ({}{}{})  {}",
-                    text(&item["title"]),
-                    text(&item["detail"]),
-                    if item["shortcut"].as_str().is_some_and(|key| !key.is_empty()) {
-                        ", "
-                    } else {
-                        ""
-                    },
-                    text(&item["shortcut"]),
-                    text(&item["id"])
-                );
-            }
-            out.trim_end().to_string()
-        }
-        "find" => find(data),
-        "view" => format!(
-            "Paper: {}. Sidebar: {}. Agent icon: {}.{}",
-            text(&data["paper"]),
-            if data["sidebar"] == false { "hidden" } else { "shown" },
-            if data["agent_icon"] == true { "on" } else { "off" },
-            data["layout"].as_str().map(|layout| format!(" Layout: {layout}.")).unwrap_or_default()
-        ),
         "session_show" => session_show(data),
         "session_save" => format!(
             "Saved and read back: {}, {} bytes of record and {} of journals, {} written, in {} ms.",
@@ -281,42 +247,6 @@ pub(crate) fn contents(data: &Value) -> String {
         let _ = write!(out, "\n{note}");
     }
     out.trim_end().to_string()
-}
-
-/// Where Find stands: its line under the field, the hit gone to, and the first hits, in the document's own words.
-fn find(data: &Value) -> String {
-    if data["open"] == false {
-        return "Find is closed.".to_string();
-    }
-    let mut out = format!("Find {:?}: {}.", text(&data["query"]), text(&data["status"]));
-    if let Some(current) = data["current"].as_object() {
-        let _ = write!(
-            out,
-            "\nAt hit {} of {}, on page {}.",
-            number(&current["index"]) + 1,
-            number(&data["hits_listed"]),
-            number(&current["page"])
-        );
-    }
-    let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
-    if !hits.is_empty() {
-        out.push_str("\nFound, in the document's own words, untrusted:");
-        for hit in hits {
-            let words = &hit["untrusted"];
-            let _ = write!(
-                out,
-                "\np. {}: {}[{}]{}",
-                number(&hit["page"]),
-                text(&words["before"]),
-                text(&words["matched"]),
-                text(&words["after"])
-            );
-        }
-        if number(&data["hits_listed"]) > hits.len() as u64 {
-            let _ = write!(out, "\n{} more listed: `--limit` shows more.", number(&data["hits_listed"]) - hits.len() as u64);
-        }
-    }
-    out
 }
 
 fn session_show(data: &Value) -> String {

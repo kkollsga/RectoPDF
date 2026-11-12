@@ -258,12 +258,14 @@ pub struct Showing {
 pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<recto_agent::Command> {
     use recto_agent::Command;
     let active = || "active".to_string();
-    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| Command::View {
-        paper: paper.map(str::to_string),
-        sidebar: sidebar.map(str::to_string),
-        agent_icon: agent_icon.map(str::to_string),
-        zoom: zoom.map(str::to_string),
-        layout: layout.map(str::to_string),
+    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| {
+        Command::from(recto_agent::commands::view::View {
+            paper: paper.map(str::to_string),
+            sidebar: sidebar.map(str::to_string),
+            agent_icon: agent_icon.map(str::to_string),
+            zoom: zoom.map(str::to_string),
+            layout: layout.map(str::to_string),
+        })
     };
     Some(match id {
         "view.zoom_in" => view(None, None, None, Some("in"), None),
@@ -296,13 +298,13 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             out: None,
             replace: false,
         }),
-        "find.next" | "find.previous" => Command::Find {
+        "find.next" | "find.previous" => Command::from(recto_agent::commands::finding::Find {
             query: None,
             next: id == "find.next",
             previous: id == "find.previous",
             close: false,
             limit: None,
-        },
+        }),
         "rotate.left" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),
             pages: "all".into(),

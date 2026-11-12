@@ -1,6 +1,8 @@
 //! **The session the socket and the app share:** the host every command runs on, and what the page views tell the app.
 
 use super::*;
+use recto_agent::commands::Move;
+use recto_agent::commands::view::{Palette, View};
 
 /// The session the socket and the app share.
 pub struct AppHost {
@@ -168,14 +170,7 @@ impl AppHost {
             };
         }
         // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-        if let Command::View {
-            paper,
-            sidebar,
-            agent_icon,
-            zoom: Some(word),
-            layout,
-        } = command
-        {
+        if let Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) = command {
             let zoom = menus::zoom_from_word(word).ok_or_else(|| {
                 AgentError::new(
                     "usage",
@@ -186,13 +181,7 @@ impl AppHost {
                     recto_agent::exit::USAGE,
                 )
             })?;
-            let rest = Command::View {
-                paper: paper.clone(),
-                sidebar: sidebar.clone(),
-                agent_icon: agent_icon.clone(),
-                zoom: None,
-                layout: layout.clone(),
-            };
+            let rest = Command::from(View { zoom: None, ..asked.clone() });
             let mut answer = self.session.run(level, &rest, events)?;
             let inner = self.saver.inner();
             let reading = inner
@@ -209,7 +198,7 @@ impl AppHost {
             self.core.push(CoreCall::Reconcile);
             return Ok(answer);
         }
-        if let Command::Palette { query, run, limit } = command {
+        if let Command::Move(Move::Palette(Palette { query, run, limit })) = command {
             return self.run_palette(level, command, query, run, limit, events);
         }
         if matches!(
@@ -229,7 +218,7 @@ impl AppHost {
         }
         let result = self.session.run(level, command, events);
         // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
-        if let (Command::Find { .. }, Ok(answer)) = (command, &result)
+        if let (Command::Move(Move::Find(_)), Ok(answer)) = (command, &result)
             && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
             && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
         {
