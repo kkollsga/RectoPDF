@@ -45,6 +45,8 @@ unsafe_code = "deny"
 
 [profile.dev]
 debug = "line-tables-only"
+# Packed: on macOS the default (unpacked) leaves every codegen unit's .o in target/debug/deps after each link, about 5,400 files per edit of recto-session and never removed; main had 408,000, and the first IOSurface in a test process lists its executable's folder (2026-11-12, tools/target-hygiene.sh). Packed keeps file:line in a backtrace for 2.7 s more per edit cycle (docs/agent-instructions/worker-testing.md).
+split-debuginfo = "packed"
 
 [profile.dev.package."*"]
 debug = false

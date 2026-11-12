@@ -378,6 +378,8 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
         recto_reader::layout::Spread::Single,
     );
     engine.set_viewport(view(0.0));
+    // The property is an order, not a time: the healthy tab settles while the dead file's open is still stuck. The fifo gets its writer only at the foot of this test, so the
+    // open can't have ended before this point; a tab held up behind it never settles, and fails at the hang bound with the engine's report.
     pump(&engine, HANG);
     assert!(settles(&engine), "the healthy tab never settled: {}", engine.report().0);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
