@@ -717,11 +717,11 @@ impl AppHost {
         let core = Arc::clone(&self.core);
         let host = Arc::downgrade(self);
         self.session.attach(Arc::new(move |events: Vec<Event>| {
-            if events.iter().any(|event| event.name == "contents_generated") {
+            if events.iter().any(|event| event.name() == "contents_generated") {
                 core.push(CoreCall::GeneratedFinished);
             }
             // The Finder's news, for the sidebar's list and a step waiting for hits.
-            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
+            if events.iter().any(|event| matches!(event.name(), "find_changed" | "find_finished")) {
                 core.push(CoreCall::Find(find::FindCall::News));
             }
             if let Some(notify) = host.upgrade().and_then(|host| lock(&host.watchers).clone()) {
@@ -3694,7 +3694,7 @@ fn session_thread(inner: &Arc<Inner>) {
                             }
                             match ask.target {
                                 passwords::Target::File => match host.session.with_session(|session| session.open_unlocked(&ask.path, facts, stamp)) {
-                                    Ok(id) => events.push(Event::new("tab_opened", json!({ "tab": id.0 }))),
+                                    Ok(id) => events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id))),
                                     Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
                                 },
                                 passwords::Target::Tab(id) => host.session.with_session(|session| session.unlock(id, facts, stamp)),
@@ -3770,11 +3770,10 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Jump(id, page, within) => {
                 // Where the reader is, as the page view has it now, is what Back comes back to. `jump` clamps: a contents entry can't send the reader off the end.
                 inner.take_places();
-                if let Ok(event) = host.session.with_session(|session| {
-                    session
-                        .jump(id, page, within)
-                        .map(|()| recto_agent::page_changed(session, id, session.tab(id).map_or(page, |tab| tab.page) + 1))
-                }) {
+                if let Ok(event) = host
+                    .session
+                    .with_session(|session| session.jump(id, page, within).map(|()| recto_agent::page_now(session, id)))
+                {
                     events.push(event);
                 }
             }
@@ -3783,7 +3782,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 let went = host.session.with_session(|session| {
                     let page = session.page_for_typed(id, &typed)?;
                     session.jump(id, page, 0.0).ok()?;
-                    Some(recto_agent::page_changed(session, id, page + 1))
+                    Some(recto_agent::page_now(session, id))
                 });
                 match went {
                     Some(event) => events.push(event),
@@ -3795,10 +3794,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 let moved = host.session.with_session(|session| {
                     let id = session.active()?;
                     let moved = if back { session.go_back(id) } else { session.go_forward(id) };
-                    moved
-                        .ok()
-                        .filter(|moved| *moved)
-                        .and_then(|_| session.tab(id).map(|tab| recto_agent::page_changed(session, id, tab.page + 1)))
+                    moved.ok().filter(|moved| *moved).map(|_| recto_agent::page_now(session, id))
                 });
                 if let Some(event) = moved {
                     events.push(event);
@@ -3880,21 +3876,15 @@ fn session_thread(inner: &Arc<Inner>) {
             },
             CoreCall::CloseAfterSave(id) => {
                 // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
-                let before = host.session.with_session(|session| session.active());
-                match host
-                    .session
-                    .with_session(|session| session.close_after_save(id).map(|closed| (closed, session.active())))
-                {
-                    Ok((false, _)) => *lock(&inner.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string()),
-                    Ok((true, now)) => {
-                        events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
-                        if now != before
-                            && let Some(active) = now
-                        {
-                            events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
+                let closed = host.session.with_session(|session| {
+                    session.close_after_save(id).inspect(|closed| {
+                        if let Some(closed) = closed {
+                            recto_agent::event::closed(session, *closed, &mut events);
                         }
-                    }
-                    Err(_) => {}
+                    })
+                });
+                if let Ok(None) = closed {
+                    *lock(&inner.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string());
                 }
             }
             CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
@@ -3961,32 +3951,39 @@ fn session_thread(inner: &Arc<Inner>) {
                         reads.start(inner, Reading::Pane(tab), path);
                     }
                     None => {
-                        if host.session.with_session(|session| session.focus_pane(id)) {
-                            events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
-                        }
+                        events.extend(
+                            host.session
+                                .with_session(|session| session.focus_pane(id).then(|| recto_agent::event::tab_activated(session, id))),
+                        );
                     }
                 }
             }
             CoreCall::SetSynced(on) => {
-                if host.session.with_session(|session| session.set_compare_synced(on)) {
-                    events.push(Event::new("view_changed", json!({ "sync": if on { "on" } else { "off" } })));
-                }
+                events.extend(host.session.with_session(|session| {
+                    session
+                        .set_compare_synced(on)
+                        .filter(|changed| *changed)
+                        .map(|_| recto_agent::event::comparison_changed(session))
+                }));
             }
             CoreCall::SetSpread(tab, spread) => host.session.with_session(|session| {
                 if let Some(id) = tab.filter(|tab| session.tab(*tab).is_some()).or(session.active())
                     && session.set_spread(id, spread)
                 {
-                    events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
+                    events.push(Event::LayoutChanged {
+                        tab: id,
+                        layout: spread.name(),
+                    });
                 }
             }),
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
-                events.push(Event::new(
-                    if failure.is_some() { "page_failed" } else { "page_drawn" },
-                    json!({ "tab": tab.0, "page": page + 1 }),
-                ));
+                events.push(match failure {
+                    None => Event::PageDrawn { tab, page: page + 1 },
+                    Some(code) => Event::PageFailed { tab, page: page + 1, code },
+                });
                 // Nothing the sidebar or the reader shows comes from this. Going round for it would rebuild the model per tile drawn.
                 if let Some(announcer) = lock(&inner.announcer).as_ref() {
                     announcer.announce(events);
@@ -4201,9 +4198,10 @@ impl FileReads {
                 if self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                 }
-                if host.session.with_session(|session| session.focus_pane(tab)) {
-                    events.push(Event::new("tab_activated", json!({ "tab": tab.0 })));
-                }
+                events.extend(
+                    host.session
+                        .with_session(|session| session.focus_pane(tab).then(|| recto_agent::event::tab_activated(session, tab))),
+                );
             }
             Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
                 host.session.with_session(|session| {
@@ -4215,7 +4213,7 @@ impl FileReads {
                 })
             }) {
                 Ok(id) => {
-                    events.push(Event::new("tab_opened", json!({ "tab": id.0 })));
+                    events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id)));
                 }
                 // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
                 Err(SessionError::Open(OpenError::PasswordNeeded)) => {
@@ -4243,13 +4241,7 @@ fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
     let outcome = inner.host.session.with_session(|session| session.toggle_compare(id));
     match outcome {
         Ok(recto_session::compare::CompareChange::Nothing) => {}
-        Ok(_) => {
-            let panes = inner.host.session.with_session(|session| session.panes());
-            events.push(Event::new(
-                "view_changed",
-                json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>() }),
-            ));
-        }
+        Ok(_) => events.push(inner.host.session.with_session(|session| recto_agent::event::comparison_changed(session))),
         Err(error) => *lock(&inner.action_notice) = Some(error.message().to_string()),
     }
 }
@@ -4257,11 +4249,11 @@ fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
 /// What a tap on a tab does, once whatever it needs from disk is here.
 fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
     let host = &inner.host;
-    let was = host.session.with_session(|session| session.active());
-    let tapped = host.session.with_session(|session| session.tap(id));
-    if tapped.is_ok() && was != Some(id) {
-        events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
-    }
+    host.session.with_session(|session| {
+        if let Ok(switched) = session.tap(id) {
+            recto_agent::event::switched(session, switched, events);
+        }
+    });
 }
 
 /// The session's word for a layout, as the page view has it.
@@ -4381,14 +4373,8 @@ fn close_tab(host: &AppHost, id: TabId, discard: bool, events: &mut Vec<Event>) 
         if discard {
             session.discard_edits(id);
         }
-        let before = session.active();
-        if session.close(id).is_ok() {
-            events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
-            if session.active() != before
-                && let Some(active) = session.active()
-            {
-                events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
-            }
+        if let Ok(closed) = session.close(id) {
+            recto_agent::event::closed(session, closed, events);
         }
     });
 }

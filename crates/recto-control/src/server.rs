@@ -9,7 +9,7 @@ use crate::host::{Host, unsaved_refusal};
 use crate::levels;
 use crate::log::{self, ActivityLog};
 use crate::state::StatePaths;
-use recto_agent::table::{EVENT_GROUPS, event_group};
+use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
     AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed,
     condition_topics, exit, parse, refusal, reply, table,
@@ -689,7 +689,7 @@ impl<H: Host> Loop<H> {
         if level > was && self.pending.is_some_and(|pending| level >= pending) {
             self.pending = None;
         }
-        self.publish(&[Event::new("level_changed", json!({ "level": level.name(), "was": was.name() }))]);
+        self.publish(&[recto_agent::event::level_changed(level, was)]);
         self.settle_subscribers(level);
         if level == Level::Off {
             self.host.access_is_off();
@@ -931,7 +931,7 @@ impl<H: Host> Loop<H> {
     /// Tells everyone who cares. A wait looks again; a watcher gets a line.
     fn publish(&mut self, events: &[Event]) {
         for event in events {
-            let group = event_group(event.name);
+            let group = Some(event.group());
             for index in 0..self.conns.len() {
                 let looks = matches!(&self.conns[index].state, State::Waiting { what: WaitFor::Condition { condition, .. }, .. } if group.is_some_and(|group| condition_topics(*condition).contains(&group)));
                 if looks {

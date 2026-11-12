@@ -5,6 +5,10 @@
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
 pub mod agreement;
+pub mod event;
+#[cfg(test)]
+mod event_agreement;
+pub use event::{Event, edits_changed, page_changed, page_now, view_changed};
 pub mod extract;
 pub mod find;
 pub mod generated;
@@ -1194,31 +1198,6 @@ pub fn allowed(have: Level, needed: Access) -> bool {
     matches!(needed, Access::At(level) if have >= level)
 }
 
-/// Something that happened in the session, for `wait` and `watch`. Holds no document text beyond a cleaned name, marked untrusted.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Event {
-    pub name: &'static str,
-    pub data: Value,
-}
-
-impl Event {
-    pub fn new(name: &'static str, data: Value) -> Self {
-        Self { name, data }
-    }
-
-    /// The group `watch --events` selects it by, if it's listed.
-    pub fn group(&self) -> Option<&'static str> {
-        table::event_group(self.name)
-    }
-
-    /// The line a watcher receives.
-    pub fn to_json(&self) -> Value {
-        let mut out = self.data.clone();
-        out["event"] = json!(self.name);
-        out
-    }
-}
-
 /// A way to reach the session. In one process that's a plain reference; on the socket it's a lock taken only as long as each step needs.
 pub trait SessionAccess {
     type Loader: DocLoader + Clone;
@@ -1279,11 +1258,6 @@ pub fn run_indexed<L: DocLoader + Clone>(
 /// What's chosen, in a word: `auto` goes with the window.
 pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
     view.paper.map_or("auto", recto_session::Paper::name)
-}
-
-/// What watchers are told when how pages are shown changes: the same words wherever it was changed from.
-pub fn view_changed(view: recto_session::ViewSettings) -> Event {
-    Event::new("view_changed", json!({ "paper": paper_name(view), "sidebar": !view.sidebar_hidden }))
 }
 
 /// What's said about a protected document wherever an agent would otherwise get something read from it.
@@ -1407,18 +1381,15 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             read_ahead(access, |s| s.wake_for_tap(id));
             access.with(|s| {
             let id = select(s, tab)?;
-            let was_active = s.active();
-            s.tap(id)?;
-            if was_active != Some(id) {
-                events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
-            }
+            let switched = s.tap(id)?;
+            event::switched(s, switched, events);
             Ok(sidebar_json(s))
             })
         }
         Command::Goto { tab, page: Some(page), label: None } => access.with(|s| {
             let id = select(s, tab)?;
             go_to(s, id, *page)?;
-            events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
+            events.push(page_now(s, id));
             Ok(where_json(s, id))
         }),
         Command::Recent {} => Ok(access.with(|s| recent_json(s, level))),
@@ -1443,18 +1414,12 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             access.with(|s| {
             let id = select(s, tab)?;
             refuse_close_that_loses_something(s, id, level)?;
-            let before = s.active();
             // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
             if level >= Level::Full && s.has_undone_owner_steps(id) {
                 s.discard_edits(id);
             }
-            s.close(id)?;
-            events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
-            if s.active() != before
-                && let Some(active) = s.active()
-            {
-                events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
-            }
+            let closed = s.close(id)?;
+            event::closed(s, closed, events);
             // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
             Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
             })
@@ -1466,7 +1431,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
                 let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
                 let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
                 if s.set_spread(id, spread) {
-                    events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
+                    events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
                 }
             }
             let mut view = was;
@@ -1635,7 +1600,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
                 keep_owners_undone_steps(s, id, level)?;
                 s.set_agent_at_full(level >= Level::Full);
                 s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
-                events.push(edits_event(s, id));
+                events.push(edits_changed(s, id));
                 let mut data = edit_state_json(s, id);
                 data["did"] = json!(format!("Added {} at page {at}.", if facts.page_count == 1 { "1 page".to_string() } else { format!("{} pages", facts.page_count) }));
                 Ok(with_place_note(s, id, data))
@@ -1647,7 +1612,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             if !s.undo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
-            events.push(edits_event(s, id));
+            events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
             data["did"] = json!("Undid the last edit.");
             Ok(with_place_note(s, id, data))
@@ -1658,7 +1623,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             if !s.redo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
-            events.push(edits_event(s, id));
+            events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
             data["did"] = json!("Redid the last undone edit.");
             Ok(with_place_note(s, id, data))
@@ -1668,7 +1633,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             refuse_discard_of_owners_edits(s, id, level)?;
             let had_any = s.page_edits(id).is_some();
             s.discard_edits(id);
-            events.push(edits_event(s, id));
+            events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
             data["did"] = json!(if had_any { "Threw away this tab's edits." } else { "There were no edits to throw away." });
             Ok(with_place_note(s, id, data))
@@ -1678,7 +1643,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             refuse_discard_of_owners_edits(s, id, level)?;
             let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
             s.clear_history(id, recto_session::ClearReason::UserAsked);
-            events.push(edits_event(s, id));
+            events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
             data["did"] = json!(if had_any { "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now." } else { "There was no edit history to clear." });
             Ok(with_place_note(s, id, data))
@@ -1703,8 +1668,8 @@ fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: O
     access.with(|s| s.note_drawn(DrawNote { tab, page: position, failure }));
     let page = position + 1;
     events.push(match failure {
-        None => Event::new("page_drawn", json!({ "tab": tab.0, "page": page })),
-        Some(code) => Event::new("page_failed", json!({ "tab": tab.0, "page": page, "code": code })),
+        None => Event::PageDrawn { tab, page },
+        Some(code) => Event::PageFailed { tab, page, code },
     });
 }
 
@@ -1795,9 +1760,9 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
         Some("off") => Some(false),
         Some(other) => return Err(usage(format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other)))),
     };
-    let before = access.with(|s| compare_json(s));
+    let mut changed = false;
     if off {
-        access.with(|s| s.end_compare());
+        changed |= access.with(|s| s.end_compare());
     }
     if let Some(list) = tabs {
         let selectors: Vec<&str> = list
@@ -1820,17 +1785,17 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
             let loaded = loader.load(&path);
             access.with(|s| s.give_woken(id, loaded, stamp));
         }
-        access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
+        changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
     }
     if let Some(on) = sync {
-        access.with(|s| s.set_compare_synced(on)).then_some(()).ok_or_else(|| {
+        changed |= access.with(|s| s.set_compare_synced(on)).ok_or_else(|| {
             AgentError::new("not_comparing", "There's no comparison to sync.", exit::NOT_FOUND)
                 .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
         })?;
     }
     let after = access.with(|s| compare_json(s));
-    if after != before {
-        events.push(Event::new("view_changed", json!({ "comparison": after["panes"].as_array().map(|panes| panes.iter().map(|pane| pane["tab"].clone()).collect::<Vec<_>>()), "sync": after["sync"] })));
+    if changed {
+        events.push(access.with(|s| event::comparison_changed(s)));
     }
     Ok(after)
 }
@@ -1911,13 +1876,9 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         if let Some(page) = page {
             go_to(s, id, page)?;
         }
-        let name = s.tab(id).map(|t| t.name.to_string());
-        events.push(Event::new(
-            if is_new { "tab_opened" } else { "tab_activated" },
-            json!({ "tab": id.0, "untrusted": { "name": name } }),
-        ));
+        events.push(if is_new { event::tab_opened(s, id) } else { event::tab_activated(s, id) });
         if page.is_some() {
-            events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
+            events.push(page_now(s, id));
         }
         let mut data = where_json(s, id);
         // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
@@ -2014,7 +1975,7 @@ fn edit<A: SessionAccess>(
         keep_owners_undone_steps(s, id, level)?;
         s.set_agent_at_full(level >= Level::Full);
         s.edit_pages_as(id, Author::Agent, change)?;
-        events.push(edits_event(s, id));
+        events.push(edits_changed(s, id));
         let mut data = edit_state_json(s, id);
         data["did"] = json!(did);
         Ok(with_place_note(s, id, data))
@@ -2118,22 +2079,6 @@ fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: 
         data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", tab.page + 1));
     }
     data
-}
-
-/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
-pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    edits_event(session, id)
-}
-
-/// What watchers are told when the person moves to another page: which tab, and its page, unless it's a protected document's, whose place was read with its password.
-pub fn page_changed<L: DocLoader>(session: &Session<L>, id: TabId, page: u32) -> Event {
-    let page = (!session.withheld_from_agents(id)).then_some(page);
-    Event::new("page_changed", json!({ "tab": id.0, "page": page }))
-}
-
-fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = (!session.withheld_from_agents(id)).then(|| session.pages_in(id));
-    Event::new("edits_changed", json!({ "tab": id.0, "pages": pages, "edited": session.is_edited(id) }))
 }
 
 /// The plain truth about unsaved edits, wherever a tab reports them.
@@ -4441,8 +4386,8 @@ mod protected_tests {
         }
         let shown = session_show_json(&session, Level::Full, Value::Null);
         assert!(!leaks(&shown), "{shown}");
-        assert!(!leaks(&page_changed(&session, id, 3).data) && !leaks(&edits_changed(&session, id).data));
-        assert_eq!(page_changed(&session, other, 3).data["page"], 3, "another tab's place is said as ever");
+        assert!(!leaks(&page_changed(&session, id, 3).to_json()) && !leaks(&edits_changed(&session, id).to_json()));
+        assert_eq!(page_changed(&session, other, 3).to_json()["page"], 3, "another tab's place is said as ever");
         let access = Direct(std::cell::RefCell::new(&mut session), None);
         assert!(matches!(check_condition(&access, Condition::PageDrawn, "#1", Some(1)), ConditionState::Failed(error) if error.code == "protected"));
         assert!(matches!(check_condition(&access, Condition::TabOpen, "#1", None), ConditionState::Met(data) if !leaks(&data)));
