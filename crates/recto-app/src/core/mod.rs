@@ -197,7 +197,7 @@ pub struct Lifecycle {
     /// The record's been read and applied, whatever it said.
     pub restored: AtomicBool,
     /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
-    pub shown_with_state: AtomicBool,
+    pub(crate) shown_with_state: AtomicBool,
     /// The window went up without the state, past its patience.
     pub(crate) shown_without_state: AtomicBool,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.

@@ -29,4 +29,6 @@ serde_json.workspace = true
 recto-testpdf = { workspace = true, optional = true }
 
 [dev-dependencies]
+# For the headless tests' protected file, which only lopdf's writer encrypts.
+lopdf.workspace = true
 recto-testpdf.workspace = true
