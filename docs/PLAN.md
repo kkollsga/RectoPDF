@@ -404,8 +404,8 @@ Owner, 2026-11-08: "add the large restructuring into the plan before we start on
 The review, the target structure and each step's proof are in `docs/reviews/2026-11-12-development-speed.md`. It replaces the step list of `docs/reviews/2026-11-08-architecture.md` §4.6, whose steps 1 to 3 are done; the old numbers are in brackets. Every step is its own branch, behaviour-preserving, mergeable alone, and reports its numbers before and after. Guide §2.8 to §2.10, §5.5, §6.6 and AGENTS rule 7 hold meanwhile. The coordinator ticks these at each merge; workers don't edit this file.
 
 **R0. Fast feedback and guards (tools only), first and all of it**
-- [ ] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
-- [ ] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
+- [x] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
+- [x] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
 - [x] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
 - [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
 - [ ] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
