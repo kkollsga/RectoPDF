@@ -34,35 +34,6 @@ fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Opt
     (report, generated, started.elapsed())
 }
 
-/// Failure: headings in white text or in render mode 3, set as large as the real ones, show in the generated contents, where a reader or an agent would take them for part of the document. And the real ones must all be there, at their pages.
-#[test]
-fn hidden_headings_never_reach_the_contents_and_visible_ones_do() {
-    let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (report, generated, _) = run(&pdf.0, key, false);
-    assert_eq!(report["state"], "ready", "{report}");
-    let generated = generated.expect("contents");
-    let titles: Vec<(&str, u32)> = generated.entries.iter().map(|entry| (entry.title.as_str(), entry.page)).collect();
-    assert!(titles.iter().all(|(title, _)| !title.contains("HIDDEN")), "{titles:?}");
-    for (page, title) in ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"]
-        .iter()
-        .enumerate()
-    {
-        assert!(titles.contains(&(title, page as u32)), "{title} missing from {titles:?}");
-    }
-    // distillPDF 0.1.7 takes both hidden lines for headings, so they're found and then left out here. Should it stop finding them, nothing's left out, and this still holds.
-    assert_eq!(
-        report["found"].as_u64(),
-        Some(titles.len() as u64 + u64::from(generated.hidden_dropped)),
-        "{report}"
-    );
-    assert!(
-        generated.entries.iter().all(|entry| entry.place < 200),
-        "headings are near the top of their pages: {:?}",
-        generated.entries
-    );
-}
-
 /// Failure: a file replaced after it was asked for gets the old version's headings, or the new one's under the old key.
 #[test]
 fn a_file_that_isnt_the_one_asked_for_gets_nothing() {
@@ -98,12 +69,15 @@ fn a_form_bomb_ends() {
     assert!(report["helper_peak_bytes"].as_u64().is_none_or(|peak| peak < 512 << 20), "{report}");
 }
 
-/// Failure: the helper outlives whoever started it. Its stdin closing is its sign to go, whatever it's doing.
+/// Failure: the helper outlives whoever started it. Its stdin closing is its sign to go, whatever it's doing. On a file it works on for seconds (the
+/// form bomb, 5.3 s here with stdin open, 2026-11-12), it goes before it has anything to say. On a quick file, as this was until then, it finished
+/// before the close mattered, so the test passed with the watch on stdin taken out.
 #[test]
 fn it_goes_when_its_stdin_closes() {
-    let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
+    let pdf = TempPdf::new("bomb.pdf", &recto_testpdf::form_bomb());
     let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (_, _, elapsed) = run(&pdf.0, key, true);
+    let (report, generated, elapsed) = run(&pdf.0, key, true);
+    assert_eq!((report, generated), (Value::Null, None), "it worked on after its stdin closed, for {elapsed:?}");
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
 }
 
@@ -118,12 +92,23 @@ fn no_way_of_hiding_a_heading_gets_it_into_the_contents() {
         let key = CorpusKey::of_file(&pdf.0).unwrap();
         let (report, generated, _) = run(&pdf.0, key, false);
         assert_eq!(report["state"], "ready", "{name}: {report}");
-        let titles: Vec<String> = generated.expect("contents").entries.iter().map(|entry| entry.title.clone()).collect();
+        let generated = generated.expect("contents");
+        let titles: Vec<String> = generated.entries.iter().map(|entry| entry.title.clone()).collect();
         assert!(titles.iter().all(|title| !title.contains("HIDDEN")), "{name}: {titles:?}");
         assert_eq!(
             titles,
             ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
             "{name}"
+        );
+        // Each at its page, near its top, and what was found is what's kept and what was left out as hidden: distillPDF may take a hidden line for a
+        // heading, and then it's left out here; should it stop finding them, nothing's left out, and this still holds.
+        let pages: Vec<u32> = generated.entries.iter().map(|entry| entry.page).collect();
+        assert_eq!(pages, [0, 1, 2, 3, 4, 5], "{name}");
+        assert!(generated.entries.iter().all(|entry| entry.place < 200), "{name}: {:?}", generated.entries);
+        assert_eq!(
+            report["found"].as_u64(),
+            Some(titles.len() as u64 + u64::from(generated.hidden_dropped)),
+            "{name}: {report}"
         );
     }
 }
@@ -162,3 +147,4 @@ fn headings_in_heavy_type_stay() {
         "{report}"
     );
 }
+
