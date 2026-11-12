@@ -1286,9 +1286,9 @@ impl AppCore {
             .spawn(move || updates::first_frame_shown(&updates));
     }
 
-    /// The UI thread has woken.
-    pub fn main_busy(&self) {
-        self.inner.window.watchdog.busy();
+    /// The UI thread has woken, or (`block`) a block of the host's begins on it. True if no stretch was under way and this began one, which `main_idle` ends.
+    pub fn main_busy(&self, block: bool) -> bool {
+        self.inner.window.watchdog.enter(block)
     }
 
     /// The UI thread is about to sleep.

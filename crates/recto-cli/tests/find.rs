@@ -2,16 +2,15 @@
 
 mod common;
 
-use common::{Raw, State};
+use common::State;
 use recto_agent::find;
 use recto_agent::{Command, DrawableLoader, Event};
 use recto_agent::{Level, exit};
 use recto_control::host::{Host, SessionHost};
 use recto_testpdf::{Page, TempPdf, pages, text_lines};
-use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn doc(name: &str, count: usize, word: &str) -> TempPdf {
     let bodies: Vec<String> = (1..=count)
@@ -119,48 +118,6 @@ fn find_is_refused_below_control_and_says_what_it_cant_do() {
     assert_eq!(code, exit::FAILED, "{long}");
     let (missing, _) = state.json(&["find", "zzqqxx"]);
     assert_eq!(missing["data"]["status"], "Not found", "{missing}");
-}
-
-/// Failure, through the socket and `recto` itself: once a second query has been asked for, Find holds its hits and not the first's. Two connections can't make the two overlap for certain, as the first can finish before the second arrives; `a_query_started_mid_run_stops_the_first` below makes them overlap.
-#[test]
-fn a_new_query_replaces_the_one_running() {
-    let state = State::at(Level::Control);
-    let _serving = state.serve();
-    let file = doc("long.pdf", 400, "alpha");
-    state.json(&["open", path(&file)]);
-    // The first, read page by page with no index yet, from one connection, and the second from another while it runs.
-    let mut first = Raw::connect(&state);
-    first.send(&json!({ "cmd": "find", "query": "alpha" }).to_string());
-    std::thread::sleep(Duration::from_millis(150));
-    let (second, code) = state.json(&["find", "page 7 of"]);
-    assert_eq!(code, 0, "{second}");
-    let first = first.read().expect("an answer");
-    assert_eq!(first["ok"], true, "{first}");
-    // Whatever the first saw, Find now holds the second's hits only.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let now = loop {
-        let (now, _) = state.json(&["find", "--limit", "200"]);
-        if now["data"]["state"] == "done" || Instant::now() > deadline {
-            break now;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    assert_eq!(now["data"]["query"], "page 7 of", "{now}");
-    let pages: Vec<u64> = now["data"]["hits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|hit| hit["page"].as_u64().unwrap())
-        .collect();
-    assert_eq!(pages, vec![7], "only the second query's hits");
-    assert!(
-        now["data"]["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|hit| hit["untrusted"]["matched"].as_str().unwrap().to_lowercase() == "page 7 of"),
-        "{now}"
-    );
 }
 
 /// Failure: a page deleted, moved or added after a query leaves Find's hits on the old arrangement, so `--next` (and ⌘G) selects the wrong words. The hits are found again for the pages as they are.

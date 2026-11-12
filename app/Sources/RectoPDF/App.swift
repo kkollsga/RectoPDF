@@ -1,6 +1,9 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// The core whose hang watchdog times the UI thread's blocks, once the app has one.
+@MainActor var watchedCore: AppCore?
+
 /// Runs a block on the UI thread, in every run-loop mode, including while a menu is tracking or a panel is open.
 func onMain(_ work: @escaping @MainActor () -> Void) {
     let main = CFRunLoopGetMain()
@@ -8,7 +11,12 @@ func onMain(_ work: @escaping @MainActor () -> Void) {
     CFRunLoopPerformBlock(main, modes) {
         // AppKit drains its pool after an event, and these aren't events. With nobody touching the app, as in a quiet run or a window left reading while an agent works, what these leave would pile up with nothing to clear it.
         autoreleasepool {
-            MainActor.assumeIsolated { work() }
+            MainActor.assumeIsolated {
+                // The hang watchdog times this block itself when the run loop hasn't said the thread woke (CI, run 43315142752: a 2.3 s stall in one went unseen).
+                let began = watchedCore?.mainBusy(block: true) ?? false
+                defer { if began { watchedCore?.mainIdle() } }
+                work()
+            }
         }
     }
     CFRunLoopWakeUp(main)
@@ -339,10 +347,11 @@ final class Bridge: AppListener, @unchecked Sendable {
     private func watchMainThread() {
         let core = self.core
         let observer = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, activity in
-            if activity == .afterWaiting { core.mainBusy() } else { core.mainIdle() }
+            if activity == .afterWaiting { _ = core.mainBusy(block: false) } else { core.mainIdle() }
         }
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
         mainObserver = observer
+        watchedCore = core
     }
 
     /// The red button's way back. Tabs are kept in the session, so the window comes back as it was.

@@ -39,7 +39,8 @@ fn a_surface_a_worker_emptied_does_not_crash_the_host() {
         (kept, zero, pixels.len())
     });
     println!("after the worker emptied it: {read:?}, emptied still: {}", surface.was_emptied());
-    assert!(read.is_ok() || read.is_err(), "and it's still here to say so");
+    // Reaching this line is what's tested: reading and writing what the worker emptied didn't take this process down. Either answer is fine.
+    let _ = read;
     drop(ours);
     drop(child);
 }

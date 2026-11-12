@@ -517,7 +517,8 @@ fn a_page_count_past_the_cap_is_refused() {
     assert!(decode_opened(payload(&encode_opened(opened(u32::MAX)))).is_err());
 }
 
-/// Failure: a decoder panics or hangs on hostile bytes. Not a fuzzer, only a cheap floor until the real targets exist.
+/// Failure: the frame header's decoder panics on hostile bytes, or a truncated frame is misread rather than refused. Every payload decoder is run on
+/// hostile bytes by the fuzz target `proto` (`recto-fuzz`'s `what_a_worker_sends_is_refused_or_checked`, on every CI run), which doesn't decode a header.
 #[test]
 fn decoders_are_total_on_arbitrary_bytes() {
     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
@@ -532,19 +533,6 @@ fn decoders_are_total_on_arbitrary_bytes() {
         for byte in &mut buf {
             *byte = next() as u8;
         }
-        let len = next() as usize % buf.len();
-        let bytes = &buf[..len];
-        let _ = RenderJob::decode(bytes);
-        let _ = RegionReply::decode(bytes);
-        let _ = PageTraits::decode(bytes);
-        let _ = TileReply::decode(bytes);
-        let _ = TextReply::decode(bytes);
-        let _ = TextJob::decode(bytes);
-        let _ = PageSize::decode(bytes);
-        let _ = decode_failed(bytes);
-        let _ = decode_hello(bytes);
-        let _ = decode_opened(bytes);
-        let _ = decode_size_request(bytes);
         let header: [u8; HEADER_LEN] = buf[..HEADER_LEN].try_into().unwrap();
         let _ = Header::decode(&header);
     }

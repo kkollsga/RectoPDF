@@ -1025,14 +1025,19 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
     assert_eq!(usage["v"], recto_agent::VERSION);
 }
 
-/// Failure: `recto help <command>` fails for a real command, or `recto help` itself is missing what an agent needs first.
+/// Failure: `recto help <command>` or `<command> --help` fails for a real command, or runs it, or `recto help` itself is missing what an agent needs
+/// first. Every row `recto` runs itself, where its own dispatch could take the command before its help, and one row of the session's, whose help is
+/// the same path for all of them. What each row's help says is `table::tests::help_for_a_command_says_how_and_at_what_level`'s, in-process.
 #[test]
 fn help_works_for_every_command_without_a_session() {
     let state = State::new();
     let (all, _, code) = state.text(&["help"]);
     assert_eq!(code, 0);
     assert!(all.contains("recto status") && all.contains("Exit codes"), "{all}");
-    for spec in TABLE.iter().filter(|spec| !spec.hidden) {
+    for spec in TABLE
+        .iter()
+        .filter(|spec| !spec.hidden && (spec.route == Route::Here || spec.name == "page move"))
+    {
         let words: Vec<&str> = std::iter::once("help").chain(spec.name.split(' ')).collect();
         let (shown, said, code) = state.text(&words);
         assert_eq!(code, 0, "{}: {said}", spec.name);

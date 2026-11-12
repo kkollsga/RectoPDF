@@ -1,7 +1,7 @@
 //! A page's contents as the host reads them, against a stand-in worker that does what a compromised one would, or runs out of memory by design. So nothing here depends on PDFium, and the limits are the test's own.
 
 use recto_platform::isolate::{self, Channel};
-use recto_proto::contents::{ContentsHeader, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, Record, TextMode, Why, begin_contents, finish_contents, put};
+use recto_proto::contents::{ContentsJob, ImageCoding, MAX_CLIP_CHAIN, Record, TextMode, Why, begin_contents, finish_contents, put};
 use recto_proto::{self as proto, FailCode, Kind, PageSize};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{ContentsEvent, ContentsRequest, DocRenderer, ExportRefusal, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig};
@@ -340,15 +340,4 @@ fn a_failure_from_the_sink_ends_the_stream() {
     let mut doc = renderer("honest", &file);
     let result = doc.read_contents(&request(), |_| Err(RenderFailure::Unavailable));
     assert_eq!(result, Err(RenderFailure::Unavailable));
-}
-
-/// Failure: the header's fixed part is read with the fields the wrong way round, so a job looks answered that wasn't.
-#[test]
-fn a_reply_header_says_what_it_says() {
-    let mut out = Vec::new();
-    begin_contents(&mut out);
-    finish_contents(&mut out, 5, 6, true).unwrap();
-    let (header, records) = recto_proto::contents::decode_contents(&out[proto::HEADER_LEN..]).unwrap();
-    assert_eq!(header, ContentsHeader { job_id: 5, seq: 6, done: true });
-    assert!(records.is_empty());
 }

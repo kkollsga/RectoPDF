@@ -27,12 +27,15 @@ fn tile(page: u32) -> TileRequest {
 }
 
 /// Failure: the bomb the spike found, which took PDFium to 4 GiB in 6.3 s, runs past any limit, or the sequence lets a hostile file take long. Every step of the
-/// sequence fails for this page, so this runs them all against the default limits: it must end, within the larger limit, and the rest of the file must still draw.
+/// sequence fails for this page, so this runs them all: each step once, the larger limit tried once, ending within it, the page remembered, and the rest of the
+/// file still drawing. Against limits of 64 and 128 MiB: the watch is the same at any limit, and the defaults' 512 MiB and 1 GiB cost 7 s on CI for it.
 #[test]
 fn the_memory_sequence_ends_a_form_bomb_quickly() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
     // Whether this Mac has memory free shouldn't decide what this test runs, and nor should how fast it is: only memory can stop this page here.
     let policy = Policy {
+        memory_limit_bytes: 64 * MIB,
+        heavy_limit_bytes: 128 * MIB,
         heavy_min_free_percent: 0,
         page_deadline: Duration::from_secs(300),
         ..Policy::default()

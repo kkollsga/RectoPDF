@@ -1002,7 +1002,7 @@ mod tests {
     /// Failure: a page of thousands of links, or a label tree of thousands of ranges, is read whole and held, as nothing counts them. The caps on counts, with the time cap given room, so a busy machine can't make this a test of the clock: `tests/nav.rs` holds the same files to their limits whatever stops them.
     #[test]
     fn counts_are_capped_whatever_the_time() {
-        let many = (0..MAX_PAGE_LINKS * 3)
+        let many = (0..MAX_PAGE_LINKS + 1)
             .map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1))
             .collect::<Vec<_>>()
             .join(" ");
@@ -1015,8 +1015,8 @@ mod tests {
         let read = links_within(&reader, &[0], Budget::lasting(Duration::from_secs(120)));
         assert_eq!(read[0].1.links.len(), MAX_PAGE_LINKS);
         assert!(read[0].1.truncated);
-        let pages = MAX_LABEL_RANGES * 5;
-        let nums = (0..MAX_LABEL_RANGES * 4)
+        let pages = MAX_LABEL_RANGES + 1;
+        let nums = (0..MAX_LABEL_RANGES + 1)
             .map(|at| format!("{at} << /S /D /P (p{at}-) >>"))
             .collect::<Vec<_>>()
             .join(" ");

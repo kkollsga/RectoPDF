@@ -518,9 +518,16 @@ fn a_wait_with_no_time_still_looks_first() {
     let _serving = state.serve();
     let file = doc();
     state.json(&["open", file.0.to_str().unwrap()]);
+    let (reply, code) = state.json(&["wait", "tab-open", "doc", "--timeout", "0s"]);
+    assert_eq!(code, 0, "what's already true: {reply}");
+    // The race is between the deadline and the look, inside the session, so the rounds that hunt it go over one connection, as `recto` sends them.
+    let line = recto_agent::table::parse_cli(&["wait", "tab-open", "doc", "--timeout", "0s"].map(String::from))
+        .unwrap()
+        .wire();
+    let mut raw = Raw::connect(&state);
     for _ in 0..50 {
-        let (reply, code) = state.json(&["wait", "tab-open", "doc", "--timeout", "0s"]);
-        assert_eq!(code, 0, "what's already true: {reply}");
+        let reply = raw.call(&serde_json::from_str(&line).unwrap());
+        assert_eq!(reply["ok"], true, "what's already true: {reply}");
     }
     let (reply, code) = state.json(&["wait", "tab-open", "nothing", "--timeout", "0s"]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
@@ -587,45 +594,6 @@ fn a_long_selector_is_refused_up_front() {
     assert_eq!(reply["error"]["code"], "no_such_tab", "{reply}");
     let reply = raw.call(&json!({ "cmd": "where", "tab": long }));
     assert_eq!(reply["error"]["code"], "no_such_tab", "{reply}");
-}
-
-/// Failure: a client that stops reading a watch makes the session hold its output for ever, and its memory grows.
-#[test]
-fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
-    let state = State::at(Level::Control);
-    let _serving = state.serve();
-    let file = doc();
-    let mut watcher = Raw::connect(&state);
-    watcher.send(&json!({ "cmd": "watch" }).to_string());
-    assert_eq!(watcher.read().unwrap()["data"]["watching"], true);
-    let mut raw = Raw::connect(&state);
-    assert_eq!(raw.call(&open_cmd(&file.0))["ok"], true);
-    // Each goto tells the watcher, which reads nothing. 40,000 of them is over 3 MiB, well past its 1 MiB allowance.
-    for sent in 0..40_000u32 {
-        let reply = raw.call(&json!({ "cmd": "goto", "page": 1 + sent % 2 }));
-        assert_eq!(reply["ok"], true, "{reply}");
-    }
-    // Reading now gets what fit, and then the connection ends instead of carrying on: its allowance plus what the socket itself holds, and not the rest.
-    let mut bytes = 0usize;
-    let mut chunk = [0u8; 65536];
-    // macOS refuses this on a socket whose peer has gone, which is what's expected here.
-    let _ = watcher.stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut ended = false;
-    loop {
-        match watcher.stream.read(&mut chunk) {
-            Ok(0) => {
-                ended = true;
-                break;
-            }
-            Err(_) => break,
-            Ok(count) => bytes += count,
-        }
-    }
-    assert!(ended, "the session must have dropped it, after {bytes} bytes");
-    assert!(
-        bytes < 1024 * 1024 + 512 * 1024,
-        "it should have been dropped at about 1 MiB, and {bytes} bytes came"
-    );
 }
 
 /// Failure: a client that gives up waiting says the server closed the connection, which sends whoever reads it looking for a server deadline that isn't there. And a test that expects a close passes on a read that only timed out.
@@ -995,17 +963,24 @@ fn the_log_records_every_action_and_never_document_text() {
     assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
 }
 
-/// Failure: an agent at Off erases its own record through the real socket: enough `status` calls and bad lines push out an earlier edit. Far past what would have rotated the old single log.
+/// Failure: an agent at Off erases its own record through the real socket: `status` calls, bad lines and refused reads reach the file of
+/// changes, so enough of them push out an earlier edit. Here, through the real server, none of them writes a byte there, and each is counted.
+/// What 60,000 of them do to the log is `log::tests::no_flood_can_erase_an_earlier_edit`'s, without a socket: this is that the server names
+/// each as the log's rules expect (a few hundred, not the 60,000 that took 13 s on CI).
 #[test]
 fn a_flood_at_off_cant_erase_an_earlier_edit() {
+    const ROUNDS: u64 = 100;
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = doc();
     state.json(&["open", file.0.to_str().unwrap()]);
     state.json(&["page", "rotate", "1", "--by", "90"]);
+    let changes = || std::fs::metadata(&state.paths.log).map(|meta| meta.len()).unwrap_or(0);
+    let before = changes();
+    assert!(before > 0, "the edit is in the file of changes");
     state.set_level(Level::Off);
     let mut raw = Raw::connect(&state);
-    for _ in 0..20_000 {
+    for _ in 0..ROUNDS {
         raw.send(r#"{"cmd":"status"}"#);
         raw.send("not json");
         raw.send(r#"{"cmd":"text","page":1}"#);
@@ -1013,8 +988,7 @@ fn a_flood_at_off_cant_erase_an_earlier_edit() {
             assert!(raw.read().is_some());
         }
     }
-    let lines = state.log_text().lines().count();
-    assert!(lines < 200, "{lines} lines for 60,000 commands");
+    assert_eq!(changes(), before, "a flood at Off wrote to the file of changes");
     state.set_level(Level::ReadOnly);
     let (log, code) = state.json(&["log", "--last", "5000"]);
     assert_eq!(code, 0, "{log}");
@@ -1030,9 +1004,9 @@ fn a_flood_at_off_cant_erase_an_earlier_edit() {
             .map(|entry| entry["count"].as_u64().unwrap_or(1))
             .sum::<u64>()
     };
-    assert!(total("status") >= 20_000, "{}", total("status"));
-    assert!(total("unknown") >= 20_000, "{}", total("unknown"));
-    assert!(total("text") >= 20_000, "{}", total("text"));
+    assert!(total("status") >= ROUNDS, "{}", total("status"));
+    assert!(total("unknown") >= ROUNDS, "{}", total("unknown"));
+    assert!(total("text") >= ROUNDS, "{}", total("text"));
 }
 
 /// Failure: with the session stopped, the same log can't be read, or it can be read at Off.

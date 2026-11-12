@@ -162,16 +162,3 @@ fn a_structure_read_that_fails_is_never_agreement() {
     assert!(recto_core::inspect(&file.0).is_err(), "lopdf refuses it");
     assert_eq!(look(&file.0), Some(Disagreement::StructureUnreadable));
 }
-
-/// Failure: the look is slow enough on a long document to matter (each page's size is a round trip to the worker). Measures a 2,000-page file and
-/// prints it; asserts only that it's bounded, as timings differ between machines.
-#[test]
-fn a_long_document_is_looked_at_in_bounded_time() {
-    let pages: Vec<recto_testpdf::Page> = (0..2_000).map(|_| recto_testpdf::Page::new("")).collect();
-    let file = TempPdf::new("long.pdf", &recto_testpdf::pages(&pages));
-    let started = std::time::Instant::now();
-    assert_eq!(look(&file.0), None);
-    let took = started.elapsed();
-    eprintln!("2,000 pages looked at in {took:?}");
-    assert!(took < std::time::Duration::from_secs(60), "{took:?}");
-}

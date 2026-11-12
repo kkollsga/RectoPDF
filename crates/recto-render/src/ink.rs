@@ -213,13 +213,6 @@ mod tests {
         assert!(!adds_nothing_seen(&on_dark, &dark, 80, (20, 20), whole), "white on a dark box is seen");
         assert!(adds_nothing_seen(&white, &white, 80, (20, 20), whole), "nothing changed is nothing seen");
         // A white dot drawn in a black one, a graph's hollow vertex: its whole shape changes, so it's seen.
-        let disk = vec![0u8; 20 * 20 * 4];
-        let mut hollow = disk.clone();
-        for row in 4..16 {
-            for x in 4..16 {
-                hollow[(row * 20 + x) * 4..(row * 20 + x) * 4 + 3].copy_from_slice(&[255, 255, 255]);
-            }
-        }
         let mut page = white.clone();
         for row in 2..18 {
             page[row * 80 + 8..row * 80 + 72].fill(0);
@@ -229,7 +222,6 @@ mod tests {
             dotted[row * 80 + 16..row * 80 + 64].fill(255);
         }
         assert!(!adds_nothing_seen(&dotted, &page, 80, (20, 20), whole), "a hollow vertex is seen");
-        let _ = (disk, hollow);
     }
 
     /// Failure: thin glyphs like `·` read as hidden, because their box lands a pixel beside the ink. Padding forgives that.
