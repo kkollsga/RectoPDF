@@ -1377,7 +1377,7 @@ struct Inner {
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     tool: snapshot_tool::Tool,
     folds: sidebar_access::Folds,
-    chrome: chrome::Chrome,
+    chrome: recto_app::chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
     printing: printing::Printing,
     /// ⌘K's palette, on the UI thread.
@@ -2027,7 +2027,7 @@ impl AppCore {
             action_notice: Mutex::new(None),
             tool: snapshot_tool::Tool::default(),
             folds: sidebar_access::Folds::default(),
-            chrome: chrome::Chrome::default(),
+            chrome: recto_app::chrome::Chrome::default(),
             printing: printing::Printing::default(),
             keys,
             password_asks: Mutex::new(passwords::Asks::default()),
