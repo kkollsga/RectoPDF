@@ -5,6 +5,7 @@
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
 use crate::{CoreCall, Inner, lock};
+use recto_app::clock::{Clock, SystemClock};
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
@@ -13,25 +14,14 @@ use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// A tab goes dormant once it hasn't been active or edited for this long. SPEC decision 25's five minutes, its *default*.
-pub(crate) const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
-/// What the documents off screen may hold in all, their workers' memory and their histories', before the oldest goes dormant. SPEC section 2: "a byte budget frees the oldest first". What's on screen is another row.
-pub(crate) const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
-/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A quit and a hand-off don't wait, and neither does being asked. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of.
-const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
-/// What sleep files may come to in an hour, all told, for the same reason: this is about 8 MiB on a heavy day's eight hours, inside SPEC section 2's "About 10 MiB of state". A file that's text is about 8 KiB, and one of a photograph about 100.
-const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
-/// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
-const BUDGET_LOOK_EVERY: Duration = Duration::from_secs(1);
+use recto_app::sleeper::{self as app, SLEEP_WRITE_EVERY_SECONDS};
+pub(crate) use recto_app::sleeper::{DORMANT_AFTER_SECONDS, LIVE_BUDGET_BYTES};
 /// How often a flush looks again for the sleep files' lock, while it may wait for it.
 const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
-/// The most the queue's writer holds back for a write someone's waiting on, each time.
-const OTHERS_FIRST_FOR: Duration = Duration::from_secs(1);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
 
@@ -63,17 +53,18 @@ struct Counts {
 }
 
 pub(crate) struct Sleeper {
-    clock: Instant,
+    /// What `recto_app::sleeper`'s decisions go by.
+    clock: SystemClock,
     after_seconds: AtomicU32,
     budget_bytes: AtomicU64,
     /// When the soonest is due, in milliseconds of `clock` plus one, and zero for nothing.
     due: AtomicU64,
-    last_budget_look: Mutex<Option<(Instant, Option<TabId>)>>,
+    last_budget_look: Mutex<app::BudgetLook>,
     write_gap_seconds: AtomicU32,
     /// When each tab's sleep file was last written, for those that have been. Next to no bytes per tab.
-    last_written: Mutex<HashMap<TabId, Instant>>,
+    last_written: Mutex<app::Written>,
     /// The hour this began, and what's been written in it.
-    this_hour: Mutex<(Instant, u64)>,
+    this_hour: Mutex<app::Hour>,
     /// One sleep file being written at a time, so a flush has what's on its way.
     writing: Mutex<()>,
     /// Writes waiting for [`Self::writing`] that someone's waiting on, a flush's or being asked's: the queue's writer lets them go first.
@@ -126,14 +117,15 @@ impl LookSlots {
 impl Sleeper {
     pub(crate) fn new() -> Self {
         Self {
-            clock: Instant::now(),
+            clock: SystemClock::new(),
             after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS),
             budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES),
             due: AtomicU64::new(0),
-            last_budget_look: Mutex::new(None),
+            last_budget_look: Mutex::new(app::BudgetLook::default()),
             write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS),
-            last_written: Mutex::new(HashMap::new()),
-            this_hour: Mutex::new((Instant::now(), 0)),
+            last_written: Mutex::new(app::Written::default()),
+            // The hour starts with the clock, at its first millisecond.
+            this_hour: Mutex::new(app::Hour::starting(1)),
             writing: Mutex::new(()),
             others_waiting: AtomicU32::new(0),
             leaving: Mutex::new(recto_app::sleep_queue::LeavingQueue::default()),
@@ -143,15 +135,12 @@ impl Sleeper {
     }
 
     fn millis(&self) -> u64 {
-        u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX) + 1
+        self.clock.now_ms() + 1
     }
 
     /// How long until something's due, for the session thread's wait, or `None`. An atomic: it's asked with the queue's lock held.
     pub(crate) fn wait_for_due(&self) -> Option<Duration> {
-        match self.due.load(Ordering::SeqCst) {
-            0 => None,
-            due => Some(Duration::from_millis(due.saturating_sub(self.millis()))),
-        }
+        app::wait_for(self.due.load(Ordering::SeqCst), self.millis()).map(Duration::from_millis)
     }
 
     pub(crate) fn set_after(&self, seconds: u32) {
@@ -169,14 +158,10 @@ impl Sleeper {
         if gap == 0 {
             return true;
         }
-        let soon = lock(&self.last_written)
-            .get(&id)
-            .is_some_and(|last| last.elapsed() < Duration::from_secs(u64::from(gap)));
-        let mut hour = lock(&self.this_hour);
-        if hour.0.elapsed() >= Duration::from_secs(3600) {
-            *hour = (Instant::now(), 0);
-        }
-        !soon && hour.1 < SLEEP_BYTES_PER_HOUR
+        let now = self.millis();
+        let soon = lock(&self.last_written).soon(id, u64::from(gap) * 1000, now);
+        let room = lock(&self.this_hour).has_room(now);
+        !soon && room
     }
 
     /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further, and counted meanwhile so the queue's writer lets it go first. A flush's thread or being asked's, never the UI's.
@@ -202,19 +187,19 @@ impl Sleeper {
     /// Before the queue's writer takes the lock for its next, a write someone's waiting on goes first: a flush looks only every [`WRITING_LOOK_EVERY`], and a lock isn't fair, so the writer, going from one to the next, would otherwise have it again first, every time. Bounded, as a flush has a limit of its own.
     fn let_others_go_first(&self) {
         let began = Instant::now();
-        while self.others_waiting.load(Ordering::SeqCst) > 0 && began.elapsed() < OTHERS_FIRST_FOR {
+        while app::hold_back_for_others(
+            self.others_waiting.load(Ordering::SeqCst),
+            u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
+        ) {
             std::thread::sleep(WRITING_LOOK_EVERY);
         }
     }
 
     fn note_written(&self, id: TabId, bytes: u64) {
-        let gap = Duration::from_secs(u64::from(self.write_gap_seconds.load(Ordering::SeqCst)));
-        let mut last = lock(&self.last_written);
+        let gap = u64::from(self.write_gap_seconds.load(Ordering::SeqCst)) * 1000;
         // Only a write within the gap holds the next one back, so older ones go: without this every tab ever written stayed, closed ones too, a day's soak of them.
-        last.retain(|_, at| at.elapsed() < gap);
-        last.insert(id, Instant::now());
-        drop(last);
-        lock(&self.this_hour).1 += bytes;
+        lock(&self.last_written).note(id, gap, self.millis());
+        lock(&self.this_hour).add(bytes);
         self.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
         self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
@@ -252,7 +237,7 @@ impl Inner {
             .host
             .session
             .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
-        let due = wait.map_or(0, |seconds| self.sleeper.millis() + u64::from(seconds) * 1000);
+        let due = app::due_at(self.sleeper.millis(), wait);
         self.sleeper.due.store(due, Ordering::SeqCst);
     }
 
@@ -499,11 +484,9 @@ impl Inner {
         }
         {
             // A change of tab is when a document comes to be off screen, so that's looked at straight away.
-            let mut last = lock(&self.sleeper.last_budget_look);
-            if last.as_ref().is_some_and(|(when, was)| *was == active && when.elapsed() < BUDGET_LOOK_EVERY) {
+            if !lock(&self.sleeper.last_budget_look).now(active, self.sleeper.millis()) {
                 return;
             }
-            *last = Some((Instant::now(), active));
         }
         let budget = self.sleeper.budget_bytes.load(Ordering::SeqCst);
         let costs: Vec<(TabId, u64)> = warm
@@ -519,15 +502,7 @@ impl Inner {
                 )
             })
             .collect();
-        let mut total: u64 = costs.iter().map(|(_, cost)| cost).sum();
-        let mut over = Vec::new();
-        for (id, cost) in costs {
-            if total <= budget {
-                break;
-            }
-            over.push(id);
-            total -= cost;
-        }
+        let over = app::over_budget(&costs, budget);
         if !over.is_empty() {
             self.core.push(CoreCall::SleepTabs(over, Why::Budget));
         }
@@ -673,20 +648,5 @@ mod tests {
         assert!(slots.finish(TabId(1)), "the look asked for meanwhile is asked for again");
         assert!(slots.start(TabId(1)), "a slot comes back when a look ends");
         assert!(!slots.finish(TabId(1)), "nothing was asked for meanwhile this time");
-    }
-
-    /// Failure: when each tab's sleep file was last written is kept for every tab that ever had one, closed tabs included, so a session that opens and closes tabs all day grows without a cap (the 24-hour soak of 2026-11-08 went through 3,068 tabs). Only those written within the gap are kept, and the gap still holds a tab back.
-    #[test]
-    fn last_written_keeps_only_writes_within_the_gap() {
-        let sleeper = Sleeper::new();
-        sleeper.set_write_gap(1);
-        for id in 0..500 {
-            sleeper.note_written(TabId(id), 1);
-        }
-        assert!(!sleeper.may_write_pictures(TabId(499)), "a tab just written waits for the gap");
-        std::thread::sleep(Duration::from_millis(1_100));
-        sleeper.note_written(TabId(1_000), 1);
-        assert_eq!(lock(&sleeper.last_written).len(), 1, "those older than the gap have gone");
-        assert!(sleeper.may_write_pictures(TabId(499)), "a tab past the gap may write again");
     }
 }
