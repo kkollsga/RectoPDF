@@ -3382,7 +3382,7 @@ pub static TABLE: &[Spec] = &[
             flag: None,
             kind: Kind::Text,
             required: true,
-            help: "`open`, `close`, `privacy` for the link to the privacy statement, or a switch's id as `qa state` lists it.",
+            help: "`open`, `close`, `privacy` for the link to the privacy statement, or a switch's or button's id as `qa state` lists it (`update.now` is Settings' Update now button, which installs a waiting update by the very call the menu makes; only a test build has `qa`).",
         }],
         fixed: &[("verb", "settings")],
         data: "`qa state`'s `app`.",
@@ -3628,7 +3628,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_status",
         group: GROUP_APP,
         summary: "What version is running, what's on offer, how things stand, and how the last update went. Works while an update is under way. Only in the app.",
-        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, dev_builds, back_to_release, build_waiting, log }`. `version` is `X.Y.Z.N` on a development build. `build` is `release` for a release and a development build alike, `development` for a local build from `app/build.sh`, and `test` for a test's. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`, `build_ready`.",
+        data: "`{ version, build, status, words, menu: { title, enabled }, offered, auto_update, second_copy, failed_versions, last_check_ms, last_update: { from, to, gap_ms, at_ms }, next_wake_in_ms, install_look_in_ms, kept, dev_builds, back_to_release, build_waiting, log, handover_dir }`. `version` is `X.Y.Z.N` on a development build. `build` is `release` for a release and a development build alike, `development` for a local build from `app/build.sh`, and `test` for a test's. `status` is one of `idle`, `checking`, `up_to_date`, `no_releases`, `available`, `available_not_installed`, `check_failed`, `preparing`, `waiting`, `installing`, `failed`, `updated`, `went_back`, `build_ready`.",
         examples: &["recto update status"],
         ..BASE
     },
@@ -3648,7 +3648,7 @@ pub static TABLE: &[Spec] = &[
         tag: "update_install",
         group: GROUP_APP,
         access: Access::At(Level::Full),
-        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way, once it's checked: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. Only in the app.",
+        summary: "Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens. It answers as soon as it's started, as the app it's talking to is about to quit: wait for the socket, then `update status`. Unsaved edits and all the app's state come across. With a zip, installs that development build (`RectoPDF-X.Y.Z.N.zip`, from `tools/dev-build.sh`) the same way. **`recto` itself opens the zip** (a link, a device or a file over 512 MiB is refused; if macOS is asking about a removable volume it says \"Waiting for macOS to allow access to …\" after 5 seconds and gives up after 2 minutes, Ctrl-C ends it cleanly) and hands the app a copy in the app's own folder, a clone on the same volume, so the app never opens a path an agent names; a client that skips `recto` and names another path gets `not_handed_over`. It is checked once the app has the copy: an `X.Y.Z.N` version, this app's bundle id, and a whole signature naming this app, ad hoc as every dev build is. Only with Allow development builds on, and always at Full, as anyone can sign ad hoc. It waits until the app hasn't been used for 5 minutes, or goes at once with `--now`. **With no zip and no `--now` while a build already waits, nothing starts:** it answers with the build, what it waits for and how to go at once (`started: false`); the five idle minutes are the owner's rule. `--now` (with or without a zip), the menu's Update to X.Y.Z… and Settings' Update now button are the one call that goes. Only in the app.",
         args: &[
             Arg {
                 key: "zip",
@@ -3662,10 +3662,10 @@ pub static TABLE: &[Spec] = &[
                 flag: Some("--now"),
                 kind: Kind::Switch,
                 required: false,
-                help: "A development build goes at once, waiting only for anything in flight, not for 5 minutes without use.",
+                help: "A development build goes at once, waiting only for anything in flight, not for 5 minutes without use. With no zip, it installs the build that waits.",
             },
         ],
-        data: "`{ started, version, words }`, and for a build `waits_ms`, until it can go.",
+        data: "`{ started, version, words }`, and for a build `waits_ms`, until it can go. `started` is false when a plain install found a build waiting and started nothing.",
         examples: &[
             "recto update install",
             "recto update install RectoPDF-0.1.0.3.zip",

@@ -384,6 +384,29 @@ pub fn clone_source_in(file: &Path, folder: &Path) -> io::Result<PathBuf> {
     Ok(master)
 }
 
+/// Opens a file somebody else named, for reading, without ever waiting on it or following a link at its name: a FIFO with no writer opens at once instead of holding the caller, a link at the last part is refused, and the caller looks at what it got (`File::metadata`) before reading. A volume macOS is still asking the person about can hold this call; that is the caller's to bound.
+pub fn open_untrusted(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC)
+        .open(path)
+}
+
+/// The owner of an open file, as the descriptor says it, for a check that holds even if the name has since been changed.
+pub fn owner_of(file: &File) -> io::Result<u32> {
+    Ok(file.metadata()?.uid())
+}
+
+/// A clone of an open file at a new name, sharing its blocks, so nothing is written twice. Made from the descriptor, not the name, so what's cloned is what was looked at. Fails, writing nothing, where a clone can't be made, as across two volumes. The new file is private to this user.
+pub fn clone_open_file(from: &File, to: &Path) -> io::Result<()> {
+    let to_c = c_path(to)?;
+    // SAFETY: the descriptor is open for the call, the path is NUL-terminated, and AT_FDCWD makes it relative to nothing (callers give absolute paths).
+    if unsafe { libc::fclonefileat(from.as_raw_fd(), libc::AT_FDCWD, to_c.as_ptr(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    make_private_file(to)
+}
+
 /// Swaps two paths on one volume in a single step, so at no moment is either of them missing or half there. What an update stands on: a crash on either side of it leaves one whole app at the app's path. Fails, changing nothing, if the volume can't do this.
 pub fn swap_paths(a: &Path, b: &Path) -> io::Result<()> {
     let (a_c, b_c) = (c_path(a)?, c_path(b)?);
@@ -886,6 +909,21 @@ pub fn set_attribute(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     // SAFETY: both strings are NUL-terminated, the value is its own length, and all live for the call.
     let rc = unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn note_interrupt(_signal: libc::c_int) {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Ctrl-C, as a flag a long job looks at between its steps, so it can clean up after itself and end cleanly instead of being cut off where it stands. Installed once; the flag is the same one every time.
+pub fn interrupt_flag() -> &'static std::sync::atomic::AtomicBool {
+    // SAFETY: the handler only stores into an atomic, which is async-signal-safe, and `signal` takes a function pointer of that shape.
+    unsafe {
+        libc::signal(libc::SIGINT, note_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
+    &INTERRUPTED
 }
 
 #[cfg(test)]

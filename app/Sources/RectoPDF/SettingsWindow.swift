@@ -6,6 +6,10 @@ import AppKit
     let window: NSWindow
     private(set) var switches: [String: NSSwitch] = [:]
     private var shownRows: [SettingRow] = []
+    private var shownAction: SettingsAction?
+    /// A waiting update and its button, drawn from Rust's words. Hidden when there's none.
+    private let actionBox = NSStackView()
+    private(set) var updateButton: NSButton?
     private let rows = NSStackView()
     private let status = NSTextField(wrappingLabelWithString: "")
     /// The privacy statement, in Rust's words, opened as a link the person chose.
@@ -37,6 +41,11 @@ import AppKit
         status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         status.textColor = .secondaryLabelColor
         status.preferredMaxLayoutWidth = Self.width - 40
+        actionBox.orientation = .vertical
+        actionBox.alignment = .leading
+        actionBox.spacing = 6
+        actionBox.isHidden = true
+        content.addArrangedSubview(actionBox)
         content.addArrangedSubview(rows)
         content.addArrangedSubview(status)
         privacyLink.isBordered = false
@@ -61,6 +70,10 @@ import AppKit
         status.stringValue = model.status
         privacyURL = model.privacyUrl
         privacyLink.attributedTitle = NSAttributedString(string: model.privacyTitle, attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.linkColor])
+        if model.action != shownAction {
+            shownAction = model.action
+            showAction(model.action)
+        }
         if model.rows != shownRows {
             shownRows = model.rows
             rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -68,6 +81,36 @@ import AppKit
             for row in model.rows { rows.addArrangedSubview(view(for: row)) }
         }
         window.setContentSize(NSSize(width: Self.width, height: window.contentView?.fittingSize.height ?? 160))
+    }
+
+    private func showAction(_ action: SettingsAction?) {
+        actionBox.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        updateButton = nil
+        actionBox.isHidden = action == nil
+        guard let action else { return }
+        let title = NSTextField(labelWithString: action.title)
+        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let hint = NSTextField(wrappingLabelWithString: action.hint)
+        hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        hint.textColor = .secondaryLabelColor
+        hint.preferredMaxLayoutWidth = Self.width - 40
+        let button = NSButton(title: action.button, target: self, action: #selector(updateNow(_:)))
+        button.bezelStyle = .rounded
+        button.keyEquivalent = ""
+        button.isEnabled = action.enabled
+        button.identifier = NSUserInterfaceItemIdentifier(action.id)
+        updateButton = button
+        [title, hint, button].forEach { actionBox.addArrangedSubview($0) }
+    }
+
+    /// The switch or button with this id, for QA: clicked by the same call a person's click makes.
+    func control(_ id: String) -> NSControl? {
+        switches[id] ?? (updateButton?.identifier?.rawValue == id ? updateButton : nil)
+    }
+
+    @objc private func updateNow(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        delegate.core.settingChosen(id: id, on: true)
     }
 
     private func view(for row: SettingRow) -> NSView {
@@ -121,7 +164,7 @@ import AppKit
     /// For QA: what's showing.
     func report() -> [String: Any] {
         let model = delegate.core.settingsModel()
-        return ["open": true, "x": window.frame.minX, "y": window.frame.minY, "title": window.title, "status": status.stringValue, "privacy": ["title": privacyLink.attributedTitle.string, "url": privacyURL], "rows": model.rows.map { row in
+        return ["open": true, "x": window.frame.minX, "y": window.frame.minY, "title": window.title, "status": status.stringValue, "privacy": ["title": privacyLink.attributedTitle.string, "url": privacyURL], "action": shownAction.map { ["id": $0.id, "title": $0.title, "hint": $0.hint, "button": updateButton?.title ?? "", "enabled": updateButton?.isEnabled ?? false] as [String: Any] } ?? NSNull(), "rows": model.rows.map { row in
             ["id": row.id, "title": row.title, "hint": row.hint, "on": switches[row.id]?.state == .on, "enabled": switches[row.id]?.isEnabled ?? false] as [String: Any]
         }]
     }

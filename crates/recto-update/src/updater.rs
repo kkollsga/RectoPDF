@@ -17,6 +17,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 pub mod builds;
+mod now;
+mod said;
+mod words;
+pub use now::UpdateAction;
+pub use said::{Said, SaidKind};
 
 /// How long a hand-off gets to write and read back the state.
 const HAND_OFF_LIMIT: Duration = Duration::from_secs(5);
@@ -132,6 +137,8 @@ pub enum Status {
     AvailableElsewhere(String),
     CheckFailed(String),
     Preparing(String),
+    /// A development build handed over, being checked from a copy in the app's own folder.
+    PreparingBuild(String),
     Waiting {
         version: String,
         for_what: String,
@@ -162,7 +169,7 @@ impl Status {
             Self::Available(_) => "available",
             Self::AvailableElsewhere(_) => "available_not_installed",
             Self::CheckFailed(_) => "check_failed",
-            Self::Preparing(_) => "preparing",
+            Self::Preparing(_) | Self::PreparingBuild(_) => "preparing",
             Self::Waiting { .. } => "waiting",
             Self::Installing(_) => "installing",
             Self::Failed { .. } => "failed",
@@ -173,7 +180,10 @@ impl Status {
     }
 
     fn is_under_way(&self) -> bool {
-        matches!(self, Self::Checking | Self::Preparing(_) | Self::Waiting { .. } | Self::Installing(_))
+        matches!(
+            self,
+            Self::Checking | Self::Preparing(_) | Self::PreparingBuild(_) | Self::Waiting { .. } | Self::Installing(_)
+        )
     }
 }
 
@@ -440,6 +450,9 @@ impl Updater {
         } else {
             self.settle_last_install(&mut saved, &current, &app, now)
         };
+        if !second_copy {
+            let _ = crate::handover::prepare(&self.files);
+        }
         let may_replace = self.source.may_replace_itself() && !second_copy;
         // A release running is where the way back from a development build was going.
         if saved.back_to_release && !crate::version::is_development(&current) {
@@ -948,62 +961,22 @@ impl Updater {
         }
     }
 
-    /// The menu item. Rust's words, whichever way things stand. An offer stays on it through whatever else has happened: a check that failed last night, or an install that didn't work, which by hand can always be tried again.
-    #[must_use]
-    pub fn menu_item(&self) -> MenuItem {
-        let st = lock(&self.st);
-        match &st.status {
-            Status::Preparing(version) | Status::Waiting { version, .. } | Status::Installing(version) => {
-                return MenuItem {
-                    title: format!("Updating to {version}…"),
-                    enabled: false,
-                };
-            }
-            Status::Checking => {
-                return MenuItem {
-                    title: "Check for Updates…".to_owned(),
-                    enabled: false,
-                };
-            }
-            _ => {}
-        }
-        if let Some(build) = &st.build {
-            return MenuItem {
-                title: format!("Update to {}…", build.version),
-                enabled: true,
-            };
-        }
-        match self.offered_here(&st) {
-            Some(version) => MenuItem {
-                title: format!("Update to {version}…"),
-                enabled: true,
-            },
-            None => MenuItem {
-                title: "Check for Updates…".to_owned(),
-                enabled: true,
-            },
-        }
-    }
-
     /// The menu item was chosen. Whichever it says: it starts on a thread of its own, and the UI's not held.
     pub fn menu_chosen(self: &Arc<Self>) {
-        let (on_offer, build) = {
+        {
             let mut st = lock(&self.st);
             // Only what this starts: something already under way was someone else's to ask for.
             if st.status.is_under_way() {
                 return;
             }
             st.from_menu = true;
-            (self.offered_here(&st).is_some(), st.build.is_some())
-        };
-        // A development build waiting goes at once, by hand.
-        let started = if build {
-            self.build_now(Asked::ByHand);
-            true
-        } else if on_offer {
-            self.install(Asked::ByHand).is_ok()
-        } else {
-            self.check_in_background(Asked::ByHand)
+        }
+        // The same call as Settings' button and `recto update install`: a waiting build goes at once, by hand, else what's on offer; and with neither, the menu checks.
+        let started = match self.update_now() {
+            Ok(_) => true,
+            // A local build never installs, so for it the menu only ever checks.
+            Err(InstallRefused::NothingOnOffer | InstallRefused::NotInThisBuild) => self.check_in_background(Asked::ByHand),
+            Err(_) => false,
         };
         if !started {
             lock(&self.st).from_menu = false;
@@ -1507,32 +1480,6 @@ impl Updater {
         give_up("the app didn't quit");
     }
 
-    /// The line in Settings and `update status`.
-    #[must_use]
-    pub fn status_line(&self) -> String {
-        let now = self.now_ms();
-        let st = lock(&self.st);
-        let version = st.facts.as_ref().map_or_else(String::new, |facts| facts.version.clone());
-        match &st.status {
-            Status::Idle => format!("{APP_NAME} {version} · not checked yet"),
-            Status::Checking => "Checking for updates…".to_owned(),
-            Status::UpToDate | Status::NoReleases => st.saved.last_check_ms.map_or_else(
-                || format!("{APP_NAME} {version} is up to date"),
-                |at| format!("{APP_NAME} {version} is up to date · checked {}", ago(at, now)),
-            ),
-            Status::Available(offered) => format!("{APP_NAME} {offered} is available"),
-            Status::AvailableElsewhere(offered) => format!("{APP_NAME} {offered} is available · a local build doesn't replace itself"),
-            Status::CheckFailed(why) => format!("Couldn't check for updates: {why}"),
-            Status::Preparing(offered) => format!("Downloading {APP_NAME} {offered}…"),
-            Status::Waiting { version: offered, for_what } => format!("Updating to {offered} as soon as this is done: {for_what}"),
-            Status::Installing(offered) => format!("Installing {APP_NAME} {offered}…"),
-            Status::Failed { version: offered, why } => format!("Update to {offered} failed: {why}"),
-            Status::Updated(offered) => format!("Updated to {offered}"),
-            Status::WentBack { version: offered, back_on } => format!("{offered} didn't start, so {back_on} came back"),
-            Status::BuildReady(build) => format!("Development build {build} is ready, and goes in once {APP_NAME} hasn't been used for 5 minutes"),
-        }
-    }
-
     /// What's to be said in the app's margin now, if anything.
     #[must_use]
     pub fn notice(&self) -> Option<Notice> {
@@ -1581,6 +1528,7 @@ impl Updater {
             "build_waiting": st.build.as_ref().map(|build| build.version.clone()),
             "build_team": st.build.as_ref().and_then(|build| build.team.clone()),
             "log": self.files.log,
+            "handover_dir": crate::handover::folder_of(&self.files),
         })
     }
 
