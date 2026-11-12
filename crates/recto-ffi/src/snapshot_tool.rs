@@ -3,11 +3,12 @@
 use crate::core::snapshot_tool::Data;
 use crate::{AppCore, lock};
 use recto_agent::extract::{self, ClipItem};
+pub use recto_app::core::snapshot_tool::ClipboardOffer;
 use recto_reader::Engine;
 use std::sync::atomic::Ordering;
 
 /// What the clipboard is offered: its types in the order to offer them, which of those are made only when a paste asks, and the number that names this offer for [`AppCore::clipboard_data`].
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ClipboardOffer {
     pub serial: u64,
     /// Uniform type identifiers, such as `public.png`, in the order a paste should prefer them.

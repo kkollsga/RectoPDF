@@ -1,13 +1,9 @@
 //! The menu bar's and the panel's records, as the host draws them. The lists, what each item does and when it's enabled are `recto_app::menus`'s.
 
-use crate::lock;
-use recto_app::menus as app;
 pub(crate) use recto_app::menus::{
-    Action, Enable, RecentItem, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
+    Action, Enable, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
 };
 pub use recto_app::menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection, ZoomLabel};
-use recto_session::{Paper, ViewSettings, record};
-use std::sync::Arc;
 
 /// One item of a menu. An empty `id` is a line between items.
 #[uniffi::remote(Record)]
@@ -88,29 +84,4 @@ pub struct PanelModel {
     pub open: bool,
     pub button_tooltip: String,
     pub sections: Vec<PanelSection>,
-}
-
-/// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
-pub(crate) fn bar_now(core: &crate::AppCore) -> Vec<app::MenuModel> {
-    let reader = lock(&core.inner.published).reader.clone();
-    let recent = Arc::clone(&lock(&core.inner.published).recent);
-    let items: Vec<RecentItem> = recent
-        .iter()
-        .map(|file| RecentItem {
-            key: &file.key,
-            name: &file.name,
-        })
-        .collect();
-    let mut bar = menu_bar_with(
-        ViewSettings {
-            paper: Paper::from_name(&reader.paper),
-            sidebar_hidden: reader.sidebar_hidden,
-            agent_icon_hidden: reader.agent_icon_hidden,
-        },
-        record::Spread::from_name(&reader.layout),
-        &core.inner.updates.menu_item().title,
-        &items,
-    );
-    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tools.tool.is_on()));
-    bar
 }

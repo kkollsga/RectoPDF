@@ -33,6 +33,7 @@ pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffRepor
 pub use recto_app::listener::QuitAnswer;
 use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 pub use recto_app::reader_view::ReaderView;
+pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
@@ -44,7 +45,7 @@ use recto_control::server::{Announcer, Limits, Server, Stopper};
 use recto_core::{DocFacts, OpenError};
 use recto_platform::FileStamp;
 use recto_reader::engine::EngineEvents;
-use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
+use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
 use recto_session::HistorySource;
@@ -134,7 +135,7 @@ pub struct QuitAnswer {
 }
 
 /// A screen as the host sees it now.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ScreenInfo {
     pub id: u64,
     pub name: String,
@@ -455,7 +456,7 @@ pub struct SelectionNotice {
 }
 
 /// A piece of a highlight, in the page's own coordinates, which are its layer's.
-#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct HighlightRect {
     pub x: f64,
     pub y: f64,
@@ -530,7 +531,7 @@ pub struct ViewportInput {
 }
 
 /// What the host does to its layers, in order.
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum ReaderOp {
     Clear,
     /// The document's size, and how far the view may scroll past its top and its end: the rest of the margin at each end.
@@ -592,86 +593,6 @@ pub enum ReaderOp {
         page: u32,
         rect: Option<HighlightRect>,
     },
-}
-
-impl From<Op> for ReaderOp {
-    fn from(op: Op) -> Self {
-        match op {
-            Op::Clear => Self::Clear,
-            Op::Document {
-                width,
-                height,
-                top_room,
-                bottom_room,
-            } => Self::Document {
-                width,
-                height,
-                top_room,
-                bottom_room,
-            },
-            Op::Magnify { value } => Self::Magnify { value },
-            Op::ScrollTo { y, seq } => Self::ScrollTo { y, seq },
-            Op::ScrollAcross { x } => Self::ScrollAcross { x },
-            Op::ShowPage {
-                page,
-                x,
-                y,
-                width,
-                height,
-                fit,
-                paper_rgb,
-                turns,
-            } => Self::ShowPage {
-                page,
-                x,
-                y,
-                width,
-                height,
-                fit,
-                paper_rgb,
-                turns,
-            },
-            Op::HidePage { page } => Self::HidePage { page },
-            Op::Attach {
-                id,
-                page,
-                x,
-                y,
-                width,
-                height,
-                surface,
-                rgb,
-                crop_width,
-                crop_height,
-                below,
-            } => Self::Attach {
-                id,
-                page,
-                x,
-                y,
-                width,
-                height,
-                surface,
-                rgb,
-                crop_width,
-                crop_height,
-                below,
-            },
-            Op::Detach { id } => Self::Detach { id },
-            Op::Highlight { page, rects } => Self::Highlight {
-                page,
-                rects: rects
-                    .into_iter()
-                    .map(|rect| HighlightRect {
-                        x: f64::from(rect.x),
-                        y: f64::from(rect.y),
-                        width: f64::from(rect.width),
-                        height: f64::from(rect.height),
-                    })
-                    .collect(),
-            },
-        }
-    }
 }
 
 /// The session the socket and the app share.
@@ -889,11 +810,6 @@ impl AppHost {
                 .saver
                 .inner()
                 .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
-            let core = AppCore {
-                inner,
-                qa_mode: false,
-                start_with: Vec::new(),
-            };
             // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
             let whom = palette::ForWhom {
                 hidden_tabs: self.session.with_session(|session| {
@@ -906,7 +822,7 @@ impl AppHost {
                 }),
                 recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
             };
-            let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
+            let rows = core::palette::found_for(&inner, query.as_deref().unwrap_or(""), &whom);
             // A tab's name is the file's, so it's marked as the document's words.
             let row_json = |row: &recto_app::palette::PaletteRow| {
                 if row.from_file {
@@ -921,11 +837,11 @@ impl AppHost {
                     AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
                         .then("`recto palette` lists what there is.")
                 })?;
-                let reader = lock(&core.inner.published).reader.clone();
+                let reader = lock(&inner.published).reader.clone();
                 // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
-                let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
+                let host = match core::palette::as_command(&first.id, &reader, &inner.recent_files()) {
                     Some(direct) => {
-                        core.inner.tools.palette.close();
+                        inner.tools.palette.close();
                         self.run_counted(level, &direct, events)?;
                         HostAction::None
                     }
@@ -939,13 +855,13 @@ impl AppHost {
                             return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed)
                                 .then("Run that command itself, if it has one, at the level it needs."));
                         }
-                        palette::run(&core, &first.id)
+                        core::palette::run(&inner, &first.id)
                     }
                 };
                 let ran = if first.from_file {
-                    json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) })
+                    json!({ "id": first.id, "untrusted": { "title": first.title }, "host": core::palette::host_word(host) })
                 } else {
-                    json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) })
+                    json!({ "id": first.id, "title": first.title, "host": core::palette::host_word(host) })
                 };
                 answer["ran"] = ran;
                 self.core.push(CoreCall::Reconcile);
@@ -1834,8 +1750,7 @@ impl AppCore {
 
     /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
     pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
-        let tabs = Arc::clone(&lock(&self.inner.published).tabs);
-        tabs.iter().cloned().collect()
+        self.inner.sidebar_tabs()
     }
 
     /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
@@ -2125,7 +2040,7 @@ impl AppCore {
 
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
-        menus::bar_now(self).into_iter().collect()
+        self.inner.bar_now()
     }
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
@@ -2164,19 +2079,12 @@ impl AppCore {
 
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
     pub fn recent_files(&self) -> Vec<RecentFile> {
-        lock(&self.inner.published).recent.as_ref().clone()
+        self.inner.recent_files()
     }
 
     /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
     pub fn open_recent(&self, key: String) {
-        let path = lock(&self.inner.published)
-            .recent
-            .iter()
-            .find(|file| file.key == key)
-            .map(|file| PathBuf::from(&file.path));
-        if let Some(path) = path {
-            self.inner.core.push(CoreCall::Open(path));
-        }
+        self.inner.open_recent(key);
     }
 
     /// The sidebar's panel as it stands.
@@ -2189,94 +2097,12 @@ impl AppCore {
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
     pub fn perform(&self, id: String) -> HostAction {
-        // Past a hand-off's last look, what's done here wouldn't come back.
-        if self.inner.core.frozen.load(Ordering::SeqCst) {
-            return HostAction::None;
-        }
-        // A window up without the state is made again once it's in, and what was done to it would go with it.
-        if !updates::takes_input_now(self.window_interactive(), &id) {
-            return HostAction::None;
-        }
-        // Features that answer ids of their own: the snapshot tool, and printing.
-        if core::snapshot_tool::perform(&self.inner, &id) || core::printing::perform(&self.inner, &id) {
-            return HostAction::None;
-        }
-        let Some(action) = menus::action(&id) else { return HostAction::None };
-        match action {
-            menus::Action::Host(host) => return host,
-            menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
-            menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
-            menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
-            menus::Action::PaletteOpen => {
-                // The palette is in the sidebar, so ⌘K shows it.
-                if lock(&self.inner.published).reader.sidebar_hidden {
-                    self.inner.core.push(CoreCall::SetSidebarHidden(false));
-                }
-                self.inner.tools.palette.open();
-                self.inner.listener.model_changed();
-                return HostAction::FocusPalette;
-            }
-            menus::Action::OpenRecent(key) => self.open_recent(key),
-            menus::Action::ClearRecent => self.inner.core.push(CoreCall::ClearRecent),
-            menus::Action::FindOpen => {
-                self.inner.core.push(CoreCall::Find(find::FindCall::Open));
-                return HostAction::FocusFind;
-            }
-            menus::Action::FindStep(forward) => self
-                .inner
-                .core
-                .push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
-            menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
-            menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
-            menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
-            menus::Action::Zoom(zoom) => {
-                self.inner.panes.zoom_all(&self.inner.engine, zoom);
-            }
-            menus::Action::ToggleSidebar => self.toggle_sidebar(),
-            // The pane being read as it's chosen, which a right-click on a pane has just made it, whatever the session's still to hear.
-            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread(
-                (self.inner.panes.count() > 1)
-                    .then(|| self.inner.panes.tab_of(self.inner.panes.reading()))
-                    .flatten(),
-                spread,
-            )),
-            menus::Action::Rotate(turns) => self.inner.core.push(CoreCall::Rotate(turns)),
-            menus::Action::Undo => self.inner.core.push(CoreCall::UndoOrRedo(true)),
-            menus::Action::Redo => self.inner.core.push(CoreCall::UndoOrRedo(false)),
-            menus::Action::ToggleAgentIcon => self.inner.core.push(CoreCall::ToggleAgentIcon),
-            menus::Action::SetPaper(paper) => self.inner.core.push(CoreCall::SetPaper(paper)),
-            menus::Action::TogglePanel => {
-                self.inner.window.panel_open.fetch_xor(true, Ordering::SeqCst);
-                self.inner.listener.model_changed();
-            }
-            // Off this thread by itself, and it says how it went.
-            menus::Action::Update => self.inner.updates.menu_chosen(),
-            menus::Action::Save => {
-                let reader = lock(&self.inner.published).reader.clone();
-                if self.can_save() && reader.shown_tab != 0 {
-                    saving::start_save(&self.inner, TabId(reader.shown_tab), None, false);
-                }
-            }
-            menus::Action::CloseDocument => {
-                let reader = lock(&self.inner.published).reader.clone();
-                if reader.home || reader.saving {
-                    return HostAction::None;
-                }
-                // Unsaved edits, or the owner's undone ones, which closing would lose: it asks, as any Mac app does.
-                if reader.edited || lock(&self.inner.published).sidebar.undone_owner_steps {
-                    return HostAction::ConfirmClose;
-                }
-                if reader.shown_tab != 0 {
-                    self.inner.core.push(CoreCall::CloseTab(TabId(reader.shown_tab), false));
-                }
-            }
-        }
-        HostAction::None
+        self.inner.perform(id)
     }
 
     /// Everything ⌘K's palette draws: its rows, ranked, worded and with their keys, all Rust's. Short locks, never the session's.
     pub fn palette_view(&self) -> palette::PaletteView {
-        palette::view(self)
+        core::palette::view(&self.inner)
     }
 
     /// What's in the palette's field now, as it's typed.
@@ -2286,12 +2112,12 @@ impl AppCore {
 
     /// ↑ (-1) and ↓ (1) in the palette.
     pub fn palette_step(&self, by: i32) {
-        palette::step(self, by);
+        core::palette::step(&self.inner, by);
     }
 
     /// A click on a row of the palette.
     pub fn palette_run(&self, id: String) -> HostAction {
-        palette::run(self, &id)
+        core::palette::run(&self.inner, &id)
     }
 
     /// Escape, or the keyboard going elsewhere.
@@ -2302,36 +2128,12 @@ impl AppCore {
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
     pub fn menu_item_enabled(&self, id: String) -> bool {
-        use menus::Enable;
-        let Some(rule) = menus::enable_rule(&id) else { return false };
-        if !updates::takes_input_now(self.window_interactive(), &id) {
-            return false;
-        }
-        let reader = |pick: fn(&ReaderView) -> bool| pick(&lock(&self.inner.published).reader);
-        match rule {
-            Enable::Always => true,
-            Enable::Document | Enable::Selection => {
-                let reading = self.inner.panes.reading_engine(&self.inner.engine);
-                menus::enabled_by_reading(rule, reading.has_document(), reading.has_selection()).unwrap_or(false)
-            }
-            Enable::Update => self.inner.updates.menu_item().enabled,
-            Enable::Save => self.can_save(),
-            Enable::Print => reader(|reader| !reader.home && reader.shown_tab != 0) && !self.inner.tools.printing.busy(),
-            Enable::SaveAs => reader(|reader| !reader.home && !reader.saving) && self.inner.tools.save_ui.disagreement_now().is_none(),
-            Enable::Close => reader(|reader| !reader.home && !reader.saving),
-            Enable::ClearRecent => !lock(&self.inner.published).recent.is_empty(),
-            Enable::Undo => reader(|reader| reader.can_undo),
-            Enable::Redo => reader(|reader| reader.can_redo),
-            Enable::Back => reader(|reader| reader.can_go_back),
-            Enable::Forward => reader(|reader| reader.can_go_forward),
-        }
+        self.inner.menu_item_enabled(id)
     }
 
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
     fn can_save(&self) -> bool {
-        let reader = lock(&self.inner.published).reader.clone();
-        // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && reader.save_enabled && self.inner.life.sheets.load(Ordering::SeqCst) == 0
+        self.inner.can_save()
     }
 
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
@@ -2598,8 +2400,7 @@ impl AppCore {
 
     /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
     pub fn toggle_sidebar(&self) {
-        let hidden = !lock(&self.inner.published).reader.sidebar_hidden;
-        self.inner.core.push(CoreCall::SetSidebarHidden(hidden));
+        self.inner.toggle_sidebar();
     }
 
     pub fn window_closed(&self) {
@@ -2715,7 +2516,7 @@ impl AppCore {
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
     pub fn window_interactive(&self) -> bool {
-        updates::takes_input(self.inner.life.shown_with_state.load(Ordering::SeqCst), self.inner.life.started.elapsed())
+        self.inner.window_interactive()
     }
 
     /// Whether a state that's come in late may still have the window made again from it: not once the window's taken input without it.

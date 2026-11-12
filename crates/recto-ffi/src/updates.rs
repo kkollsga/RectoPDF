@@ -3,6 +3,7 @@
 use crate::ScreenInfo;
 use crate::{CoreCall, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
+pub use recto_app::core::updates::{SettingRow, SettingsAction, SettingsModel, UpdateAlert, UpdateTimer};
 use recto_control::record_store::Loaded;
 use recto_platform::isolate::SharedMemory;
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind, TileRect, TileRequest, TileResult};
@@ -18,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 /// When the host's one timer should go off.
-#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct UpdateTimer {
     /// What identifies this time: the host arms the timer again only when this changes.
     pub at_ms: u64,
@@ -26,7 +27,7 @@ pub struct UpdateTimer {
 }
 
 /// One switch of the Settings window.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SettingRow {
     pub id: String,
     pub title: String,
@@ -36,7 +37,7 @@ pub struct SettingRow {
 }
 
 /// An update waiting or under way, with the button that installs it now: Rust's words ([`recto_update::updater::UpdateAction`]).
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SettingsAction {
     pub id: String,
     pub title: String,
@@ -46,7 +47,7 @@ pub struct SettingsAction {
 }
 
 /// The Settings window, as it stands.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SettingsModel {
     pub title: String,
     pub rows: Vec<SettingRow>,
@@ -60,7 +61,7 @@ pub struct SettingsModel {
 }
 
 /// What an update chosen from the menu came to, for an app-modal alert. Rust's words.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct UpdateAlert {
     pub message: String,
     pub button: String,

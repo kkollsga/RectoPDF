@@ -3,12 +3,13 @@
 use crate::core::printing::{Request, chosen_range, start};
 use crate::{AppCore, CoreCall, lock};
 use recto_agent::print;
+pub use recto_app::core::printing::PrintModel;
 use recto_session::TabId;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 /// What the print panel needs to know before it opens, all Rust's to say.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PrintModel {
     /// The tab the print is of, which the answer goes back with. 0 with nothing showing, and then there's nothing to print.
     pub tab: u32,
