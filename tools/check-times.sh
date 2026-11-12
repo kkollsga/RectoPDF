@@ -68,22 +68,29 @@ times_summarise() {
       n = split(process_bins, a, " "); for (i = 1; i <= n; i++) is_process[a[i]] = 1
       n = split(app_bins, a, " "); for (i = 1; i <= n; i++) is_app["recto-cli::" a[i]] = 1
     }
+    # A test can be in several stages JUnit files: the app tests are in the workspace stage too, where RECTO_SKIP_APP makes them skip in no time, and the notices
+    # are in the bundle stage and the workspace one. It counts once, in the stage where it took longest, i.e. where it really ran. The slow stage tests are
+    # the same tests run late: kept apart, never added to a tier.
     {
       stage = $1; secs = $2; start = $3; end = $4; bin = $5; name = $6
-      if (stage == "slow") tier = "slow"
-      else if (bin in is_app) tier = ((bin " " name) in is_life) ? 4 : 3
-      else if (bin in is_process) tier = 2
-      else tier = 1
-      if (tier == "slow") { slow_n++; slow_s += secs }
-      else {
-        n_t[tier]++; s_t[tier] += secs
-        key = tier SUBSEP stage
-        if (!(key in lo) || start < lo[key]) lo[key] = start
-        if (!(key in hi) || end > hi[key]) hi[key] = end
-      }
-      rows++; r_tier[rows] = tier; r_stage[rows] = stage; r_bin[rows] = bin; r_secs[rows] = secs; r_name[rows] = name
+      if (stage == "slow") { slow_n++; slow_s += secs; rows++; r_tier[rows] = "slow"; r_stage[rows] = stage; r_bin[rows] = bin; r_secs[rows] = secs; r_name[rows] = name; next }
+      key = bin SUBSEP name
+      if (!(key in seen)) { seen[key] = ++uniq; order[uniq] = key }
+      u = seen[key]
+      if (!(u in u_secs) || secs > u_secs[u]) { u_stage[u] = stage; u_secs[u] = secs; u_start[u] = start; u_end[u] = end; u_bin[u] = bin; u_name[u] = name }
     }
     END {
+      for (u = 1; u <= uniq; u++) {
+        bin = u_bin[u]; name = u_name[u]; stage = u_stage[u]
+        if (bin in is_app) tier = ((bin " " name) in is_life) ? 4 : 3
+        else if (bin in is_process) tier = 2
+        else tier = 1
+        n_t[tier]++; s_t[tier] += u_secs[u]
+        tk = tier SUBSEP stage
+        if (!(tk in lo) || u_start[u] < lo[tk]) lo[tk] = u_start[u]
+        if (!(tk in hi) || u_end[u] > hi[tk]) hi[tk] = u_end[u]
+        rows++; r_tier[rows] = tier; r_stage[rows] = stage; r_bin[rows] = bin; r_secs[rows] = u_secs[u]; r_name[rows] = name
+      }
       for (tier = 1; tier <= 4; tier++) {
         wall = 0
         for (key in lo) { split(key, k, SUBSEP); if (k[1] == tier) wall += hi[key] - lo[key] }

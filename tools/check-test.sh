@@ -709,8 +709,8 @@ f=$(ls $TIMES/*.tsv | head -1)
 check "the file says commit, scope, part and result" "run	$(git rev-parse HEAD)	all	all	pass" "$(awk -F'\t' '$1 == "run" { print $1 "\t" $2 "\t" $4 "\t" $5 "\t" $6 }' "$f")"
 check "it has the wall time of the stages" "1" "$(grep -c '^stage	other-tests	' "$f")"
 check "a core test is in tier 1" "tier	1" "$(grep '^tier	1	' "$f" | cut -f1,2)"
-# Each stage that ran nextest wrote the same two tests, so every stage's JUnit is read when the tiers hold as many of each, and the slow stage's two are apart.
-check "every stage's JUnit is read, not only the last" "true" "$([ "$(grep '^tier	1	' "$f" | cut -f3)" -gt 1 ] && [ "$(grep '^tier	1	' "$f" | cut -f3)" = "$(grep '^tier	2	' "$f" | cut -f3)" ] && echo true || echo false)"
+# Each stage that ran nextest wrote the same two tests: they count once each, however many stages' JUnit holds them, and the slow stage's copies apart.
+check "a test in several stages' JUnit counts once" "1 1" "$(grep '^tier	1	' "$f" | cut -f3) $(grep '^tier	2	' "$f" | cut -f3)"
 check "the slow stage's tests are kept apart from the tiers" "slow	2" "$(grep '^slow	' "$f" | cut -f1,2)"
 check "the slowest tests are listed with their binary and seconds" "true" "$([ "$(grep -c '^test	2	[a-z-]*	alpha::proc	1.50	p1$' "$f")" -ge 1 ] && echo true || echo false)"
 check "and the full run is on the ledger as before" "pass" "$(last_ledger_field 4)"
@@ -772,6 +772,16 @@ printf 'recto-cli::restore update::an_update\n' > "$X/life"
 got=$(printf 'app-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an_update\napp-tests\t3.000\t100.000\t103.000\trecto-cli::app\ta_window_test\nother-tests\t0.100\t50.000\t50.100\trecto-cli::socket\ts\nother-tests\t0.100\t50.000\t50.100\trecto-core\tc\nslow\t9.000\t200.000\t209.000\trecto-cli::app\ta_window_test\n' |
   APP_BINARIES='app restore' PROCESS_BINARIES='recto-cli::socket' times_summarise "$X/life" | grep -E '^(tier|slow)' | awk -F'\t' '{ printf "%s%s=%s ", $1, $2, $3 }')
 check "tests are put in their tier, the slow stage's apart" "tier1=1 tier2=1 tier3=1 tier4=1 slow9.0=9.0 " "$(printf '%s' "$got" | sed 's/slow1=/slow9.0=/')"
+
+# Failure: a test that is in two stages' JUnit counted twice (the app tests are in the workspace stage too, where they skip in no time), which doubled the
+# window and lifecycle test counts and put their time in the wrong stage; or the slow stage's late copies added into a tier.
+printf 'recto-cli::restore update::an_update\n' > "$X/life2"
+got=$(printf 'other-tests\t0.010\t10.000\t10.010\trecto-cli::app\ta_window_test\nother-tests\t0.010\t10.000\t10.010\trecto-cli::restore\tupdate::an_update\nother-tests\t0.100\t10.000\t10.100\trecto-core\tc\napp-tests\t3.000\t100.000\t103.000\trecto-cli::app\ta_window_test\napp-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an_update\nslow\t9.000\t200.000\t209.000\trecto-cli::app\ta_window_test\nslow\t8.000\t200.000\t208.000\trecto-cli::restore\tupdate::an_update\n' |
+  APP_BINARIES='app restore' PROCESS_BINARIES='' times_summarise "$X/life2")
+tiers_of() { printf '%s\n' "$got" | awk -F'\t' '$1 == "tier" && $3 > 0 { printf "%s:%s:%s ", $2, $3, $4 }'; }
+check "a test in two stages counts once, with the time of the stage where it ran" "1:1:0.1 3:1:3.0 4:1:2.0 " "$(tiers_of)"
+check "the slow stage is kept apart and never added into a tier" "slow 2 17.0" "$(printf '%s\n' "$got" | awk -F'\t' '$1 == "slow" { print "slow " $2, $3 }')"
+check "and the slowest list names each test once" "1" "$(printf '%s\n' "$got" | grep -c '^test	3	.*	a_window_test$')"
 
 # Failure: a part of a full run does the other part's work, or is remembered as a pass of everything, or CI's jobs overlap in what they run.
 branch_with parts
