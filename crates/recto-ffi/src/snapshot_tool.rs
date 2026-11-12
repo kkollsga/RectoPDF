@@ -1,9 +1,9 @@
-//! **The clipboard's calls:** what a copy offers, one type's bytes, and letting it go. The tool and its state are `crate::core::snapshot_tool`'s.
+//! **The clipboard's calls:** what a copy offers, one type's bytes, and letting it go. The tool and its state are `recto_app::core::snapshot_tool`'s.
 
-use crate::core::snapshot_tool::Data;
 use crate::{AppCore, lock};
 use recto_agent::extract::{self, ClipItem};
 pub use recto_app::core::snapshot_tool::ClipboardOffer;
+use recto_app::core::snapshot_tool::Data;
 use recto_reader::Engine;
 use std::sync::atomic::Ordering;
 

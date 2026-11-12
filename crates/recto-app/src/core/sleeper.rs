@@ -4,8 +4,8 @@
 //!
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
-use crate::{CoreCall, Inner, lock};
-use recto_app::clock::{Clock, SystemClock};
+use super::{CoreCall, Inner, lock};
+use crate::clock::{Clock, SystemClock};
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
@@ -18,9 +18,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-pub(crate) use recto_app::sleeper::Why;
-use recto_app::sleeper::{self as app, SLEEP_WRITE_EVERY_SECONDS};
-pub(crate) use recto_app::sleeper::{DORMANT_AFTER_SECONDS, LIVE_BUDGET_BYTES};
+pub use crate::sleeper::Why;
+use crate::sleeper::{self as app, SLEEP_WRITE_EVERY_SECONDS};
+pub use crate::sleeper::{DORMANT_AFTER_SECONDS, LIVE_BUDGET_BYTES};
 /// How often a flush looks again for the sleep files' lock, while it may wait for it.
 const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
@@ -44,8 +44,8 @@ struct Counts {
     system_critical: AtomicU64,
 }
 
-pub(crate) struct Sleeper {
-    /// What `recto_app::sleeper`'s decisions go by.
+pub struct Sleeper {
+    /// What `crate::sleeper`'s decisions go by.
     clock: SystemClock,
     after_seconds: AtomicU32,
     budget_bytes: AtomicU64,
@@ -61,26 +61,26 @@ pub(crate) struct Sleeper {
     writing: Mutex<()>,
     /// Writes waiting for [`Self::writing`] that someone's waiting on, a flush's or being asked's: the queue's writer lets them go first.
     others_waiting: AtomicU32,
-    /// Sleep files written off the session's time, waiting for their one writer: [`recto_app::sleep_queue`].
-    leaving: Mutex<recto_app::sleep_queue::LeavingQueue>,
+    /// Sleep files written off the session's time, waiting for their one writer: [`crate::sleep_queue`].
+    leaving: Mutex<crate::sleep_queue::LeavingQueue>,
     counts: Counts,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
 }
 
 /// Looks at files that can be under way at once. A look is a stat, microseconds, unless the file's on a volume that's stopped answering, where it may never end: then this many threads are all that's ever held for it, however many times the app comes to the front.
-pub(crate) const MAX_LOOKS: usize = 8;
+pub const MAX_LOOKS: usize = 8;
 
 /// **Which tabs have a look at their file under way.** A tab already being looked at doesn't get a second thread, and past [`MAX_LOOKS`] no more start, so coming back to the app over and over with a hung disk adds no threads (review O3). A look asked for while one's under way isn't lost: it's noted, and when the look under way ends it's asked for again, as the one under way may have looked before the file changed.
 #[derive(Debug, Default)]
-pub(crate) struct LookSlots {
+pub struct LookSlots {
     /// Each tab being looked at, and whether another look was asked for meanwhile.
     running: Mutex<Vec<(TabId, bool)>>,
 }
 
 impl LookSlots {
     /// Takes a slot for a look at this tab's file, if it hasn't one and one's free. If it has one, another look is noted for when that ends.
-    pub(crate) fn start(&self, id: TabId) -> bool {
+    pub fn start(&self, id: TabId) -> bool {
         let mut running = lock(&self.running);
         if let Some(entry) = running.iter_mut().find(|(tab, _)| *tab == id) {
             entry.1 = true;
@@ -94,20 +94,22 @@ impl LookSlots {
     }
 
     /// The look's done, however it ended: whether another was asked for meanwhile, which the caller asks for again.
-    pub(crate) fn finish(&self, id: TabId) -> bool {
+    pub fn finish(&self, id: TabId) -> bool {
         let mut running = lock(&self.running);
         let again = running.iter().any(|(tab, again)| *tab == id && *again);
         running.retain(|(tab, _)| *tab != id);
         again
     }
 
-    pub(crate) fn running(&self) -> usize {
+    pub fn running(&self) -> usize {
         lock(&self.running).len()
     }
 }
 
+// `new` is public for the bridge, which builds the app.
+#[allow(clippy::new_without_default)]
 impl Sleeper {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             clock: SystemClock::new(),
             after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS),
@@ -120,7 +122,7 @@ impl Sleeper {
             this_hour: Mutex::new(app::Hour::starting(1)),
             writing: Mutex::new(()),
             others_waiting: AtomicU32::new(0),
-            leaving: Mutex::new(recto_app::sleep_queue::LeavingQueue::default()),
+            leaving: Mutex::new(crate::sleep_queue::LeavingQueue::default()),
             counts: Counts::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
         }
@@ -131,16 +133,16 @@ impl Sleeper {
     }
 
     /// How long until something's due, for the session thread's wait, or `None`. An atomic: it's asked with the queue's lock held.
-    pub(crate) fn wait_for_due(&self) -> Option<Duration> {
+    pub fn wait_for_due(&self) -> Option<Duration> {
         app::wait_for(self.due.load(Ordering::SeqCst), self.millis()).map(Duration::from_millis)
     }
 
-    pub(crate) fn set_after(&self, seconds: u32) {
+    pub fn set_after(&self, seconds: u32) {
         self.after_seconds.store(seconds, Ordering::SeqCst);
     }
 
     /// How long a tab that's only moving about waits for its next sleep file. None at all takes the hourly limit with it.
-    pub(crate) fn set_write_gap(&self, seconds: u32) {
+    pub fn set_write_gap(&self, seconds: u32) {
         self.write_gap_seconds.store(seconds, Ordering::SeqCst);
     }
 
@@ -196,11 +198,11 @@ impl Sleeper {
         self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub(crate) fn set_budget(&self, bytes: u64) {
+    pub fn set_budget(&self, bytes: u64) {
         self.budget_bytes.store(bytes, Ordering::SeqCst);
     }
 
-    pub(crate) fn report(&self) -> Value {
+    pub fn report(&self) -> Value {
         let count = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         let counts = &self.counts;
         json!({
@@ -223,7 +225,7 @@ impl Sleeper {
 
 impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
-    pub(crate) fn rearm_dormancy(&self) {
+    pub fn rearm_dormancy(&self) {
         let after = self.sleeper.after_seconds.load(Ordering::SeqCst);
         let wait = self
             .host
@@ -234,7 +236,7 @@ impl Inner {
     }
 
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
-    pub(crate) fn dormancy_due(&self) -> Option<Vec<TabId>> {
+    pub fn dormancy_due(&self) -> Option<Vec<TabId>> {
         if self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
             self.sleeper
                 .due
@@ -246,7 +248,7 @@ impl Inner {
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
-    pub(crate) fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
+    pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
         let tabs: Vec<TabId> = self
             .host
             .session
@@ -288,12 +290,12 @@ impl Inner {
     }
 
     /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
-    pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
+    pub fn write_sleep_for(&self, id: TabId, now: bool) {
         self.write_sleep_now_for(id, now, None);
     }
 
     /// The same, as a quit or a hand-off has it, waiting for another sleep file being written only until `until`, and counted as skipped past it. These are only a way to be quick, and the state's already written by then: a quit waited its 5 s behind sleep files queued for a slow disk and went without the state (slow mode, 2026-11-11). Skipped, the next launch's first frame is bare paper, which the count says.
-    pub(crate) fn write_sleep_for_until(&self, id: TabId, until: Instant) {
+    pub fn write_sleep_for_until(&self, id: TabId, until: Instant) {
         self.write_sleep_now_for(id, true, Some(until));
     }
 
@@ -348,8 +350,8 @@ impl Inner {
         }
     }
 
-    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`recto_app::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
-    pub(crate) fn queue_those_leaving(&self) {
+    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
+    pub fn queue_those_leaving(&self) {
         let left = self.host.session.with_session(|session| session.take_left_warm());
         let mut start = false;
         for facts in left {
@@ -395,7 +397,7 @@ impl Inner {
     /// **The queue's one writer:** oldest first, until there's none, and then it ends. Each is taken from the queue only as it's about to be written, and counted till it's done, so what's held is what the queue's caps allow. A write someone's waiting on goes first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either came before or comes after.
     fn write_leaving(&self) {
         let queue = &self.sleeper.leaving;
-        let _running = recto_app::sleep_queue::WriterRunning::enter(queue);
+        let _running = crate::sleep_queue::WriterRunning::enter(queue);
         loop {
             // Its own statement, so the queue's lock is let go before the write: in a `while let` it would be held through it.
             let next = lock(queue).take_next();
@@ -411,7 +413,7 @@ impl Inner {
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
-    pub(crate) fn check_woken_files(&self) {
+    pub fn check_woken_files(&self) {
         let woken = self.host.session.with_session(|session| session.take_woken_from_file());
         if woken.is_empty() {
             return;
@@ -425,7 +427,7 @@ impl Inner {
     }
 
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
-    pub(crate) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
+    pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
         let read = self.host.session.with_session(|session| session.take_sleep_read(id));
         let sleep = read.or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.sleep_to_read_awake(id))?;
@@ -469,7 +471,7 @@ impl Inner {
     }
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
-    pub(crate) fn look_at_budget(&self) {
+    pub fn look_at_budget(&self) {
         let (warm, active) = self.host.session.with_session(|session| (session.dormant_oldest_first(), session.active()));
         if warm.is_empty() {
             return;
@@ -500,11 +502,11 @@ impl Inner {
         }
     }
 
-    /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`recto_app::pressure::heard`]). A quiet run is the one with a QA bridge.
-    pub(crate) fn system_pressure(&self, critical: bool) {
-        match recto_app::pressure::heard(self.qa.is_some(), recto_app::pressure::Source::System) {
-            recto_app::pressure::Heard::Act => self.core.push(CoreCall::MemoryPressure(critical)),
-            recto_app::pressure::Heard::Count => {
+    /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`crate::pressure::heard`]). A quiet run is the one with a QA bridge.
+    pub fn system_pressure(&self, critical: bool) {
+        match crate::pressure::heard(self.qa.is_some(), crate::pressure::Source::System) {
+            crate::pressure::Heard::Act => self.core.push(CoreCall::MemoryPressure(critical)),
+            crate::pressure::Heard::Count => {
                 let counts = &self.sleeper.counts;
                 let counter = if critical { &counts.system_critical } else { &counts.system_warning };
                 counter.fetch_add(1, Ordering::Relaxed);
@@ -513,7 +515,7 @@ impl Inner {
     }
 
     /// The system's asked for memory back: the same as a tab's being left alone, for all that can go, and now. Counted first, so a test can see it came.
-    pub(crate) fn memory_pressure(&self, critical: bool) {
+    pub fn memory_pressure(&self, critical: bool) {
         self.sleeper.counts.pressure_events.fetch_add(1, Ordering::Relaxed);
         let tabs = self.host.session.with_session(|session| session.dormant_oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
@@ -557,10 +559,10 @@ fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
     Some(surface)
 }
 
-pub(crate) use recto_app::version_of;
+pub use crate::version_of;
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
-pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
+pub fn look_before_showing(inner: &Inner, id: TabId) {
     let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
         return;
     };
@@ -600,7 +602,7 @@ pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
 const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
-pub(crate) fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
+pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
         return;
     };

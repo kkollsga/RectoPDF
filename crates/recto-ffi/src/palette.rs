@@ -1,7 +1,6 @@
 //! **⌘K, the command palette: its records.** What it lists, how it's worded and ranked, and what a row runs are `recto_app::palette`'s; `core::palette` gives it the
 //! window's lists and does what a row comes to.
 
-pub(crate) use recto_app::palette::ForWhom;
 pub use recto_app::palette::{PaletteRow, PaletteView};
 
 /// One of the palette's rows.

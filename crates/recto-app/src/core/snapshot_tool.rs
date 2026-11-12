@@ -6,9 +6,9 @@
 //!
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
-use crate::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
+use super::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
+pub use crate::snapshot_menu::{TOGGLE_ID, is_menu_id};
 use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
-pub(crate) use recto_app::snapshot_menu::{TOGGLE_ID, is_menu_id};
 use recto_reader::Engine;
 use recto_reader::snapshot::{SnapshotTool, Taken};
 use recto_session::TabId;
@@ -42,7 +42,7 @@ struct Job {
 
 /// What to say by the page about the last snapshot, with its number.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ToolNotice {
+pub struct ToolNotice {
     pub serial: u64,
     pub text: String,
     pub offers_copy_anyway: bool,
@@ -50,18 +50,18 @@ pub(crate) struct ToolNotice {
 
 /// What a snapshot's promised SVG is made from, if a paste asks.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Promise {
-    pub(crate) path: PathBuf,
-    pub(crate) page: u32,
-    pub(crate) rect: [f32; 4],
-    pub(crate) turns: u8,
+pub struct Promise {
+    pub path: PathBuf,
+    pub page: u32,
+    pub rect: [f32; 4],
+    pub turns: u8,
 }
 
 /// What's on its way to the clipboard, or on it.
 #[derive(Default)]
-pub(crate) struct Offered {
-    pub(crate) serial: u64,
-    pub(crate) items: Vec<ClipItem>,
+pub struct Offered {
+    pub serial: u64,
+    pub items: Vec<ClipItem>,
     promise: Option<Promise>,
 }
 
@@ -94,7 +94,7 @@ impl JobSlot {
 }
 
 #[derive(Default)]
-pub(crate) struct Tool {
+pub struct Tool {
     state: Mutex<SnapshotTool>,
     /// The tool's on, readable with no lock on every press.
     on: AtomicBool,
@@ -102,10 +102,10 @@ pub(crate) struct Tool {
     drawn: Mutex<Option<(usize, u32)>>,
     jobs: Mutex<JobSlot>,
     running: AtomicU32,
-    pub(crate) ready: Mutex<Option<Offered>>,
+    pub ready: Mutex<Option<Offered>>,
     /// What the host has been offered, held until a paste takes it or another copy replaces it.
-    pub(crate) offered: Mutex<Option<Offered>>,
-    pub(crate) serial: AtomicU64,
+    pub offered: Mutex<Option<Offered>>,
+    pub serial: AtomicU64,
     notice: Mutex<Option<ToolNotice>>,
     /// What the notice with this number refused, for its "Copy anyway".
     refused: Mutex<Option<(u64, Job)>>,
@@ -114,12 +114,12 @@ pub(crate) struct Tool {
 }
 
 impl Tool {
-    pub(crate) fn is_on(&self) -> bool {
+    pub fn is_on(&self) -> bool {
         self.on.load(Ordering::SeqCst)
     }
 
     /// The menu's and the panel's toggle. Turning it either way takes any box and any notice away, and what a notice offered with it.
-    pub(crate) fn toggle(&self) -> bool {
+    pub fn toggle(&self) -> bool {
         let mut state = lock(&self.state);
         let on = !state.is_on();
         state.set_on(on);
@@ -130,20 +130,20 @@ impl Tool {
     }
 
     /// A snapshot is being taken now, which a hand-off and `qa wait-settled` wait for.
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.running.load(Ordering::SeqCst) > 0
     }
 
-    pub(crate) fn is_drawing(&self) -> bool {
+    pub fn is_drawing(&self) -> bool {
         lock(&self.state).is_drawing()
     }
 
-    pub(crate) fn notice(&self) -> Option<ToolNotice> {
+    pub fn notice(&self) -> Option<ToolNotice> {
         lock(&self.notice).clone()
     }
 
     /// The notice as the window shows it, its button naming this notice.
-    pub(crate) fn selection_notice(&self) -> Option<SelectionNotice> {
+    pub fn selection_notice(&self) -> Option<SelectionNotice> {
         self.notice().map(|notice| SelectionNotice {
             action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()),
             action_id: notice.offers_copy_anyway.then(|| format!("{ANYWAY_PREFIX}{}", notice.serial)),
@@ -152,7 +152,7 @@ impl Tool {
         })
     }
 
-    pub(crate) fn dismiss_notice(&self) {
+    pub fn dismiss_notice(&self) {
         lock(&self.notice).take();
         lock(&self.refused).take();
     }
@@ -203,7 +203,7 @@ impl Tool {
     }
 
     /// A press on a page starts a new box or click, so an old notice, and what it offered, goes.
-    pub(crate) fn press(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
+    pub fn press(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
         self.dismiss_notice();
         let mut state = lock(&self.state);
         if let Some((point, size)) = engine.point_on_page(x, y) {
@@ -215,7 +215,7 @@ impl Tool {
     }
 
     /// A drag goes on the page the box was pressed on, wherever the pointer is, held to that page's edges.
-    pub(crate) fn drag(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
+    pub fn drag(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
         let mut state = lock(&self.state);
         if let Some(point) = state.pressed_page().and_then(|page| engine.point_on_given_page(page, x, y)) {
             state.drag(point);
@@ -226,7 +226,7 @@ impl Tool {
     }
 
     /// The button came up: the box goes, and what it took is on its way to the clipboard.
-    pub(crate) fn release(&self, inner: &Arc<Inner>, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
+    pub fn release(&self, inner: &Arc<Inner>, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
         let taken = lock(&self.state).release();
         let ops = self.box_ops(pane, None);
         let Some(tab) = engine.hot_tab() else { return ops };
@@ -255,7 +255,7 @@ impl Tool {
     }
 
     /// The app's on its way out: a paste that asks now for a promised SVG gets nothing, rather than holding the quit up for a worker.
-    pub(crate) fn quitting(&self) {
+    pub fn quitting(&self) {
         self.quitting.store(true, Ordering::SeqCst);
         if let Some(running) = &lock(&self.jobs).running {
             running.stop();
@@ -263,7 +263,7 @@ impl Tool {
     }
 
     /// One type of the offer with this number: its bytes, once, dropped from here as they go, or what a promised one is made from. Nothing for an offer replaced since, a type not in it, or a promise on the way out.
-    pub(crate) fn data(&self, serial: u64, uti: &str) -> Option<Data> {
+    pub fn data(&self, serial: u64, uti: &str) -> Option<Data> {
         let mut offered = lock(&self.offered);
         let current = offered.as_mut().filter(|offered| offered.serial == serial)?;
         let at = current.items.iter().position(|item| item.uti() == uti)?;
@@ -282,7 +282,7 @@ impl Tool {
     }
 
     /// A text copy, as one offer like any other.
-    pub(crate) fn offer_text(&self, text: String) -> Offered {
+    pub fn offer_text(&self, text: String) -> Offered {
         Offered {
             serial: 0,
             items: vec![ClipItem::Ready {
@@ -295,17 +295,17 @@ impl Tool {
 }
 
 /// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
-pub(crate) fn tab_came_forward(inner: &crate::Inner) {
+pub fn tab_came_forward(inner: &super::Inner) {
     if inner.tools.tool.is_on() {
         inner.tools.tool.toggle();
     }
 }
 
 /// What a menu item, panel button or notice button does, if it's the tool's: toggling it, or a notice's "Copy anyway", which takes again only what that notice refused. Says whether it was the tool's.
-pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
+pub fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if id == TOGGLE_ID {
         inner.tools.tool.toggle();
-        inner.core.push(crate::CoreCall::Reconcile);
+        inner.core.push(super::CoreCall::Reconcile);
         inner.listener.model_changed();
         return true;
     }
@@ -313,7 +313,7 @@ pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
         start(inner, Job { anyway: true, ..job });
     }
-    inner.core.push(crate::CoreCall::Reconcile);
+    inner.core.push(super::CoreCall::Reconcile);
     true
 }
 
@@ -334,7 +334,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
     // A box on a heavy page can take seconds, so the reader is told it's on its way, until the answer replaces this.
     tool.say("Copying…", false);
     lock(&tool.refused).take();
-    inner.core.push(crate::CoreCall::Reconcile);
+    inner.core.push(super::CoreCall::Reconcile);
     let Some(first) = lock(&tool.jobs).offer(job) else { return };
     tool.running.fetch_add(1, Ordering::SeqCst);
     // An update waits for it, as it does for a command.
@@ -353,14 +353,14 @@ fn start(inner: &Arc<Inner>, job: Job) {
         }
         runner.tools.tool.running.fetch_sub(1, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
-        runner.core.push(crate::CoreCall::Reconcile);
+        runner.core.push(super::CoreCall::Reconcile);
     });
     if spawned.is_err() {
         *lock(&tool.jobs) = JobSlot::default();
         tool.running.fetch_sub(1, Ordering::SeqCst);
         inner.host.running.fetch_sub(1, Ordering::SeqCst);
         tool.say("The snapshot couldn't be started.", false);
-        inner.core.push(crate::CoreCall::Reconcile);
+        inner.core.push(super::CoreCall::Reconcile);
     }
 }
 
@@ -421,7 +421,7 @@ fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathB
 
 /// What [`Tool::data`] hands over: bytes made with the copy, or what to make a promised type from.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Data {
+pub enum Data {
     Ready(Vec<u8>),
     Make(Promise, usize),
 }
@@ -574,4 +574,14 @@ mod tests {
             }]
         );
     }
+}
+
+/// What the clipboard is offered: its types in the order to offer them, which of those are made only when a paste asks, and the number that names this offer for the bridge's `clipboard_data`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardOffer {
+    pub serial: u64,
+    /// Uniform type identifiers, such as `public.png`, in the order a paste should prefer them.
+    pub types: Vec<String>,
+    /// The ones made only when a paste asks for them: the host declares them and gives them when asked.
+    pub promised: Vec<String>,
 }

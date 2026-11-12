@@ -1,9 +1,7 @@
 //! The menu bar's and the panel's records, as the host draws them. The lists, what each item does and when it's enabled are `recto_app::menus`'s.
 
-pub(crate) use recto_app::menus::{
-    Action, Enable, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
-};
 pub use recto_app::menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection, ZoomLabel};
+pub(crate) use recto_app::menus::{context_menu, panel, plain_key, zoom_label};
 
 /// One item of a menu. An empty `id` is a line between items.
 #[uniffi::remote(Record)]

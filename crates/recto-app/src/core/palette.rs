@@ -1,9 +1,9 @@
 //! **⌘K's palette, as the window and `recto palette` reach it:** the rows it finds from what's published, and what running one does. The ranking, the words and
-//! the routes are `recto_app::palette`'s, the records the bridge's.
+//! the routes are `crate::palette`'s, the records the bridge's.
 
+use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, lock};
+use crate::palette as app;
 use crate::palette::{ForWhom, PaletteView};
-use crate::{CoreCall, HostAction, Inner, ReaderView, RecentFile, lock};
-use recto_app::palette as app;
 use recto_session::TabId;
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ fn items(inner: &Arc<Inner>) -> Vec<app::PaletteRow> {
 }
 
 /// The rows a query finds, best first: the tabs, the files opened lately and the commands ranked together, in that order among equals, so an empty query lists the tabs, then the recent files, then the commands. The tabs' ranking is kept for the query and the tab list's version.
-pub(crate) fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
+pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
     let version = lock(&inner.published).sidebar.tabs_version;
     app::found_for(
         &inner.tools.palette,
@@ -52,7 +52,7 @@ pub(crate) fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<
 }
 
 /// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
-pub(crate) fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -> Option<recto_agent::Command> {
+pub fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -> Option<recto_agent::Command> {
     let showing = app::Showing {
         sidebar_hidden: reader.sidebar_hidden,
         agent_icon_hidden: reader.agent_icon_hidden,
@@ -63,21 +63,21 @@ pub(crate) fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -
 }
 
 /// What the host draws now.
-pub(crate) fn view(inner: &Arc<Inner>) -> PaletteView {
+pub fn view(inner: &Arc<Inner>) -> PaletteView {
     inner.tools.palette.view(|text| found_for(inner, text, &ForWhom::person()))
 }
 
 /// ↑ and ↓: the selection moves, stopping at either end.
-pub(crate) fn step(inner: &Arc<Inner>, by: i32) {
+pub fn step(inner: &Arc<Inner>, by: i32) {
     let count = inner.tools.palette.view(|text| found_for(inner, text, &ForWhom::person())).rows.len();
     inner.tools.palette.step(count, by);
 }
 
 /// Runs a row, closing the palette first, and says what's left for the host.
-pub(crate) fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
+pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
     inner.tools.palette.close();
     let frozen = inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
-    match app::route(id, crate::find::is_open(inner), frozen) {
+    match app::route(id, super::find::is_open(inner), frozen) {
         app::Run::Tap(tab) => {
             inner.core.push(CoreCall::Tap(TabId(tab)));
             HostAction::None
@@ -94,6 +94,6 @@ pub(crate) fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
 }
 
 /// What the host was left to do, by name, for `recto palette --run`.
-pub(crate) fn host_word(action: HostAction) -> &'static str {
+pub fn host_word(action: HostAction) -> &'static str {
     app::host_word(action)
 }

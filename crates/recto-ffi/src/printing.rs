@@ -1,9 +1,9 @@
-//! **Printing's calls:** the print panel's model, its answer, and the system's printing's file. The rules and the state are `crate::core::printing`'s.
+//! **Printing's calls:** the print panel's model, its answer, and the system's printing's file. The rules and the state are `recto_app::core::printing`'s.
 
-use crate::core::printing::{Request, chosen_range, start};
 use crate::{AppCore, CoreCall, lock};
 use recto_agent::print;
 pub use recto_app::core::printing::PrintModel;
+use recto_app::core::printing::{Request, chosen_range, start};
 use recto_session::TabId;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;

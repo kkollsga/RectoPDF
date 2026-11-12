@@ -1,8 +1,8 @@
 //! **What a menu item, a panel button or a key does,** and whether it can be chosen now: the person's actions, as `AppCore` forwards them and as ⌘K's palette and
 //! `recto palette --run` run them, with the menu bar as it stands.
 
-use crate::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, find, lock, menus, saving, updates};
-use recto_app::menus::RecentItem;
+use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, find, lock, menus, saving, updates};
+use crate::menus::RecentItem;
 use recto_session::{Paper, TabId, ViewSettings, record};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,18 +10,18 @@ use std::sync::atomic::Ordering;
 
 impl Inner {
     /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
-    pub(crate) fn sidebar_tabs(&self) -> Vec<SidebarRow> {
+    pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
         let tabs = Arc::clone(&lock(&self.published).tabs);
         tabs.iter().cloned().collect()
     }
 
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
-    pub(crate) fn recent_files(&self) -> Vec<RecentFile> {
+    pub fn recent_files(&self) -> Vec<RecentFile> {
         lock(&self.published).recent.as_ref().clone()
     }
 
     /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
-    pub(crate) fn open_recent(&self, key: String) {
+    pub fn open_recent(&self, key: String) {
         let path = lock(&self.published)
             .recent
             .iter()
@@ -33,7 +33,7 @@ impl Inner {
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
-    pub(crate) fn perform(self: &Arc<Self>, id: String) -> HostAction {
+    pub fn perform(self: &Arc<Self>, id: String) -> HostAction {
         // Past a hand-off's last look, what's done here wouldn't come back.
         if self.core.frozen.load(Ordering::SeqCst) {
             return HostAction::None;
@@ -115,7 +115,7 @@ impl Inner {
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
-    pub(crate) fn menu_item_enabled(&self, id: String) -> bool {
+    pub fn menu_item_enabled(&self, id: String) -> bool {
         use menus::Enable;
         let Some(rule) = menus::enable_rule(&id) else { return false };
         if !updates::takes_input_now(self.window_interactive(), &id) {
@@ -142,25 +142,25 @@ impl Inner {
     }
 
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
-    pub(crate) fn can_save(&self) -> bool {
+    pub fn can_save(&self) -> bool {
         let reader = lock(&self.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
         !reader.home && reader.edited && reader.save_enabled && self.life.sheets.load(Ordering::SeqCst) == 0
     }
 
     /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
-    pub(crate) fn toggle_sidebar(&self) {
+    pub fn toggle_sidebar(&self) {
         let hidden = !lock(&self.published).reader.sidebar_hidden;
         self.core.push(CoreCall::SetSidebarHidden(hidden));
     }
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
-    pub(crate) fn window_interactive(&self) -> bool {
+    pub fn window_interactive(&self) -> bool {
         updates::takes_input(self.life.shown_with_state.load(Ordering::SeqCst), self.life.started.elapsed())
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
-    pub(crate) fn bar_now(&self) -> Vec<recto_app::menus::MenuModel> {
+    pub fn bar_now(&self) -> Vec<crate::menus::MenuModel> {
         let reader = lock(&self.published).reader.clone();
         let recent = Arc::clone(&lock(&self.published).recent);
         let items: Vec<RecentItem> = recent
@@ -180,7 +180,7 @@ impl Inner {
             &self.updates.menu_item().title,
             &items,
         );
-        bar.push(recto_app::snapshot_menu::tools_menu(self.tools.tool.is_on()));
+        bar.push(crate::snapshot_menu::tools_menu(self.tools.tool.is_on()));
         bar
     }
 }

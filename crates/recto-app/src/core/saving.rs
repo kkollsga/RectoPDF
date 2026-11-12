@@ -1,12 +1,12 @@
 //! What a save needs of the app beyond the session: where the backup of an original goes, and its journals. A save's note goes to the journal and is
 //! read back from the disk before the file's moved into place, so a crash just after the move finds it and carries the history over.
 
-use crate::saver::Saver;
+use super::saver::Saver;
+pub use crate::saving::SaveProblem;
+use crate::saving::{self as app, replace_answered};
+pub use crate::saving::{CloseButton, CloseChoice, ClosePrompt, SavePanelModel};
+pub use crate::saving::{SAVED_NOT_CLOSED, SaveUi, close_prompt, panel_for, save_from_gate};
 use recto_agent::saving::SaveSupport;
-pub use recto_app::saving::SaveProblem;
-use recto_app::saving::{self as app, replace_answered};
-pub use recto_app::saving::{CloseButton, CloseChoice, ClosePrompt, SavePanelModel};
-pub(crate) use recto_app::saving::{SAVED_NOT_CLOSED, SaveUi, close_prompt, panel_for, save_from_gate};
 use recto_core::save::SaveStep;
 use recto_platform::FileStamp;
 use recto_session::TabId;
@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-pub(crate) struct AppSaving {
-    pub(crate) saver: Arc<Saver>,
-    pub(crate) backups: PathBuf,
+pub struct AppSaving {
+    pub saver: Arc<Saver>,
+    pub backups: PathBuf,
     /// How the save under way is going, for the window's progress: 0 for none.
-    pub(crate) step: Arc<AtomicU8>,
-    pub(crate) core: Arc<crate::CoreQueue>,
+    pub step: Arc<AtomicU8>,
+    pub core: Arc<super::CoreQueue>,
 }
 
 impl SaveSupport for AppSaving {
@@ -64,65 +64,12 @@ impl SaveSupport for AppSaving {
         };
         self.step.store(value, Ordering::SeqCst);
         // So the window shows it's saving, and which step a long save is at.
-        self.core.push(crate::CoreCall::Reconcile);
+        self.core.push(super::CoreCall::Reconcile);
     }
 }
 
-/// A save that didn't happen, as an alert over the window. Every word is Rust's.
-#[uniffi::remote(Record)]
-pub struct SaveProblem {
-    pub title: String,
-    pub message: String,
-    /// A button that opens Save As, when a copy is the way on.
-    pub save_as_title: Option<String>,
-    pub ok_title: String,
-}
-
-/// What Save As's sheet says.
-#[uniffi::remote(Record)]
-pub struct SavePanelModel {
-    /// The tab it's for, as it was when the sheet opened: the answer saves that tab, whichever is showing by then.
-    pub tab: u32,
-    pub prompt: String,
-    pub suggested_name: String,
-    /// The folder it opens in: the document's own.
-    pub directory: String,
-    /// A line on the sheet, as for a signed document. `None` for most.
-    pub message: Option<String>,
-}
-
-/// What closing a document with unsaved edits asks, as any Mac app asks it.
-#[uniffi::remote(Record)]
-pub struct ClosePrompt {
-    /// The tab it's about, as it was when it was asked.
-    pub tab: u32,
-    pub message: String,
-    pub informative: String,
-    /// In the order they're shown, each with what it does.
-    pub buttons: Vec<CloseButton>,
-}
-
-/// One of the close prompt's buttons.
-#[uniffi::remote(Record)]
-pub struct CloseButton {
-    pub title: String,
-    pub choice: CloseChoice,
-    /// Throws something away, so it's drawn as such.
-    pub destructive: bool,
-}
-
-/// The answer to it.
-#[uniffi::remote(Enum)]
-pub enum CloseChoice {
-    Save,
-    /// Save is off for this document, as for a signed one: Save As's sheet, for an unsigned copy.
-    SaveAs,
-    DontSave,
-    Cancel,
-}
-
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
-pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
+pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
     let inner = Arc::clone(inner);
@@ -133,19 +80,19 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std:
             run_save(&inner, tab, out, close_after, answered);
             inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
             inner.tools.save_ui.step.store(0, Ordering::SeqCst);
-            inner.core.push(crate::CoreCall::Reconcile);
+            inner.core.push(super::CoreCall::Reconcile);
         }
     });
     if spawned.is_err() {
         inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
         inner.tools.save_ui.set_problem(Some(app::not_started()));
-        inner.core.push(crate::CoreCall::Reconcile);
+        inner.core.push(super::CoreCall::Reconcile);
     }
 }
 
 /// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
 /// that's there was agreed to; it's looked at here, off the UI thread (review).
-fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
+fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
     use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
@@ -167,15 +114,15 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
                 .as_array()
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
-            *crate::lock(&inner.window.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
+            *super::lock(&inner.window.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
             inner.tools.save_ui.set_problem(None);
             // Watchers hear it was saved before they hear it closed.
-            inner.core.push(crate::CoreCall::Events(std::mem::take(&mut events)));
+            inner.core.push(super::CoreCall::Events(std::mem::take(&mut events)));
             if close_after {
-                inner.core.push(crate::CoreCall::CloseAfterSave(id));
+                inner.core.push(super::CoreCall::CloseAfterSave(id));
             }
         }
         Err(error) => inner.tools.save_ui.set_problem(Some(app::problem_for(&error))),
     }
-    inner.core.push(crate::CoreCall::Events(events));
+    inner.core.push(super::CoreCall::Events(events));
 }

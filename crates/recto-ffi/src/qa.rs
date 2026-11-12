@@ -1,7 +1,7 @@
-//! **The quiet run's guard's calls.** What they say is `crate::core::qa`'s.
+//! **The quiet run's guard's calls.** What they say is `recto_app::core::qa`'s.
 
 use crate::AppCore;
-use crate::core::qa::policy_nudge;
+use recto_app::core::qa::policy_nudge;
 
 #[uniffi::export]
 impl AppCore {

@@ -1,8 +1,8 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
-use crate::{CoreQueue, Inner, lock};
+use super::{CoreQueue, Inner, lock};
+use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_agent::{AgentError, Command, exit};
-use recto_app::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
 use serde_json::{Value, json};
@@ -13,7 +13,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 /// How long a quiet run lasts at most, if it isn't told.
-pub(crate) const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
+pub const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
 
 /// What a test's slow mode has done in this run, for `qa state`: each seam's delay, how often it's been waited at and for how long in all. Null when it's off.
 fn slow_report() -> Value {
@@ -31,12 +31,12 @@ fn slow_report() -> Value {
 ///
 /// `<ms>,in-put-back` also lands one change in the guard's first put-back of each, between its set and its read, as Launch Services' change from an `open` did (three quiet runs side by side, 2026-11-11: a set from `accessory` said it took, and the read after it said `regular`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Nudge {
+pub struct Nudge {
     pub every: Duration,
     pub in_put_back: bool,
 }
 
-pub(crate) fn policy_nudge(quiet: bool) -> Option<Nudge> {
+pub fn policy_nudge(quiet: bool) -> Option<Nudge> {
     nudge_for(recto_platform::RELEASE_BUILD, quiet, || std::env::var("RECTO_QA_POLICY_NUDGE_MS").ok())
 }
 
@@ -64,12 +64,12 @@ fn nudge_for(release: bool, quiet: bool, switch: impl FnOnce() -> Option<String>
 static OWNER: OnceLock<u32> = OnceLock::new();
 
 /// What a quiet run's relaunch is given, so the new run ends with the same test.
-pub(crate) fn owner_args() -> Vec<String> {
+pub fn owner_args() -> Vec<String> {
     OWNER.get().map(|pid| vec!["--qa-owner-pid".to_owned(), pid.to_string()]).unwrap_or_default()
 }
 
 /// **A quiet run ends with what started it** (PLAN: three ran on, orphaned, for up to their limit after their worktrees were gone). One thread, asleep in one `kevent` with no wake-ups, until the soonest of: the test or script it was started for ends (`--qa-owner-pid`, from `RECTO_QA_OWNER_PID` or `recto qa start --owner`), its temp state folder goes, its own program is deleted, as a worktree's removal or a rebuild does, or its time limit is up. A run started by hand with no owner, as an agent does one command at a time, lasts until one of the others. Its copy forgets itself with Launch Services before it exits, as a quit does, or it stays a second RectoPDF in Open With (CI run 43195226598: two runs of the built app ended so by `a_quiet_run_ends_with_what_started_it` left it registered).
-pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::path::PathBuf>, ending: Weak<Inner>) {
+pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::path::PathBuf>, ending: Weak<Inner>) {
     if let Some(pid) = owner {
         let _ = OWNER.set(pid);
     }
@@ -92,7 +92,7 @@ pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Optio
 }
 
 fn updates_takes_input(inner: &Inner) -> bool {
-    crate::updates::takes_input(inner.life.shown_with_state.load(Ordering::SeqCst), inner.life.started.elapsed())
+    super::updates::takes_input(inner.life.shown_with_state.load(Ordering::SeqCst), inner.life.started.elapsed())
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -212,8 +212,8 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
     })
 }
 
-pub(crate) struct QaBridge {
-    listener: Arc<dyn recto_app::Listener>,
+pub struct QaBridge {
+    listener: Arc<dyn crate::Listener>,
     engine: Engine,
     watchdog: Watchdog,
     core: Arc<CoreQueue>,
@@ -226,7 +226,7 @@ pub(crate) struct QaBridge {
 }
 
 impl QaBridge {
-    pub(crate) fn new(listener: Arc<dyn recto_app::Listener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
+    pub fn new(listener: Arc<dyn crate::Listener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
         Self {
             listener,
             engine,
@@ -241,7 +241,7 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn attach(&self, inner: Weak<Inner>) {
+    pub fn attach(&self, inner: Weak<Inner>) {
         let _ = self.inner.set(inner);
     }
 
@@ -274,7 +274,7 @@ impl QaBridge {
         })
     }
 
-    pub(crate) fn answer(&self, id: u64, ok: bool, json: String) {
+    pub fn answer(&self, id: u64, ok: bool, json: String) {
         let mut answers = lock(&self.answers);
         if let Some(slot) = answers.get_mut(&id) {
             *slot = Some(if ok { Ok(json) } else { Err(json) });
@@ -282,7 +282,7 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
+    pub fn note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
         self.step_waiting.store(false, Ordering::SeqCst);
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
@@ -332,7 +332,7 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn run(&self, command: &Command) -> Result<Value, AgentError> {
+    pub fn run(&self, command: &Command) -> Result<Value, AgentError> {
         match command {
             Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
                 "state" => self.state(),
@@ -747,7 +747,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
             "lower-right:out",
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => recto_app::sidebar_access::is_qa_value(value),
+        "accessibility" => crate::sidebar_access::is_qa_value(value),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),
@@ -756,7 +756,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => {
-            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::core::snapshot_tool::is_menu_id(value))
+            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || super::snapshot_tool::is_menu_id(value))
         }
         "panel" => {
             value == "toggle"

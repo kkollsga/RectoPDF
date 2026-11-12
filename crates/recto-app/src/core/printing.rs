@@ -6,7 +6,7 @@
 //! - **A print to a file is an export.** When the panel's answer saves or previews a PDF rather than printing on paper, a file that asks not to be copied gets the notice a copy has, with "Print anyway" (owner, 2026-11-08: exports ask "anyway" like Copy). Print to paper never asks.
 //! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
 
-use crate::{CoreCall, Inner, SelectionNotice, lock};
+use super::{CoreCall, Inner, SelectionNotice, lock};
 use recto_agent::print;
 use recto_session::TabId;
 use std::path::{Path, PathBuf};
@@ -24,12 +24,12 @@ const FILE_PREFIX: &str = "recto-print-";
 
 /// What a print was asked for, kept so "Print anyway" can ask again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Request {
-    pub(crate) tab: TabId,
-    pub(crate) range: (u32, u32),
-    pub(crate) dpi: u32,
-    pub(crate) to_file: bool,
-    pub(crate) anyway: bool,
+pub struct Request {
+    pub tab: TabId,
+    pub range: (u32, u32),
+    pub dpi: u32,
+    pub to_file: bool,
+    pub anyway: bool,
 }
 
 /// The line by the page, with its number and button.
@@ -41,12 +41,12 @@ struct Said {
 }
 
 #[derive(Default)]
-pub(crate) struct Printing {
+pub struct Printing {
     running: AtomicBool,
     cancel: AtomicBool,
     done: AtomicU32,
     of: AtomicU32,
-    pub(crate) generation: AtomicU64,
+    pub generation: AtomicU64,
     serial: AtomicU64,
     ready: Mutex<Option<PathBuf>>,
     /// The host has the file and the system's printing is running.
@@ -55,21 +55,21 @@ pub(crate) struct Printing {
     /// What the notice with this number refused, for its "Print anyway".
     refused: Mutex<Option<(u64, Request)>>,
     /// A QA print to a file: where the system's printing writes, a new name of ours, and where it's published, never over anything.
-    pub(crate) qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
+    pub qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
 }
 
 impl Printing {
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.running.load(Ordering::SeqCst) || lock(&self.ready).is_some() || self.handing.load(Ordering::SeqCst)
     }
 
     /// The line by the page while pages are being prepared, or what went wrong.
-    pub(crate) fn notice(&self) -> Option<String> {
+    pub fn notice(&self) -> Option<String> {
         self.selection_notice().map(|notice| notice.text)
     }
 
     /// The notice as the window shows it: Stop while preparing, "Print anyway" naming the notice that offered it.
-    pub(crate) fn selection_notice(&self) -> Option<SelectionNotice> {
+    pub fn selection_notice(&self) -> Option<SelectionNotice> {
         if self.running.load(Ordering::SeqCst) {
             let (done, of) = (self.done.load(Ordering::SeqCst), self.of.load(Ordering::SeqCst));
             let text = if of > 1 {
@@ -92,7 +92,7 @@ impl Printing {
         })
     }
 
-    pub(crate) fn dismiss_notice(&self) {
+    pub fn dismiss_notice(&self) {
         lock(&self.notice).take();
         lock(&self.refused).take();
     }
@@ -117,7 +117,7 @@ impl Printing {
     }
 
     /// The file to print, once, for the host to hand to the system.
-    pub(crate) fn take_ready(&self) -> Option<PathBuf> {
+    pub fn take_ready(&self) -> Option<PathBuf> {
         let ready = lock(&self.ready).take();
         if ready.is_some() {
             self.handing.store(true, Ordering::SeqCst);
@@ -126,7 +126,7 @@ impl Printing {
     }
 
     /// The system's printing is done with a file, however it went: it goes, if it's one of ours, and a QA print to a file is published where it was asked for.
-    pub(crate) fn finished(&self, path: &str) {
+    pub fn finished(&self, path: &str) {
         remove_if_ours(Path::new(path), &std::env::temp_dir(), std::process::id());
         if let Some((written, out)) = lock(&self.qa_target).take() {
             if written.exists() && recto_agent::publish_picture(&written, &out).is_err() {
@@ -137,17 +137,17 @@ impl Printing {
         self.handing.store(false, Ordering::SeqCst);
     }
 
-    pub(crate) fn has_ready(&self) -> bool {
+    pub fn has_ready(&self) -> bool {
         lock(&self.ready).is_some()
     }
 
     /// Stops a print being prepared, at the next page. Cheap, for the UI thread.
-    pub(crate) fn cancel(&self) {
+    pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
     /// The app's quitting: preparing stops at the next page, and a file the host hasn't taken goes now. One the system's printing has is the system's until it's done, and a launch removes it if this run never hears.
-    pub(crate) fn quitting(&self) {
+    pub fn quitting(&self) {
         self.cancel();
         if let Some(path) = lock(&self.ready).take() {
             let _ = std::fs::remove_file(path);
@@ -190,7 +190,7 @@ fn sweep_stale(folder: &Path, alive: impl Fn(u32) -> bool) -> usize {
 }
 
 /// At launch, off the UI thread on a short-lived thread of its own: the print files of runs that died go. Only on a Mac, where a process's number can be asked about.
-pub(crate) fn sweep_at_launch() {
+pub fn sweep_at_launch() {
     if !cfg!(target_os = "macos") {
         return;
     }
@@ -200,7 +200,7 @@ pub(crate) fn sweep_at_launch() {
 }
 
 /// Which pages the panel's answer means. `first` and `last` count from 1, and `all` or a selection's pages override them. A range given backwards is taken forwards. None if there's nothing to print.
-pub(crate) fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Option<(u32, u32)>) -> Option<(u32, u32)> {
+pub fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Option<(u32, u32)>) -> Option<(u32, u32)> {
     if pages == 0 {
         return None;
     }
@@ -214,7 +214,7 @@ pub(crate) fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selecti
 }
 
 /// What a menu item or notice button does, if it's printing's: Stop, or a notice's "Print anyway", which asks again only what that notice refused. Says whether it was printing's.
-pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
+pub fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if id == STOP_ID {
         inner.tools.printing.cancel();
         return true;
@@ -228,7 +228,7 @@ pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
 }
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.
-pub(crate) fn start(inner: &Arc<Inner>, request: Request) -> bool {
+pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
     let printing = &inner.tools.printing;
     if printing.running.swap(true, Ordering::SeqCst) {
         printing.say("A print is already being prepared.", false);
@@ -416,4 +416,19 @@ mod tests {
         assert!(printing.cancel.load(Ordering::SeqCst));
         assert!(!path.exists() && !printing.busy());
     }
+}
+
+/// What the print panel needs to know before it opens, all Rust's to say.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrintModel {
+    /// The tab the print is of, which the answer goes back with. 0 with nothing showing, and then there's nothing to print.
+    pub tab: u32,
+    pub pages: u32,
+    /// Something's selected, so the panel offers to print just its pages.
+    pub has_selection: bool,
+    /// The job's name in the print queue: the file's name.
+    pub job_title: String,
+    /// The first page's size as it's shown, in points, for a print to a PDF at the page's own size.
+    pub width_pt: f64,
+    pub height_pt: f64,
 }
