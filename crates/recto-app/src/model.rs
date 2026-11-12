@@ -4,10 +4,10 @@
 //! `reconcile` takes the inputs, calls these, then does the side effects. [`read`] takes everything the session is asked for in one pass, which the caller does under one lock,
 //! so the view models of a pass are of one moment in the session and not of six.
 //!
-//! **What will need a plain twin when this moves to a toolkit-free crate:** the view records ([`ReaderView`], [`SidebarView`], [`SidebarRow`], [`PaneView`], [`SelectionNotice`],
-//! [`RecentFile`]) are UniFFI records defined in `lib.rs`; [`Surfaces`] holds `saving`, `linking` and `passwords` types of this crate; [`recent_files`] uses `menus::recent_key`.
+//! The plain records it returns are owned here; `recto-ffi` keeps the UniFFI records the host sees (their shape is the Swift contract) and converts one for one, with no logic.
+//! The reader model is composed of parts by concern ([`PaperModel`], [`EditModel`], [`SaveModel`], [`DocumentModel`], [`WindowModel`]), each small.
 
-use crate::{PaneView, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView, linking, menus, passwords, saving};
+use recto_platform::FileStamp;
 use recto_reader::PaperKind;
 use recto_reader::tiles::{PageMap, SavedPlace};
 use recto_session::compare::Comparison;
@@ -16,31 +16,213 @@ use recto_session::{DocLoader, Paper, RowKind as SessionRowKind, Session, Sideba
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// What a row of the sidebar is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    Tab,
+    Contents,
+    /// A quiet line over the contents, about generated contents.
+    Note,
+}
+
+/// A row of the sidebar. At rest it's a name; its page number shows on hover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarRow {
+    pub kind: RowKind,
+    pub tab: u32,
+    /// From the file, so it's only ever drawn as text.
+    pub text: String,
+    pub page: Option<u32>,
+    pub depth: u8,
+    pub current: bool,
+    pub rail_filled: bool,
+    pub rail_first: bool,
+    pub rail_last: bool,
+    /// Something's wrong with this tab's file, in Rust's words. On a note, what it means.
+    pub notice: Option<String>,
+    /// What tapping a note does, by Rust's own name for it.
+    pub action: Option<String>,
+    pub expandable: bool,
+    pub expanded: bool,
+    /// A tab side by side with others.
+    pub in_comparison: bool,
+}
+
+/// Everything the sidebar draws but for the contents' rows, which the host pulls as they come on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarView {
+    pub tabs_version: u64,
+    pub tab_count: u32,
+    pub active_index: Option<u32>,
+    pub contents_count: u32,
+    pub contents_version: u64,
+    pub contents_changed_from: u32,
+    pub contents_removed: u32,
+    pub contents_inserted: u32,
+    pub contents_place_shift: i32,
+    pub contents_current: Option<u32>,
+    pub toc_open: bool,
+    pub edited: bool,
+    pub undone_owner_steps: bool,
+    pub contents_note: Option<SidebarRow>,
+}
+
+/// A comparison's pane, as its label says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneView {
+    pub tab: u32,
+    /// Its file's name, cleaned.
+    pub title: String,
+    /// It's the pane being read.
+    pub reading: bool,
+    /// Its tab's layout, by name.
+    pub layout: String,
+    /// What's wrong with its file, in Rust's words.
+    pub note: Option<String>,
+}
+
+/// What to say by the page about a copy, a print or an action, and the button if there is one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionNotice {
+    pub text: String,
+    pub action_title: Option<String>,
+    pub action_id: Option<String>,
+    pub fades: bool,
+}
+
+/// A file opened lately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentFile {
+    pub key: String,
+    pub name: String,
+    pub folder: String,
+    pub path: String,
+    pub open: bool,
+}
+
+/// What the window's Save is, decided by the caller from the signature rule: whether it's off, what Save As's sheet says, and the icon's tooltip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFacts {
+    pub off: bool,
+    pub note: Option<String>,
+    pub tooltip: String,
+}
+
+/// **The key a file in Open Recent goes by:** from its path, so it's the same file however the list has moved since the menu was made, and an item can't open another file than the one it showed. Sixteen hex digits, never a path, so nothing of where someone keeps their files is in a menu item's id.
+pub fn recent_key(path: &std::path::Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// A file's stamp as it says which version of the file this is: not the disk it's on, whose number can change while the file doesn't.
+pub fn version_of(stamp: FileStamp) -> FileStamp {
+    FileStamp { device: 0, ..stamp }
+}
+
+/// The paper as the window is told it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaperModel {
+    /// The paper's name, which QA and the menu use.
+    pub name: String,
+    pub rgb: u32,
+    /// A colour to multiply over each page in the compositor, for warm paper.
+    pub tint: Option<u32>,
+    pub highlight_dark_colour: bool,
+    pub highlight_lighten: bool,
+}
+
+/// What can be done to the tab being read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditModel {
+    pub edited: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub edit_mode: bool,
+    pub can_rotate: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+}
+
+/// The Save icon and what it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveModel {
+    pub saving: bool,
+    pub tooltip: String,
+    pub as_note: Option<String>,
+    /// The icon is beside the window's controls: with unsaved edits, or while saving.
+    pub button: bool,
+    /// It does something: not while saving, and not when Save over the file would break a signature.
+    pub enabled: bool,
+}
+
+/// The tab showing and where in it the reader is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentModel {
+    /// The tab an action from the window is about. 0 with none.
+    pub shown_tab: u32,
+    pub name: String,
+    pub folder: String,
+    /// The page number in the lower right, such as "32 of 96".
+    pub place: String,
+    /// The page being read, by its label if it has one.
+    pub page_text: String,
+    /// The tab showing's layout, by name. Empty with none.
+    pub layout: String,
+}
+
+/// The window around the page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowModel {
+    pub home: bool,
+    pub sidebar_hidden: bool,
+    pub agent_icon_hidden: bool,
+    pub sidebar_width: f64,
+    pub compare_synced: bool,
+    pub print_ready: bool,
+}
+
+/// What the page area shows, by concern. The sheets that ask something (a link, a password, a failed save) are the bridge's and aren't in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReaderModel {
+    /// Tabs side by side, a pane each. Empty with one tab showing.
+    pub panes: Vec<PaneView>,
+    /// Something the reader needs to be told, in words.
+    pub note: Option<String>,
+    pub selection_notice: Option<SelectionNotice>,
+    pub window: WindowModel,
+    pub paper: PaperModel,
+    pub edit: EditModel,
+    pub save: SaveModel,
+    pub document: DocumentModel,
+}
+
 /// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ContentsEntry {
-    pub(crate) tab: u32,
-    pub(crate) text: Box<str>,
-    pub(crate) page: Option<u32>,
-    pub(crate) depth: u8,
+pub struct ContentsEntry {
+    pub tab: u32,
+    pub text: Box<str>,
+    pub page: Option<u32>,
+    pub depth: u8,
     /// Its entry in the list, and whether it folds and is open.
-    pub(crate) entry: u32,
-    pub(crate) expandable: bool,
-    pub(crate) expanded: bool,
+    pub entry: u32,
+    pub expandable: bool,
+    pub expanded: bool,
 }
 
 /// What the last pass published, which this pass keeps when nothing in it has changed: a page crossed mustn't mean thousands of strings copied, for a long outline or for many tabs.
 #[derive(Clone)]
-pub(crate) struct Held {
-    pub(crate) tabs: Arc<Vec<SidebarRow>>,
-    pub(crate) contents: Arc<Vec<ContentsEntry>>,
-    pub(crate) sidebar: Arc<SidebarView>,
+pub struct Held {
+    pub tabs: Arc<Vec<SidebarRow>>,
+    pub contents: Arc<Vec<ContentsEntry>>,
+    pub sidebar: Arc<SidebarView>,
     /// What the Open Recent list was last built from.
-    pub(crate) recent_key: Option<(u64, u64)>,
+    pub recent_key: Option<(u64, u64)>,
 }
 
 /// A sidebar with nothing in it: what the window starts with.
-pub(crate) fn empty_sidebar() -> SidebarView {
+pub fn empty_sidebar() -> SidebarView {
     SidebarView {
         tabs_version: 0,
         tab_count: 0,
@@ -60,11 +242,11 @@ pub(crate) fn empty_sidebar() -> SidebarView {
 }
 
 /// The sidebar as one pass projects it. `tabs` and `contents` are the held ones, the same `Arc`s, when they haven't changed.
-pub(crate) struct SidebarParts {
-    pub(crate) view: SidebarView,
-    pub(crate) tabs: Arc<Vec<SidebarRow>>,
-    pub(crate) contents: Arc<Vec<ContentsEntry>>,
-    pub(crate) rail_filled: u32,
+pub struct SidebarParts {
+    pub view: SidebarView,
+    pub tabs: Arc<Vec<SidebarRow>>,
+    pub contents: Arc<Vec<ContentsEntry>>,
+    pub rail_filled: u32,
 }
 
 /// How many tab rows and contents rows the model has, and where the current one of each is. A note belongs to neither.
@@ -210,7 +392,7 @@ fn contents_note(model: &SidebarModel<'_>) -> Option<SidebarRow> {
 }
 
 /// **The sidebar,** from the session's model and what was published last: rows are copied only when they've changed.
-pub(crate) fn sidebar_parts(model: &SidebarModel<'_>, compared: impl Fn(TabId) -> bool, held: &Held) -> SidebarParts {
+pub fn sidebar_parts(model: &SidebarModel<'_>, compared: impl Fn(TabId) -> bool, held: &Held) -> SidebarParts {
     let counts = count_rows(model);
     let (tabs, tabs_version) = tab_rows(model, &compared, counts.tabs, held);
     let contents = contents_change(model, &counts, held);
@@ -239,25 +421,25 @@ pub(crate) fn sidebar_parts(model: &SidebarModel<'_>, compared: impl Fn(TabId) -
 }
 
 /// What a read of the tab being read says, for the window's buttons.
-pub(crate) struct ReadingFacts {
-    pub(crate) edited: bool,
-    pub(crate) can_undo: bool,
-    pub(crate) can_redo: bool,
-    pub(crate) edit_mode: bool,
-    pub(crate) can_rotate: bool,
-    pub(crate) saving: bool,
+pub struct ReadingFacts {
+    pub edited: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub edit_mode: bool,
+    pub can_rotate: bool,
+    pub saving: bool,
     /// The tab, its file and the file's stamp, if there is a tab being read and its file is known.
-    pub(crate) file: Option<(TabId, PathBuf, recto_platform::FileStamp)>,
-    pub(crate) needs_rewrite: bool,
-    pub(crate) can_go_back: bool,
-    pub(crate) can_go_forward: bool,
+    pub file: Option<(TabId, PathBuf, recto_platform::FileStamp)>,
+    pub needs_rewrite: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
     /// The page by its label, or its number: what the go-to field starts with.
-    pub(crate) page_text: String,
+    pub page_text: String,
 }
 
 impl ReadingFacts {
     /// The tab an action from the window is about, 0 with none.
-    pub(crate) fn shown_tab(&self) -> u32 {
+    pub fn shown_tab(&self) -> u32 {
         self.file.as_ref().map_or(0, |(id, _, _)| id.0)
     }
 
@@ -290,29 +472,29 @@ impl ReadingFacts {
 }
 
 /// Everything one pass reads of the session.
-pub(crate) struct Facts {
+pub struct Facts {
     /// What each pane shows, left to right. Their jumps are filled in by the caller, which takes them from the session.
-    pub(crate) panes: Vec<PaneSnapshot>,
-    pub(crate) comparison: Option<Comparison>,
-    pub(crate) pane_pages: Vec<u32>,
-    pub(crate) compare_note: Option<String>,
-    pub(crate) active: Option<TabId>,
-    pub(crate) sidebar: SidebarParts,
+    pub panes: Vec<PaneSnapshot>,
+    pub comparison: Option<Comparison>,
+    pub pane_pages: Vec<u32>,
+    pub compare_note: Option<String>,
+    pub active: Option<TabId>,
+    pub sidebar: SidebarParts,
     /// The page number in the lower right, such as "32 of 96".
-    pub(crate) place: String,
-    pub(crate) chosen_paper: Option<Paper>,
-    pub(crate) sidebar_hidden: bool,
-    pub(crate) agent_icon_hidden: bool,
-    pub(crate) reading: ReadingFacts,
-    pub(crate) compare_synced: bool,
+    pub place: String,
+    pub chosen_paper: Option<Paper>,
+    pub sidebar_hidden: bool,
+    pub agent_icon_hidden: bool,
+    pub reading: ReadingFacts,
+    pub compare_synced: bool,
     /// What Open Recent was built from, and the list if that has changed since the last pass.
-    pub(crate) recent_key: (u64, u64),
-    pub(crate) recent: Option<Vec<RecentFile>>,
+    pub recent_key: (u64, u64),
+    pub recent: Option<Vec<RecentFile>>,
 }
 
 impl Facts {
     /// The pane being read: the active tab's, or else the first.
-    pub(crate) fn reading_pane(&self) -> Option<&PaneSnapshot> {
+    pub fn reading_pane(&self) -> Option<&PaneSnapshot> {
         self.panes.iter().find(|shown| Some(shown.id) == self.active).or(self.panes.first())
     }
 }
@@ -347,7 +529,7 @@ fn recent_files<L: DocLoader>(session: &Session<L>) -> Vec<RecentFile> {
         .recent_files()
         .into_iter()
         .map(|file| RecentFile {
-            key: menus::recent_key(&file.path),
+            key: recent_key(&file.path),
             name: recto_core::clean_line(&file.name),
             folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(),
             path: file.path.to_string_lossy().into_owned(),
@@ -357,7 +539,7 @@ fn recent_files<L: DocLoader>(session: &Session<L>) -> Vec<RecentFile> {
 }
 
 /// **Reads everything a pass needs of the session,** in one go. Called under the session's one lock, so what it returns is of one moment. Takes nothing out of the session: the caller takes each pane's jump.
-pub(crate) fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
+pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
     let active = session.active();
     let panes = session.panes();
     let snapshots: Vec<PaneSnapshot> = panes
@@ -395,14 +577,14 @@ pub(crate) fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
 }
 
 /// The paper as it's drawn: what's shown, what the page views are told, and a tint over it if any.
-pub(crate) struct PaperLook {
-    pub(crate) shown: Paper,
-    pub(crate) kind: PaperKind,
-    pub(crate) tint: Option<u32>,
+pub struct PaperLook {
+    pub shown: Paper,
+    pub kind: PaperKind,
+    pub tint: Option<u32>,
 }
 
 /// **The paper,** with nothing chosen going with the window. Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
-pub(crate) fn paper_look(chosen: Option<Paper>, window_is_dark: bool) -> PaperLook {
+pub fn paper_look(chosen: Option<Paper>, window_is_dark: bool) -> PaperLook {
     let shown = Paper::resolved(chosen, window_is_dark);
     let (kind, tint) = match shown {
         Paper::White => (PaperKind::White, None),
@@ -413,24 +595,24 @@ pub(crate) fn paper_look(chosen: Option<Paper>, window_is_dark: bool) -> PaperLo
 }
 
 /// What can be said by the page about the document, in the order it wins. The first of these that has something to say is the one shown.
-pub(crate) struct NoteSources {
+pub struct NoteSources {
     /// A file that wouldn't open.
-    pub(crate) open_failure: Option<String>,
+    pub open_failure: Option<String>,
     /// The app's own state couldn't be saved.
-    pub(crate) save_failed: bool,
+    pub save_failed: bool,
     /// What's wrong with the tab being read.
-    pub(crate) problem: Option<String>,
+    pub problem: Option<String>,
     /// A word from the session's start, as a damaged record.
-    pub(crate) session: Option<String>,
+    pub session: Option<String>,
     /// Synced scroll over documents of different lengths.
-    pub(crate) compare: Option<String>,
+    pub compare: Option<String>,
     /// The page view's own, such as a page at a lower resolution.
-    pub(crate) engine: Option<String>,
+    pub engine: Option<String>,
 }
 
 impl NoteSources {
     /// **The one note shown:** a file that wouldn't open, then a save of the app's state that failed, then a problem with the tab, then the session's word, then the comparison's, and last the page view's.
-    pub(crate) fn note(self) -> Option<String> {
+    pub fn note(self) -> Option<String> {
         self.open_failure
             .or_else(|| self.save_failed.then(|| notices::SAVE_FAILED.to_string()))
             .or(self.problem)
@@ -441,26 +623,26 @@ impl NoteSources {
 }
 
 /// What the page view says of a copy in its selection.
-pub(crate) struct CopyNotice {
-    pub(crate) text: String,
-    pub(crate) offers_copy_anyway: bool,
-    pub(crate) fades: bool,
+pub struct CopyNotice {
+    pub text: String,
+    pub offers_copy_anyway: bool,
+    pub fades: bool,
 }
 
 /// The lines by the page, each from its own part of the app. The first that has something to say is the one shown.
-pub(crate) struct SelectionSources {
-    pub(crate) copy: Option<CopyNotice>,
-    pub(crate) printing: Option<SelectionNotice>,
-    pub(crate) tool: Option<SelectionNotice>,
+pub struct SelectionSources {
+    pub copy: Option<CopyNotice>,
+    pub printing: Option<SelectionNotice>,
+    pub tool: Option<SelectionNotice>,
     /// A line from an action, which goes by itself.
-    pub(crate) action: Option<String>,
+    pub action: Option<String>,
     /// The updater's line: its words, and whether it goes by itself.
-    pub(crate) update: Option<(String, bool)>,
+    pub update: Option<(String, bool)>,
 }
 
 impl SelectionSources {
     /// **The line by the page:** a copy's (with "Copy anyway" if it offers it), then a print's, then a tool's, then an action's, and last the updater's.
-    pub(crate) fn notice(self) -> Option<SelectionNotice> {
+    pub fn notice(self) -> Option<SelectionNotice> {
         self.copy
             .map(|notice| SelectionNotice {
                 text: notice.text,
@@ -490,7 +672,7 @@ impl SelectionSources {
 }
 
 /// **The labels of a comparison's panes,** a pane each, left to right; none outside a comparison, where the one pane has no label. A pane's note is its tab's problem, or else its page view's, as a pane that isn't read has no other place to say so.
-pub(crate) fn pane_views(snapshots: &[PaneSnapshot], active: Option<TabId>, comparing: bool, engine_notes: &[Option<String>]) -> Vec<PaneView> {
+pub fn pane_views(snapshots: &[PaneSnapshot], active: Option<TabId>, comparing: bool, engine_notes: &[Option<String>]) -> Vec<PaneView> {
     if !comparing {
         return Vec::new();
     }
@@ -508,65 +690,69 @@ pub(crate) fn pane_views(snapshots: &[PaneSnapshot], active: Option<TabId>, comp
 }
 
 /// What the app holds beside the session that the window shows.
-pub(crate) struct Surfaces {
-    pub(crate) paper: PaperLook,
-    pub(crate) note: Option<String>,
-    pub(crate) selection_notice: Option<SelectionNotice>,
-    pub(crate) pane_views: Vec<PaneView>,
+pub struct Surfaces {
+    pub paper: PaperLook,
+    pub note: Option<String>,
+    pub selection_notice: Option<SelectionNotice>,
+    pub pane_views: Vec<PaneView>,
     /// A tab is being brought to the window, so the home state doesn't show in between.
-    pub(crate) holding: bool,
+    pub holding: bool,
     /// The first pane has no tab in it.
-    pub(crate) first_pane_empty: bool,
-    pub(crate) sidebar_width: f64,
-    pub(crate) save: saving::SaveState,
-    pub(crate) save_problem: Option<saving::SaveProblem>,
-    pub(crate) print_ready: bool,
-    pub(crate) link_prompt: Option<linking::LinkPrompt>,
-    pub(crate) password_prompt: Option<passwords::PasswordPrompt>,
+    pub first_pane_empty: bool,
+    pub sidebar_width: f64,
+    pub save: SaveFacts,
+    pub print_ready: bool,
 }
 
 /// **What the page area shows.** The home state is no tab showing and none on its way; the Save icon is there with edits to save or while saving, and does something unless saving or a signature is in the way.
-pub(crate) fn reader_view(facts: &Facts, app: Surfaces) -> ReaderView {
+pub fn reader_view(facts: &Facts, app: Surfaces) -> ReaderModel {
     let reading = &facts.reading;
     let shown_tab = reading.shown_tab();
-    let (document_name, document_folder) = reading.document();
+    let (name, folder) = reading.document();
     let highlight = app.paper.kind.highlight();
-    ReaderView {
+    ReaderModel {
         panes: app.pane_views,
-        compare_synced: facts.compare_synced,
-        home: app.first_pane_empty && !app.holding,
         note: app.note,
-        sidebar_hidden: facts.sidebar_hidden,
-        layout: facts.reading_pane().map_or(String::new(), |shown| shown.spread.name().to_string()),
-        edited: reading.edited,
-        can_undo: reading.can_undo,
-        can_redo: reading.can_redo,
-        edit_mode: reading.edit_mode,
-        can_rotate: reading.can_rotate,
-        place: facts.place.clone(),
-        paper: app.paper.shown.name().to_string(),
-        paper_rgb: app.paper.kind.rgb(),
-        page_tint: app.paper.tint,
-        agent_icon_hidden: facts.agent_icon_hidden,
-        sidebar_width: app.sidebar_width,
-        highlight_dark_colour: highlight.dark_colour,
-        highlight_lighten: highlight.lighten,
         selection_notice: app.selection_notice,
-        saving: reading.saving,
-        save_tooltip: app.save.tooltip,
-        save_problem: app.save_problem,
-        save_as_note: app.save.note,
-        shown_tab,
-        document_name,
-        document_folder,
-        save_button: shown_tab != 0 && (reading.edited || reading.saving),
-        save_enabled: !app.save.off && !reading.saving,
-        print_ready: app.print_ready,
-        can_go_back: reading.can_go_back,
-        can_go_forward: reading.can_go_forward,
-        link_prompt: app.link_prompt,
-        page_text: reading.page_text.clone(),
-        password_prompt: app.password_prompt,
+        window: WindowModel {
+            home: app.first_pane_empty && !app.holding,
+            sidebar_hidden: facts.sidebar_hidden,
+            agent_icon_hidden: facts.agent_icon_hidden,
+            sidebar_width: app.sidebar_width,
+            compare_synced: facts.compare_synced,
+            print_ready: app.print_ready,
+        },
+        paper: PaperModel {
+            name: app.paper.shown.name().to_string(),
+            rgb: app.paper.kind.rgb(),
+            tint: app.paper.tint,
+            highlight_dark_colour: highlight.dark_colour,
+            highlight_lighten: highlight.lighten,
+        },
+        edit: EditModel {
+            edited: reading.edited,
+            can_undo: reading.can_undo,
+            can_redo: reading.can_redo,
+            edit_mode: reading.edit_mode,
+            can_rotate: reading.can_rotate,
+            can_go_back: reading.can_go_back,
+            can_go_forward: reading.can_go_forward,
+        },
+        save: SaveModel {
+            saving: reading.saving,
+            tooltip: app.save.tooltip,
+            as_note: app.save.note,
+            button: shown_tab != 0 && (reading.edited || reading.saving),
+            enabled: !app.save.off && !reading.saving,
+        },
+        document: DocumentModel {
+            shown_tab,
+            name,
+            folder,
+            place: facts.place.clone(),
+            page_text: reading.page_text.clone(),
+            layout: facts.reading_pane().map_or(String::new(), |shown| shown.spread.name().to_string()),
+        },
     }
 }
 
@@ -632,30 +818,30 @@ fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32,
 }
 
 /// What a pane shows, from the session.
-pub(crate) struct PaneSnapshot {
-    pub(crate) id: TabId,
-    pub(crate) pages: u32,
-    pub(crate) page: u32,
-    pub(crate) map: PageMap,
+pub struct PaneSnapshot {
+    pub id: TabId,
+    pub pages: u32,
+    pub page: u32,
+    pub map: PageMap,
     /// Tabs this pane's page view keeps warm besides: pane 0 has the warm tabs off screen, and the others none.
-    pub(crate) warm: Vec<u32>,
-    pub(crate) problem: Option<String>,
-    pub(crate) saved: Option<SavedPlace>,
-    pub(crate) spread: record::Spread,
+    pub warm: Vec<u32>,
+    pub problem: Option<String>,
+    pub saved: Option<SavedPlace>,
+    pub spread: record::Spread,
     /// Its file's name, cleaned, for its pane's label.
-    pub(crate) title: String,
+    pub title: String,
     /// A jump the page view hasn't taken: where to land, as far down the page as it says.
-    pub(crate) jump: Option<recto_session::trail::Stop>,
+    pub jump: Option<recto_session::trail::Stop>,
     /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
-    pub(crate) toc: Option<Arc<recto_core::Toc>>,
+    pub toc: Option<Arc<recto_core::Toc>>,
 }
 
-pub(crate) fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
+pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
     let tab = session.tab(id)?;
     let own = session.path_of(id)?;
-    let same_file = session.own_stamp(id).map(crate::sleeper::version_of);
+    let same_file = session.own_stamp(id).map(version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
-    let follows = session.saved_from(id).map(crate::sleeper::version_of);
+    let follows = session.saved_from(id).map(version_of);
     let mut map = match session.page_edits(id) {
         None => PageMap {
             files: vec![own],
@@ -737,7 +923,7 @@ pub(crate) fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, i
 }
 
 /// The warm tabs off screen that pane 0's page view keeps: most recent first, and only as many as leave the panes and these at [`recto_session::MAX_WARM`] live documents (SPEC §2).
-pub(crate) fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
+pub fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
     warm.filter(|other| !panes.contains(other))
         .take(recto_session::MAX_WARM.saturating_sub(panes.len()))
         .map(|other| other.0)
@@ -815,15 +1001,12 @@ mod tests {
             holding: false,
             first_pane_empty: false,
             sidebar_width: 240.0,
-            save: saving::SaveState {
+            save: SaveFacts {
                 off: false,
                 note: None,
                 tooltip: String::new(),
             },
-            save_problem: None,
             print_ready: false,
-            link_prompt: None,
-            password_prompt: None,
         }
     }
 
@@ -1049,7 +1232,7 @@ mod tests {
         let mut s = session();
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         s.apply_file_status(id, recto_session::record::FileStatus::Same(stamp(1)));
-        let icon = |s: &Session<Disk>| reader_view(&read(s, &nothing_held()), surfaces()).save_button;
+        let icon = |s: &Session<Disk>| reader_view(&read(s, &nothing_held()), surfaces()).save.button;
         assert!(!icon(&s), "nothing to save");
         s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
         assert!(icon(&s), "an edit to save");
@@ -1059,7 +1242,7 @@ mod tests {
         let mut facts = read(&s, &nothing_held());
         facts.reading.edited = false;
         facts.reading.saving = true;
-        assert!(reader_view(&facts, surfaces()).save_button, "saving, with nothing left edited");
+        assert!(reader_view(&facts, surfaces()).save.button, "saving, with nothing left edited");
     }
 
     /// Failure: the Save icon shows with no document (a stray 'edited' flag with no tab to save), so a click has nothing it is about.
@@ -1071,7 +1254,7 @@ mod tests {
         reading.edited = true;
         reading.saving = true;
         let facts = Facts { reading, ..facts };
-        assert!(!reader_view(&facts, surfaces()).save_button);
+        assert!(!reader_view(&facts, surfaces()).save.button);
     }
 
     /// Failure: Save stays on while a save is already running (a second one starts over the first), or it stays on when a signature would be broken by it, or it is off when nothing is in the way.
@@ -1080,9 +1263,9 @@ mod tests {
         let mut s = session();
         let id = edited_tab(&mut s, "/d/a.pdf");
         let facts = read(&s, &nothing_held());
-        assert!(reader_view(&facts, surfaces()).save_enabled);
+        assert!(reader_view(&facts, surfaces()).save.enabled);
         let signed = Surfaces {
-            save: saving::SaveState {
+            save: SaveFacts {
                 off: true,
                 note: line("The new copy won't be signed."),
                 tooltip: "off".into(),
@@ -1090,16 +1273,16 @@ mod tests {
             ..surfaces()
         };
         let view = reader_view(&facts, signed);
-        assert!(!view.save_enabled);
+        assert!(!view.save.enabled);
         assert_eq!(
-            view.save_as_note.as_deref(),
+            view.save.as_note.as_deref(),
             Some("The new copy won't be signed."),
             "Save As says what its copy is"
         );
-        assert_eq!(view.save_tooltip, "off");
+        assert_eq!(view.save.tooltip, "off");
         s.begin_save(id, false).unwrap();
         let view = reader_view(&read(&s, &nothing_held()), surfaces());
-        assert!(view.saving && !view.save_enabled);
+        assert!(view.save.saving && !view.save.enabled);
     }
 
     /// Failure: the home state shows while a tab is being brought to the window (a flash of the empty window between two tabs), or doesn't show with nothing open.
@@ -1115,6 +1298,7 @@ mod tests {
                     ..surfaces()
                 },
             )
+            .window
             .home
         };
         assert!(home(true, false));
@@ -1129,11 +1313,18 @@ mod tests {
         let view = reader_view(&facts, surfaces());
         assert!(facts.panes.is_empty() && facts.active.is_none() && facts.comparison.is_none());
         assert_eq!(
-            (view.place.as_str(), view.layout.as_str(), view.document_name.as_str(), view.page_text.as_str()),
+            (
+                view.document.place.as_str(),
+                view.document.layout.as_str(),
+                view.document.name.as_str(),
+                view.document.page_text.as_str()
+            ),
             ("", "", "", "")
         );
-        assert!(!view.edited && !view.can_undo && !view.can_redo && !view.can_rotate && !view.can_go_back && !view.can_go_forward);
-        assert_eq!(view.shown_tab, 0);
+        assert!(
+            !view.edit.edited && !view.edit.can_undo && !view.edit.can_redo && !view.edit.can_rotate && !view.edit.can_go_back && !view.edit.can_go_forward
+        );
+        assert_eq!(view.document.shown_tab, 0);
         assert!(view.panes.is_empty());
         assert_eq!(facts.sidebar.view.tab_count, 0);
         assert_eq!(facts.sidebar.view.contents_count, 0);
@@ -1204,9 +1395,9 @@ mod tests {
                 ..surfaces()
             },
         );
-        assert_eq!(dark.paper, "dark");
-        assert_eq!(dark.paper_rgb, PaperKind::Dark.rgb());
-        assert!(dark.highlight_lighten);
+        assert_eq!(dark.paper.name, "dark");
+        assert_eq!(dark.paper.rgb, PaperKind::Dark.rgb());
+        assert!(dark.paper.highlight_lighten);
         let warm = reader_view(
             &facts,
             Surfaces {
@@ -1214,8 +1405,11 @@ mod tests {
                 ..surfaces()
             },
         );
-        assert_eq!((warm.paper.as_str(), warm.paper_rgb, warm.page_tint), ("warm", 0xFF_FF_FF, Some(WARM_PAPER)));
-        assert!(!warm.highlight_lighten);
+        assert_eq!(
+            (warm.paper.name.as_str(), warm.paper.rgb, warm.paper.tint),
+            ("warm", 0xFF_FF_FF, Some(WARM_PAPER))
+        );
+        assert!(!warm.paper.highlight_lighten);
     }
 
     /// Failure: a comparison's panes aren't labelled with their own file's names, or two panes both read as the one being read, or the label of the pane being read is on the other.
@@ -1283,7 +1477,7 @@ mod tests {
         let facts = read(&s, &nothing_held());
         assert!(facts.compare_synced);
         assert!(facts.compare_note.as_deref().is_some_and(|note| note.contains("Different lengths")));
-        assert!(reader_view(&facts, surfaces()).compare_synced);
+        assert!(reader_view(&facts, surfaces()).window.compare_synced);
     }
 
     /// Failure: with two tabs side by side the page number and edit buttons go by the first pane and not the one being read.
@@ -1298,9 +1492,9 @@ mod tests {
         let facts = read(&s, &nothing_held());
         assert_eq!(facts.reading_pane().map(|shown| shown.id), Some(two));
         let view = reader_view(&facts, surfaces());
-        assert_eq!(view.shown_tab, two.0);
-        assert!(view.edited && view.save_button);
-        assert_eq!(view.document_name, "beta.pdf");
+        assert_eq!(view.document.shown_tab, two.0);
+        assert!(view.edit.edited && view.save.button);
+        assert_eq!(view.document.name, "beta.pdf");
     }
 
     /// Failure: the go-to field starts with the wrong page, or with an empty string where the document has no labels (the page number is the fallback).
@@ -1431,7 +1625,7 @@ mod tests {
         let facts = read(&s, &nothing_held());
         assert_eq!(facts.chosen_paper, Some(Paper::Warm));
         let view = reader_view(&facts, surfaces());
-        assert!(view.sidebar_hidden && view.agent_icon_hidden);
+        assert!(view.window.sidebar_hidden && view.window.agent_icon_hidden);
     }
 
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.

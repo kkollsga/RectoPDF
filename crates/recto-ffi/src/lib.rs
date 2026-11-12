@@ -10,13 +10,13 @@ mod find;
 mod generated_contents;
 pub mod linking;
 mod menus;
-mod model;
 mod palette;
 mod panes;
 pub mod passwords;
 mod printing;
 mod privacy;
 mod qa;
+mod records;
 mod saver;
 mod saving;
 mod sidebar_access;
@@ -27,9 +27,9 @@ pub mod updates;
 mod watchdog;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
-use model::{ContentsEntry, PaneSnapshot};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_app::{ContentsEntry, PaneSnapshot};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
@@ -1305,8 +1305,8 @@ struct Published {
     recent_key: Option<(u64, u64)>,
     /// Each pane's contents and page labels, for a link's hint: the UI thread reads them here and never asks the session.
     pane_tocs: Vec<Option<Arc<recto_core::Toc>>>,
-    sidebar: Arc<SidebarView>,
-    tabs: Arc<Vec<SidebarRow>>,
+    sidebar: Arc<recto_app::SidebarView>,
+    tabs: Arc<Vec<recto_app::SidebarRow>>,
     contents: Arc<Vec<ContentsEntry>>,
     rail_filled: u32,
     reader: ReaderView,
@@ -1977,7 +1977,7 @@ impl AppCore {
                 contents: Arc::new(Vec::new()),
                 rail_filled: 0,
                 tabs: Arc::new(Vec::new()),
-                sidebar: Arc::new(model::empty_sidebar()),
+                sidebar: Arc::new(recto_app::empty_sidebar()),
                 reader: ReaderView {
                     panes: Vec::new(),
                     compare_synced: false,
@@ -2115,13 +2115,13 @@ impl AppCore {
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
     pub fn sidebar(&self) -> SidebarView {
-        (*lock(&self.inner.published).sidebar).clone()
+        SidebarView::from((*lock(&self.inner.published).sidebar).clone())
     }
 
     /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
     pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
         let tabs = Arc::clone(&lock(&self.inner.published).tabs);
-        (*tabs).clone()
+        tabs.iter().cloned().map(SidebarRow::from).collect()
     }
 
     /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
@@ -4413,7 +4413,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
     let held = {
         let published = lock(&inner.published);
-        model::Held {
+        recto_app::Held {
             tabs: Arc::clone(&published.tabs),
             contents: Arc::clone(&published.contents),
             sidebar: Arc::clone(&published.sidebar),
@@ -4435,14 +4435,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 events.push(recto_agent::page_changed(session, id, page + 1));
             }
         }
-        let mut facts = model::read(session, &held);
+        let mut facts = recto_app::read(session, &held);
         for snapshot in &mut facts.panes {
             snapshot.jump = session.take_jump(snapshot.id);
         }
         facts
     });
     // The paper first, so what's asked for next is drawn right.
-    let look = model::paper_look(facts.chosen_paper, inner.dark.load(Ordering::SeqCst));
+    let look = recto_app::paper_look(facts.chosen_paper, inner.dark.load(Ordering::SeqCst));
     let paper = look.kind;
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
@@ -4570,7 +4570,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         inner.keys.keep_only(&open);
     }
     let reading_engine = inner.panes.reading_engine(&inner.engine);
-    let note = model::NoteSources {
+    let note = recto_app::NoteSources {
         open_failure: lock(&inner.open_failure).clone(),
         save_failed: inner.saver.has_failed(),
         problem,
@@ -4579,14 +4579,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         engine: reading_engine.note(),
     }
     .note();
-    let selection_notice = model::SelectionSources {
-        copy: reading_engine.selection_notice().map(|notice| model::CopyNotice {
+    let selection_notice = recto_app::SelectionSources {
+        copy: reading_engine.selection_notice().map(|notice| recto_app::CopyNotice {
             text: notice.text,
             offers_copy_anyway: notice.offers_copy_anyway,
             fades: notice.fades,
         }),
-        printing: inner.printing.selection_notice(),
-        tool: inner.tool.selection_notice(),
+        printing: inner.printing.selection_notice().map(Into::into),
+        tool: inner.tool.selection_notice().map(Into::into),
         action: lock(&inner.action_notice).clone(),
         update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
     }
@@ -4598,25 +4598,31 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     } else {
         Vec::new()
     };
-    let reader = model::reader_view(
+    let model = recto_app::reader_view(
         &facts,
-        model::Surfaces {
+        recto_app::Surfaces {
             paper: look,
             note,
             selection_notice,
-            pane_views: model::pane_views(&facts.panes, active, comparing, &engine_notes),
+            pane_views: recto_app::pane_views(&facts.panes, active, comparing, &engine_notes),
             holding: lock(&inner.holding_tab).is_some(),
             first_pane_empty: synced.panes.first().is_none_or(|pane| pane.tab.is_none()),
             sidebar_width: lock(&inner.app).sidebar_width,
-            save,
-            save_problem: inner.save_ui.problem(),
+            save: recto_app::SaveFacts {
+                off: save.off,
+                note: save.note,
+                tooltip: save.tooltip,
+            },
             print_ready: inner.printing.has_ready(),
-            link_prompt: lock(&inner.link_prompt).clone(),
-            password_prompt,
         },
     );
+    // The sheets that ask something are the bridge's, and ride beside the model.
+    let mut reader = ReaderView::from(model);
+    reader.save_problem = inner.save_ui.problem();
+    reader.link_prompt = lock(&inner.link_prompt).clone();
+    reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
-    let model::SidebarParts {
+    let recto_app::SidebarParts {
         view: sidebar,
         tabs,
         contents,
@@ -4627,6 +4633,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
     published.recent_key = Some(facts.recent_key);
     let recent_changed = facts.recent.is_some_and(|recent| {
+        let recent: Vec<RecentFile> = recent.into_iter().map(RecentFile::from).collect();
         let changed = *published.recent != recent;
         if changed {
             published.recent = Arc::new(recent);

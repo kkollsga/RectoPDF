@@ -16,6 +16,7 @@ recto-platform = { path = "crates/recto-platform" }
 recto-core = { path = "crates/recto-core" }
 recto-sign = { path = "crates/recto-sign" }
 recto-session = { path = "crates/recto-session" }
+recto-app = { path = "crates/recto-app" }
 recto-agent = { path = "crates/recto-agent" }
 recto-control = { path = "crates/recto-control" }
 recto-proto = { path = "crates/recto-proto" }
