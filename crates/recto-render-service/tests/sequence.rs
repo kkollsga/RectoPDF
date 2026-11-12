@@ -558,10 +558,19 @@ fn an_idle_heavy_worker_lets_a_waiting_export_through_with_nobody_touching_it() 
     };
     let (mut holder, _a) = doc_with("fits_heavy", quick, &slot);
     done(holder.render_tile(&request(0), &surface()));
-    let (_cancel, thread, _b) = export_waiting_for(&slot, policy());
-    // `holder` isn't called again: the reaper ends it and frees the slot.
+    let limit = Duration::from_secs(30);
+    let began = std::time::Instant::now();
+    let (_cancel, thread, _b) = export_waiting_for(
+        &slot,
+        Policy {
+            export_slot_wait: limit,
+            ..policy()
+        },
+    );
+    // `holder` isn't called again: the reaper ends it and frees the slot, and that wakes the export, which doesn't wait out its limit.
     let (result, _) = thread.join().unwrap();
     assert!(result.is_ok(), "{result:?}");
+    assert!(began.elapsed() < limit / 2, "the export waited {:?} for a slot that was freed after about a second", began.elapsed());
     drop(holder);
 }
 
