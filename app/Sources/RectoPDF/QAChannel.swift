@@ -440,6 +440,14 @@ import QuartzCore
         let moved = #selector(NSResponder.mouseMoved(with:))
         let wheel = #selector(NSResponder.scrollWheel(with:))
         // These two aren't responders, so nothing but their own code answers these, and tracking areas call them by name. Going by a selector nothing answers would throw, and this would never answer.
+        // The corners' marks (window buttons, zoom, page number) are answered by the fader, which AppKit reaches by `mouseEntered:` and `mouseExited:`.
+        let chrome = controller.chrome
+        found["chrome_hover_in"] = chrome.responds(to: Selector(("mouseEntered:")))
+        found["chrome_hover_out"] = chrome.responds(to: Selector(("mouseExited:")))
+        found["chrome_areas_are_on_the_window"] = chrome.areasAreOn(controller.root)
+        // The top left area covers the window's buttons and the sidebar's button, so a pointer going to them is found.
+        let corner = chrome.watchedCorners["top-left"] ?? .zero
+        found["top_left_area_covers_the_buttons"] = (controller.windowButtonFrames(in: controller.root) + [controller.sidebarButton.frame]).allSatisfy { corner.contains($0) }
         let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved)]
         for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
         guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }

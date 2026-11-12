@@ -6,6 +6,7 @@ app.contents.thumb.accessibility.value Where the list is, as VoiceOver hears it,
 app.contents.thumb.thumb_top Where the thumb is follows the contents' scroll, which is carried; the thumb's own number can differ by a fraction of a point as the table lays out.
 app.copy_notice A line about a copy, which fades. A copy is over by then, or a hand-off waits for it.
 app.pages.page_frames_landscape Page layers shown wider than tall, counted over the page layers, which differ as those do.
+app.pages.page_gutters The room beside each page layer shown, over the page layers, which differ as those do.
 app.pages.page_layers The same, as the app has them.
 app.pages.page_turns How each page layer is turned: as many as there are page layers, which differ as those do.
 app.pages.pointer_steps Its own pointer moves, counted from its own start.

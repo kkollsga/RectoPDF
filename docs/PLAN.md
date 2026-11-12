@@ -394,8 +394,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Bugs from the owner, 2026-11-12 (fixed alongside phase R, each with its test)
 
-- [ ] **Window controls with the sidebar hidden.** Owner: "when sidebar is hidden the traffic light buttons and sidebar toggle doesn't appear at all, they should appear when hovering over the the left corner." The 2026-11-08 rule (hide, then show on hover) only half works: they hide and never come back.
-- [ ] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
+- [x] **Window controls with the sidebar hidden.** Owner: "when sidebar is hidden the traffic light buttons and sidebar toggle doesn't appear at all, they should appear when hovering over the the left corner." The 2026-11-08 rule (hide, then show on hover) only half works: they hide and never come back.
+- [x] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
 
 ## Phase R: Restructuring, after the first release and before any other new feature
 
