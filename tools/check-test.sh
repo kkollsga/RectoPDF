@@ -85,8 +85,12 @@ echo "gh $*" >> "$CALLS.gh"
 [ -z "${STUB_GH_HANG:-}" ] || exec sleep 30
 [ -z "${STUB_GH_FAIL:-}" ] || exit 1
 case "$*" in
-  "run list"*) printf '%s\n' "${STUB_GH_RUNS:-[]}" ;;
+  "run list"*) if [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
+  # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
+  "run view"*"--json jobs"*"steps"*) printf "${STUB_GH_JOBS:-check (core)\tsuccess\t15\t0\t1\ncheck (lifecycle)\tfailure\t15\t1\t2\n}" ;;
   "run view"*"--json jobs"*) echo "check (lifecycle)" ;;
+  "run rerun"*) touch "$CALLS.gh-rerun"; exit "${STUB_GH_RERUN_EXIT:-0}" ;;
+  "api"*"annotations"*) echo "The job was not acquired by Runner of type hosted even after multiple attempts" ;;
   "run view"*"--log-failed"*) printf 'check (lifecycle)\tFull check, this part\t2026-11-12T11:50:03Z \033[31;1m        FAIL\033[0m [   8.3s] (2/2) recto-cli::registrations no_copy\ncheck (lifecycle)\tFull check, this part\t2026-11-12T11:50:04Z check:   recto-cli::registrations no_copy      failed 3 of 5\n' ;;
   "api"*) echo "check-logs-lifecycle-1 4096" ;;
 esac
@@ -1055,6 +1059,33 @@ out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH
 check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"
 out=$(PUSH_MAIN_GH=/nonexistent/gh tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a watch with no gh says so at once" "2 yes" "$rc $(printf '%s' "$out" | grep -q "gh isn't installed" && echo yes)"
+# Failure (coordinator, 2026-11-12, run 43248252599): a run whose macOS jobs never got a runner, cancelled after 15 minutes, ends as `failure` with no test
+# run, and was read as red; or as green. It never ran: neither, said plainly, run again once, and the push guard isn't held by it.
+never_jobs='check (window)\tcancelled\t0\t0\t3\ncheck (core)\tcancelled\t0\t0\t4\ncheck (lifecycle)\tcancelled\t0\t0\t5\nsandbox (macos-15)\tsuccess\t17\t0\t6\n'
+rm -f "$CALLS.gh-rerun"
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 16 "$pushed")" STUB_GH_RUNS_AFTER="$(run_of success 16 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "a run that never ran is said to have never run" "CI NEVER RAN on main $(printf '%s' "$pushed" | cut -c1-12) (failure, but no test ran): https://ci/16" "$out"
+has "with each job and GitHub's annotation" "check (window) (cancelled, 0 steps: The job was not acquired by Runner of type hosted even after multiple attempts)" "$out"
+check "it's run again once, and the watch follows it to its end" "0 yes yes" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes) $(printf '%s' "$out" | grep -q "CI is green on main" && echo yes)"
+check "and it's never kept as a failure" "no" "$(grep -q $'\t16\tfailure\t' .git/recto-ci-main && echo yes || echo no)"
+rm -f "$CALLS.gh-rerun"
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 17 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "never running twice ends the watch with 2 and says how to go on" "2 yes" "$rc $(printf '%s' "$out" | grep -q "gh run rerun 17 --failed" && echo yes)"
+rm -f "$CALLS.gh-rerun"
+out=$(PUSH_MAIN_RERUN=0 STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 18 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "with PUSH_MAIN_RERUN=0 it only offers the rerun" "2 no" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes || echo no)"
+out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t15\t1\t2\n' STUB_GH_RUNS="$(run_of failure 19 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a run where a part ran and failed is red, not rerun" "1 no" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes || echo no)"
+out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t9\t1\t2\n' STUB_GH_RUNS="$(run_of timed_out 20 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "and so is one whose part was cut off mid-step (a hang to the job's limit)" "1" "$rc"
+git checkout -q main
+commit_code after-never
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 21 "$pushed")" full --why "never ran"); rc=$?
+check "on main, a run that never ran doesn't hold the stamp" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "and the check says it's neither red nor green" "main's CI never ran on $(printf '%s' "$pushed" | cut -c1-12) (https://ci/21): no part got a runner or ran a step, so it's neither red nor green" "$out"
+commit_code after-real-red
+out=$(STUB_GH_RUNS="$(run_of failure 22 "$pushed")" full --why "real red"); rc=$?
+check "while a run whose part failed still does" "4" "$rc"
 
 # Failure (PLAN R0.7d): a CI-like run isn't CI's profile, concurrency or limits, holds the build to the limits too, runs the slow stage CI doesn't, counts
 # as a pass for the push guard, or doesn't say what it can't give; or a test filter's rerun can't be repeated to give its rate here.

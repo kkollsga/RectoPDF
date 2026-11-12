@@ -4,7 +4,7 @@
 #
 #   tools/push-main.sh                 git push origin main (the pre-push hook still decides), then watch the pushed commit's CI run
 #   tools/push-main.sh --watch [sha]   watch a commit's run on main (default: origin/main)
-#   tools/push-main.sh --status        one line on the last pushed main commit's CI, for tools/check.sh: exit 0 green, running or marked known, 1 red, 2 unknown
+#   tools/push-main.sh --status        one line on the last pushed main commit's CI, for tools/check.sh: exit 0 green, running or marked known, 1 red, 2 unknown, 3 never ran
 #   tools/push-main.sh --known <sha> --until YYYY-MM-DD --why "what is known"
 #                                      marks that commit's red CI as known until the date, at most 7 days ahead, so `check.sh --full` on main stamps again
 #
@@ -75,6 +75,24 @@ known_for() {
   return 1
 }
 
+# How a finished run that didn't pass ended: `failed` when one of its parts ran a step that failed or was cut off (cancelled, timed out), `never` when
+# none did: its jobs got no runner, or no step (run 43248252599, 2026-11-12: three macos-26 jobs never acquired a runner in 15 minutes and were
+# cancelled, and the aggregate `check` failed for it). The aggregate job is left out, as it fails whenever a part didn't pass, and so is the runner's own
+# `Set up job`. When gh can't say, `failed`, the safe side. Also prints, after a tab, the jobs that never ran with GitHub's annotation for each.
+run_outcome() {
+  local jobs rc=0 bad never="" name conclusion steps failed jid note
+  jobs=$(gh_bounded run view "$1" --json jobs --jq '.jobs[] | select(.name != "check") | "\(.name)\t\(.conclusion)\t\(.steps | length)\t\([.steps[] | select(.name != "Set up job") | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] | length)\t\(.databaseId)"') || rc=$?
+  [ "$rc" = 0 ] || { echo failed; return 0; }
+  bad=$(printf '%s\n' "$jobs" | awk -F'\t' '$4 > 0' | head -1)
+  if [ -n "$bad" ]; then echo failed; return 0; fi
+  while IFS=$'\t' read -r name conclusion steps failed jid; do
+    [ -n "$name" ] && [ "$conclusion" != success ] || continue
+    note=$(gh_bounded api "repos/{owner}/{repo}/check-runs/$jid/annotations" --jq '.[0].message // empty' 2>/dev/null | head -1 || true)
+    never="$never${never:+; }$name ($conclusion, $steps steps${note:+: $note})"
+  done <<< "$jobs"
+  printf 'never\t%s\n' "${never:-no job of it failed}"
+}
+
 # The last pushed main commit's CI: the newest run on main that wasn't cancelled (a newer push cancels an older run) and whose commit is origin/main or
 # in its history. Prints `<state> <sha> <run id> <url>`, state one of green, red, running, none. Fails with gh's code when it can't be read.
 last_main_run() {
@@ -89,7 +107,11 @@ last_main_run() {
     git merge-base --is-ancestor "$sha" "$tip" 2>/dev/null || continue
     if [ "$status" != completed ]; then echo "running $sha $(field "$line" databaseId) $(field "$line" url)"
     elif [ "$conclusion" = success ]; then echo "green $sha $(field "$line" databaseId) $(field "$line" url)"
-    else echo "red $sha $(field "$line" databaseId) $(field "$line" url)"
+    else
+      case "$(run_outcome "$(field "$line" databaseId)" | cut -f1)" in
+        never) echo "never $sha $(field "$line" databaseId) $(field "$line" url)" ;;
+        *) echo "red $sha $(field "$line" databaseId) $(field "$line" url)" ;;
+      esac
     fi
     return 0
   done < <(printf '%s' "$runs" | objects)
@@ -105,6 +127,10 @@ status() {
     green) echo "push-main: main's CI is green on $(printf '%s' "$sha" | cut -c1-12) ($url)." ;;
     running) echo "push-main: main's CI is still running on $(printf '%s' "$sha" | cut -c1-12) ($url)." ;;
     none) echo "push-main: no finished CI run on main's pushed commits to go by." ;;
+    never)
+      echo "push-main: main's CI never ran on $(printf '%s' "$sha" | cut -c1-12) ($url): no part got a runner or ran a step, so it's neither red nor green. tools/push-main.sh --watch $(printf '%s' "$sha" | cut -c1-12) runs it again once."
+      return 3
+      ;;
     red)
       if mark=$(known_for "$sha"); then
         echo "push-main: main's CI is red on $(printf '%s' "$sha" | cut -c1-12) ($url), marked known until $(printf '%s' "$mark" | cut -f2): $(printf '%s' "$mark" | cut -f3)."
@@ -146,11 +172,15 @@ report_failure() {
 }
 
 watch() {
-  local sha=$1 began rc line id url status conclusion
-  began=$(date +%s)
-  sha=$(git rev-parse "$sha") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
+  sha=$(git rev-parse "$1") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
+  began=$(date +%s) reruns=0
   echo "push-main: watching CI on main for $(printf '%s' "$sha" | cut -c1-12), up to $((LIMIT / 60)) min."
-  id=""
+  watch_loop
+}
+
+# Follows $sha's run to its end, and says how it ended. Shares sha, began and reruns with `watch`.
+watch_loop() {
+  local rc line id="" url="" status conclusion
   while :; do
     rc=0
     line=$(gh_bounded run list --workflow "$WORKFLOW" --branch main --commit "$sha" -L 1 --json databaseId,status,conclusion,url | objects | head -1) || rc=$?
@@ -172,11 +202,34 @@ watch() {
     fi
     sleep "$POLL"
   done
-  printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" "$conclusion" "$(($(date +%s) - began))" >> "$results"
   if [ "$conclusion" = success ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" success "$(($(date +%s) - began))" >> "$results"
     echo "push-main: CI is green on main $(printf '%s' "$sha" | cut -c1-12): $url"
     return 0
   fi
+  local outcome
+  outcome=$(run_outcome "$id")
+  if [ "$(printf '%s' "$outcome" | cut -f1)" = never ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" never-ran "$(($(date +%s) - began))" >> "$results"
+    echo "push-main: CI NEVER RAN on main $(printf '%s' "$sha" | cut -c1-12) ($conclusion, but no test ran): $url"
+    echo "push-main:   $(printf '%s' "$outcome" | cut -f2-)"
+    echo "push-main: that's GitHub's runners, not the code: main is neither red nor green until a run completes, and check.sh --full on main says so but stamps."
+    if [ "$reruns" -ge 1 ] || [ "${PUSH_MAIN_RERUN:-1}" = 0 ]; then
+      echo "push-main: run it again: gh run rerun $id --failed, then tools/push-main.sh --watch $(printf '%s' "$sha" | cut -c1-12)." >&2
+      return 2
+    fi
+    rc=0
+    gh_bounded run rerun "$id" --failed > /dev/null || rc=$?
+    if [ "$rc" != 0 ]; then
+      echo "push-main: the rerun was refused ($(gh_trouble "$rc")): gh run rerun $id --failed, then tools/push-main.sh --watch $(printf '%s' "$sha" | cut -c1-12)." >&2
+      return 2
+    fi
+    reruns=1
+    echo "push-main: ran its failed jobs again, once (gh run rerun $id --failed); watching again."
+    watch_loop
+    return $?
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" "$conclusion" "$(($(date +%s) - began))" >> "$results"
   echo "push-main: CI is RED on main $(printf '%s' "$sha" | cut -c1-12) ($conclusion): $url"
   report_failure "$id"
   echo "push-main: until it's green or marked known (tools/push-main.sh --known $(printf '%s' "$sha" | cut -c1-12) --until <date> --why \"...\"), tools/check.sh --full on main won't stamp a commit for the push guard."

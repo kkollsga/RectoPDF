@@ -123,6 +123,7 @@ main_ci_allows_stamp() {
       } >&2
       return 1
       ;;
+    3) echo "check: warning: $said The pass is stamped: a run that never ran says nothing of the code." >&2 ;;
     *) echo "check: warning: $said The pass is stamped without knowing it." >&2 ;;
   esac
 }
