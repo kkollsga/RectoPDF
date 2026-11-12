@@ -37,4 +37,5 @@ serde_json.workspace = true
 uniffi = { version = "0.31", default-features = false }
 
 [dev-dependencies]
+recto-app = { workspace = true, features = ["testkit"] }
 recto-testpdf.workspace = true

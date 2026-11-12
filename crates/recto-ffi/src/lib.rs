@@ -3651,10 +3651,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 if !inner.restored.load(Ordering::SeqCst) {
                     match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.started.elapsed()) {
                         // The state hasn't come. The window goes up without it, and when it does come it's taken in.
-                        updates::Patience::ShowNow => {
-                            inner.shown_without_state.store(true, Ordering::SeqCst);
-                            inner.listener.restore_ready();
-                        }
+                        updates::Patience::ShowNow => updates::show_without_state(&inner.shown_without_state, &*inner.listener),
                         updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
                     }
                 }

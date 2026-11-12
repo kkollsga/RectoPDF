@@ -50,8 +50,7 @@ pub trait Listener: Send + Sync {
     ///
     /// From the session thread. When the state comes in time, once, after what came of it is published. When the patience runs out first (`restore_patience_over`,
     /// with no update to wait for), once then, and again when the state does come: the host makes its window again from it. In a slow run the second comes later, from a
-    /// timer's thread. **Today:** if the thread that waits for an update's patience can't be started, it's said at once without marking the window as up without the
-    /// state, so the state's coming later is a second call that isn't held back in a slow run.
+    /// timer's thread. The window's marked as up without the state before the first of the two.
     fn restore_ready(&self);
 
     /// What to do about a quit the host asked for (`quit_requested`), once everything's been written or the wait for it is over.
