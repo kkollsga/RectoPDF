@@ -25,12 +25,13 @@ cat > "$X/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
   "nextest --version") echo "nextest ${STUB_NEXTEST:-1}"; exit 0 ;;
-  metadata*) echo '{"name":"alpha"},{"name":"beta"}'; exit 0 ;;
+  # beta depends on alpha, gamma on nothing: a change to alpha affects beta too.
+  metadata*) echo '{"packages":[{"name":"alpha","dependencies":[]},{"name":"beta","dependencies":[{"name":"alpha","path":"/x"},{"name":"serde","path":null}]},{"name":"gamma","dependencies":[]}]}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
-if [ -n "${STUB_DURING:-}" ] && [[ "$*" == *clippy* ]]; then bash -c "$STUB_DURING"; fi
+if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
 if [ -n "${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then exit "${STUB_EXIT:-100}"; fi
 STUB
 cat > "$X/bin/rustup" <<'STUB'
@@ -48,15 +49,27 @@ export PATH="$X/bin:$PATH" CALLS="$X/calls"
 git init -q --bare -b main "$X/origin.git"
 git init -q -b main "$X/repo"
 cd "$X/repo" || exit 1
-mkdir -p tools/sysguard tools/hooks app crates/alpha/src crates/beta/src docs
+mkdir -p tools/sysguard tools/hooks app crates/alpha/src crates/beta/src crates/gamma/src docs
 cp "$SOURCE/tools/check.sh" tools/check.sh
+# The real rules, with this repository's own guards and tiers: alpha has a guard, gamma is what the lifecycle tier is about, beta is a window crate.
+cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
+cat >> tools/check-scope.sh <<'SCOPE'
+GUARD_TESTS='test(~guard_one) | test(~stale::)'
+APP_BINARIES=''
+LIFECYCLE_TESTS='test(~life_test)'
+WINDOW_TESTS="test(~window_test) & !($LIFECYCLE_TESTS)"
+WINDOW_CRATES='beta'
+LIFECYCLE_PATHS='^app/|^crates/gamma/|^crates/beta/src/record\.rs$'
+SCOPE
 cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh
 cp "$SOURCE/tools/hooks/pre-push" tools/hooks/pre-push
 printf '#!/usr/bin/env bash\n' > tools/pdfium.sh
 printf '#!/usr/bin/env bash\necho app-build >> "$CALLS"\n[ "${STUB_FAIL:-}" != app-build ]\n' > app/build.sh
 chmod +x tools/pdfium.sh app/build.sh
-echo one > crates/alpha/src/lib.rs
+printf 'mod stale;\nfn guard_one() {}\n' > crates/alpha/src/lib.rs
 echo one > crates/beta/src/lib.rs
+echo "fn life_test() {}" > crates/gamma/src/lib.rs
+echo "fn window_test() {}" >> crates/beta/src/lib.rs
 echo notes > docs/notes.md
 git add . && git commit -qm start
 git remote add origin "$X/origin.git"
@@ -64,7 +77,9 @@ git push -q origin main
 LEDGER=.git/recto-full-runs
 PASSES=.git/recto-passes
 CHECKED=.git/recto-checked
-full() { tools/check.sh --full "$@" 2>&1; }
+# A full run of everything, as CI and main have it, which is what most cases here are about. Selection has its own cases further down: sel_full.
+full() { CHECK_ALL=1 tools/check.sh --full "$@" 2>&1; }
+sel_full() { tools/check.sh --full "$@" 2>&1; }
 ran() { local n; n=$(wc -l < "$CALLS" | tr -d ' '); : > "$CALLS"; echo "$n"; }
 last_ledger_field() { tail -1 "$LEDGER" | cut -f"$1"; }
 runs_in_ledger() { if [ -f "$LEDGER" ]; then wc -l < "$LEDGER" | tr -d ' '; else echo 0; fi; }
@@ -220,7 +235,8 @@ commit_code clippy-fails
 out=$(STUB_FAIL=clippy STUB_EXIT=101 full); rc=$?
 check "the failure's exit code comes through" "101" "$rc"
 check "it stops at the first failing stage, after the layout's two" "3" "$(ran)"
-check "the ledger names the stage" "fail:clippy" "$(last_ledger_field 4)"
+check "a clippy error is the compile gate's: no run is in the ledger" "0" "$(runs_in_ledger)"
+has "and it says no test was queued" "no test was queued" "$out"
 check "a failure isn't remembered as a pass" "no-passes" "$([ -s "$PASSES" ] && echo has-passes || echo no-passes)"
 check "nor given to the guard" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
 
@@ -229,7 +245,7 @@ before=$(runs_in_ledger)
 out=$(STUB_FAIL=clippy STUB_EXIT=101 full); rc=$?
 check "the queue refuses the same failure, with its exit" "101" "$rc"
 has "and shows why" "heavy: refused" "$out"
-check "and no step ran" "0" "$(ran)"
+check "and nothing ran but the layout's two checks, which build nothing" "2" "$(ran)"
 check "and it costs no budget" "$before" "$(runs_in_ledger)"
 
 # Failure (review V1): code laid out by hand reaches clippy and the tests, minutes spent before the cheapest check says no.
@@ -237,7 +253,8 @@ fresh_ledger
 commit_code fmt-fails
 out=$(STUB_FAIL="fmt --all --check" STUB_EXIT=1 full); rc=$?
 check "a layout off stops the run first" "1 1" "$rc $(ran)"
-check "and the ledger says so" "fail:fmt" "$(last_ledger_field 4)"
+check "and costs no run: it is found before the queue" "0" "$(runs_in_ledger)"
+has "and says nothing was queued" "nothing was queued" "$out"
 STUB_FAIL="fmt --all --check" STUB_EXIT=1 tools/check.sh --quick > /dev/null 2>&1
 check "the quick check has it too" "1" "$?"
 : > "$CALLS"
@@ -290,13 +307,13 @@ fresh_ledger
 commit_code windows-warns
 out=$(STUB_FAIL="x86_64-pc-windows-gnu" STUB_EXIT=101 full); rc=$?
 check "and a warning there fails the full run" "101" "$rc"
-check "with the ledger naming the stage" "fail:windows" "$(last_ledger_field 4)"
+check "at the compile gate, with no run counted" "0" "$(runs_in_ledger)"
 : > "$CALLS"
 
 # Failure: a job stopped from outside held against the branch.
 fresh_ledger
 commit_code stopped-base
-STUB_FAIL=clippy STUB_EXIT=143 full > /dev/null
+STUB_FAIL="-p recto-render-service" STUB_EXIT=143 full > /dev/null
 : > "$CALLS"
 check "a run stopped from outside is in the ledger as stopped" "stopped" "$(last_ledger_field 4)"
 counted=$(tools/check.sh --runs | sed -n 's/^work: \([0-9]*\) of.*/\1/p')
@@ -320,11 +337,11 @@ has "the cheaper options" "tools/check.sh --failed" "$out"
 has "and exactly what to do" 'tools/check.sh --full --why "what this run decides"' "$out"
 
 # Failure: a speed bump that a reason can't get past, or a reason lost.
-out=$(tools/check.sh --full --why $'  decides\tthe race\nis gone ' 2>&1); rc=$?
+out=$(CHECK_ALL=1 tools/check.sh --full --why $'  decides\tthe race\nis gone ' 2>&1); rc=$?
 check "with a reason it runs" "0" "$rc"
 check "and really does" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
 check "the reason is in the ledger, on one line" "decides the race is gone" "$(last_ledger_field 6)"
-check "and the ledger line has six fields" "6" "$(tail -1 "$LEDGER" | awk -F'\t' '{print NF}')"
+check "and the ledger line has seven fields, the last saying everything ran" "7 all" "$(tail -1 "$LEDGER" | awk -F'\t' '{print NF}') $(last_ledger_field 7)"
 out=$(tools/check.sh --full --why "   " 2>&1); rc=$?
 check "an empty reason isn't a reason" "2" "$rc"
 out=$(tools/check.sh --quick --why "no" 2>&1); rc=$?
@@ -440,10 +457,10 @@ check "with nothing run" "0" "$(ran)"
 fresh_ledger
 git checkout -q main
 git checkout -qb every-crate
-echo every >> crates/alpha/src/lib.rs && echo every >> crates/beta/src/lib.rs && git add . && git commit -qm every-crate
+echo every >> crates/alpha/src/lib.rs && echo every >> crates/beta/src/lib.rs && echo every >> crates/gamma/src/lib.rs && git add . && git commit -qm every-crate
 out=$(full); rc=$?
 cp "$CALLS" "$X/every-calls"
-check "a change to every crate runs them all as changed, and passes" "0 yes no" "$rc $(grep -q 'nextest run --locked --no-fail-fast -p alpha -p beta' "$X/every-calls" && echo yes || echo no) $(grep -q 'no-tests=pass' "$X/every-calls" && echo yes || echo no)"
+check "a change to every crate runs them all as changed, and passes" "0 yes no" "$rc $(grep -q 'nextest run --locked --no-fail-fast -p alpha -p beta -p gamma' "$X/every-calls" && echo yes || echo no) $(grep -q 'nextest run --locked --no-fail-fast --no-tests=pass' "$X/every-calls" && echo yes || echo no)"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -5
 : > "$CALLS"
 git checkout -q main
@@ -464,6 +481,171 @@ check "with nothing run slow" "0" "$( [ -f "$CALLS.slow" ] && wc -l < "$CALLS.sl
 has "and the app tests still run" "-p recto-cli --test app --test restore --test compare --test long_session" "$(cat "$CALLS")"
 : > "$CALLS"
 rm -f "$CALLS.slow"
+
+
+# ---- R0.1: the quick check ------------------------------------------------------------------------------------------------------------------------------
+# Failure: `--quick` looked only at uncommitted files, so after a commit it fell back to the whole workspace (or, with nothing changed, tested nothing).
+# It takes what changed since the branch left main, committed or not, and untracked files too.
+quick() { : > "$CALLS"; tools/check.sh --quick > "$X/quick.out" 2>&1; echo $?; cp "$CALLS" "$X/quick.calls"; : > "$CALLS"; }
+quick_tests() { grep '^nextest run' "$X/quick.calls" || true; }
+git checkout -q main
+git checkout -qb quick-1
+echo q >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-committed
+check "a committed change is enough for the quick check" "0" "$(quick)"
+has "it tests the crate changed in the commit" "package(=gamma)" "$(quick_tests)"
+check "and not the whole workspace" "0" "$(quick_tests | grep -c -- '^nextest run --locked --no-fail-fast --no-tests=pass --workspace$')"
+echo more >> crates/beta/src/lib.rs
+quick > /dev/null
+has "and what is uncommitted on top" "package(=beta)" "$(quick_tests)"
+echo new > crates/alpha/src/new.rs
+quick > /dev/null
+has "and an untracked file" "package(=alpha)" "$(quick_tests)"
+rm crates/alpha/src/new.rs; git checkout -q crates/beta/src/lib.rs
+# Failure: a registration list broken by a change in another crate fails only minutes later, in a full run: the guards run whichever crate changed.
+quick > /dev/null
+has "the registration guards run whichever crate changed" "test(~guard_one)" "$(quick_tests)"
+has "all of them" "test(~stale::)" "$(quick_tests)"
+check "and not the other crates' tests" "0" "$(quick_tests | grep -c 'package(=alpha)')"
+git checkout -q main
+git checkout -qb quick-2
+quick > /dev/null
+has "with nothing changed it runs the guards alone" "-E test(~guard_one)" "$(quick_tests)"
+# A change outside crates/ and app/ can affect anything, as before.
+echo t > tools/note.txt && git add . && git commit -qm tools-change
+quick > /dev/null
+check "a change to the tools runs every test" "1" "$(quick_tests | grep -c -- '--workspace$')"
+git checkout -q main
+
+# Failure: a guard renamed or moved, so the filter names nothing and the guard quietly stops running. It stops the check before anything is queued, and says which.
+git checkout -qb quick-3
+sed -i '' 's/fn guard_one/fn guard_renamed/' crates/alpha/src/lib.rs
+check "a guard that no longer exists stops the quick check" "2" "$(quick)"
+has "naming it" "test guard_one" "$(cat "$X/quick.out")"
+check "before any step ran" "0" "$(wc -l < "$X/quick.calls" | tr -d ' ')"
+git checkout -q crates/alpha/src/lib.rs
+sed -i '' 's/fn life_test/fn life_renamed/' crates/gamma/src/lib.rs
+out=$(full); rc=$?
+check "a test a tier names that no longer exists stops a full run" "2" "$rc"
+has "naming it" "test life_test" "$out"
+git checkout -q crates/gamma/src/lib.rs
+sed -i '' 's/^mod stale;//' crates/alpha/src/lib.rs
+quick > /dev/null
+has "a guard module that no longer exists is found too" "module stale::" "$(cat "$X/quick.out")"
+git checkout -q crates/alpha/src/lib.rs
+# A test file that drives the app and is named in no tier would run in none.
+mkdir -p crates/recto-cli/tests
+echo 'fn x() { app_path(); }' > crates/recto-cli/tests/newbie.rs
+has "a test file that starts the app and is in no tier is found" "tests/newbie.rs" "$(bash -c '. tools/check-scope.sh; scope_names_missing .')"
+rm -rf crates/recto-cli
+git checkout -q main
+# And this repository's real names exist, now, so the rule above isn't only proved on a stub.
+check "every name in the real tools/check-scope.sh exists" "" "$(cd "$SOURCE" && bash -c '. tools/check-scope.sh; scope_names_missing .')"
+
+# Failure: a compile error found by a test job, minutes into a queue wait (46 of 156 failed jobs in 30 hours). Clippy and the Windows check are a job of their
+# own, in front; when they fail no test is queued.
+git checkout -qb gate-1
+echo g >> crates/gamma/src/lib.rs && git add . && git commit -qm gate-change
+out=$(STUB_FAIL=clippy STUB_EXIT=101 tools/check.sh --quick 2>&1); rc=$?
+check "a clippy error fails the quick check" "101" "$rc"
+check "and no test was started" "0" "$(grep -c '^nextest' "$CALLS")"
+check "nor the workers built" "0" "$(grep -c '^build' "$CALLS")"
+: > "$CALLS"
+git checkout -q main
+
+# ---- R0.2: --full by what changed -----------------------------------------------------------------------------------------------------------------------
+# Failure: a change to one crate ran every test and every app test, 514 s on average. The selection:
+branch_with() { git checkout -q main; git checkout -qb "$1"; fresh_ledger; }
+sel() { : > "$CALLS"; rm -f "$CALLS.slow"; sel_full "$@" > "$X/sel.out"; echo $?; cp "$CALLS" "$X/sel.calls"; : > "$CALLS"; }
+sel_has() { grep -c -- "$1" "$X/sel.calls" | tr -d ' '; }
+branch_with sel-window
+echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-only
+check "a change to a window crate passes selectively" "0" "$(sel)"
+has "the start says what was selected" "selective" "$(cat "$X/sel.out")"
+has "and what was skipped" "skipped: lifecycle tier" "$(cat "$X/sel.out")"
+check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare -j 4 -E test(~window_test)')"
+check "the lifecycle tier doesn't" "0" "$(sel_has 'long_session')"
+check "nor the stage that checks what is left registered" "0" "$(sel_has '--test registrations')"
+check "the slow stage runs only what is in the window tier" "1" "$(grep -c 'window_test' "$CALLS.slow" | tr -d ' ')"
+check "its crate's tests run, and the guards" "1" "$(sel_has 'nextest run --locked --no-fail-fast -p beta')"
+check "the other crates' tests don't (alpha, gamma)" "0" "$(sel_has 'package(=gamma)')"
+check "the app is built, for the window tier" "1" "$(sel_has '^app-build')"
+check "the run's ledger line says it was selective" "selective" "$(last_ledger_field 7)"
+check "the push guard is not given a selective pass" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
+check "the memory has it, for this selection" "1" "$(grep -c 'sel:' "$PASSES")"
+
+# Failure: a selective pass taken for a pass of everything, so main is pushed on tests that were never run.
+: > "$CALLS"
+out=$(sel_full); rc=$?
+check "the same code and selection again runs nothing" "0 0" "$rc $(ran)"
+has "and says it was not a pass of everything" "doesn't let \`main\` be pushed" "$out"
+check "and still gives the guard nothing" "no-stamp" "$([ -s "$CHECKED" ] && echo has-stamp || echo no-stamp)"
+out=$(CHECK_ALL=1 tools/check.sh --full --why "everything, after a selective pass" 2>&1); rc=$?
+check "CHECK_ALL=1 runs everything on the same code" "0 true" "$rc $([ "$(ran)" -gt 0 ] && echo true || echo false)"
+check "and that pass is stamped for the guard" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
+check "with the ledger saying everything ran" "all" "$(last_ledger_field 7)"
+check "and everything's pass answers a selective run, free" "0 0" "$(sel >/dev/null; echo 0) $(wc -l < "$X/sel.calls" | tr -d ' ')"
+# A pass of a smaller selection isn't a pass of a larger one: the same code with more changed.
+branch_with sel-memory
+echo m1 >> crates/gamma/src/lib.rs && git add . && git commit -qm m1
+sel > /dev/null
+echo m2 >> crates/beta/src/lib.rs && git add . && git commit -qm m2
+check "another selection on the same branch runs for real" "true" "$(sel --why selection > /dev/null; [ "$(wc -l < "$X/sel.calls" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
+# Failure: main moved, so the same branch code is selected differently (its base changed), and the earlier pass was for another selection.
+check "a different base selects differently, so the old pass doesn't answer" "true" "$(CHECK_BASE=HEAD~1 sel --why base > /dev/null; [ "$(wc -l < "$X/sel.calls" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
+
+branch_with sel-lifecycle
+echo l >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-only
+check "a change to the lifecycle's crates passes" "0" "$(sel)"
+check "it runs the lifecycle tier" "1" "$(sel_has 'long_session -j 4 -E test(~life_test)')"
+check "and the stage that checks what is left registered" "1" "$(sel_has '--test registrations')"
+check "and not the window tier" "0" "$(sel_has 'window_test')"
+branch_with sel-dependent
+echo d >> crates/alpha/src/lib.rs && git add . && git commit -qm alpha-only
+sel > /dev/null
+check "a crate's dependents are tested with it" "1" "$(sel_has 'package(=beta)')"
+check "and a change two crates down reaches the window tier" "2" "$(sel_has 'window_test')"
+check "without the lifecycle tier" "0" "$(sel_has 'long_session')"
+branch_with sel-app
+echo a > app/x.swift && git add . && git commit -qm app-only
+sel > /dev/null
+check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "but no crate's tests, the guards only" "0" "$(sel_has 'package(=')"
+branch_with sel-tools
+echo t > tools/note.txt && git add . && git commit -qm tools
+sel > /dev/null
+has "a change to the tools says why it runs everything" "everything runs" "$(cat "$X/sel.out")"
+check "it runs every crate's tests" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
+check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "that pass is of everything, so the guard has it" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
+branch_with sel-docs
+echo d >> docs/notes.md && git add . && git commit -qm docs-only
+check "a change to documents only builds no app and starts none" "0 0 0" "$(sel) $(sel_has '^app-build') $(sel_has '-p recto-cli --test')"
+check "it runs only the cheap guards" "1" "$(sel_has 'nextest run.*--workspace -E test(~guard_one)')"
+branch_with sel-ci
+echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-ci
+: > "$CALLS"; rm -f "$CALLS.slow"
+CI=true sel_full > "$X/sel.out"; cp "$CALLS" "$X/sel.calls"
+has "on CI the same change runs everything" "CI runs everything" "$(cat "$X/sel.out")"
+check "every crate" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
+check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+# main runs everything, whatever changed since it: it is what gets pushed.
+git checkout -q main
+echo mm >> crates/beta/src/lib.rs && git add . && git commit -qm beta-on-main
+sel > /dev/null
+has "main runs everything too" "main runs everything" "$(cat "$X/sel.out")"
+check "and its pass is stamped" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
+
+# The push guard through a merge: a branch's selective pass doesn't let the same code go up as main.
+branch_with sel-merge
+echo sm >> crates/beta/src/lib.rs && git add . && git commit -qm sel-merge
+sel > /dev/null
+git checkout -q main
+git merge -q --no-ff --no-edit sel-merge
+check "a merge identical to a branch that passed selectively is not accepted by the push guard" "no" "$(hook_accepts)"
+out=$(sel_full); rc=$?
+check "main then runs everything, for real" "0 true" "$rc $([ "$(wc -l < "$CALLS" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
+: > "$CALLS"
+check "and then the push guard takes it" "yes" "$(hook_accepts)"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

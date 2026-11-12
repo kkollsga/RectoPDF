@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # check: the one local check, cheapest step first, stopping at the first failure.
 #
-#   tools/check.sh --quick    The layout (rustfmt), changed crates' tests, clippy for the workspace, a Windows compile check (while working)
+#   tools/check.sh --quick    The compile gate, then the tests of crates changed since the branch left main (and uncommitted) and the registration guards (while working)
 #   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
-#   tools/check.sh --full     Clippy, a Windows compile check, the tests of crates changed since main, every other test,
-#                             then the app built and driven in quiet runs (before handing back). A pass on a clean tree is what lets `main` be pushed.
+#   tools/check.sh --full     The compile gate, then the tests of what the change can affect (changed crates and their dependents, the guards) and the app
+#                             tiers it can affect, as tools/check-scope.sh says; everything on CI, on `main` and with CHECK_ALL=1 (before handing back).
+#                             Only a pass of everything lets `main` be pushed.
 #   tools/check.sh --full --why "what this run decides"    A branch gets two full runs. A third needs a stated reason, which goes in the ledger.
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #
@@ -13,12 +14,14 @@
 # nothing. Documents don't count as code, as in tools/hooks/pre-push. CHECK_AGAIN=1 runs it for real anyway. A dirty tree always runs and is never recorded.
 # docs/agent-instructions/worker-testing.md says which check answers which question.
 #
+# The compile gate is what runs first, before any test is queued: the layout (rustfmt, outside the queue, as it builds nothing), then clippy and the Windows
+# compile check as a quick job of their own. An error there costs seconds and no test job is ever queued for it, nor a full run counted.
 # The queue (tools/sysguard/heavy.sh) refuses to run a check again on code that hasn't changed since it failed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,10p' "$0"; exit 2; }
+usage() { sed -n '2,14p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
@@ -48,9 +51,10 @@ fi
 
 common_dir=$(git rev-parse --git-common-dir)
 checked="$common_dir/recto-checked"
-# fingerprint, commit, time: a line per pass on a clean tree.
+# fingerprint, commit, time, scope: a line per pass on a clean tree. Scope is `all` (a pass of everything), or `sel:` and a hash of the selection (tools/check-scope.sh).
+# A line without a scope is from before selection, and was a pass of everything.
 passes="$common_dir/recto-passes"
-# time, branch, commit, result, seconds, reason: a line per real --full run. Result is pass, fail:<stage>, or stopped, meaning from outside, which says nothing about the code.
+# time, branch, commit, result, seconds, reason, scope (all or selective): a line per real --full run. Result is pass, fail:<stage>, or stopped, meaning from outside, which says nothing about the code.
 ledger="$common_dir/recto-full-runs"
 BUDGET=2
 
@@ -105,10 +109,10 @@ counts_now() {
 # The ledger's lines that count against this branch now, oldest first. A run stopped from outside doesn't.
 counted_runs() {
   [ -f "$ledger" ] || return 0
-  local time run_branch commit result seconds reason
-  while IFS=$'\t' read -r time run_branch commit result seconds reason; do
+  local time run_branch commit result seconds reason scope
+  while IFS=$'\t' read -r time run_branch commit result seconds reason scope; do
     [ "$run_branch" = "$branch" ] && [ "$result" != stopped ] || continue
-    if counts_now "$commit"; then printf '  %s  %s  %s  %s s  %s\n' "$time" "$(printf '%s' "$commit" | cut -c1-12)" "$result" "$seconds" "$reason"; fi
+    if counts_now "$commit"; then printf '  %s  %s  %s  %s s  %s%s\n' "$time" "$(printf '%s' "$commit" | cut -c1-12)" "$result" "$seconds" "$reason" "${scope:+ ($scope)}"; fi
   done < "$ledger"
 }
 scope_words() {
@@ -139,12 +143,49 @@ crates_in() {
   members=$(cargo metadata --no-deps --format-version 1 --locked 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | sort -u)
   sed -n 's#^crates/\([^/]*\)/.*#\1#p' | sort -u | grep -Fxf <(echo "$members") || true
 }
+# What the rules in tools/check-scope.sh select and the names it relies on. A name no test has any more stops the check here, before anything is queued.
+# shellcheck source=tools/check-scope.sh
+. tools/check-scope.sh
+names_or_stop() {
+  local missing
+  missing=$(scope_names_missing .)
+  [ -z "$missing" ] || {
+    echo "check: tools/check-scope.sh names tests that aren't there any more (renamed or moved?). Fix the name there, or the tier, before anything runs:" >&2
+    printf '%s\n' "$missing" | sed 's/^/  /' >&2
+    exit 2
+  }
+}
+# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/ENGINEERING.md, "Slow mode"): whole-state comparisons across a quit and
+# updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
+# copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
+# that did (2026-11-11). Left out as covered here: quitting twice (every whole-state test here crosses a quit), a launch from a sleep file (the dormant
+# test wakes from one), the minimised update (its bug has a unit test, and two other updates are here).
+SLOW_TESTS='test(=everything_comes_back_after_a_quit) | test(=update::an_update_in_the_middle_of_things_changes_nothing) | test(=update::a_closed_window_stays_closed_across_an_update) | test(=update::a_new_version_that_keeps_ending_goes_back_by_itself) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=a_quit_during_a_stuck_read_still_writes) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=a_tab_left_alone_goes_dormant_and_wakes_from_its_file) | test(=tabs_just_opened_come_back_when_sleep_files_are_slow) | test(=find_in_the_sidebar_lists_steps_and_keeps_to_its_room) | test(=recto_acts_on_the_running_app_and_sees_what_it_does) | test(=the_sidebar_folds_switches_and_goes_to_contents) | test(=contents_fold_reveal_at_once_and_keep_a_thumb) | test(=a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app) | test(=a_search_in_the_app_gets_its_index) | test(=the_sidebar_offers_generated_contents_and_labels_them) | test(=the_watchdog_catches_a_stall_and_it_fails_the_script) | test(=quiet::a_quiet_run_stays_quiet_when_the_system_opens_it_again) | test(=slow::a_slow_run_waits_at_every_seam_it_passes) | test(=slow::a_quiet_run_with_no_switch_is_never_slow) | test(=slow::a_switch_that_cant_be_read_refuses_the_launch)'
+export SLOW_TESTS
+# How a run is shaped, set below from the mode and what changed, and read by `run`:
+#   tests_first    the crates whose tests go first (what changed is most likely to fail)
+#   other_mode     all: every other test; filter: the tests of other_filter; none
+#   app_mode       both, window, lifecycle or none: which tiers of tests that launch the app
 tests_first=""
+tests=()
+other_mode=none
+other_filter=""
+app_mode=none
+slow_filter=$SLOW_TESTS
 case "$mode" in
   --quick)
-    changed=$( { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | crates_in)
-    tests=()
-    if [ -n "$changed" ]; then for c in $changed; do tests+=(-p "$c"); done; else tests=(--workspace); fi
+    names_or_stop
+    select_scope --quick
+    if [ "$scope_all" = 1 ]; then
+      other_mode=all
+      tests=(--workspace)
+      echo "check: $scope_report Quick runs every test, as something outside crates/ and app/ changed."
+    else
+      other_mode=filter
+      other_filter="$GUARD_TESTS"
+      [ -z "$scope_changed" ] || other_filter="($(printf '%s\n' $scope_changed | packages_filter)) | $GUARD_TESTS"
+      echo "check: quick: the tests of ${scope_changed:-no crate} (changed since the branch left main, or uncommitted), and the registration guards."
+    fi
     ;;
   --corpus)
     # Every kind of search from the index and from the pages, over a folder of real PDFs. Slow, so not part of --full, which always runs a small version.
@@ -153,13 +194,22 @@ case "$mode" in
     RECTO_INDEX_ALL=1 exec tools/sysguard/heavy.sh cargo test --release --locked -p recto-cli --test index real_pages -- --nocapture
     ;;
   --full)
+    names_or_stop
+    select_scope --full
+    echo "$scope_report"
     if [ "${CHECK_AGAIN:-}" != 1 ] && tree_is_clean; then
-      known=$(grep "^$(code_fingerprint)"$'\t' "$passes" 2>/dev/null | tail -1 || true)
+      # A pass of everything counts for any scope; a selective one only for the same selection (a different change, or main having moved, may need other tests).
+      known=$(awk -F'\t' -v fp="$(code_fingerprint)" -v sc="$scope_key" '$1 == fp && ($4 == "" || $4 == "all" || $4 == sc) { line = $0 } END { print line }' "$passes" 2>/dev/null || true)
       if [ -n "$known" ]; then
         passed_commit=$(printf '%s' "$known" | cut -f2 | cut -c1-12)
         passed_at=$(printf '%s' "$known" | cut -f3)
-        stamp_checked
-        echo "check: this code already passed, on commit $passed_commit at $passed_at. Only documents, if anything, have changed since, so nothing ran and this commit counts as checked. CHECK_AGAIN=1 runs it for real."
+        known_scope=$(printf '%s' "$known" | cut -f4)
+        if [ -z "$known_scope" ] || [ "$known_scope" = all ]; then
+          stamp_checked
+          echo "check: this code already passed, on commit $passed_commit at $passed_at. Only documents, if anything, have changed since, so nothing ran and this commit counts as checked. CHECK_AGAIN=1 runs it for real."
+        else
+          echo "check: this code already passed the same selection, on commit $passed_commit at $passed_at, so nothing ran. That was not a pass of everything, so it doesn't let \`main\` be pushed: CHECK_ALL=1 runs everything."
+        fi
         exit 0
       fi
     fi
@@ -172,29 +222,43 @@ case "$mode" in
         printf '%s\n' "$counted"
         echo "A smaller question is usually cheaper:"
         echo "  tools/check.sh --failed     only the tests that failed last time"
-        echo "  tools/check.sh --quick      clippy, changed crates' tests, the Windows compile check"
+        echo "  tools/check.sh --quick      the compile gate, changed crates' tests, the registration guards"
         echo "  HEAVY_CLASS=quick tools/sysguard/heavy.sh cargo nextest run --locked -p <crate> -E 'test(=<name>)'     one named test"
         echo "If a whole run is what's needed, nothing stops it. Say what it decides, and it starts at once:"
         echo "  tools/check.sh --full --why \"what this run decides\""
       } >&2
       exit 3
     fi
-    tests=(--workspace)
     # What this work changed is what's most likely to fail, so it runs first, and the rest skip it.
-    base=$(git merge-base main HEAD 2>/dev/null || true)
-    if [ -n "$base" ]; then
-      changed=$( { git diff --name-only "$base" 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | crates_in)
-      for c in $changed; do
-        tests_first="$tests_first -p $c"
-        tests+=(--exclude "$c")
-      done
+    for c in $scope_changed; do tests_first="$tests_first -p $c"; done
+    if [ "$scope_all" = 1 ]; then
+      other_mode=all
+      app_mode=both
+      tests=(--workspace)
+      for c in $scope_changed; do tests+=(--exclude "$c"); done
       # Every crate changed, as a rustfmt pass does: the changed ones are all of them, and nothing's left for the rest. `--workspace` with every member
       # left out is an error, not an empty run.
       all=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
-      if [ -n "$changed" ] && [ "$changed" = "$all" ]; then
+      if [ -n "$scope_changed" ] && [ "$(printf '%s\n' $scope_changed | sort -u)" = "$all" ]; then
         tests=()
+        other_mode=none
+      fi
+    else
+      other_mode=filter
+      others=$(printf '%s\n' $scope_affected | grep -vFxf <(printf '%s\n' $scope_changed) || true)
+      other_filter="$GUARD_TESTS"
+      [ -z "$others" ] || other_filter="($(printf '%s\n' "$others" | packages_filter)) | $GUARD_TESTS"
+      if [ "$scope_window$scope_lifecycle" = 11 ]; then app_mode=both
+      elif [ "$scope_window" = 1 ]; then app_mode=window
+      elif [ "$scope_lifecycle" = 1 ]; then app_mode=lifecycle
       fi
     fi
+    # The slow stage's tests (SLOW_TESTS) that are in a tier this run covers.
+    slow_filter=$SLOW_TESTS
+    case "$app_mode" in
+      window) slow_filter="($SLOW_TESTS) & ($WINDOW_TESTS)" ;;
+      lifecycle) slow_filter="($SLOW_TESTS) & ($LIFECYCLE_TESTS)" ;;
+    esac
     ;;
   --failed)
     log=$(tools/sysguard/heavy.sh --last-failure) || exit 1
@@ -219,13 +283,6 @@ tracked_tree() {
   tracked_code
   git -c core.quotePath=false ls-files | grep -vE '^docs/|\.md$' | tr '\n' '\0' | xargs -0 stat -f '%Fm %z %i %N' 2>/dev/null || true
 }
-# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/ENGINEERING.md, "Slow mode"): whole-state comparisons across a quit and
-# updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
-# copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
-# that did (2026-11-11). Left out as covered here: quitting twice (every whole-state test here crosses a quit), a launch from a sleep file (the dormant
-# test wakes from one), the minimised update (its bug has a unit test, and two other updates are here).
-SLOW_TESTS='test(=everything_comes_back_after_a_quit) | test(=update::an_update_in_the_middle_of_things_changes_nothing) | test(=update::a_closed_window_stays_closed_across_an_update) | test(=update::a_new_version_that_keeps_ending_goes_back_by_itself) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=a_quit_during_a_stuck_read_still_writes) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=a_tab_left_alone_goes_dormant_and_wakes_from_its_file) | test(=tabs_just_opened_come_back_when_sleep_files_are_slow) | test(=find_in_the_sidebar_lists_steps_and_keeps_to_its_room) | test(=recto_acts_on_the_running_app_and_sees_what_it_does) | test(=the_sidebar_folds_switches_and_goes_to_contents) | test(=contents_fold_reveal_at_once_and_keep_a_thumb) | test(=a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app) | test(=a_search_in_the_app_gets_its_index) | test(=the_sidebar_offers_generated_contents_and_labels_them) | test(=the_watchdog_catches_a_stall_and_it_fails_the_script) | test(=quiet::a_quiet_run_stays_quiet_when_the_system_opens_it_again) | test(=slow::a_slow_run_waits_at_every_seam_it_passes) | test(=slow::a_quiet_run_with_no_switch_is_never_slow) | test(=slow::a_switch_that_cant_be_read_refuses_the_launch)'
-export SLOW_TESTS
 
 # Prints how long the last stage took, and leaves the name of the one now running where the caller can see it.
 stage() {
@@ -236,27 +293,29 @@ stage() {
   stage_started=$at
   [ "$1" = done ] || echo "$1" >> "$check_mark"
 }
-run() {
+# The compile gate: what must build and pass the lints before a test job is queued. Clippy for the whole workspace, which is incremental and so costs
+# seconds on what didn't change, then the headings helper's own lints, then the Windows compile check. A compile error is found here, as a quick job at
+# the front of the queue, and no test is ever queued for it (46 of 156 failed jobs in 30 hours were compile, clippy or fmt errors, 2026-11-12).
+gate() {
   set -e
-  # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
-  echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
-  tracked_tree > "$check_mark.tree"
-  # One layout, so two branches that each add a field to a struct literal merge without a conflict (guide §2.8). Seconds, and nothing builds.
-  # `cargo fmt --all` fixes it.
-  stage fmt
-  cargo fmt --all --check
-  cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check
-  stage clippy
+  local at
+  at=$(date +%s)
   cargo clippy --workspace --all-targets --locked -- -D warnings
   # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.
   cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed. A compile error, so it goes before anything runs.
   # Clippy at the level above, so a warning fails it: code only a Windows build compiles is seen nowhere else, and an unused variable in it passed a plain
   # `cargo check` (916efaf). Clippy shares the check's artifacts for dependencies, so nothing more is built than before.
-  stage windows
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
     cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
   fi
+  echo "check: clippy and the Windows compile check took $(($(date +%s) - at)) s"
+}
+run() {
+  set -e
+  # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
+  echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
+  tracked_tree > "$check_mark.tree"
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   stage workers
   cargo build --locked -p recto-render-service -p recto-indexer
@@ -269,12 +328,15 @@ run() {
     # shellcheck disable=SC2086
     RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast $tests_first
   fi
-  if [ ${#tests[@]} -gt 0 ]; then
+  if [ "$other_mode" = all ]; then
     stage other-tests
     RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass "${tests[@]}"
+  elif [ "$other_mode" = filter ]; then
+    stage other-tests
+    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass --workspace -E "$other_filter"
   fi
-  # Only --full: no Xcode needed for --quick, and no minutes spent on Swift.
-  if [ "$mode" = "--full" ]; then
+  # Only --full: no Xcode needed for --quick, and no minutes spent on Swift. And only when a tier of tests that launch the app is selected.
+  if [ "$mode" = "--full" ] && [ "$app_mode" != none ]; then
     stage app-build
     app/build.sh
     # The bundle just built, as it ships: its notices are this tree's, and nothing in it has an extended attribute, which a zip carries as a file the
@@ -283,9 +345,13 @@ run() {
     RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=nothing_in_the_built_app_has_extended_attributes)'
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
-    # (docs/reports/build-performance-2026-11-11.md).
+    # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
     stage app-tests
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4
+    case "$app_mode" in
+      both) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 ;;
+      window) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare -j 4 -E "$WINDOW_TESTS" ;;
+      lifecycle) RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
+    esac
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
     # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
     # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
@@ -293,11 +359,13 @@ run() {
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
     if [ -z "${CI:-}" ]; then
       stage slow
-      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$SLOW_TESTS"
+      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
     fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
-    stage registrations
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations
+    if [ "$app_mode" = both ] || [ "$app_mode" = lifecycle ]; then
+      stage registrations
+      RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test registrations
+    fi
   fi
   stage done
 }
@@ -305,8 +373,22 @@ run() {
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
 trap 'rm -f "$check_mark" "$check_mark.tree"' EXIT
+# The compile gate, before any test is queued. The layout first, outside the queue as it builds nothing: one layout, so two branches that each add a field
+# to a struct literal merge without a conflict (guide §2.8). `cargo fmt --all` fixes it. Then clippy and the Windows check, a quick job of their own: a
+# failure is refused at once the next time on the same code, and no full run is counted for it.
+if ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check; }; then
+  echo "check: the layout is off, so nothing was queued. \`cargo fmt --all\` fixes it." >&2
+  exit 1
+fi
+export -f gate
+gate_status=0
+HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh$mode gate" || gate_status=$?
+if [ "$gate_status" -ne 0 ]; then
+  echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
+  exit "$gate_status"
+fi
 export -f run stage code_state untracked_that_counts tracked_code tracked_tree
-export check_mark mode tests_first
+export check_mark mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
@@ -340,9 +422,11 @@ if [ -n "$started_state" ] && tree_is_clean && { [ "$started_state" = "$(code_st
 fi
 if [ "$ledger_commit" = "$started_commit" ]; then
   if [ "$result" = pass ]; then
-    printf '%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" >> "$passes"
-    stamp_checked "$started_commit"
+    # The scope goes with the pass: only a pass of everything is remembered for any scope, and only it lets `main` be pushed. A selective pass is
+    # remembered for the same selection and never stamps the push guard: the same code on `main`, or with other changes under it, still runs everything.
+    printf '%s\t%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" "$scope_key" >> "$passes"
+    [ "$scope_key" != all ] || stamp_checked "$started_commit"
   fi
 fi
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" >> "$ledger"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" "$([ "$scope_key" = all ] && echo all || echo selective)" >> "$ledger"
 exit "$status"
