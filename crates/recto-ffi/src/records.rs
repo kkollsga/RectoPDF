@@ -2,8 +2,15 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{PaneView, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
+use crate::{AppListener, PaneView, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
 use recto_app as app;
+
+/// The app core's listener is the host's: one call each, through the UniFFI listener. The core takes it as a generic, so there's no second trait object.
+impl recto_app::Listener for dyn AppListener {
+    fn model_changed(&self) {
+        AppListener::model_changed(self);
+    }
+}
 
 impl From<app::RowKind> for RowKind {
     fn from(kind: app::RowKind) -> Self {

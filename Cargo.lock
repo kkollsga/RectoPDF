@@ -664,6 +664,7 @@ dependencies = [
  "recto-reader",
  "recto-session",
  "recto-update",
+ "serde_json",
 ]
 
 [[package]]

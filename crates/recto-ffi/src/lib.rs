@@ -1376,7 +1376,7 @@ struct Inner {
     /// ⌘K's palette, on the UI thread.
     palette: recto_app::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
-    find_field: Mutex<find::Field>,
+    find_field: Mutex<recto_app::find::Field>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -2032,7 +2032,7 @@ impl AppCore {
             prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
             palette: recto_app::palette::Palette::default(),
-            find_field: Mutex::new(find::Field::default()),
+            find_field: Mutex::new(recto_app::find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));

@@ -1,7 +1,9 @@
-//! **Fakes of what the app core is given by its host,** for tests here and in other crates (the `testkit` feature): a clock that moves only when told, and, as the seams grow, a
-//! listener that counts what it heard. The headless app of step R1.3 is built from these.
+//! **Fakes of what the app core is given by its host,** for tests here and in other crates (the `testkit` feature): a clock that moves only when told, a listener that records
+//! what it heard, and a page view's hooks that hear nothing. The headless app of step R1.3 is built from these.
 
 use crate::clock::Clock;
+use crate::listener::Listener;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A clock that stands still until a test moves it.
@@ -33,8 +35,102 @@ impl Clock for FakeClock {
     }
 }
 
+/// One call the host heard, by its name in [`Listener`]. It grows with the trait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Heard {
+    ModelChanged,
+}
+
+/// What a check run inside each call is given: the call.
+type Check = Box<dyn Fn(Heard) + Send + Sync>;
+
+/// A listener that records every call in order, and can run a check inside each one, at the moment it's made: what the core holds then, for one, which [`Listener`]'s promises
+/// are about. Recording takes a short lock of its own, after the check.
+#[derive(Default)]
+pub struct FakeListener {
+    heard: Mutex<Vec<Heard>>,
+    check: Option<Check>,
+}
+
+impl std::fmt::Debug for FakeListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeListener").field("heard", &self.heard()).finish_non_exhaustive()
+    }
+}
+
+impl FakeListener {
+    /// One that runs `check` inside every call, before recording it. A check that panics fails the test on the core's thread, where the call was made.
+    #[must_use]
+    pub fn checking(check: impl Fn(Heard) + Send + Sync + 'static) -> Self {
+        Self {
+            heard: Mutex::default(),
+            check: Some(Box::new(check)),
+        }
+    }
+
+    /// Every call so far, in order.
+    #[must_use]
+    pub fn heard(&self) -> Vec<Heard> {
+        crate::lock(&self.heard).clone()
+    }
+
+    /// How many of one call.
+    #[must_use]
+    pub fn count(&self, what: Heard) -> usize {
+        crate::lock(&self.heard).iter().filter(|heard| **heard == what).count()
+    }
+
+    /// Every call so far, forgetting them, so a test can ask what one step alone made.
+    pub fn take(&self) -> Vec<Heard> {
+        std::mem::take(&mut *crate::lock(&self.heard))
+    }
+
+    fn hear(&self, what: Heard) {
+        if let Some(check) = &self.check {
+            check(what);
+        }
+        crate::lock(&self.heard).push(what);
+    }
+}
+
+impl Listener for FakeListener {
+    fn model_changed(&self) {
+        self.hear(Heard::ModelChanged);
+    }
+}
+
+/// A page view's hooks that hear nothing, for a page view made in a test.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QuietEngine;
+
+impl recto_reader::engine::EngineEvents for QuietEngine {
+    fn ops_ready(&self) {}
+    fn note_changed(&self) {}
+    fn page_moved(&self) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Failure: the fake listener loses a call, records them out of order, or `take` leaves them for the next step, so a test of what one step tells the host reads another's.
+    #[test]
+    fn the_fake_listener_records_in_order_and_takes() {
+        let seen = std::sync::Arc::new(AtomicU64::new(0));
+        let counted = std::sync::Arc::clone(&seen);
+        let listener = FakeListener::checking(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        listener.model_changed();
+        listener.model_changed();
+        assert_eq!(listener.count(Heard::ModelChanged), 2);
+        assert_eq!(seen.load(Ordering::SeqCst), 2, "the check runs in each call");
+        assert_eq!(listener.take(), vec![Heard::ModelChanged; 2]);
+        assert!(listener.heard().is_empty());
+    }
+
     /// Failure: a crate enables `recto-app`'s `testkit` feature outside `[dev-dependencies]`, so the fakes (a clock that never moves, a listener that hears nothing) are built into the app or the CLI, where nothing should be able to reach them.
     #[test]
     fn only_tests_enable_the_testkit() {

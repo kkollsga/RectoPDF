@@ -1,9 +1,11 @@
 //! **The app's own logic with no toolkit and no bridge:** the view models the window shows, projected from the session and a few plain facts ([`model`]), and the window's features'
-//! rules and state, each in its module, taking what they need as plain parameters, a small handle, or a trait this crate owns ([`clock::Clock`]). `recto-ffi` converts and forwards.
+//! rules and state, each in its module, taking what they need as plain parameters, a small handle, or a trait this crate owns ([`clock::Clock`], [`Listener`]). `recto-ffi` converts and forwards.
 
 pub mod chrome;
 pub mod clock;
+pub mod find;
 pub mod linking;
+pub mod listener;
 pub mod menus;
 pub mod model;
 pub mod palette;
@@ -18,6 +20,7 @@ pub mod snapshot_menu;
 pub mod testkit;
 pub mod watchdog;
 
+pub use listener::Listener;
 pub use model::*;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
