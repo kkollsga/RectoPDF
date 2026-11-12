@@ -152,7 +152,7 @@ import QuartzCore
             case "close": delegate.settings?.window.close()
             case "privacy": delegate.settings?.privacyLink.performClick(nil)
             default:
-                guard let toggle = delegate.settings?.switches[value] else { return fail(id, "That switch isn't showing.") }
+                guard let toggle = delegate.settings?.control(value) else { return fail(id, "That switch isn't showing.") }
                 toggle.performClick(nil)
             }
         case "sidebar_width":

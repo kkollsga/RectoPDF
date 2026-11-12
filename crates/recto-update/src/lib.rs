@@ -11,6 +11,7 @@
 //! - [`version`]: a release's `X.Y.Z` and a development build's `X.Y.Z.N`, and their order. Pure.
 
 pub mod fetch;
+pub mod handover;
 pub mod install;
 pub mod plan;
 mod process;

@@ -335,12 +335,16 @@ fn make_folders(path: &Path) -> io::Result<()> {
 
 /// Checks and unpacks a zip into an empty folder of its own.
 pub fn unpack(zip: &Path, app_folder: &str, into: &Path, deadline: Instant) -> Result<(), ZipError> {
-    let mut file = std::fs::File::open(zip)?;
-    let entries = read_directory(&mut file, app_folder)?;
+    unpack_open(&mut std::fs::File::open(zip)?, app_folder, into, deadline)
+}
+
+/// [`unpack`] from a file that's already open, so a zip that was looked at once is read from that one descriptor and never opened again by name.
+pub fn unpack_open(file: &mut std::fs::File, app_folder: &str, into: &Path, deadline: Instant) -> Result<(), ZipError> {
+    let entries = read_directory(file, app_folder)?;
     if !entries.iter().any(|entry| entry.name.starts_with(&format!("{app_folder}/"))) {
         return Err(ZipError::Bad("it doesn't hold the app"));
     }
-    unpack_entries(&mut file, &entries, into, deadline)
+    unpack_entries(file, &entries, into, deadline)
 }
 
 #[cfg(test)]
