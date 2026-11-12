@@ -136,21 +136,36 @@ times_report() {
       name[1] = "core"; name[2] = "process"; name[3] = "window"; name[4] = "lifecycle"
     }
     $1 == "run" { printf "Latest kept run: commit %s, %s, %s, part %s, %s\n\n", substr($2, 1, 12), $3, ($4 == "all" ? "everything" : "selective"), $5, $6 }
-    $1 == "stage" { stages = stages sprintf("  %-14s %6d s\n", $2, $3); if ($2 == "slow") slow_stage = $3 }
+    $1 == "stage" { stagewall[$2] = $3; stages = stages sprintf("  %-14s %6d s\n", $2, $3); if ($2 == "slow") slow_stage = $3 }
     $1 == "tier" { tests[$2] = $3; secs[$2] = $4; wall[$2] = $5 }
     $1 == "slow" { slow_tests = $2; slow_secs = $3 }
     $1 == "test" { top = top sprintf("  %7.1f s  %-5s %s  %s\n", $5, $2, $4, $6) }
     END {
       print "Slowest tests (seconds, tier, binary, name):"
       printf "%s\n", top
-      print "Tiers, against their budgets (wall: first start to last end; tiers sharing a run overlap):"
-      printf "  %-4s %-10s %6s %12s %8s %8s\n", "tier", "", "tests", "test-seconds", "wall s", "budget s"
+      print "Tiers (a tier that shares a nextest run with another has no wall of its own here; the pair gets the run'"'"'s wall against both budgets added):"
+      printf "  %-4s %-10s %6s %12s %8s\n", "tier", "", "tests", "test-seconds", "budget s"
+      pair_of[1] = 2; pair_of[2] = 1; pair_of[3] = 4; pair_of[4] = 3
       for (t = 1; t <= 4; t++) {
-        verdict = ""
-        if (tests[t] == 0) verdict = "  (no tests in this run)"
-        else if (wall[t] > budget[t]) verdict = sprintf("  OVER by %d s", wall[t] - budget[t])
-        printf "  %-4d %-10s %6d %12.0f %8.0f %8d%s\n", t, name[t], tests[t], secs[t], wall[t], budget[t], verdict
+        shared = (tests[t] > 0 && tests[pair_of[t]] > 0)
+        note = ""
+        if (tests[t] == 0) note = "  (no tests in this run)"
+        else if (shared) note = "  (shares its run with tier " pair_of[t] ")"
+        else if (wall[t] > budget[t]) note = sprintf("  wall %d s: OVER by %d s", wall[t], wall[t] - budget[t])
+        else note = sprintf("  wall %d s", wall[t])
+        printf "  %-4d %-10s %6d %12.0f %8d%s\n", t, name[t], tests[t], secs[t], budget[t], note
       }
+      for (p = 1; p <= 2; p++) {
+        ta = (p == 1) ? 1 : 3; tb = ta + 1
+        if (tests[ta] > 0 && tests[tb] > 0) {
+          label = (p == 1) ? "core + process" : "window + lifecycle"
+          split((p == 1) ? "changed-tests other-tests" : "app-tests", sn, " ")
+          pw = 0; for (k in sn) pw += stagewall[sn[k]]
+          pb = budget[ta] + budget[tb]
+          printf "  tiers %d+%d (%s): %d s wall against %d s (%d + %d)%s\n", ta, tb, label, pw, pb, budget[ta], budget[tb], (pw > pb) ? sprintf(", OVER by %d s", pw - pb) : ""
+        }
+      }
+      print "  The spans of tiers that share a run overlap when run locally; CI runs them as separate jobs and gives each tier'"'"'s own wall."
       printf "\nSlow stage (the same tests as tiers 3 and 4, with every waiting point late): %d tests, %.0f test-seconds", slow_tests, slow_secs
       if (slow_stage != "") printf ", %d s wall", slow_stage
       printf "\n\nStages of that run:\n%s", stages

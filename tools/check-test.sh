@@ -731,14 +731,21 @@ check "a run that wrote no JUnit keeps nothing" "0" "$(ls $TIMES 2>/dev/null | w
 # Failure: --slow cannot say which tier is over its budget, or hides it.
 rm -rf $TIMES; mkdir -p $TIMES
 printf 'run\taaaaaaaaaaaaaaaa\t2026-11-12 10:00\tall\tall\tpass\nstage\tother-tests\t100\nstage\tapp-tests\t300\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t200.0\ntier\t4\t8\t300.0\t200.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T100000-aaaaaaaaaaaa.tsv
-printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t130.0\ntier\t4\t8\t300.0\t200.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
+printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t130.0\ntier\t4\t0\t0.0\t0.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
 out=$(tools/check.sh --slow 2>&1); rc=$?
 check "--slow exits 0 even over budget" "0" "$rc"
 has "it lists the slowest tests with seconds and binary" "42.1 s  3     recto-cli::app  drawing_is_slow" "$out"
-has "a tier over its budget is named, with by how much" "OVER by 40 s" "$out"
+has "a tier over its budget is named, with by how much" "wall 130 s: OVER by 40 s" "$out"
 check "a tier within it is not" "0" "$(printf '%s\n' "$out" | grep -E '^  (1|2) ' | grep -c OVER)"
-has "the tier that wasn't in the run says so" "(no tests in this run)" "$(sed 's/^tier\t4.*/tier\t4\t0\t0.0\t0.0/' $TIMES/20261112T110000-bbbbbbbbbbbb.tsv > "$X/t.tsv"; rm $TIMES/20261112T110000-bbbbbbbbbbbb.tsv; cp "$X/t.tsv" $TIMES/20261112T110000-bbbbbbbbbbbb.tsv; tools/check.sh --slow 2>&1)"
+has "the tier that wasn't in the run says so" "(no tests in this run)" "$out"
 has "the slow stage's total is there" "25 tests, 400 test-seconds, 120 s wall" "$out"
+# Failure: two tiers that share one nextest run each get a wall that overlaps the other's, so neither number is true. The pair gets the run's wall, once, against both budgets.
+printf 'run\tdddddddddddddddd\t2026-11-12 13:00\tall\tall\tpass\nstage\tapp-tests\t400\ntier\t3\t40\t500.0\t380.0\ntier\t4\t8\t300.0\t390.0\n' > $TIMES/20261112T130000-dddddddddddd.tsv
+out=$(tools/check.sh --slow 2>&1)
+has "tiers sharing a run are given the run's wall against both budgets added" "tiers 3+4 (window + lifecycle): 400 s wall against 330 s (90 + 240), OVER by 70 s" "$out"
+has "each with its own test count and test-seconds, and a note on the overlap" "shares its run with tier 3" "$out"
+has "and says CI gives the per-tier wall" "CI runs them as separate jobs" "$out"
+rm -f $TIMES/20261112T130000-dddddddddddd.tsv
 # The comparison needs the run of everything before the latest; it shows the change per stage.
 printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\ntier\t1\t1\t1.0\t1.0\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
 out=$(tools/check.sh --slow 2>&1)
