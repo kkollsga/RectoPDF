@@ -23,6 +23,8 @@ struct Shared {
     over_note: AtomicU64,
     over_fail: AtomicU64,
     worst_ms: AtomicU64,
+    /// Blocks of the host's that ran on the UI thread with no stretch under way: work the run loop's wake and sleep didn't bracket.
+    unbracketed: AtomicU64,
     /// The stretch each threshold was last counted for, by its start, so the watcher and the stretch's own end count it once between them.
     noted_stretch: AtomicU64,
     failed_stretch: AtomicU64,
@@ -47,6 +49,7 @@ impl Watchdog {
             over_note: AtomicU64::new(0),
             over_fail: AtomicU64::new(0),
             worst_ms: AtomicU64::new(0),
+            unbracketed: AtomicU64::new(0),
             noted_stretch: AtomicU64::new(0),
             failed_stretch: AtomicU64::new(0),
             thread: Mutex::new(None),
@@ -81,6 +84,27 @@ impl Watchdog {
             // Counted here too, as it ends: the watcher looks every quarter second, and on a starved machine (CI, 2026-11-11: a 2.3 s stall passed a script) it may not look between 2 s and the end.
             count(&self.0, began, now.saturating_sub(began));
         }
+    }
+
+    /// From the UI thread, as it wakes, or (`block`) as a block of the host's begins on it. The run loop's wake and sleep bracket most work, but not all of
+    /// it: on CI (run 43315142752, 2026-11-12) a launch's blocks ran with no stretch under way, and a 2.3 s stall in one was never seen. So a block begins
+    /// the stretch itself when none is under way, and is counted as one the run loop missed. True if this began the stretch, for the caller to end it with
+    /// [`Self::idle`]; a stretch under way is left as it is. Only the UI thread begins and ends stretches, so the look and the store don't race.
+    pub fn enter(&self, block: bool) -> bool {
+        if self.0.busy_since.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        if block {
+            self.0.unbracketed.fetch_add(1, Ordering::Relaxed);
+        }
+        self.busy();
+        true
+    }
+
+    /// How many blocks began a stretch themselves: what the run loop's wake and sleep didn't bracket.
+    #[must_use]
+    pub fn unbracketed(&self) -> u64 {
+        self.0.unbracketed.load(Ordering::Relaxed)
     }
 
     /// Stalls past [`NOTE_MS`], stalls past [`FAIL_MS`], and the worst in ms.
@@ -169,5 +193,34 @@ mod tests {
         assert_eq!((dog.report().0, dog.report().1), (1, 1), "counted at its end, and the note only once");
         count(&dog.0, began, 2_400);
         assert_eq!(dog.report().1, 1, "and the failure only once");
+    }
+
+    /// Failure (CI, run 43315142752, 2026-11-12): a block the host ran on the UI thread stalled it for 2.3 s and nothing was counted, as the run loop had said
+    /// the thread was asleep: the worst stretch seen in that launch was 6 ms. A block with no stretch under way begins and ends one, and is counted as such.
+    #[test]
+    fn a_block_the_run_loop_didnt_bracket_is_a_stretch_of_its_own() {
+        let dog = Watchdog::new();
+        let began = dog.enter(true);
+        assert!(began, "asleep by the run loop's account, so the block begins the stretch");
+        let since = dog.0.busy_since.load(Ordering::Acquire);
+        assert_ne!(since, 0);
+        dog.look_at(since + 2_300);
+        dog.idle();
+        assert_eq!(dog.report().1, 1, "the stall in it is counted");
+        assert_eq!(dog.0.busy_since.load(Ordering::Acquire), 0, "and the stretch ends with the block");
+        assert_eq!(dog.unbracketed(), 1);
+        assert!(dog.enter(false), "the run loop's own wake begins a stretch");
+        assert_eq!(dog.unbracketed(), 1, "and isn't counted as missed");
+    }
+
+    /// Failure: a block inside a stretch the run loop began ends that stretch early, so a stall after it in the same wake goes unseen, or cuts one stall into two.
+    #[test]
+    fn a_block_inside_a_stretch_leaves_it_alone() {
+        let dog = Watchdog::new();
+        dog.0.busy_since.store(100, Ordering::Release);
+        assert!(!dog.enter(true), "so the block doesn't end it");
+        assert_eq!(dog.0.busy_since.load(Ordering::Acquire), 100, "the run loop's stretch goes on");
+        dog.look_at(2_200);
+        assert_eq!((dog.report().1, dog.unbracketed()), (1, 0));
     }
 }
