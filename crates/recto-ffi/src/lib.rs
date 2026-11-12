@@ -14,7 +14,7 @@ mod palette;
 mod panes;
 pub mod passwords;
 mod printing;
-mod privacy;
+
 mod qa;
 mod records;
 mod saver;
@@ -29,7 +29,7 @@ mod watchdog;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
-use recto_app::{ContentsEntry, PaneSnapshot};
+use recto_app::{ContentsEntry, PaneSnapshot, privacy};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;

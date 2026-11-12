@@ -656,10 +656,14 @@ dependencies = [
 name = "recto-app"
 version = "0.1.0"
 dependencies = [
+ "recto-agent",
+ "recto-control",
  "recto-core",
+ "recto-index",
  "recto-platform",
  "recto-reader",
  "recto-session",
+ "recto-update",
 ]
 
 [[package]]

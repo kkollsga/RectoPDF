@@ -18,3 +18,9 @@ recto-core.workspace = true
 recto-platform.workspace = true
 recto-reader.workspace = true
 recto-session.workspace = true
+recto-update.workspace = true
+
+[dev-dependencies]
+recto-agent.workspace = true
+recto-control.workspace = true
+recto-index.workspace = true
