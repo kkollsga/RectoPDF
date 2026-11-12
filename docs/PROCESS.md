@@ -217,3 +217,35 @@ Owner: "I have noticed extremely slow development speeds on this project". The w
 **Changing.** Phase R is replanned in `docs/PLAN.md`: tools first (R0), the app core out of the bridge (R1), one action with one implementation (R2), components (R3), then test homes, a feature kit and a measured pilot (R4). Guide §2.9, §2.10, §5.5 and §6.6 carry the general lessons.
 
 **Check next time.** After R0: `--quick`'s time and whether a stale registration fails in under 30 s. After each track: the exit numbers in the review's §7. At every review from now: a branch's tail (minutes from last feature commit to merge, follow-up merges), beside the queue, runs and CI.
+
+## 2026-11-12 evening, after seven merges (push-main's superseded runs, the headless kit, the CI guard, lifecycle slices 1 and 2, the test audit, the watchdog fix)
+
+One evening after a restart of the Mac, with at most two workers at a time. The owner set three rules in it: tests are for real concerns, CI doesn't get slower, and the warning for that is stern (all in `AGENTS.md`).
+
+**Numbers.**
+- **CI's check job:** 33, 18, 28, 25 and 28 minutes on the day's first five single-job runs; 15 min 18 s on `420e2e3` (the first lifecycle slice, the audit and the watchdog fix); 23 min on `e656236` (the second slice, a run that also paid the tools' tests and every test, as `tools/check.sh` changed). App tests on CI: 461 to 754 s before, 272 s on `420e2e3`. One run each, on runners that vary, so the trend needs the next five.
+- **Tests that launch the app:** 225 to 204 (21 gone: 5 for the kit, 12 and 8 for the lifecycle slices less one counted twice, 1 for the audit). The ratchet holds the number.
+- **Local full check:** app-tests stage 174 to 195 s before, 141 to 150 s after, at differing loads. The slow stage is 107 to 109 s and has barely moved: it is now the largest local stage a branch can't avoid.
+- **Workers:** five tasks, all Opus (design was the work, or judgement was). The kit: 43 min, 399k tokens. Lifecycle 1: 52 min, 502k. The audit: 61 min, 428k. Lifecycle 2: 49 min, 337k. Each stopped once to report back as briefed (a design, an audit table); none was sent back; each used one full run and, where lifecycle was touched, one CI-like run. The coordinator did three small tool branches itself.
+- **Full runs:** 12 in the ledger for the evening: 4 by workers on their branches, 4 by the coordinator on branches (two tool branches, the watchdog fix, and a worker's branch after `main` was merged into it), 4 on `main`. None failed. Twice more `main` ran nothing, as the tool counted a branch's pass on the same code.
+- **CI:** 6 pushes of code. One red: `the_watchdog_catches_a_stall_and_it_fails_the_script`, 1 of 5, fixed from its evidence in one round (below). One run where a sandbox job got no runner twice.
+- **xprotectd:** 3.7 MB after the restart and after each of seven full checks. One evening of checks doesn't make it grow; the 3.9 GB of before took 19 days.
+
+**What review and the audit found.**
+- **A measurement changed the plan.** The kit's first five ports saved 13 test-seconds: a window-tier app test is under a second on a quiet Mac. The seconds were in lifecycle and on CI's slower machine, so R1.4 moved ahead of the remaining R1.3 ports. The handover had assumed the opposite, and so had the review's estimate of "about 90 ports".
+- **Tests that couldn't fail.** The audit read about half the suite and found two tests that passed with their bug in place (an idle worker's wake removed; a kill that waited), one byte cap that was never reached, and a cap in a test's name that was never asserted. Each was found only by seeding the bug. A doc comment naming a failure isn't evidence the test catches it.
+- **Two product bugs** came out of structure work: a quit and a hand-off each lifting the other's freeze (found by the machine's every-order test), and the hang watchdog blind to blocks the run loop hadn't bracketed (found by CI, 1 of 5). The second's cause in the run loop is still not known; a counter in `qa state` now says how often it happens.
+- **One failure was enough.** The red `main` was diagnosed from the first run's evidence folder (`hangs.worst_ms` of 6 during a 2.3 s stall), without a rerun. R0.7 paid for itself. Its sample of the app didn't finish in its bound on a runner at load 52, which is when it's wanted most.
+
+**What went wrong.**
+1. **The coordinator repeated a stale figure to the owner** (CI "12 to 15 minutes", the undone three-part layout's) until the owner said CI seemed slow. A number in a handover is checked against its source before it's said again.
+2. **A guard of the coordinator's own stopped it:** the watchdog fix first added two bridge methods, and the ratchet refused. The second form reused the existing call and is better. The guard was right; an hour's work should start with the ratchet in mind.
+3. **Two branches edited the same six tests** (the audit rewrote one that a lifecycle slice then deleted), as the audit's out-of-bounds list named the first slice's files and not the second's. Bounds are set from every running brief, when each is written.
+4. **The second slice's CI-like run was on the branch before `main` was merged into it.** The full check covered the merged result; the rule asks for the lifecycle part too. It should run after the merge of `main`, by the coordinator if the worker has handed back.
+
+**Changing.**
+- Reports to the owner give CI's check time from `tools/push-main.sh`'s kept times, not from memory or a note.
+- A deletion or a rewrite of a test needs its seeded-bug proof (now in `AGENTS.md`'s rule and in the briefs); the audit's unread half is in the plan.
+- The budget (25 min) is lowered when five green runs in a row are under 20.
+
+**Check next time.** The median of CI's last five check times and whether the budget was lowered; the count of app-launching tests; whether the slow stage (107 s) has a plan; `hangs.unbracketed_blocks` in any new evidence; whether the watchdog test has failed again.
