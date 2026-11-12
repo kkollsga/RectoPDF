@@ -10,7 +10,6 @@ file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
-file crates/recto-session/src/lib.rs 3722
 file crates/recto-session/src/record.rs 1561
 file crates/recto-update/src/updater.rs 2858
 fn crates/recto-agent/src/human.rs::render 231
@@ -45,7 +44,6 @@ impl crates/recto-reader/src/tiles.rs::Reader 138
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
-impl crates/recto-session/src/lib.rs::Session 192
 impl crates/recto-update/src/updater.rs::Updater 56
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
