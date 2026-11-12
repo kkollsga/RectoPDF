@@ -27,6 +27,7 @@ Read a document:
   print                Prints pages to a new PDF, through the same drawing the app's File > Print uses: the real pages, drawn at print resolution, never the screen's, with no paper colour, and unsaved turns as the edits have them.
   signatures           What the file says about signatures.
   sidebar              The sidebar's rows, as the app would draw them.
+  links                A page's links and where each goes: a page of this document, a web or email address, or refused, as a script, a program or a file on the Mac always is.
 
 Open and move around:
   open                 Opens a PDF as the active tab, or goes to its tab if it's already open.
@@ -34,26 +35,25 @@ Open and move around:
   goto label           Goes to the page the file calls this, such as `iv` or `A-3`, as the go-to field reads it: a label first, then a plain number no page is called.
   back                 Goes back to where the tab was before its last jump, as ⌘[ does: a link, a contents entry or `goto`.
   forward              Goes forward again after `back`, as ⌘] does.
-
-Read a document:
-  links                A page's links and where each goes: a page of this document, a web or email address, or refused, as a script, a program or a file on the Mac always is.
-
-Open and move around:
   follow               Follows a link within the document, as a click does, so `recto back` comes back.
-  tap                  Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.
   recent               Files opened lately, newest first, as File > Open Recent lists them, with the tab each is open in and its whole path, which `recto open` can open.
   recent clear         Empties the list of files opened lately, as Open Recent > Clear Menu does.
   close                Closes a tab.
+  tap                  Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.
+  compare              Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same.
+  view                 How the app shows pages: the paper, the sidebar, the agent icon, the tab showing's layout and the zoom.
+  palette              ⌘K's command palette in the app: what a few letters find among its commands and open tabs, best first, worded and ranked as the palette shows them.
+  find                 The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does.
 
 Change pages, then save:
-  page move            Moves pages, so the first of them ends up at `--to`.
   page rotate          Turns pages clockwise.
+  page move            Moves pages, so the first of them ends up at `--to`.
   page delete          Removes pages from the edited document.
   page insert          Adds every page of another PDF.
-  undo                 Reverses the last page edit.
-  redo                 Repeats the last undone page edit.
   edits                A tab's unsaved edits, as runs of pages.
   discard              Throws away a tab's edits, undone ones included.
+  undo                 Reverses the last page edit.
+  redo                 Repeats the last undone page edit.
   clear-history        Clears a tab's edit history: every step undo or redo could take, and its file on disk.
   save                 Saves a tab's edits into its file.
   save-as              Saves a tab's document as a new file, and the tab goes over to it.
@@ -70,15 +70,27 @@ Wait instead of polling:
 Access and history:
   permission show      What access agents have now, and what each level allows.
   permission request   Asks the user for more access.
-  permission set       For the user: sets what agents may do.
   log                  What agents have done: time, command, level and outcome, oldest first.
   sign                 Signing isn't open to agents at any level.
+  permission set       For the user: sets what agents may do.
 
 The session:
   serve                Runs the session, on a socket only this user can reach, with no network listener.
   stop                 Ends the session.
   local                For tests: runs one command in a throwaway session in this process, with one file open.
   session              For QA scripts: a throwaway session in this process, with one JSON command per line on stdin and one reply per line.
+  session show         What the state record holds, and what's become of each tab's file: moved, changed, missing or needing its password again.
+  session sleep        Puts a tab to sleep now, as five minutes left alone would: its sleep file's written, its journal's compacted, and its contents, edits, worker and tiles leave memory.
+  session save         Writes the state record now and reads it back, returning an error if it doesn't match.
+  session restore      Puts the session back as the state record has it, with every tab cold but the active one.
+  session check        Whether this is a safe moment to hand off to a new version: no sheet open, no command or file read under way.
+
+The app itself:
+  update status        What version is running, what's on offer, how things stand, and how the last update went.
+  update check         Looks for a new version now and waits for the answer, by what Check for Updates… does.
+  update install       Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens.
+  update dev-builds    Allow development builds, as Settings has it: off unless the owner's turned it on.
+  settings             The app's settings, as the Settings window shows them.
 
 Skill files:
   skill show           Prints the generated skill.
@@ -86,16 +98,10 @@ Skill files:
 
 Measuring:
   budget               The session's own footprint, tabs and handles right now.
-  budget tabs          Opens one PDF as many tabs, through links in a temp folder, and reports memory and handles.
-  budget index         Builds one PDF's index in the system's temp folder and reports what that costs, and search times with and without it.
   budget render        Measures a worker on a tab's document: idle, pages, peak and retirement.
   budget viewport      Measures a reader's window: first view, one scroll step, one zoom step.
-
-Open and move around:
-  compare              Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same.
-  view                 How the app shows pages: the paper, the sidebar, the agent icon, the tab showing's layout and the zoom.
-  palette              ⌘K's command palette in the app: what a few letters find among its commands and open tabs, best first, worded and ranked as the palette shows them.
-  find                 The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does.
+  budget tabs          Opens one PDF as many tabs, through links in a temp folder, and reports memory and handles.
+  budget index         Builds one PDF's index in the system's temp folder and reports what that costs, and search times with and without it.
 
 Testing the app:
   qa start             Starts the app in a quiet run on this state folder, which must be set with RECTO_STATE_DIR: off every screen, with no Dock icon and never active.
@@ -180,28 +186,10 @@ Testing the app:
   qa shot-menu         Writes a PNG of a menu's real items, drawn inside the app at 2x in the menu's place.
   qa quit              Quits the app, by what the Quit menu item does.
   qa handoff           Hands off as an update does: flushes, reads back, and quits with no prompt.
-
-The session:
-  session show         What the state record holds, and what's become of each tab's file: moved, changed, missing or needing its password again.
-  session sleep        Puts a tab to sleep now, as five minutes left alone would: its sleep file's written, its journal's compacted, and its contents, edits, worker and tiles leave memory.
-
-Testing the app:
   qa dormant-after     How many seconds left alone makes a tab go dormant, in place of five minutes.
   qa hold-drawing      Holds all drawing until it's told otherwise, so a tab's first frame stays to be looked at: `on` or `off`.
   qa sleep-write-gap   How many seconds a tab that's only moving about waits for its next sleep file, in place of five minutes.
   qa live-budget       How many MiB the documents off screen may hold, in place of 256.
   qa memory-pressure   What the system saying memory's short calls: `warning` or `critical`.
-
-The session:
-  session save         Writes the state record now and reads it back, returning an error if it doesn't match.
-  session restore      Puts the session back as the state record has it, with every tab cold but the active one.
-  session check        Whether this is a safe moment to hand off to a new version: no sheet open, no command or file read under way.
-
-The app itself:
-  update status        What version is running, what's on offer, how things stand, and how the last update went.
-  update check         Looks for a new version now and waits for the answer, by what Check for Updates… does.
-  update install       Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens.
-  update dev-builds    Allow development builds, as Settings has it: off unless the owner's turned it on.
-  settings             The app's settings, as the Settings window shows them.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 ambiguous, 5 permission denied, 6 not running, 7 timed out, 8 protected, 10 busy.

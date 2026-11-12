@@ -1,6 +1,6 @@
 //! **The command registry** (step R2.2, guide §2.8 and §2.9). Every command is a payload type in a module of its feature, and the module holds everything about it: what it reads from the wire, its rows in the table, its handler, the plain words of its answer, and the properties that guard memory and safety. [`Cmd`] has no defaults for those, so a new command can't compile without saying whether it draws, which tab it holds, what it logs, what level it needs and where it's answered.
 //!
-//! Commands come in families, one enum each, under the small top-level [`Command`](crate::Command): a family is a group of the help (Read, Move, Edit…), declared below with [`family!`] in the shape of a plain enum, so the ratchet counts its variants as it would any enum's. Adding a command to a family is one line there, and one in [`PARTS`] to say where its rows go in `recto help`.
+//! Commands come in families, one enum each, under the small top-level [`Command`](crate::Command): a family is a group of the help (Read, Move, Edit…), declared below with [`family!`] in the shape of a plain enum, so the ratchet counts its variants as it would any enum's. Adding a command to a family is one line there: its rows go into the table, in its group of `recto help`, at its family's place in [`PARTS`].
 //!
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
 
@@ -97,6 +97,9 @@ macro_rules! family {
         }
 
         impl $family {
+            /// Its commands' rows, in the order of its list: where they stand in their group of `recto help`.
+            pub const ROWS: &'static [&'static [$crate::table::Spec]] = &[$(<$payload as $crate::commands::Cmd>::ROWS,)*];
+
             /// The wire names this family reads.
             pub const TAGS: &'static [&'static str] = &[$(<$payload as $crate::commands::Cmd>::TAG,)*];
 
@@ -330,110 +333,112 @@ pub(crate) fn human(tag: &str, data: &Value) -> Option<String> {
     FAMILIES.iter().find_map(|(_, _, words)| words(tag, data))
 }
 
-/// **The table, in the order `recto help` shows it.** Each command's rows, and the rows that run in `recto` itself, which have no command.
-const PARTS: &[&[Spec]] = &[
-    <session::Status as Cmd>::ROWS,
-    table::CLI_HELP,
-    <reading::Tabs as Cmd>::ROWS,
-    <reading::Where as Cmd>::ROWS,
-    <reading::Facts as Cmd>::ROWS,
-    <reading::Contents as Cmd>::ROWS,
-    <text::Search as Cmd>::ROWS,
-    <text::Index as Cmd>::ROWS,
-    <text::IndexStatus as Cmd>::ROWS,
-    <text::IndexClear as Cmd>::ROWS,
-    <text::Text as Cmd>::ROWS,
-    <text::Select as Cmd>::ROWS,
-    <text::Copy as Cmd>::ROWS,
-    <export::Render as Cmd>::ROWS,
-    <export::ExportSvg as Cmd>::ROWS,
-    <export::Images as Cmd>::ROWS,
-    <export::Image as Cmd>::ROWS,
-    <export::Snapshot as Cmd>::ROWS,
-    <export::Print as Cmd>::ROWS,
-    <reading::Signatures as Cmd>::ROWS,
-    <reading::Sidebar as Cmd>::ROWS,
-    table::ROWS_OPEN,
-    <linking::Goto as Cmd>::ROWS,
-    <linking::Back as Cmd>::ROWS,
-    <linking::Forward as Cmd>::ROWS,
-    <linking::Links as Cmd>::ROWS,
-    <linking::Follow as Cmd>::ROWS,
-    table::ROWS_TAP,
-    <tabs::Recent as Cmd>::ROWS,
-    <tabs::RecentClear as Cmd>::ROWS,
-    <tabs::Close as Cmd>::ROWS,
-    <editing::PageMove as Cmd>::ROWS,
-    table::ROWS_PAGE_ROTATE,
-    <editing::PageDelete as Cmd>::ROWS,
-    <editing::PageInsert as Cmd>::ROWS,
-    table::ROWS_UNDO,
-    table::ROWS_REDO,
-    <editing::Edits as Cmd>::ROWS,
-    <editing::Discard as Cmd>::ROWS,
-    table::ROWS_CLEAR_HISTORY,
-    table::ROWS_SAVE,
-    <sync::Wait as Cmd>::ROWS,
-    <sync::Watch as Cmd>::ROWS,
-    <sync::WatchStop as Cmd>::ROWS,
-    <access::PermissionShow as Cmd>::ROWS,
-    <access::PermissionRequest as Cmd>::ROWS,
-    table::CLI_PERMISSION_SET,
-    <access::Log as Cmd>::ROWS,
-    <access::Sign as Cmd>::ROWS,
-    table::CLI_SERVE,
-    <session::Stop as Cmd>::ROWS,
-    table::CLI_LOCAL,
-    <measure::Budget as Cmd>::ROWS,
-    table::CLI_BUDGET_TABS,
-    <measure::BudgetRender as Cmd>::ROWS,
-    <measure::BudgetViewport as Cmd>::ROWS,
-    table::ROWS_COMPARE,
-    table::ROWS_VIEW,
-    table::ROWS_PALETTE,
-    table::ROWS_FIND,
-    table::QA_1,
-    table::ROWS_SESSION_SHOW,
-    table::ROWS_SESSION_SLEEP,
-    table::QA_2,
-    table::ROWS_SESSION_SAVE,
-    table::ROWS_SESSION_RESTORE,
-    table::ROWS_SESSION_CHECK,
-    table::ROWS_UPDATE_STATUS,
-    table::ROWS_UPDATE_CHECK,
-    table::ROWS_UPDATE_INSTALL,
-    table::ROWS_UPDATE_DEV_BUILDS,
-    table::ROWS_SETTINGS,
-    <access::LevelChanged as Cmd>::ROWS,
+/// **The table.** Each family's rows, and the rows of the commands not in a family yet and of what runs in `recto` itself, which has no command. `recto help` shows them by group in [`GROUP_ORDER`], each group once; within a group, in the order here. A new command needs no line here: its family's list places it.
+const PARTS: &[&[&[Spec]]] = &[
+    Start::ROWS,
+    &[table::CLI_HELP],
+    Read::ROWS,
+    &[table::ROWS_OPEN],
+    Move::ROWS,
+    &[table::ROWS_TAP, table::ROWS_COMPARE, table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
+    &[table::ROWS_PAGE_ROTATE],
+    Edit::ROWS,
+    &[table::ROWS_UNDO, table::ROWS_REDO, table::ROWS_CLEAR_HISTORY, table::ROWS_SAVE],
+    Waits::ROWS,
+    Rights::ROWS,
+    &[table::CLI_PERMISSION_SET, table::CLI_SERVE],
+    Session::ROWS,
+    &[table::CLI_LOCAL],
+    &[
+        table::ROWS_SESSION_SHOW,
+        table::ROWS_SESSION_SLEEP,
+        table::ROWS_SESSION_SAVE,
+        table::ROWS_SESSION_RESTORE,
+        table::ROWS_SESSION_CHECK,
+    ],
+    &[
+        table::ROWS_UPDATE_STATUS,
+        table::ROWS_UPDATE_CHECK,
+        table::ROWS_UPDATE_INSTALL,
+        table::ROWS_UPDATE_DEV_BUILDS,
+        table::ROWS_SETTINGS,
+    ],
+    Measure::ROWS,
+    &[table::CLI_BUDGET_TABS],
+    &[table::QA_1, table::QA_2],
 ];
 
-const fn rows_in(parts: &[&[Spec]]) -> usize {
+const fn rows_in(parts: &[&[&[Spec]]]) -> usize {
     let mut count = 0;
-    let mut at = 0;
-    while at < parts.len() {
-        count += parts[at].len();
-        at += 1;
+    let mut list = 0;
+    while list < parts.len() {
+        let mut at = 0;
+        while at < parts[list].len() {
+            count += parts[list][at].len();
+            at += 1;
+        }
+        list += 1;
     }
     count
 }
 
-/// The parts one after another, at compile time, so the table is one static array as it was.
-const fn joined<const N: usize>(parts: &[&[Spec]]) -> [Spec; N] {
-    let mut out = [table::BASE; N];
-    let mut filled = 0;
+/// The groups of `recto help`, in the order a newcomer needs them: each is shown once, with its rows in the order of [`PARTS`].
+const GROUP_ORDER: &[&str] = &[
+    table::GROUP_START,
+    table::GROUP_READ,
+    table::GROUP_MOVE,
+    table::GROUP_EDIT,
+    table::GROUP_SYNC,
+    table::GROUP_ACCESS,
+    table::GROUP_SESSION,
+    table::GROUP_APP,
+    table::GROUP_SKILL,
+    table::GROUP_MEASURE,
+    table::GROUP_QA,
+];
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
     let mut at = 0;
-    while at < parts.len() {
-        let mut row = 0;
-        while row < parts[at].len() {
-            out[filled] = parts[at][row];
-            filled += 1;
-            row += 1;
+    while at < a.len() {
+        if a[at] != b[at] {
+            return false;
         }
         at += 1;
     }
-    assert!(filled == N);
+    true
+}
+
+/// The parts' rows, group by group in [`GROUP_ORDER`], keeping their order within a group. A row in no listed group fails the build.
+const fn grouped<const N: usize>(parts: &[&[&[Spec]]]) -> [Spec; N] {
+    let mut out = [table::BASE; N];
+    let mut filled = 0;
+    let mut group = 0;
+    while group < GROUP_ORDER.len() {
+        let mut list = 0;
+        while list < parts.len() {
+            let mut at = 0;
+            while at < parts[list].len() {
+                let mut row = 0;
+                while row < parts[list][at].len() {
+                    if same(parts[list][at][row].group, GROUP_ORDER[group]) {
+                        out[filled] = parts[list][at][row];
+                        filled += 1;
+                    }
+                    row += 1;
+                }
+                at += 1;
+            }
+            list += 1;
+        }
+        group += 1;
+    }
+    assert!(filled == N, "a row's group isn't in GROUP_ORDER");
     out
 }
 
 /// Every row, in order.
-pub(crate) static ROWS: [Spec; rows_in(PARTS)] = joined(PARTS);
+pub(crate) static ROWS: [Spec; rows_in(PARTS)] = grouped(PARTS);
