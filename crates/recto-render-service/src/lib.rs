@@ -62,7 +62,7 @@ pub mod exit_code {
     pub const LAUNCHD_REACHABLE: i32 = 79;
 }
 
-/// Where the renderer lives in the app, and when it must be walled in. `docs/ENGINEERING.md`, "Renderer".
+/// Where the renderer lives in the app, and when it must be walled in. `docs/engineering/sandbox.md`.
 pub mod bundle {
     use std::path::{Path, PathBuf};
 

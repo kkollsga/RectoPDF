@@ -224,7 +224,7 @@ The app now hands the worker `IOSurface`s over a Mach link, which this spike's m
 
 ## To build it
 
-**Built, 2026-11-08,** as below: `docs/ENGINEERING.md`, "Renderer", has the layout, the tests and the numbers. The walls are `recto_platform::wall`, the layout `app/render-helper.sh`, and a port of `walls.rs` is `crates/recto-platform/tests/walls.rs`.
+**Built, 2026-11-08,** as below: `docs/engineering/sandbox.md`, has the layout, the tests and the numbers. The walls are `recto_platform::wall`, the layout `app/render-helper.sh`, and a port of `walls.rs` is `crates/recto-platform/tests/walls.rs`.
 
 Small, and behind the launch seam. No other change to `DocRenderer`, the protocol or the limits.
 

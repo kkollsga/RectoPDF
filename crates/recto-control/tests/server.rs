@@ -59,11 +59,14 @@ impl Host for Stand {
                 Ok(json!({ "huge": "x".repeat(5_000_000) }))
             }
             Command::Goto { page, .. } => {
-                events.push(Event::new("page_changed", json!({ "page": page })));
+                events.push(Event::PageChanged {
+                    tab: recto_session::TabId(1),
+                    page: *page,
+                });
                 Ok(json!({ "page": page }))
             }
             Command::Close { .. } => {
-                events.push(Event::new("tab_closed", json!({})));
+                events.push(Event::TabClosed { tab: recto_session::TabId(1) });
                 Ok(json!({ "closed": true }))
             }
             _ => Ok(json!({ "ran": command.tag() })),

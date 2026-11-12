@@ -36,6 +36,8 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
         (Some(true), Some(true)),
         "opening a document changes both: {opened}"
     );
+    // A quiet run's window sits 40,000 points off every screen and is never ordered in (`MainWindowController`), so the real pointer can't be in a corner: nothing here depends on where the owner's mouse is.
+    assert_eq!(opened["pointer_in"], serde_json::json!([]), "no corner has the real pointer in it: {opened}");
     let next = opened["next_change_in_ms"].as_u64().unwrap();
     assert!(next > 0 && next <= 3_000, "they go within 3 s: {opened}");
     let gone = wait_marks(&run, |marks| marks["zoom_shown"] == false && marks["place_shown"] == false);

@@ -233,7 +233,7 @@ pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFact
         return Err(OpenError::NotPdf);
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
-    // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in ENGINEERING. The options are moved in, so there's nothing left here to clear.
+    // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in `docs/engineering/opening.md`. The options are moved in, so there's nothing left here to clear.
     let options = lopdf::IndexedReaderOptions {
         password: Some(password.bytes().to_vec()),
         ..lopdf::IndexedReaderOptions::default()

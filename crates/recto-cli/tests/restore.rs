@@ -102,6 +102,20 @@ fn exceptions() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// Failure (full check, 2026-11-12, `an_update_in_the_middle_of_things_changes_nothing`): the whole-state comparison failed with `app.animations: nothing then "chrome_fading"`. The zoom level's and page number's fade starts on its own timer 3 s after their last change (`ChromeFader.armTimer`, `Chrome.swift`), and `wait-settled` only waits for a fade already under way; on a loaded machine the 3 s ran out between `settled` and the state read (the test took 65 s). It is not the pointer: a quiet run's `pointer_in` stayed empty. A fade in flight is not part of what comes back, as `app.chrome` isn't, so two states that differ only in it are the same. Needs no app.
+#[test]
+fn a_fade_that_began_on_its_own_timer_is_not_a_difference() {
+    let at_rest = json!({ "app": { "animations": [], "pages": { "scroll_y": 12.0 } } });
+    let fading = json!({ "app": { "animations": ["chrome_fading"], "pages": { "scroll_y": 12.0 } } });
+    assert_same(&at_rest, &fading, &[]);
+    assert_same(&fading, &at_rest, &[]);
+    // Any other animation is still one, and so is a real difference beside a fade.
+    let zooming = json!({ "app": { "animations": ["zoom_settling"], "pages": { "scroll_y": 12.0 } } });
+    assert!(std::panic::catch_unwind(|| assert_same(&at_rest, &zooming, &[])).is_err());
+    let moved = json!({ "app": { "animations": ["chrome_fading"], "pages": { "scroll_y": 13.0 } } });
+    assert!(std::panic::catch_unwind(|| assert_same(&at_rest, &moved, &[])).is_err());
+}
+
 /// Failure (review T3): the list of known paths was unsorted, with new ones added at its top, so every branch that added a `qa state` field conflicted there. Each area's file, of known paths and of exceptions, is sorted with no line twice, holds only its own area's paths, and every file in those folders is read. An exception says why. Needs no app.
 #[test]
 fn the_known_paths_and_exceptions_are_sorted_with_no_duplicates() {
@@ -150,6 +164,15 @@ fn differs(left: &Value, right: &Value) -> bool {
     }
 }
 
+/// A state without the zoom level's and page number's fade in `app.animations`, which starts on a timer of its own.
+fn without_timed_fade(state: &Value) -> Value {
+    let mut state = state.clone();
+    if let Some(list) = state["app"]["animations"].as_array_mut() {
+        list.retain(|one| one.as_str() != Some("chrome_fading"));
+    }
+    state
+}
+
 /// Compares everything, and fails on anything but what's named.
 fn assert_same(before: &Value, after: &Value, known: &[&str]) {
     assert_same_but(before, after, known, &[]);
@@ -158,8 +181,9 @@ fn assert_same(before: &Value, after: &Value, known: &[&str]) {
 /// The same, with what else a caller can name and say why.
 fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str]) {
     let (mut one, mut two) = (BTreeMap::new(), BTreeMap::new());
-    flatten(before, "", &mut one);
-    flatten(after, "", &mut two);
+    // A fade the 3 s timer starts can begin between `settled` and the state read, on either side: it's no more part of what comes back than `app.chrome` is (and as `moving_besides_the_timed_fade` in tests/app.rs has it).
+    flatten(&without_timed_fade(before), "", &mut one);
+    flatten(&without_timed_fade(after), "", &mut two);
     let exceptions = exceptions();
     // Known failing on CI only (2026-11-11, due 2026-11-18): on GitHub's runners the contents' per-row accessibility now and then comes
     // back empty across a restart (runs 43079093694, 43109960924), never reproduced here and not explained by the diagnostic. PLAN phase 7
@@ -940,7 +964,7 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     assert_eq!(run.ok(&["where"])["pages"], 2);
 }
 
-/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/ENGINEERING.md`.
+/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/engineering/state-record.md`.
 #[test]
 fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     let state = State::at(Level::Full);

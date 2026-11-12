@@ -13,7 +13,7 @@
 //! a backup of the original: nothing is lost. It may Save As to a new file, which changes nothing that exists. Replacing another file, and a save
 //! that rewrites the file, which takes what was removed out of it for good, need Full. Read-only and Off can't save.
 
-use crate::{AgentError, Event, Level, SessionAccess, edits_event, exit, file_label, select};
+use crate::{AgentError, Event, Level, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
 use recto_session::TabId;
@@ -315,8 +315,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
             None => 0,
         };
         s.end_save(id);
-        events.push(Event::new("saved", json!({ "tab": id.0, "writer": outcome.writer.name() })));
-        events.push(edits_event(s, id));
+        events.extend(crate::event::saved(s, id, outcome.writer.name()));
         answer(s, id, &outcome, rolled_off, saved_as.as_deref(), level)
     });
     drop(ending);
