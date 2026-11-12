@@ -3,7 +3,7 @@
 use super::*;
 use crate::slow_stage::make_rich_lean;
 
-/// Failure (CI, 2026-11-11: an update's launch under slow conditions): an update loses or changes anything the user can see or has changed when the new app's launch is late at every waiting point: its state read 1.5 s late so its window goes up without it and is made again from it, the session thread late after it, the socket's first answer late (the relaunch carries the slow switches over), and its first frame's tiles drawn through workers whose answers are late. Crossed: the late state read and remake at the new app's launch, a page on screen and settled before the hand-off and drawn again after it, the first correct frame, the whole of `qa state` compared, undo after it.
+/// Failure (CI, 2026-11-11: an update's launch under slow conditions): an update loses or changes anything the user can see or has changed when the new app's launch is late at every waiting point: what it is known late, its state read 1.5 s late, the session thread late after it, the socket's first answer late (the relaunch carries the slow switches over), and its first frame's tiles drawn through workers whose answers are late. A launch an update opened waits for its state (`UPDATE_RESTORE_PATIENCE`, 20 s), so its window goes up with it: no window is made again here (`record.remade` is false), which is `everything_comes_back_when_the_state_is_read_late`'s. Crossed: the late state read inside an update's patience, a page on screen and settled before the hand-off and drawn again after it, the first correct frame, the whole of `qa state` compared, undo after it.
 #[test]
 fn an_update_changes_nothing_when_every_wait_is_late() {
     let Some(bed) = Bed::new() else { return };
@@ -37,6 +37,7 @@ fn an_update_changes_nothing_when_every_wait_is_late() {
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something's on it: {shown}");
     assert_eq!(shown["page"], before["reader"]["page"]);
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
+    assert_eq!(after["record"]["remade"], false, "an update's launch waited for its state");
     run.ok(&["qa", "owner-edit", "redo"]);
     run.quit();
 }
