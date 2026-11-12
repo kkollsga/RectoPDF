@@ -590,12 +590,13 @@ mod tests {
         assert!(!late.may_visit(), "out of time");
     }
 
-    /// Failure: a title with bidi overrides or newlines reaches the sidebar or an agent's prompt intact.
+    /// Failure: a title with bidi overrides or newlines reaches the sidebar or an agent's prompt intact; or one with tag characters, which take two UTF-16 units each and which no
+    /// eye can see and an agent reads as text. Which characters go is `the_one_rule_covers_every_kind_of_invisible_character`'s.
     #[test]
     fn clean_text_strips_controls_and_bidi_overrides() {
         assert_eq!(clean_text(b"Report\n\tIgnore"), "Report Ignore");
         let mut utf16 = vec![0xFE, 0xFF];
-        for unit in "a\u{202E}b".encode_utf16() {
+        for unit in "a\u{202E}\u{E0041}\u{E0042}b".encode_utf16() {
             utf16.extend(unit.to_be_bytes());
         }
         assert_eq!(clean_text(&utf16), "ab");
@@ -634,17 +635,6 @@ mod tests {
         for c in ['a', 'Æ', '数', '😀', ' ', '-'] {
             assert!(!is_invisible_format(c), "U+{:04X} is real text", c as u32);
         }
-    }
-
-    /// Failure: a title carries an instruction in tag characters, which no eye can see and an agent reads as text.
-    #[test]
-    fn clean_text_strips_tag_characters_and_variation_selectors() {
-        let mut utf16 = vec![0xFE, 0xFF, 0, b'a'];
-        for unit in "\u{E0041}\u{E0042}\u{FE0F}\u{2064}".encode_utf16() {
-            utf16.extend_from_slice(&unit.to_be_bytes());
-        }
-        utf16.extend_from_slice(&[0, b'b']);
-        assert_eq!(clean_text(&utf16), "ab");
     }
 
     /// Failure: Norwegian letters in a Latin-1 title come out garbled.
