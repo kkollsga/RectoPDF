@@ -32,3 +32,28 @@ impl Clock for FakeClock {
         self.now.load(Ordering::SeqCst)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Failure: a crate enables `recto-app`'s `testkit` feature outside `[dev-dependencies]`, so the fakes (a clock that never moves, a listener that hears nothing) are built into the app or the CLI, where nothing should be able to reach them.
+    #[test]
+    fn only_tests_enable_the_testkit() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut looked = 0;
+        for entry in std::fs::read_dir(&crates).expect("the crates folder") {
+            let manifest = entry.expect("an entry").path().join("Cargo.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else { continue };
+            looked += 1;
+            let mut section = String::new();
+            for line in text.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    section = line.to_string();
+                } else if line.starts_with("recto-app") && line.contains("testkit") {
+                    assert!(section.ends_with("dev-dependencies]"), "{} enables testkit in {section}", manifest.display());
+                }
+            }
+        }
+        assert!(looked > 10, "read only {looked} manifests");
+    }
+}
