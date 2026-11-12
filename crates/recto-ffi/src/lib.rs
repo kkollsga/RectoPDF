@@ -22,11 +22,11 @@ mod sleep_queue;
 mod sleeper;
 mod snapshot_tool;
 pub mod updates;
-mod watchdog;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
@@ -56,7 +56,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
 

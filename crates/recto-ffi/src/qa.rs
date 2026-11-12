@@ -1,8 +1,8 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
-use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use crate::{AppCore, AppListener, CoreQueue, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
+use recto_app::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
 use serde_json::{Value, json};

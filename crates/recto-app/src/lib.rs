@@ -16,6 +16,7 @@ pub mod sidebar_access;
 pub mod snapshot_menu;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
+pub mod watchdog;
 
 pub use model::*;
 
