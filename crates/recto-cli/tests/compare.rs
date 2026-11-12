@@ -52,7 +52,8 @@ fn comparison_view_from_command_click_to_one_again() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let one = run.report();
-    let threads_alone = one["memory"]["threads"].as_u64().unwrap();
+    // The app's own, by name: the count of all took in the system's libdispatch pool, whose size goes with the machine's load (CI, 2026-11-12).
+    let threads_alone = common::threads::own(run.pid);
     assert_eq!(panes(&one).len(), 1);
     assert!(
         one["context_menu"].is_null()
@@ -189,15 +190,9 @@ fn comparison_view_from_command_click_to_one_again() {
     assert!(closed["session"]["comparison"].is_null());
     assert_eq!(closed["session"]["active"], 3);
     // One-shot threads, a look at a file or a sleep file being written, end by themselves: a pane's page view that stayed would be there for good.
-    let began = Instant::now();
-    let threads = loop {
-        let threads = run.report()["memory"]["threads"].as_u64().unwrap();
-        if threads <= threads_alone + 1 || began.elapsed() > Duration::from_secs(5) {
-            break threads;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    assert!(threads <= threads_alone + 1, "{threads} threads, {threads_alone} alone");
+    if let Some(wrong) = common::threads::back_to(run.pid, &threads_alone, Duration::from_secs(5)) {
+        panic!("a pane's thread stayed: {wrong}");
+    }
 
     // And a plain click returns to one.
     run.ok(&["compare", "--tabs", "#2,#3"]);
