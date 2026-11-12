@@ -426,9 +426,11 @@ Owner, 2026-11-12, with `main` red on CI for four pushes: "The red ci issue is s
 - [ ] R0.7e `main`'s CI is watched by the tool: the push that the coordinator makes ends with a watcher that reports the run, and a red `main` makes `tools/check.sh --full` on `main` say so and refuse the next merge's stamp until it is green or the failure is marked known with a date.
 R1.4 (lifecycle as state machines on a fake clock, arrivals in every order) is the structural half of this, and moves up: it starts as soon as R1.2's next slice is in.
 
+- [x] The slow stage runs lean variants of its two longest tests (2026-11-12): 148 s to 109 s of wall. Five more tests of 21 to 30 s could get the same treatment for about 30 s more; left, as R1.4 replaces most of the stage.
+
 **R1. The app core out of the bridge (track A)**
 - [x] R1.1 [4] The pure part of `reconcile` (500 lines) into a `model` function, with 20 unit tests (notice precedence, Save icon, pane labels, contents changes). 2–3 d
-- [ ] R1.2 [11] (first slice done 2026-11-12 with R1.1: the `recto-app` crate exists and holds the view model, with plain view types and `From` conversions in `recto-ffi/src/records.rs`; the feature modules and `Inner` remain) A toolkit-free `recto-app` crate with `Listener`, `Clock` and host-service traits; `recto-ffi`'s feature modules move, `Inner`'s 45 fields become narrow handles, `recto-ffi` adapts only. 5–7 d, in 3–4 merges
+- [ ] R1.2 [11] (second slice merged 2026-11-12: chrome, privacy, linking, passwords, sidebar access, menus, the palette and panes are in recto-app, with a Clock trait and a testkit feature; the bridge is at 10,227 production lines and Inner at 43 fields; left, in order: watchdog, find with the Listener trait, generated contents, saving wording, then saver, sleeper, sleep queue, printing and the snapshot tool with narrow handles, then updates) (first slice done 2026-11-12 with R1.1: the `recto-app` crate exists and holds the view model, with plain view types and `From` conversions in `recto-ffi/src/records.rs`; the feature modules and `Inner` remain) A toolkit-free `recto-app` crate with `Listener`, `Clock` and host-service traits; `recto-ffi`'s feature modules move, `Inner`'s 45 fields become narrow handles, `recto-ffi` adapts only. 5–7 d, in 3–4 merges
 - [ ] R1.3 A headless app for tests (fake listener, clock and disk); the about 90 app tests that check a Rust rule ported to it, each shown failing on its seeded bug; the whole-state restore guard in process. 3–4 d
 - [ ] R1.4 [14] Launch and late state, quit and hand-off, update, and the sleep writer as state machines with the clock passed in, arrivals tested in every order; about 20 update tests ported; the window drawn from Rust's state alone. 4–6 d
 
@@ -441,7 +443,7 @@ Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cl
 - [ ] R2.4 [12] A QA verb table; the about 25 verbs standing in for an action replaced by commands; Swift's verbs checked against the table. 2 d
 
 **R3. Components (track C)**
-- [ ] R3.1 [6] `Session`'s `impl` and its inline tests split by concern (moves only). 1–2 d
+- [x] R3.1 [6] `Session`'s `impl` and its inline tests split by concern (moves only). 1–2 d
 - [ ] R3.2 [7] `Session`'s fields into component structs, one concern per merge; a cold tab's cost unchanged. 4–6 d
 - [ ] R3.3 `Reader`'s 43 fields and 155 methods into components the same way. 3–4 d
 - [ ] R3.4 [13, reduced] Swift: `QAChannel` by area, and a pane file per feature where one is next touched. 1 d
