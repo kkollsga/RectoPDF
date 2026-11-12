@@ -1,4 +1,4 @@
-apptest crates/recto-cli/tests 204
+apptest crates/recto-cli/tests 203
 ffi crates/recto-ffi/src 2354
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524

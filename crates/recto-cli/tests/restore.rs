@@ -1787,23 +1787,6 @@ fn history_is_only_taken_up_after_a_good_read() {
     run.hand_off();
 }
 
-/// Failure (final review N4): a quit during a read that's stuck wrote nothing at all, as what's right for a hand-off isn't for a quit: there, the update waits, but here the app's going anyway. The reader's place came back as page 1. A quit writes what there is.
-#[test]
-fn a_quit_during_a_stuck_read_still_writes() {
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
-    let (file, other) = (long_document("stuck", 20), long_document("other", 2));
-    run.ok(&["open", file.0.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["qa", "hold-reads", "on"]);
-    run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
-    run.ok(&["goto", "12"]);
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(run.report()["reader"]["page"], 12);
-}
-
 /// Failure (review T12, T13): the damaged-state notice is saved and shown again on every launch, though the reader has seen it. And what a record's notice says reaches the reader and agents as text, forged or not, in a field documented as Rust's own. It's a code, it goes once they've moved on, and a code it doesn't know says nothing.
 #[test]
 fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {

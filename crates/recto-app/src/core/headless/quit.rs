@@ -120,3 +120,26 @@ fn tabs_just_opened_come_back_when_their_sleep_files_are_late() {
     assert_eq!(app.tabs().len(), TABS, "every tab came back");
     drop(app.quit());
 }
+
+/// Failure (final review N4): a quit during a read that's stuck wrote nothing at all, as what's right for a hand-off isn't for a quit: there the update waits,
+/// but here the app's going anyway, and the reader's place came back as page 1. A file's read held back, the reader moved meanwhile, a quit: the next launch is
+/// at the place. (Replaces the app test `a_quit_during_a_stuck_read_still_writes`: nothing of it was the window's.)
+#[test]
+fn a_quit_during_a_stuck_read_still_writes() {
+    let app = HeadlessApp::start();
+    let (file, other) = (app.disk().pdf("stuck.pdf", 20), app.disk().pdf("other.pdf", 2));
+    app.open(&file);
+    app.core().qa_session_verb("hold_reads", "on").expect("a QA verb").expect("reads held");
+    app.core().open_file(other);
+    app.wait_until("the other file's read to be under way", || {
+        app.core().life.reads_running.load(Ordering::SeqCst) > 0
+    });
+    app.recto(recto_agent::Level::Full, &["goto", "12"]).expect("goto");
+    let answer = app.ask_to_quit();
+    assert!(answer.go, "{answer:?}");
+    // The real app's process ends with the read still stuck; here the read is let go so the core can end, with the quit already written and the app frozen.
+    app.core().qa_session_verb("hold_reads", "off").expect("a QA verb").expect("reads let go");
+    let again = app.quit_anyway().start();
+    assert_eq!(again.reader().place, "12 of 20", "the place the quit wrote, with a read stuck");
+    drop(again.quit());
+}
