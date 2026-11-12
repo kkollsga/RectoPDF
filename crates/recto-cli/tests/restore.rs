@@ -185,25 +185,21 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     flatten(&without_timed_fade(before), "", &mut one);
     flatten(&without_timed_fade(after), "", &mut two);
     let exceptions = exceptions();
-    // Known failing on CI only (2026-11-11, due 2026-11-18): on GitHub's runners the contents' per-row accessibility now and then comes
-    // back empty across a restart (runs 43079093694, 43109960924), never reproduced here and not explained by the diagnostic. PLAN phase 7
-    // has the item. Everywhere else it's compared like everything else.
-    let ci_known = std::env::var_os("CI").is_some();
-    let excepted = |path: &str| {
-        exceptions.iter().any(|(name, _)| path.starts_with(name))
-            || also.iter().any(|name| path.starts_with(name))
-            || (ci_known && path.starts_with("app.contents.accessibility"))
-    };
-    let mut wrong = Vec::new();
+    let excepted =
+        |path: &str| exceptions.iter().any(|(name, _)| path.starts_with(name)) || also.iter().any(|name| path.starts_with(name)) || ci_known::covers(path);
+    let (mut wrong, mut let_through) = (Vec::new(), Vec::new());
     for (path, value) in &one {
-        if excepted(path) {
-            continue;
-        }
-        match two.get(path) {
-            Some(other) if !differs(value, other) => {}
-            other => wrong.push(format!("{path}: {value} then {}", other.map_or("nothing".to_string(), ToString::to_string))),
+        let said = match two.get(path) {
+            Some(other) if !differs(value, other) => continue,
+            other => format!("{path}: {value} then {}", other.map_or("nothing".to_string(), ToString::to_string)),
+        };
+        if !excepted(path) {
+            wrong.push(said);
+        } else if ci_known::covers(path) {
+            let_through.push(said);
         }
     }
+    ci_known::say(&let_through);
     for path in two.keys() {
         if !excepted(path) && !one.contains_key(path) {
             wrong.push(format!("{path}: nothing then {}", two[path]));
@@ -2406,6 +2402,8 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 #[path = "restore/update.rs"]
 mod update;
 
+#[path = "restore/ci_known.rs"]
+mod ci_known;
 #[path = "restore/exits.rs"]
 mod exits;
 #[path = "restore/many.rs"]

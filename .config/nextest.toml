@@ -19,3 +19,10 @@ priority = 50
 path = "junit.xml"
 store-success-output = false
 store-failure-output = false
+
+# On CI the restore tests' output shows when they pass too, at the end of the run: a comparison let through by the CI-only exception for the contents'
+# pane (crates/recto-cli/tests/restore/ci_known.rs, due 2026-11-18) says so there, with what the apps said, so a green job still leaves the evidence.
+# Find it with: grep 'ci-known exception used'.
+[[profile.ci.overrides]]
+filter = 'binary(=restore)'
+success-output = "final"

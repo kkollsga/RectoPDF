@@ -412,3 +412,29 @@ pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
     document.save_to(&mut bytes).unwrap();
     bytes
 }
+
+/// What every app this test process started said, the run before's kept too, from each state folder of this process's still there: for a line a passing test prints when it let something through it would otherwise have failed on.
+pub fn messages_so_far() -> String {
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    let mine = format!("rc{}-", std::process::id());
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&temp)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    folders.retain(|folder| folder.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&mine)));
+    folders.sort();
+    let mut said = Vec::new();
+    for folder in folders {
+        for name in ["server-messages.previous.txt", "server-messages.txt"] {
+            if let Ok(text) = std::fs::read_to_string(folder.join(name))
+                && !text.trim().is_empty()
+            {
+                said.push(format!("{}/{name}:\n{}", folder.display(), text.trim_end()));
+            }
+        }
+    }
+    if said.is_empty() {
+        "(the apps said nothing)".to_string()
+    } else {
+        said.join("\n")
+    }
+}
