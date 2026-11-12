@@ -336,7 +336,7 @@ mod tests {
         let started = Instant::now();
         while !done() {
             assert!(started.elapsed() < Duration::from_secs(10), "waited 10 s for {what}");
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
         }
     }
 

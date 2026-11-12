@@ -276,7 +276,7 @@ fn wait_until(what: &str, limit: Duration, mut done: impl FnMut() -> bool) {
     let began = Instant::now();
     while !done() {
         assert!(began.elapsed() < limit, "waited for {what}");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
 }
 

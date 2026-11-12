@@ -242,7 +242,7 @@ fn wait_gone(pid: u64) {
     // This is the test watching a process it can't wait on, because it isn't its child.
     while recto_platform::local::process_counters(u32::try_from(pid).unwrap()).is_some() {
         assert!(started.elapsed() < Duration::from_secs(10), "it's still running");
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
 }
 
