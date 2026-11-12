@@ -1653,6 +1653,11 @@ impl Inner {
                     self.core.push(CoreCall::MemoryPressure(value == "critical"));
                     Ok(())
                 }
+                // What the host's dispatch source calls, through the same method, which in a quiet run only counts it.
+                "system-warning" | "system-critical" => {
+                    self.system_pressure(value == "system-critical");
+                    Ok(())
+                }
                 // The system taking back what's marked discardable, which it does without a word whenever it needs the pages.
                 "discard" => {
                     for engine in self.panes.engines(&self.engine) {
@@ -2662,7 +2667,7 @@ impl AppCore {
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
     pub fn memory_pressure(&self, critical: bool) {
-        self.inner.core.push(CoreCall::MemoryPressure(critical));
+        self.inner.system_pressure(critical);
     }
 
     /// What a right-click on a page offers.

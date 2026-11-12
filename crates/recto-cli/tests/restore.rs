@@ -1257,6 +1257,25 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     );
 }
 
+/// Failure: a quiet run acts on the machine's own memory pressure, so a test's tabs go to sleep under it when other work loads the Mac (full check, 2026-11-12: the test below saw 2 documents held of 3, during the kernel's only warning that hour); or it isn't counted, so a run can't say the machine was under pressure. Through the method the host's dispatch source calls.
+#[test]
+fn a_quiet_run_counts_the_systems_memory_pressure_and_puts_nothing_to_sleep() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::on(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    for at in 0..2 {
+        run.ok(&["open", text_document(&folder, &format!("d{at}.pdf"), 2).to_str().unwrap()]);
+        run.settled();
+    }
+    run.ok(&["qa", "memory-pressure", "system-warning"]);
+    run.settled();
+    let sleep = &run.report()["record"]["sleep"];
+    assert!(sleep["system_pressure"]["warning"].as_u64().unwrap() >= 1, "counted: {sleep}");
+    assert_eq!(sleep["pressure_events"], 0, "and not acted on: {sleep}");
+    assert_eq!(sleep["gone_dormant"]["pressure"], 0, "{sleep}");
+}
+
 /// Failure: the system says memory's short and tabs off screen stay, or the budget across documents isn't kept, or what's being read goes blank. Everything off screen goes dormant at once, oldest first, and what's on screen stays. And a window of many tabs can't go over its budget.
 #[test]
 fn pressure_and_the_budget_do_what_being_left_alone_does() {

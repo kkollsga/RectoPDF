@@ -9,6 +9,7 @@ pub mod model;
 pub mod palette;
 pub mod panes;
 pub mod passwords;
+pub mod pressure;
 pub mod privacy;
 pub mod prompts;
 pub mod sidebar_access;
