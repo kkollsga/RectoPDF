@@ -447,7 +447,7 @@ fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
 }
 
-/// Failure: the page number isn't in the lower right with the sidebar showing, or goes with it hidden, or doesn't follow the page. Owner, 2026-11-07: "The page number should always be visible in the lower right."
+/// Failure: the page number isn't in the lower right with the sidebar showing, or with it hidden, or in a small window, or doesn't follow the page. Owner, 2026-11-07: "The page number should always be visible in the lower right", which the owner replaced on 2026-11-08 by its fading 3 s after the place last changed (`marks::the_zoom_level_and_the_page_number_fade_after_their_last_change`); where it is still holds.
 #[test]
 fn the_page_number_is_always_in_the_lower_right() {
     let Some(run) = Run::start() else { return };

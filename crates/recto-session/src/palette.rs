@@ -112,19 +112,17 @@ mod tests {
         );
     }
 
-    /// Failure: a hostile tab name, very long or full of the query's letters, makes ranking slow on the UI thread (review: 0.53 ms an item with a 256-letter name and a 64-letter query, so seconds over 10,000 tabs), or a list holds every item there is.
+    /// Failure: a hostile tab name, very long or full of the query's letters, makes ranking slow on the UI thread (review: 0.53 ms an item with a 256-letter name and a 64-letter query, so seconds over 10,000 tabs), or a list holds every item there is. What bounds an item's cost is that only [`MAX_QUERY_CHARS`] of the query and [`MAX_TEXT_CHARS`] of the item are looked at, 4,096 steps at most; that's shown by what they find, with no clock (a timed run of 10,000 hostile names took 2 s on CI).
     #[test]
     fn its_cost_and_its_list_are_bounded() {
-        let long = "a".repeat(100_000);
-        assert!(score(&"a".repeat(10_000), &long).is_some());
-        let hostile: Vec<String> = (0..10_000).map(|_| "ab".repeat(128)).collect();
-        let query = "ab".repeat(32);
-        let started = std::time::Instant::now();
-        let found = rank(&query, hostile.iter().map(String::as_str));
-        let took = started.elapsed();
-        assert_eq!(found.len(), MAX_RESULTS);
-        // About 4,096 steps an item: a few milliseconds a thousand in a release build. Generous, for a debug build under load.
-        assert!(took < std::time::Duration::from_secs(5), "{took:?} for 10,000 hostile names");
+        const { assert!(MAX_QUERY_CHARS * MAX_TEXT_CHARS <= 4096) };
+        let past_the_item = format!("{}z", "a".repeat(MAX_TEXT_CHARS));
+        assert_eq!(score("z", &past_the_item), None, "a letter past an item's first {MAX_TEXT_CHARS} was looked at");
+        let past_the_query = format!("{}z", "a".repeat(MAX_QUERY_CHARS));
+        assert!(
+            score(&past_the_query, &"a".repeat(MAX_QUERY_CHARS)).is_some(),
+            "a letter past a query's first {MAX_QUERY_CHARS} was looked for"
+        );
         let many: Vec<String> = (0..1000).map(|at| format!("tab {at}")).collect();
         assert_eq!(rank("tab", many.iter().map(String::as_str)).len(), MAX_RESULTS);
     }

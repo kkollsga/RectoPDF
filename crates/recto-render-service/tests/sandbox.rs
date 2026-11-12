@@ -14,9 +14,9 @@ use recto_platform::surface::PixelSurface;
 use recto_proto::CharRecord;
 use recto_render_service::transport::send_all;
 use recto_render_service::{
-    DocRenderer, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig, Surface, TILE_EDGE, TileKind, TileRect, TileRequest, TileResult, WallsDown,
+    DocRenderer, HeavySlot, Policy, RenderFailure, ServiceConfig, Surface, TILE_EDGE, TileKind, TileRect, TileRequest, TileResult, WallsDown,
 };
-use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
+use recto_testpdf::{Object, Page, TempPdf, build, hidden_text_page, pages, text_lines};
 use std::ffi::{CString, c_char, c_int};
 use std::io::Read as _;
 use std::net::TcpListener;
@@ -149,8 +149,9 @@ fn text_of(doc: &mut DocRenderer, page: u32) -> (String, Vec<bool>, bool) {
     (text, flags, characters.hidden_checked)
 }
 
-/// Failure: the worker in the shipped layout runs outside the sandbox, or can read a file by its path, and only its own word says otherwise. The kernel is asked about the live process,
-/// with this test process as the control, and the helper's own library as a path the sandbox must allow, so a check that always says "denied" can't pass.
+/// Failure: the worker in the shipped layout runs outside the sandbox, or can read a file by its path, and only its own word says otherwise; or one started to replace a worker
+/// that was killed does. The kernel is asked about the live process, with this test process as the control, and the helper's own library as a path the sandbox must allow, so a
+/// check that always says "denied" can't pass. (What a kill mid-page does to the document is `worker`'s `a_worker_killed_mid_page_is_replaced`: being sandboxed doesn't change it.)
 #[test]
 fn the_bundled_worker_runs_sandboxed_and_cant_read_by_path() {
     let bundle = Bundle::new("proof");
@@ -186,6 +187,14 @@ fn the_bundled_worker_runs_sandboxed_and_cant_read_by_path() {
         "a bare development worker isn't sandboxed, so the sandbox comes from the helper's signing"
     );
     assert_eq!(plain.worker_walled(), Some(false), "a bare worker said it was walled");
+    // Killed, the next page draws in a new worker, walled as the first was.
+    kill_process(pid);
+    wait_until("the killed worker to be gone", || process_memory(pid).is_none());
+    draw(&mut doc, 0);
+    let again = doc.worker_pid().expect("a new worker");
+    assert_ne!(again, pid);
+    assert_eq!(sandboxed(again), 1, "the replacement isn't sandboxed");
+    assert_eq!(doc.worker_walled(), Some(true), "the replacement's hello didn't say its walls were up");
 }
 
 /// Failure: a helper signed without the sandbox, the mistake a build could make, draws a hostile file anyway and nobody can tell. The worker tests its wall before any document
@@ -228,52 +237,6 @@ fn drawing_text_and_the_hidden_check_are_the_same_in_the_sandbox() {
         text_of(&mut theirs, 1),
         "the sandbox changed the text or the hidden-text check"
     );
-}
-
-/// Failure: a sandboxed worker that crashes or is killed, mid-page or between pages, leaves its document broken, or its replacement starts outside the sandbox.
-#[test]
-fn a_crash_or_kill_in_the_sandbox_is_recovered() {
-    let bundle = Bundle::new("kill");
-    let file = TempPdf::new("kill.pdf", &form_bomb());
-    let policy = Policy {
-        memory_limit_bytes: 2 << 30,
-        page_deadline: Duration::from_secs(60),
-        ..Policy::default()
-    };
-    let mut doc = DocRenderer::new(&file.0, None, bundle.config(), policy).unwrap();
-    assert_eq!(doc.page_count().unwrap(), 2);
-    let first = doc.worker_pid().unwrap();
-    // The bomb runs until something stops it, so this kill lands inside the page whenever it arrives.
-    let killer = std::thread::spawn(move || {
-        wait_until("the bomb to start growing", || {
-            process_memory(first).is_some_and(|memory| memory.footprint_bytes > 32 * 1024 * 1024)
-        });
-        kill_process(first);
-    });
-    let surface = Surface::create((EDGE * EDGE * 4) as usize).unwrap();
-    let failure = doc.render_tile(&request(0), &surface).unwrap_err();
-    killer.join().unwrap();
-    assert_eq!(
-        failure,
-        RenderFailure::PageFailed {
-            page: 0,
-            reason: KillReason::Crashed
-        }
-    );
-    assert!(
-        matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour),
-        "the next page draws in a new worker"
-    );
-    let second = doc.worker_pid().unwrap();
-    assert_ne!(second, first);
-    assert_eq!(sandboxed(second), 1, "the replacement isn't sandboxed");
-    kill_process(second);
-    wait_until("the killed worker to be gone", || process_memory(second).is_none());
-    assert!(
-        matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour),
-        "a page draws after a kill between pages"
-    );
-    assert_eq!(sandboxed(doc.worker_pid().unwrap()), 1);
 }
 
 /// A file that asks, every way PDF offers, for a file by its path and for the network: external streams for a page's contents, an image and a font, all naming a canary file that is

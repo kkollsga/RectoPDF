@@ -165,21 +165,21 @@ fn a_long_session_stays_flat() {
     let _ = pid;
 }
 
-/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. And (review 1) memory pressure wrote the tabs going dormant on the session thread, behind every file queued, while nothing else was served. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, one writer at most, the pictures queued and being written stay under their cap, and its footprint doesn't climb with the tabs. Its threads are its own, by name (`common::threads`), at every sample: none more than with the warm ones full but the passing kinds, and never two sleep writers; the count of all threads took in the system's libdispatch pool, whose size goes with the machine's load (CI, 2026-11-12: "13 then 17"). Memory pressure then, with the queue full, doesn't hold up showing a tab for a slow write. And once the queue's written, there's no writer and no thread left for it. Numbers that matter come from a release build: `--no-capture` prints them.
+/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. And (review 1) memory pressure wrote the tabs going dormant on the session thread, behind every file queued, while nothing else was served. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, one writer at most, the pictures queued and being written stay under their cap, and its footprint doesn't climb with the tabs. Its threads are its own, by name (`common::threads`), at every sample: none more than with the warm ones full but the passing kinds, and never two sleep writers; the count of all threads took in the system's libdispatch pool, whose size goes with the machine's load (CI, 2026-11-12: "13 then 17"). Memory pressure then, with the queue full, doesn't hold up showing a tab for a slow write. And once the queue's written, there's no writer and no thread left for it. Enough tabs leave to pass the queue's cap on tabs by a few: more only add slow writes to wait out at the end (80 took 107 s on CI, 2026-11-12). Its cap on bytes isn't reached by tabs of this size (8 queued held 6.7 MiB of its 16, measured 2026-11-12), and `sleep_queue`'s own tests hold that one. Numbers that matter come from a release build: `--no-capture` prints them.
 #[test]
 fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     use common::app::{Run, long_document};
-    const TABS: usize = 80;
     let state = State::new();
     let slow = [("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_write=5000"))];
     let Some(run) = Run::on_with_env(&state, &slow) else { return };
     let file = long_document("leaving", 3);
     let folder = state.root.join("tabs");
     std::fs::create_dir_all(&folder).unwrap();
-    let link = |at: usize| folder.join(format!("t{at}.pdf"));
-    for at in 0..TABS {
-        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
-    }
+    let link = |at: usize| {
+        let link = folder.join(format!("t{at}.pdf"));
+        recto_platform::local::clone_file(&file.0, &link).unwrap();
+        link
+    };
     let sample = |run: &Run| {
         let report = run.report();
         let memory = &report["memory"];
@@ -190,12 +190,14 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         run.ok(&["open", link(at).to_str().unwrap()]);
         run.settled();
     }
-    let (threads_full, footprint_full, _) = sample(&run);
+    let (threads_full, footprint_full, full) = sample(&run);
+    // Past the queue's cap on tabs by a few.
+    let tabs = recto_session::MAX_WARM + full["record"]["sleep"]["leaving"]["cap_tabs"].as_u64().unwrap() as usize + 6;
     let (full_own, full_named) = (common::threads::own(run.pid), common::threads::named(run.pid));
     assert!(!full_own.is_empty(), "the app's threads couldn't be read: {full_named}");
     let (mut peak_threads, mut peak_footprint) = (threads_full, footprint_full);
     let began = std::time::Instant::now();
-    for at in recto_session::MAX_WARM..TABS {
+    for at in recto_session::MAX_WARM..tabs {
         run.ok(&["open", link(at).to_str().unwrap()]);
         run.settled();
         let (threads, footprint, report) = sample(&run);
@@ -203,7 +205,7 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         let now = common::threads::own(run.pid);
         if let Some(wrong) = common::threads::grew(&full_own, &now) {
             panic!(
-                "tab {at} of {TABS} leaving: {wrong}\nwith the warm ones full: {full_named}\nnow: {}\nsleep: {}",
+                "tab {at} of {tabs} leaving: {wrong}\nwith the warm ones full: {full_named}\nnow: {}\nsleep: {}",
                 common::threads::named(run.pid),
                 report["record"]["sleep"]
             );
@@ -216,7 +218,7 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     let sleep = &report["record"]["sleep"];
     println!(
         "{} tabs left in {took:?} with sleep writes 5 s late: threads {threads_full} with the warm ones full, at most {peak_threads}; footprint {:.1} MiB, at most {:.1} MiB; sleep {sleep}",
-        TABS - recto_session::MAX_WARM,
+        tabs - recto_session::MAX_WARM,
         footprint_full as f64 / 1048576.0,
         peak_footprint as f64 / 1048576.0,
     );
@@ -226,6 +228,10 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         report["slow"]
     );
     let leaving = &sleep["leaving"];
+    assert!(
+        leaving["dropped"].as_u64().unwrap() > 0,
+        "enough left to pass the cap on tabs, or it isn't tested: {leaving}"
+    );
     assert!(
         leaving["peak_bytes"].as_u64().unwrap() <= leaving["cap_bytes"].as_u64().unwrap(),
         "the pictures queued passed their cap: {leaving}"

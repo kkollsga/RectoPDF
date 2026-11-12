@@ -487,24 +487,7 @@ impl TempPdf {
 mod tests {
     use super::*;
 
-    /// Failure: a temp file goes into a folder left behind by an earlier process with the same id, and a test finds that process's
-    /// files beside its own.
-    #[test]
-    fn a_folder_left_behind_is_never_shared() {
-        let next = NEXT.load(Ordering::Relaxed);
-        let stale = std::env::temp_dir().join(format!("recto-render-test-{}-{next}", std::process::id()));
-        std::fs::create_dir_all(&stale).unwrap();
-        std::fs::write(stale.join("left.svg"), b"x").unwrap();
-        let file = TempPdf::new("doc.pdf", b"%PDF-1.7");
-        let dir = file.0.parent().unwrap();
-        assert_ne!(dir, stale);
-        let beside: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|entry| entry.file_name()).collect();
-        assert_eq!(beside, ["doc.pdf"]);
-        let _ = std::fs::remove_file(stale.join("left.svg"));
-        let _ = std::fs::remove_dir(&stale);
-    }
-
-    /// Failure: a test's folder is one left behind by an earlier process with the same id and count, so the test finds that
+    /// Failure: a test's folder, or a temp PDF's, is one left behind by an earlier process with the same id and count, so the test finds that
     /// process's files in it; or the folder outlives the test, as 707 did on 2026-11-11.
     #[test]
     fn a_temp_dir_is_always_fresh_and_goes_with_its_files() {
@@ -529,5 +512,8 @@ mod tests {
         drop(dir);
         assert!(!path.exists(), "the folder and what's in it go on drop");
         assert!(stale.join("left.svg").exists(), "another's folder is left alone");
+        let file = TempPdf::new("doc.pdf", b"%PDF-1.7");
+        let beside: Vec<_> = std::fs::read_dir(file.folder()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(beside, ["doc.pdf"], "a temp PDF has a folder of its own, made the same way");
     }
 }

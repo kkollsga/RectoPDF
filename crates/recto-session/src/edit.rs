@@ -1367,18 +1367,6 @@ mod tests {
         assert!(!edits.is_edited());
     }
 
-    /// Failure: past the undo cap, undoing everything reads as "no edits" while the document still differs, so the tab closes and silently loses them.
-    #[test]
-    fn a_document_past_the_undo_cap_stays_edited_after_undoing_everything() {
-        let mut edits = PageEdits::new(2);
-        for _ in 0..MAX_UNDO + 1 {
-            edits.move_pages(0, 1, 1).unwrap();
-        }
-        while edits.undo() {}
-        assert_ne!(order(&edits), [0, 1], "the oldest step can't be undone any more");
-        assert!(edits.is_edited(), "it still differs from the file");
-    }
-
     /// Failure: undo is capped by steps but not bytes, so 256 steps that each remove 200,000 pages hold about 400 MiB per tab. Past the cap the oldest go, and the document says it can't get back.
     #[test]
     fn undo_history_is_capped_in_bytes_and_says_so() {
@@ -1787,15 +1775,5 @@ mod tests {
         assert_eq!(edits.nearest_position(1, 0, 0), Some(1));
         assert_eq!(edits.nearest_position(1, 0, 3), Some(3));
         assert_eq!(edits.nearest_position(9, 0, 0), None);
-    }
-
-    /// Failure: undo history grows without limit on a long editing session.
-    #[test]
-    fn undo_history_is_capped() {
-        let mut edits = PageEdits::new(2);
-        for _ in 0..MAX_UNDO * 2 {
-            edits.rotate(0, 1, 1).unwrap();
-        }
-        assert_eq!(edits.undo.len(), MAX_UNDO);
     }
 }

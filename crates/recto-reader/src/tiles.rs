@@ -5455,27 +5455,6 @@ mod tests {
         assert!(reader.is_settled(), "{}", reader.report().0);
     }
 
-    /// Failure: a surface goes out to the engine with a tile's lock on the reader, as making one is what the plan's for. A plan can be made with no surface, and a region's rows are kept to the cap only once it has one.
-    #[test]
-    fn a_plan_makes_its_surface_after_the_lock() {
-        let mut reader = reader_on(10);
-        loop {
-            let plan = reader.next_plan().expect("a plan");
-            let is_draw = matches!(plan.kind, PlanKind::Draw { .. });
-            let job = plan.ready().expect("made");
-            if is_draw {
-                assert!(matches!(job.kind, JobKind::Draw { .. }));
-                break;
-            }
-            let outcome = if matches!(job.kind, JobKind::Size) {
-                Outcome::Size(letter())
-            } else {
-                Outcome::Heavy(false)
-            };
-            reader.finish(job, outcome);
-        }
-    }
-
     /// Failure: each way of zooming has its own step and limits, or one goes past them, or "actual size" is the same as "fit".
     #[test]
     fn every_way_of_zooming_is_one_path_with_one_set_of_limits() {

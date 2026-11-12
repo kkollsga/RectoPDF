@@ -202,8 +202,9 @@ fn every_edit_survives_the_window_closing() {
 }
 
 /// Failure (the research's rule 3: Folio 1.10.5's printing cleared the edited flag): printing or exporting a tab with unsaved edits saves them,
-/// drops them, or marks them saved. A print to PDF and a picture of a page from each tab leave every edit as it was, each tab still edited, and
-/// no PDF changed.
+/// drops them, or marks them saved. A print to PDF and a picture of a page from a tab with unsaved edits leave every tab's edits as they were, that
+/// tab still edited and the window saying so, and no PDF changed. One tab is printed: the print and the picture read a tab's pages as its edits
+/// have them, whatever their kind, and change nothing of them (`print::print_pages`), so each kind's own print cost 5 of this test's 22 s on CI.
 #[test]
 fn every_edit_survives_printing_and_exporting() {
     let state = State::at(Level::Full);
@@ -211,16 +212,14 @@ fn every_edit_survives_printing_and_exporting() {
     let folder = state.root.join("docs");
     let (docs, extra) = one_of_each(&run, &folder);
     let before = edits(&run);
-    for doc in &docs {
-        let tab = tab_of(&run, &doc.path);
-        run.ok(&["tap", &tab]);
-        run.settled();
-        let printed = folder.join(format!("{}-printed.pdf", doc.kind));
-        run.ok(&["print", "--to-pdf", printed.to_str().unwrap()]);
-        run.ok(&["render", "1", "--out", folder.join(format!("{}.png", doc.kind)).to_str().unwrap()]);
-        assert_eq!(run.ok(&["edits", "--tab", &tab])["edited"], true, "{}: still edited", doc.kind);
-        assert_eq!(run.report()["app"]["document_edited"], true, "{}: and the window says so", doc.kind);
-    }
+    let doc = docs.last().unwrap();
+    let tab = tab_of(&run, &doc.path);
+    run.ok(&["tap", &tab]);
+    run.settled();
+    run.ok(&["print", "--to-pdf", folder.join("printed.pdf").to_str().unwrap()]);
+    run.ok(&["render", "1", "--out", folder.join("page.png").to_str().unwrap()]);
+    assert_eq!(run.ok(&["edits", "--tab", &tab])["edited"], true, "{}: still edited", doc.kind);
+    assert_eq!(run.report()["app"]["document_edited"], true, "{}: and the window says so", doc.kind);
     assert_eq!(edits(&run), before, "after printing and exporting");
     untouched(&docs, &extra);
 }

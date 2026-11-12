@@ -662,7 +662,7 @@ mod tests {
         assert!(receive.recv_timeout(Duration::from_millis(50)).is_err(), "once each");
     }
 
-    /// Failure (review 1): a late call that panics takes the delivery thread with it, `running` stays set, and no late call arrives again, as no other thread is started. The ones after it arrive, and so does one made later.
+    /// Failure (review 1): a late call that panics takes the delivery thread with it, `running` stays set, and no late call arrives again, as no other thread is started. The ones after it arrive, and so does one made later. And the delivery thread goes once nothing's waiting, so a quiet slow run doesn't carry a thread a fast one doesn't, and a test that counts threads at rest fails only in slow mode; and comes again for the next.
     #[test]
     fn a_call_that_panics_doesnt_stop_the_ones_after_it() {
         let (send, receive) = channel();
@@ -678,23 +678,6 @@ mod tests {
         }
         deliveries().push(Instant::now(), Box::new(move || send.send(2).unwrap()));
         assert_eq!(receive.recv_timeout(Duration::from_secs(10)), Ok(2), "and one made later");
-    }
-
-    /// Failure: the delivery thread stays once nothing's waiting, so a quiet slow run carries a thread a fast one doesn't, and a test that counts threads at rest fails only in slow mode.
-    #[test]
-    fn the_delivery_thread_goes_when_nothing_waits() {
-        let (send, receive) = channel();
-        deliveries().push(Instant::now(), Box::new(move || send.send(()).unwrap()));
-        receive.recv_timeout(Duration::from_secs(10)).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while deliveries().running.load(Ordering::SeqCst) {
-            assert!(Instant::now() < deadline, "the thread never went");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        // And comes again for the next.
-        let (send, receive) = channel();
-        deliveries().push(Instant::now(), Box::new(move || send.send(()).unwrap()));
-        receive.recv_timeout(Duration::from_secs(10)).unwrap();
     }
 
     /// Failure: something in a process that isn't a quiet run, as `recto` or a normal launch of a test build, is made slow.

@@ -778,3 +778,48 @@ fn a_killed_watch_frees_its_place() {
         assert!(started.elapsed() < Duration::from_secs(5), "the place wasn't freed");
     }
 }
+
+/// Failure: a client that stops reading a watch makes the session hold its output for ever, and its memory grows. With a small allowance and a few
+/// thousand events it never reads, the watcher gets what fit, its allowance and what the socket itself holds, and then its connection ends. (Was
+/// `a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for` in recto-cli's socket tests, 40,000 commands through a real session to pass the
+/// default 1 MiB; the drop is the server's, so the stand-in host and a small allowance show it as well.)
+#[test]
+fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
+    const ALLOWANCE: usize = 16 * 1024;
+    let running = Running::start(Limits {
+        max_watcher_backlog: ALLOWANCE,
+        ..Limits::default()
+    });
+    let mut watcher = running.connect();
+    watcher.write_all(b"{\"cmd\":\"watch\"}\n").unwrap();
+    assert_eq!(read_line(&mut watcher).unwrap()["data"]["watching"], true);
+    // Each goto tells the watcher, which reads nothing: about 400 KB of events, far past the allowance and what a socket holds.
+    let mut caller = running.connect();
+    for sent in 0..4_000u32 {
+        caller
+            .write_all(format!("{{\"cmd\":\"goto\",\"page\":{}}}\n", 1 + sent % 2).as_bytes())
+            .unwrap();
+        let reply = read_line(&mut caller).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+    let mut bytes = 0usize;
+    let mut chunk = [0u8; 65536];
+    // macOS refuses this on a socket whose peer has gone, which is what's expected here.
+    let _ = watcher.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut ended = false;
+    loop {
+        match watcher.read(&mut chunk) {
+            Ok(0) => {
+                ended = true;
+                break;
+            }
+            Err(_) => break,
+            Ok(count) => bytes += count,
+        }
+    }
+    assert!(ended, "the session must have dropped it, after {bytes} bytes");
+    assert!(
+        bytes < ALLOWANCE + 128 * 1024,
+        "it should have been dropped at about its allowance of {ALLOWANCE} bytes, and {bytes} bytes came"
+    );
+}

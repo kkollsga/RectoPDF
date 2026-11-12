@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::State;
+use common::{Raw, State};
 use recto_agent::{Level, exit};
 use recto_index::corpus::CorpusKey;
 use recto_testpdf::{Page, TempPdf, form_bomb, hidden_text_page, pages, text_lines};
@@ -69,15 +69,23 @@ fn totals_agree(indexed: &Value, scanned: &Value, args: &[&str]) {
     }
 }
 
+/// One command line, read as `recto` reads it, sent over one connection: the two routes are the session's, and a process per query adds nothing to what's
+/// compared (58 of them made one test 4 s on CI). `recto` itself is held to the same answer by `the_index_answers_as_reading_the_pages_does`.
+fn over_the_socket(state: &State, args: &[&str]) -> Value {
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    let invocation = recto_agent::table::parse_cli(&args).unwrap_or_else(|error| panic!("{args:?}: {error:?}"));
+    Raw::connect(state).call(&serde_json::from_str(&invocation.wire()).unwrap())
+}
+
 /// Holds a search answered from the index to the same search read page by page, field by field, and says which route each took.
 fn index_matches_scan(state: &State, args: &[&str]) -> Value {
-    let (indexed, code) = state.json(args);
-    assert_eq!(code, 0, "{args:?}: {indexed}");
+    let indexed = over_the_socket(state, args);
+    assert_eq!(indexed["ok"], true, "{args:?}: {indexed}");
     assert_eq!(indexed["data"]["route"], "index", "{args:?} wasn't answered from the index: {indexed}");
     let mut with_scan = args.to_vec();
     with_scan.push("--scan");
-    let (scanned, code) = state.json(&with_scan);
-    assert_eq!(code, 0, "{args:?}: {scanned}");
+    let scanned = over_the_socket(state, &with_scan);
+    assert_eq!(scanned["ok"], true, "{args:?}: {scanned}");
     assert_eq!(scanned["data"]["route"], "scan", "{scanned}");
     totals_agree(&indexed, &scanned, args);
     let answer = indexed.clone();
@@ -129,6 +137,12 @@ fn the_index_answers_as_reading_the_pages_does() {
     assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
     let (no_text, _) = state.json(&["search", "zzzqqqxx"]);
     assert_eq!(no_text["data"]["coverage"]["no_text_pages"], serde_json::json!([14]), "{no_text}");
+    // `recto` itself, once each way: what it says is the session's answer, and it reads `--scan`.
+    for args in [&["search", "common"][..], &["search", "common", "--scan"][..]] {
+        let (by_recto, code) = state.json(args);
+        assert_eq!(code, 0, "{args:?}: {by_recto}");
+        assert_eq!(by_recto, over_the_socket(&state, args), "{args:?}");
+    }
 }
 
 /// Failure: a blind agent's request: an answer stopped at its limit says nothing about how many there are in all, so it pages through a document to count. It must count past the limit from the index, and page by page must say it can't.
@@ -391,6 +405,18 @@ fn an_adversarial_page_fails_alone_and_says_so() {
         + done["data"]["no_text_pages"].as_u64().unwrap();
     assert!(said >= 1, "the bomb's page must show up in what's said: {done}");
     assert!(started.elapsed() < Duration::from_secs(120), "{:?}", started.elapsed());
+    // No total is given over a page that couldn't be counted, in either form (`no_total_is_given_over_a_page_that_couldnt_be_counted`'s first case).
+    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
+    assert_eq!(
+        (
+            found["data"]["coverage"]["hits_total"].clone(),
+            found["data"]["coverage"]["hits_at_least"].as_u64()
+        ),
+        (Value::Null, Some(1)),
+        "{found}"
+    );
+    let (plain, _, _) = state.text(&["search", "ordinary page"]);
+    assert!(!plain.contains("in all"), "{plain}");
 }
 
 /// Failure: opening a file starts an indexer, so 200 tabs start 200 of them, or leave a process, a thread or a folder behind. **Only asking starts one.** And once it's done there's nothing left of it in the session.
@@ -402,11 +428,13 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     let file = doc("tabs.pdf", 3);
     let folder = file.0.parent().unwrap().join("links");
     std::fs::create_dir_all(&folder).unwrap();
+    // Over one connection: what's held is the session's, and a process for each open cost 3 s on CI.
+    let mut raw = Raw::connect(&state);
     for at in 0..200 {
         let link = folder.join(format!("t{at}.pdf"));
         std::fs::copy(&file.0, &link).unwrap();
-        let (opened, code) = state.json(&["open", link.to_str().unwrap()]);
-        assert_eq!(code, 0, "{opened}");
+        let opened = raw.call(&common::open_cmd(&link));
+        assert_eq!(opened["ok"], true, "{opened}");
     }
     assert!(!state.paths.corpus.exists(), "opening 200 tabs wrote to the corpus folder");
     std::thread::sleep(Duration::from_millis(100));
@@ -1082,23 +1110,6 @@ fn lowering_to_off_stops_indexing() {
 fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
-    let bomb = TempPdf::new("no-total.pdf", &form_bomb());
-    state.json(&["open", path(&bomb)]);
-    wait_done(&state, "active");
-    let (found, code) = state.json(&["search", "ordinary"]);
-    assert_eq!(code, 0, "{found}");
-    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
-    assert_eq!(
-        (
-            found["data"]["coverage"]["hits_total"].clone(),
-            found["data"]["coverage"]["hits_at_least"].as_u64()
-        ),
-        (Value::Null, Some(1)),
-        "{found}"
-    );
-    let (plain, _, _) = state.text(&["search", "ordinary"]);
-    assert!(!plain.contains("in all"), "{plain}");
-
     // Past the limit, a corpus's failed page is only counted, and it can't be.
     let file = doc("uncounted.pdf", 5);
     corpus_with_a_failed_page(&state, &file, 4);
