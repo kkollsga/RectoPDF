@@ -1,11 +1,11 @@
 enum crates/recto-agent/src/lib.rs::Command 68
-ffi crates/recto-ffi/src 11671
+ffi crates/recto-ffi/src 10239
 file crates/recto-agent/src/lib.rs 2403
 file crates/recto-agent/src/table.rs 4530
 file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 4655
+file crates/recto-ffi/src/lib.rs 4635
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
@@ -23,7 +23,7 @@ fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187
 fn crates/recto-core/src/save.rs::save 213
-fn crates/recto-ffi/src/lib.rs::AppCore::start 195
+fn crates/recto-ffi/src/lib.rs::AppCore::start 193
 fn crates/recto-ffi/src/lib.rs::AppHost::run_counted 156
 fn crates/recto-ffi/src/lib.rs::reconcile 281
 fn crates/recto-ffi/src/lib.rs::session_thread 350
@@ -116,7 +116,7 @@ struct crates/recto-agent/src/render/svg.rs::Tally 20
 struct crates/recto-agent/src/search.rs::Reader 16
 struct crates/recto-control/src/server.rs::Limits 17
 struct crates/recto-control/src/server.rs::Loop 21
-struct crates/recto-ffi/src/lib.rs::Inner 45
+struct crates/recto-ffi/src/lib.rs::Inner 43
 struct crates/recto-ffi/src/lib.rs::ReaderView 35
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
