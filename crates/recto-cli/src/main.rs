@@ -1,6 +1,7 @@
 //! `recto`: a thin client of the session on the control socket. It parses the line through the command table, sends one JSON command, and prints the answer. Everything decided is decided in
 //! `recto-agent` and `recto-control`. A few commands run here because they need no session: help, the skill, starting the session, and the user's own `permission set`.
 
+mod handover;
 mod qa;
 
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
@@ -156,6 +157,10 @@ fn through_session(invocation: &Invocation) -> i32 {
             }
             (_, Err(error)) => Err(error),
             (Command::Watch { .. }, Ok(client)) => Ok(Answer::Stream(client, wait)),
+            (Command::UpdateInstall { zip: Some(zip), .. }, Ok(client)) => {
+                drop(client);
+                handover::install(&paths, invocation, zip, wait).map(Answer::Envelope)
+            }
             (_, Ok(mut client)) => client.call(&invocation.wire(), wait).map(Answer::Envelope),
         }
     });

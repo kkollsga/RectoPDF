@@ -743,6 +743,62 @@ fn a_development_build_waits_for_five_quiet_minutes() {
     run.quit();
 }
 
+/// Failure: with a development build waiting for its five idle minutes, Settings shows no way to install it (owner, 2026-11-12: "I dont see the update now button in settings"), the plain command installs it against the owner's rule, or the button does something the menu and `--now` don't. **The real app, through the real hand-over:** `recto update install <zip>` copies the zip into the app's folder and the app opens only that; Settings shows the build and an enabled Update now; the plain command only says what it waits for; the button goes at once and the new app comes up. With `RECTO_SHOTS_DIR` set, light and dark screenshots of Settings with and without the waiting build are written there.
+#[test]
+fn settings_offers_update_now_for_a_waiting_build() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "4"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["update", "dev-builds", "on"]);
+    run.ok(&["qa", "settings", "open"]);
+    let shot = |name: &str| {
+        let Some(dir) = std::env::var_os("RECTO_SHOTS_DIR") else { return };
+        std::fs::create_dir_all(&dir).unwrap();
+        for look in ["light", "dark"] {
+            run.ok(&["qa", "appearance", look]);
+            let out = PathBuf::from(&dir).join(format!("settings-{name}-{look}.png"));
+            run.ok(&["qa", "shot-settings", "--out", out.to_str().unwrap()]);
+        }
+        run.ok(&["qa", "appearance", "light"]);
+    };
+    let action = || run.ok(&["qa", "state"])["app"]["settings"]["action"].clone();
+    assert!(action().is_null(), "nothing waits, so no button: {}", action());
+    shot("without");
+    let zip = bed.dev_build(DEV, Broken::Not);
+    let answer = run.ok(&["update", "install", zip.to_str().unwrap()]);
+    assert!(answer["waits_ms"].as_u64().unwrap() > 4 * 60_000, "{answer}");
+    let folder = PathBuf::from(bed.status(&run)["handover_dir"].as_str().unwrap());
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0, "the copy is gone once it was read");
+    // The plain command starts nothing: the five idle minutes are the owner's rule.
+    let plain = run.ok(&["update", "install"]);
+    assert_eq!(plain["started"], false, "{plain}");
+    assert!(plain["words"].as_str().unwrap().contains("Nothing was started"), "{plain}");
+    assert_eq!(bed.status(&run)["status"], "build_ready");
+    // Settings and the menu, from Rust's words.
+    let wanted = format!("Development build {DEV} is ready");
+    let began = Instant::now();
+    while action()["title"] != json!(wanted) {
+        assert!(began.elapsed() < Duration::from_secs(10), "Settings never showed the build: {}", action());
+        std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
+    }
+    let shown = action();
+    assert_eq!((&shown["button"], &shown["enabled"]), (&json!("Update now"), &json!(true)), "{shown}");
+    let status = bed.status(&run);
+    assert_eq!(status["menu"], json!({ "title": format!("Update to {DEV}…"), "enabled": true }), "{status}");
+    shot("with");
+    // The button is the menu's call and `--now`'s: it goes at once.
+    run.ok(&["qa", "settings", "update.now"]);
+    let run = bed.wait_for_new_app_of(run, DEV);
+    run.settled();
+    assert_eq!(bed.version(), DEV);
+    run.quit();
+}
+
 /// Failure: a new version that won't start leaves nothing, or the user's work behind it. **The real app, with a release that damages the real record in both slots and ends:** it goes back by itself, the whole state comes back as it was, and it says so and doesn't try again by itself.
 #[test]
 fn a_new_app_that_wont_start_goes_back_with_the_same_state() {

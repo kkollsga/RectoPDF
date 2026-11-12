@@ -35,11 +35,23 @@ pub struct SettingRow {
     pub enabled: bool,
 }
 
+/// An update waiting or under way, with the button that installs it now: Rust's words ([`recto_update::updater::UpdateAction`]).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SettingsAction {
+    pub id: String,
+    pub title: String,
+    pub hint: String,
+    pub button: String,
+    pub enabled: bool,
+}
+
 /// The Settings window, as it stands.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SettingsModel {
     pub title: String,
     pub rows: Vec<SettingRow>,
+    /// A waiting update and its button, above the switches. None when there's nothing to install.
+    pub action: Option<SettingsAction>,
     /// How updates stand now.
     pub status: String,
     /// A link to the privacy statement: its words, and where it opens.
@@ -58,6 +70,8 @@ pub struct UpdateAlert {
 pub(crate) const AUTO_UPDATE_ROW: &str = "update.automatic";
 /// *Allow development builds*.
 pub(crate) const DEV_BUILDS_ROW: &str = "update.dev_builds";
+/// The button that installs a waiting update now.
+pub(crate) const UPDATE_NOW_ROW: &str = "update.now";
 
 /// How the updater reaches the app. Holds only a way back to it: it's made first, as the updater's a part of what it reaches.
 pub(crate) struct Hooks {
@@ -310,7 +324,12 @@ impl Inner {
                 }
                 Ok(self.dev_builds_answer())
             }
-            Command::UpdateInstall { zip: None, .. } => match self.updates.install(Asked::ByHand) {
+            // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
+            Command::UpdateInstall { zip: None, now: false } if self.updates.waiting_build_words().is_some() => {
+                let (version, words) = self.updates.waiting_build_words().unwrap_or_default();
+                Ok(json!({ "started": false, "version": version, "words": words }))
+            }
+            Command::UpdateInstall { zip: None, .. } => match self.updates.update_now() {
                 Ok(version) => Ok(
                     json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
                 ),
@@ -425,21 +444,12 @@ impl Inner {
     }
 
     pub(crate) fn has_setting(&self, id: &str) -> bool {
-        id == AUTO_UPDATE_ROW || id == DEV_BUILDS_ROW
+        matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
     }
 
     pub(crate) fn settings_model(&self) -> SettingsModel {
         let development = self.updates.source().mode == Mode::Development;
-        let hint = if development {
-            "A local build checks only when you ask, and doesn't replace itself."
-        } else {
-            "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it."
-        };
-        let hint = if self.updates.source().checks_by_itself() {
-            format!("{hint} {}", crate::privacy::CHECK_EITHER_WAY)
-        } else {
-            hint.to_owned()
-        };
+        let hint = self.updates.auto_update_hint(crate::privacy::CHECK_EITHER_WAY);
         let mut rows = vec![
                 SettingRow {
                     id: AUTO_UPDATE_ROW.to_owned(),
@@ -461,6 +471,13 @@ impl Inner {
         SettingsModel {
             title: "Settings".to_owned(),
             rows,
+            action: self.updates.settings_action().map(|action| SettingsAction {
+                id: UPDATE_NOW_ROW.to_owned(),
+                title: action.title,
+                hint: action.hint,
+                button: action.button,
+                enabled: action.enabled,
+            }),
             status: self.updates.status_line(),
             privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
             privacy_url: crate::privacy::statement_url(),
@@ -475,6 +492,8 @@ impl Inner {
         match id {
             AUTO_UPDATE_ROW => self.set_auto_update(on),
             DEV_BUILDS_ROW => self.set_dev_builds(on),
+            // The menu's call and `recto update install --now`: whatever it comes to is in the status.
+            UPDATE_NOW_ROW => drop(self.updates.update_now()),
             _ => {}
         }
     }
@@ -571,39 +590,13 @@ pub(crate) fn forgets_on_quit(quiet: bool, app: &Path) -> bool {
 
 /// What a refusal to install comes to, for an agent: a code that doesn't change, our words, and what to do next.
 fn refused_words(refused: &InstallRefused) -> AgentError {
-    match refused {
-        InstallRefused::NotInThisBuild => AgentError::new("development_build", "A local build doesn't replace itself.", exit::FAILED)
-            .then("`recto update check` still says whether there's a new version. Install the app with `tools/dev-build.sh` to take builds."),
-        InstallRefused::NothingOnOffer => {
-            AgentError::new("nothing_on_offer", "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one.")
-        }
-        InstallRefused::Underway => {
-            AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY).then("`recto update status` says how it's going.")
-        }
-        InstallRefused::AnotherCopy => AgentError::new(
-            "another_copy",
-            "Another copy of RectoPDF is keeping the state, and it's the one that can update.",
-            exit::FAILED,
-        )
-        .then("Quit this copy, and use that one."),
-        InstallRefused::DevBuildsOff => AgentError::new("dev_builds_off", "Development builds are off, so only releases are installed.", exit::FAILED)
-            .then("The owner turns on Settings › Allow development builds."),
-        InstallRefused::NotABuild => {
-            AgentError::new("not_a_build", "That isn't a RectoPDF-X.Y.Z.N.zip.", exit::USAGE).then("`tools/dev-build.sh` makes one and prints its path.")
-        }
-        InstallRefused::SameVersion => {
-            AgentError::new("same_version", "That's the version that's running.", exit::FAILED).then("`tools/dev-build.sh` numbers the next one.")
-        }
-        InstallRefused::TeamSignedCopy => AgentError::new(
-            "release_copy",
-            "This copy is a release signed by RectoPDF's developer, and never takes a development build, which is signed ad hoc.",
-            exit::FAILED,
-        )
-        .then("The coordinator puts the first one in with `tools/dev-build.sh --first-install --replace-release`, which keeps this copy aside."),
-        InstallRefused::Refused { code, why } => {
-            AgentError::new(code, format!("That build wasn't installed: {why}."), exit::FAILED).then("`recto update status` has the log's path.")
-        }
-    }
+    let said = refused.said();
+    let exit = match said.kind {
+        recto_update::updater::SaidKind::Usage => exit::USAGE,
+        recto_update::updater::SaidKind::Busy => exit::BUSY,
+        recto_update::updater::SaidKind::Failed => exit::FAILED,
+    };
+    AgentError::new(said.code, said.words, exit).then(said.next)
 }
 
 /// Whether a launch comes up behind what the user's doing: an update arriving, with the app not having been frontmost. Any other launch was asked for by someone, and comes forward as usual.
