@@ -647,5 +647,16 @@ check "main then runs everything, for real" "0 true" "$rc $([ "$(wc -l < "$CALLS
 : > "$CALLS"
 check "and then the push guard takes it" "yes" "$(hook_accepts)"
 
+# Failure: a selective run on a dirty tree escaping the budget, so a branch could be run again and again unseen. It is in the ledger as dirty, is not
+# remembered, and counts like any real run (decided: a run is a run, dirty or not).
+branch_with sel-dirty
+echo d1 >> crates/gamma/src/lib.rs && git add . && git commit -qm d1
+echo d2 >> crates/gamma/src/lib.rs
+sel > /dev/null
+sel > /dev/null
+check "dirty selective runs are in the ledger as dirty" "2 +dirty" "$(runs_in_ledger) $(last_ledger_field 3 | grep -o '+dirty')"
+check "they count against the budget of two" "2" "$(tools/check.sh --runs | sed -n 's/^sel-dirty: \([0-9]*\) of.*/\1/p')"
+check "so a third needs a reason" "3" "$(sel)"
+git checkout -q -- crates/gamma/src/lib.rs
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
