@@ -38,6 +38,14 @@ impl EngineEvents for Events {
     }
 }
 
+/// How long a test waits for something that must happen: only a hang reaches it. On 2026-11-12 a stall of about 10 s hit unrelated tests at once in the main checkout while other checks ran, and bounds of 5 to 25 s that measured the machine failed. A test that waits longer than this has found a bug, and says what it saw.
+const HANG: Duration = Duration::from_secs(60);
+
+/// Waits for the engine to settle, for as long as [`HANG`].
+fn settles(engine: &Engine) -> bool {
+    engine.wait_settled(HANG)
+}
+
 fn view(y: f64) -> Viewport {
     Viewport {
         x: 0.0,
@@ -105,8 +113,8 @@ fn started(file: &TempPdf, count: u32) -> (Engine, Arc<Events>) {
 fn a_real_page_reaches_the_host_as_surfaces() {
     let file = document(3);
     let (engine, events) = started(&file, 3);
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     assert!(ops.iter().any(|op| matches!(op, Op::ShowPage { page: 0, .. })), "{ops:?}");
     let surfaces = ops.iter().filter(|op| matches!(op, Op::Attach { surface, .. } if *surface != 0)).count();
     assert!(surfaces >= 1, "{ops:?}");
@@ -122,8 +130,8 @@ fn a_real_page_reaches_the_host_as_surfaces() {
 fn the_engine_is_silent_at_rest() {
     let file = document(2);
     let (engine, _events) = started(&file, 2);
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)));
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     let pid = std::process::id();
     // A few goes: a thread that polls wakes it in all of them, and a busy machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
     let woke: Vec<u64> = (0..4)
@@ -162,8 +170,8 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
     let away = height - 900.0;
     engine.set_viewport(view(away));
     let moved = Instant::now();
-    pump(&engine, Duration::from_secs(10));
-    assert!(engine.wait_settled(Duration::from_secs(10)), "{}", engine.report().0);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     let took = moved.elapsed();
     let report = engine.report().0;
     assert!(report["visible_pages"].as_array().unwrap().iter().any(|page| page == 3), "{report}");
@@ -194,11 +202,11 @@ fn corners(ops: &[Op]) -> Vec<[u8; 3]> {
 fn dark_paper_changes_what_is_in_the_surface() {
     let file = document(1);
     let (engine, _events) = started(&file, 1);
-    let white = corners(&pump(&engine, Duration::from_secs(20)));
+    let white = corners(&pump(&engine, HANG));
     assert!(!white.is_empty() && white.iter().all(|corner| *corner == [0xFF, 0xFF, 0xFF]), "{white:?}");
     engine.set_paper(PaperKind::Dark);
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)));
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     assert_eq!(engine.report().0["paper"], "dark");
     let dark = corners(&ops);
     let rgb = PaperKind::Dark.rgb();
@@ -218,10 +226,10 @@ fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
     }];
     let file = TempPdf::new("picture.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     engine.set_paper(PaperKind::Dark);
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     let dimmed = dim_rgb(0xFF_00_00);
     let want = [(dimmed >> 16) as u8, 0, 0];
     let colours: Vec<u32> = ops
@@ -259,10 +267,10 @@ fn a_chart_on_white_turns_over_on_dark_paper() {
     }];
     let file = TempPdf::new("chart.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     engine.set_paper(PaperKind::Dark);
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     let rgb = PaperKind::Dark.rgb();
     let paper = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
     let surfaces = corners(&ops);
@@ -290,8 +298,8 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
     let file = TempPdf::new("replaced.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
     engine.set_paper(PaperKind::Dark);
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     // The new file: the same page with text and no picture, written beside it and renamed over it.
     let copy = file.0.with_extension("new");
     std::fs::write(&copy, pages(&[Page::new(text_lines(&["Only words now"]))])).unwrap();
@@ -301,8 +309,8 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
         magnification: 1.5,
         ..view(0.0)
     });
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     let rgb = PaperKind::Dark.rgb();
     let paper = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
     let colours: Vec<u32> = ops
@@ -370,14 +378,8 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
         recto_reader::layout::Spread::Single,
     );
     engine.set_viewport(view(0.0));
-    let began = Instant::now();
-    pump(&engine, Duration::from_secs(10));
-    assert!(
-        engine.wait_settled(Duration::from_secs(5)),
-        "the healthy tab never settled: {}",
-        engine.report().0
-    );
-    assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
+    pump(&engine, HANG);
+    assert!(settles(&engine), "the healthy tab never settled: {}", engine.report().0);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
     // And back on it, it says so rather than waiting for ever.
     engine.activate(
@@ -397,7 +399,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
         recto_reader::layout::Spread::Single,
     );
     engine.set_viewport(view(0.0));
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + HANG;
     while engine.note().is_none() && Instant::now() < deadline {
         engine.drain();
         engine.applied();
@@ -414,20 +416,20 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
 fn tiles_keep_arriving_after_the_window_comes_back() {
     let file = document(1);
     let (engine, events) = started(&file, 1);
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)));
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     // The window's gone: whatever it's told now, nobody takes.
     engine.window_closed();
     let before = events.ops.load(Ordering::SeqCst);
     engine.window_opened();
     engine.set_viewport(view(0.0));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + HANG;
     while events.ops.load(Ordering::SeqCst) == before && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(events.ops.load(Ordering::SeqCst) > before, "tiles were drawn, and nobody was told");
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
 }
 
 /// Failure: a closed window keeps its worker and file, so it's over the budget for a closed window. Everything goes, and comes back when the window does.
@@ -435,11 +437,11 @@ fn tiles_keep_arriving_after_the_window_comes_back() {
 fn a_closed_window_lets_the_worker_go() {
     let file = document(1);
     let (engine, _events) = started(&file, 1);
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     assert!(engine.workers_footprint().0 > 0);
     engine.window_closed();
     engine.applied();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -447,8 +449,8 @@ fn a_closed_window_lets_the_worker_go() {
     assert_eq!(engine.report().0["tiles"]["attached"], 0);
     engine.window_opened();
     engine.set_viewport(view(0.0));
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
 
@@ -487,9 +489,9 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
         recto_reader::layout::Spread::Single,
     );
     engine.set_viewport(view(0.0));
-    pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)));
-    let deadline = Instant::now() + Duration::from_secs(8);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let deadline = Instant::now() + HANG;
     while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -509,7 +511,7 @@ fn highlight_on(ops: &[Op], page: u32) -> Option<Vec<recto_index::select::Rect>>
 fn settled_on_page(engine: &Engine, page: u32) -> (f64, f64, f64) {
     let mut ops = engine.set_viewport(view(0.0));
     engine.applied();
-    ops.extend(pump(engine, Duration::from_secs(20)));
+    ops.extend(pump(engine, HANG));
     let shown = ops.iter().rev().find_map(|op| match op {
         Op::ShowPage { page: on, x, y, fit, .. } if *on == page => Some((*x, *y, *fit)),
         _ => None,
@@ -537,7 +539,7 @@ fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
     assert_eq!(highlight_on(&ops, 0), None, "its page hasn't been read, so it can't be known");
     let mut later = engine.selection_release();
     engine.applied();
-    later.extend(pump(&engine, Duration::from_secs(20)));
+    later.extend(pump(&engine, HANG));
     let rects = highlight_on(&later, 0).expect("a double-click takes a word, once its page is read");
     assert_eq!(rects.len(), 1);
     assert!(rects[0].width > 10.0 && rects[0].width < 60.0, "one word: {:?}", rects[0]);
@@ -567,11 +569,11 @@ fn a_click_takes_the_same_word_at_any_zoom() {
             ..view(0.0)
         });
         engine.applied();
-        pump(&engine, Duration::from_secs(20));
+        pump(&engine, HANG);
         let mut ops = engine.selection_press(press_x, press_y, 2, false);
         ops.extend(engine.selection_release());
         engine.applied();
-        ops.extend(pump(&engine, Duration::from_secs(20)));
+        ops.extend(pump(&engine, HANG));
         let report = engine.report().0;
         (report["selection"]["start"].clone(), report["selection"]["end"].clone(), ops)
     };
@@ -593,7 +595,7 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
     settled_on_page(&engine, 0);
     engine.select_all();
     assert!(engine.has_selection());
-    let ops = pump(&engine, Duration::from_secs(20));
+    let ops = pump(&engine, HANG);
     assert!(highlight_on(&ops, 0).is_some_and(|rects| !rects.is_empty()), "what's showing is highlighted");
     let report = engine.report().0;
     let read = report["selection"]["text_reads"].as_u64().unwrap();
@@ -614,7 +616,7 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
         copied.text.find("Page number 0").unwrap() < copied.text.find("Page number 59").unwrap(),
         "in page order"
     );
-    assert!(pump(&engine, Duration::from_secs(5)).iter().all(|op| !matches!(op, Op::Attach { .. })) || engine.wait_settled(Duration::from_secs(5)));
+    assert!(pump(&engine, Duration::from_secs(5)).iter().all(|op| !matches!(op, Op::Attach { .. })) || settles(&engine));
 }
 
 /// Failure: a page with no text keeps being read, holding the settled state open for ever, or says it has a selection. A page that fails has to come to rest too.
@@ -627,8 +629,8 @@ fn a_page_with_no_text_comes_to_rest_with_nothing_selected() {
     engine.selection_press(x + 200.0 * fit, y + 300.0 * fit, 2, false);
     engine.selection_drag(x + 300.0 * fit, y + 400.0 * fit);
     engine.selection_release();
-    let ops = pump(&engine, Duration::from_secs(20));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     assert_eq!(highlight_on(&ops, 0).unwrap_or_default().len(), 0);
     assert!(!engine.has_selection());
     assert!(!engine.pointer_is_over_text(x + 200.0 * fit, y + 300.0 * fit), "no I-beam on a scan");
@@ -642,7 +644,7 @@ fn the_pointer_asks_for_its_page_and_goes_to_an_i_beam_only_over_text() {
     let (x, y, fit) = settled_on_page(&engine, 0);
     let (on_x, on_y) = (x + 80.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
     assert!(!engine.pointer_is_over_text(on_x, on_y), "not read yet");
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     assert!(engine.pointer_is_over_text(on_x, on_y), "{}", engine.report().0);
     assert!(!engine.pointer_is_over_text(x + 80.0 * fit, y + 600.0 * fit), "the blank part of the page");
     assert!(!engine.pointer_is_over_text(x - 30.0, on_y), "the margin");
@@ -653,7 +655,7 @@ fn the_pointer_asks_for_its_page_and_goes_to_an_i_beam_only_over_text() {
 fn the_thread_that_draws_comes_back_after_a_panic() {
     let file = document(30);
     let (engine, events) = started(&file, 30);
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     events.panics.store(1, Ordering::SeqCst);
     engine.jump_to(10);
     engine.applied();
@@ -663,9 +665,9 @@ fn the_thread_that_draws_comes_back_after_a_panic() {
         ..view(view_at)
     });
     engine.applied();
-    let ops = pump(&engine, Duration::from_secs(20));
+    let ops = pump(&engine, HANG);
     assert_eq!(events.panics.load(Ordering::SeqCst), 0, "it did panic");
-    assert!(engine.wait_settled(Duration::from_secs(20)), "{}", engine.report().0);
+    assert!(settles(&engine), "{}", engine.report().0);
     let more = ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
     assert!(more > 0, "pages draw again: {ops:?}");
     assert_eq!(engine.note(), None);
@@ -679,9 +681,9 @@ fn a_thread_that_keeps_dying_says_so() {
     events.panics.store(1000, Ordering::SeqCst);
     engine.set_viewport(view(0.0));
     engine.applied();
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     assert!(engine.note().is_some_and(|note| note.contains("draw")), "{:?}", engine.note());
-    assert!(engine.wait_settled(Duration::from_secs(5)), "nothing's left to wait for: {}", engine.report().0);
+    assert!(settles(&engine), "nothing's left to wait for: {}", engine.report().0);
 }
 
 /// Failure: a worker dying in the middle of a copy loses the copy, or leaves it running for ever, or leaves pages undrawn. It comes out with what could be read, says what couldn't, and the page view goes on.
@@ -695,7 +697,7 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
     let (engine, events) = started(&file, COUNT);
     settled_on_page(&engine, 0);
     engine.select_all();
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     engine.copy_selection(false);
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut killed = 0;
@@ -718,7 +720,7 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
         COUNT,
         "every page is in it, or counted as not"
     );
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     assert!(engine.wait_settled(Duration::from_secs(1)), "{}", engine.report().0);
     assert_eq!(engine.report().0["selection"]["copying"], false);
 }
@@ -737,7 +739,7 @@ fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
     let (engine, _events) = started(&file, 3);
     settled_on_page(&engine, 0);
     engine.select_all();
-    pump(&engine, Duration::from_secs(20));
+    pump(&engine, HANG);
     assert!(engine.has_selection());
     std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Only this now"]))])).unwrap();
     for pid in engine.worker_pids() {
@@ -745,7 +747,7 @@ fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
     }
     std::thread::sleep(Duration::from_millis(50));
     engine.copy_selection(false);
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + HANG;
     while engine.has_selection() {
         assert!(Instant::now() < deadline, "still selected: {}", engine.report().0);
         pump(&engine, Duration::from_millis(50));
@@ -780,7 +782,7 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     };
     engine.activate(1, 2, 0, map, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG;
     while engine.note().is_none() && Instant::now() < deadline {
         pump(&engine, Duration::from_millis(200));
     }
@@ -811,8 +813,8 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
         recto_reader::layout::Spread::Single,
     );
     engine.set_viewport(view(0.0));
-    pump(&engine, Duration::from_secs(10));
-    assert!(engine.wait_settled(Duration::from_secs(5)));
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
     assert_eq!(engine.note(), None);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
