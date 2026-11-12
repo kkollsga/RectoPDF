@@ -9,7 +9,10 @@ X=$(mktemp -d "${TMPDIR:-/tmp}/check-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock" HEAVY_TESTING=1 MIN_FREE=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
-unset CHECK_ALL CHECK_BASE CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE CI
+# Everything check.sh and the queue read from the environment, so a run on CI (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*) or in a shell of someone's own makes no
+# difference: the first full run of the three-part CI layout failed 119 cases because CHECK_PART=core leaked in. A case below runs a slice with them all set.
+unset CHECK_ALL CHECK_BASE CHECK_AGAIN CHECK_PART HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS CARGO_TARGET_DIR NEXTEST_PROFILE CI TMPDIR_CHECK
+for name in $(env | sed -n 's/^\(GITHUB_[A-Z0-9_]*\|NEXTEST_[A-Z0-9_]*\|CHECK_[A-Z0-9_]*\)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -109,6 +112,14 @@ check "a full run passes" "0" "$rc"
 sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
 check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
+# Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
+if [ -z "${CHECK_TEST_SLICE:-}" ]; then
+  slice=$(CI=true CHECK_PART=core CHECK_ALL=1 CHECK_BASE=HEAD NEXTEST_PROFILE=ci GITHUB_ACTIONS=true RECTO_QA_SLOW=ci CHECK_TEST_SLICE=1 bash "$SOURCE/tools/check-test.sh" 2>&1)
+  check "the cases pass with CI's variables set (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*)" "0" "$(printf '%s\n' "$slice" | grep -c '^FAIL')"
+  has "and that slice did run" "ok    every stage runs" "$slice"
+else
+  echo "slice done"; exit 0
+fi
 : > "$CALLS"
 # Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
 check "only the slow stage runs with every waiting point late" "1" "$(wc -l < "$CALLS.slow" | tr -d ' ')"
