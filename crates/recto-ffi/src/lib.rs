@@ -4616,7 +4616,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             print_ready: inner.printing.has_ready(),
         },
     );
-    // The sheets that ask something are the bridge's, and ride beside the model.
+    // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
     reader.save_problem = inner.save_ui.problem();
     reader.link_prompt = lock(&inner.link_prompt).clone();
