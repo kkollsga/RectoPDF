@@ -12,7 +12,10 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # Everything check.sh and the queue read from the environment, so a run on CI (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*) or in a shell of someone's own makes no
 # difference: the first full run of the three-part CI layout failed 119 cases because CHECK_PART=core leaked in. A case below runs a slice with them all set.
 unset CHECK_ALL CHECK_BASE CHECK_AGAIN CHECK_PART HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS CARGO_TARGET_DIR NEXTEST_PROFILE CI TMPDIR_CHECK
-for name in $(env | sed -n 's/^\(GITHUB_[A-Z0-9_]*\|NEXTEST_[A-Z0-9_]*\|CHECK_[A-Z0-9_]*\)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
+# ERE, as macOS's sed has no `\|` in a basic expression: written that way this loop unset nothing, and a run of this inside `check.sh --full` took its
+# CHECK_RERUN=0 (2026-11-12), as one on CI would take its 4. What check.sh exports to its children is unset by name too.
+unset CHECK_RERUN CHECK_RERUN_TESTS CHECK_RERUN_SECONDS CHECK_SLOW_SEED CHECK_EVIDENCE_ROOT CHECK_LIKE_CI CHECK_LIKE_CI_WRAP CHECK_STAGE CHECK_STAGE_JOBS LIKE_CI_LIMITS
+for name in $(env | sed -nE 's/^((GITHUB|NEXTEST|CHECK|PUSH_MAIN|LIKE)_[A-Z0-9_]*)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -32,10 +35,30 @@ case "$*" in
   metadata*) echo '{"packages":[{"name":"alpha","dependencies":[]},{"name":"beta","dependencies":[{"name":"alpha","path":"/x"},{"name":"serde","path":null}]},{"name":"gamma","dependencies":[]}]}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
+# With STUB_LIST, `nextest list` lists those tests, `binary name` a line, as the real one does with -T oneline.
+if [ -n "${STUB_LIST:-}" ] && [[ "$*" == "nextest list "* ]]; then printf '%s\n' "$STUB_LIST"; exit 0; fi
 # With STUB_JUNIT, a nextest run writes the JUnit the real one does: a core test, a process test (alpha::proc) and, in the slow stage, the same process test.
 if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
   mkdir -p target/nextest/default
   printf '<testsuites>\n<testsuite name="alpha">\n<testcase name="t1" classname="alpha" timestamp="2026-11-12T10:00:00.000+01:00" time="0.500"/>\n<testcase name="p1" classname="alpha::proc" timestamp="2026-11-12T10:00:01.000+01:00" time="1.500"/>\n</testsuite>\n</testsuites>\n' > target/nextest/default/junit.xml
+fi
+# With STUB_JUNIT_FAIL, the nextest run whose line has it fails one test, `flaky_one`, in its JUnit, and leaves its evidence as the harness would. A rerun of
+# it (its line names the test by binary_id) fails while fewer than STUB_RERUN_FAILS reruns have, and passes after.
+if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && [[ "$*" == *"$STUB_JUNIT_FAIL"* ]]; then
+  junit="target/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
+  mkdir -p "$(dirname "$junit")"
+  verdict=fail
+  if [[ "$*" == *"binary_id(="* ]]; then
+    n=$(( $(cat "$CALLS.reruns" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS.reruns"
+    [ "$n" -le "${STUB_RERUN_FAILS:-0}" ] || verdict=pass
+  fi
+  if [ "$verdict" = fail ]; then
+    printf '<testsuites>\n<testsuite name="recto-cli::app">\n<testcase name="steady_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="0.5"/>\n<testcase name="flaky_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="1.0">\n<failure type="test failure">boom</failure>\n</testcase>\n</testsuite>\n</testsuites>\n' > "$junit"
+    mkdir -p "$RECTO_EVIDENCE/recto-cli--app--flaky_one" && echo "tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --jobs ${CHECK_STAGE_JOBS:-}" > "$RECTO_EVIDENCE/recto-cli--app--flaky_one/rerun.txt"
+    exit 100
+  fi
+  printf '<testsuites>\n<testsuite name="recto-cli::app">\n<testcase name="flaky_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="1.0"/>\n</testsuite>\n</testsuites>\n' > "$junit"
+  exit 0
 fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
@@ -50,8 +73,33 @@ cat > "$X/bin/swift" <<'STUB'
 #!/usr/bin/env bash
 echo "swift ${STUB_SWIFT:-1}"
 STUB
+# taskpolicy, for --like-ci: says what it was asked, then runs the command after its options.
+cat > "$X/bin/taskpolicy" <<'STUB'
+#!/usr/bin/env bash
+echo "taskpolicy $* profile=${NEXTEST_PROFILE:-}" >> "$CALLS.policy"
+while [ $# -gt 0 ] && [ "$1" != cargo ]; do shift; done
+exec "$@"
+STUB
+# gh, for tools/push-main.sh, which check.sh asks about main's CI: runs from STUB_GH_RUNS (none by default), a failed run's jobs, log and artifacts;
+# STUB_GH_HANG never answers, STUB_GH_FAIL fails. Every case here uses it, so no case reaches GitHub.
+cat > "$X/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS.gh"
+[ -z "${STUB_GH_HANG:-}" ] || exec sleep 30
+[ -z "${STUB_GH_FAIL:-}" ] || exit 1
+case "$*" in
+  "run list"*) if [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
+  # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
+  "run view"*"--json jobs"*"steps"*) printf "${STUB_GH_JOBS:-check (core)\tsuccess\t15\t0\t1\ncheck (lifecycle)\tfailure\t15\t1\t2\n}" ;;
+  "run view"*"--json jobs"*) echo "check (lifecycle)" ;;
+  "run rerun"*) touch "$CALLS.gh-rerun"; exit "${STUB_GH_RERUN_EXIT:-0}" ;;
+  "api"*"annotations"*) echo "The job was not acquired by Runner of type hosted even after multiple attempts" ;;
+  "run view"*"--log-failed"*) printf 'check (lifecycle)\tFull check, this part\t2026-11-12T11:50:03Z \033[31;1m        FAIL\033[0m [   8.3s] (2/2) recto-cli::registrations no_copy\ncheck (lifecycle)\tFull check, this part\t2026-11-12T11:50:04Z check:   recto-cli::registrations no_copy      failed 3 of 5\n' ;;
+  "api"*) echo "check-logs-lifecycle-1 4096" ;;
+esac
+STUB
 chmod +x "$X/bin/"*
-export PATH="$X/bin:$PATH" CALLS="$X/calls"
+export PATH="$X/bin:$PATH" CALLS="$X/calls" PUSH_MAIN_GH="$X/bin/gh" PUSH_MAIN_GH_TIMEOUT=2
 : > "$CALLS"
 
 git init -q --bare -b main "$X/origin.git"
@@ -62,6 +110,9 @@ cp "$SOURCE/tools/check.sh" tools/check.sh
 # The real rules, with this repository's own guards and tiers: alpha has a guard, gamma is what the lifecycle tier is about, beta is a window crate.
 cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
 cp "$SOURCE/tools/check-times.sh" tools/check-times.sh
+cp "$SOURCE/tools/check-rerun.sh" tools/check-rerun.sh
+cp "$SOURCE/tools/push-main.sh" tools/push-main.sh
+cp "$SOURCE/tools/check-like-ci.sh" tools/check-like-ci.sh
 echo "fn p1() {}" > crates/alpha/tests/proc.rs
 cat >> tools/check-scope.sh <<'SCOPE'
 GUARD_TESTS='test(~guard_one) | test(~stale::)'
@@ -87,6 +138,8 @@ echo one > crates/beta/src/lib.rs
 echo "fn life_test() {}" > crates/gamma/src/lib.rs
 echo "fn window_test() {}" >> crates/beta/src/lib.rs
 echo notes > docs/notes.md
+# As in the real repository: what the check and its tests write under target/ (JUnit, the evidence of failed tests) is never part of the tree.
+echo "target/" > .gitignore
 git add . && git commit -qm start
 git remote add origin "$X/origin.git"
 git push -q origin main
@@ -611,7 +664,7 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-only
 check "a change to a window crate passes selectively" "0" "$(sel)"
 has "the start says what was selected" "selective" "$(cat "$X/sel.out")"
 has "and what was skipped" "skipped: lifecycle tier" "$(cat "$X/sel.out")"
-check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare -j 4 -E test(~window_test)')"
+check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare --test evidence -j 4 -E test(~window_test)')"
 check "the lifecycle tier doesn't" "0" "$(sel_has 'long_session')"
 check "nor the stage that checks what is left registered" "0" "$(sel_has '--test registrations')"
 check "the slow stage runs only what is in the window tier" "1" "$(grep -c 'window_test' "$CALLS.slow" | tr -d ' ')"
@@ -657,14 +710,14 @@ check "without the lifecycle tier" "0" "$(sel_has 'long_session')"
 branch_with sel-app
 echo a > app/x.swift && git add . && git commit -qm app-only
 sel > /dev/null
-check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 check "but no crate's tests, the guards only" "0" "$(sel_has 'package(=')"
 branch_with sel-tools
 echo t > tools/note.txt && git add . && git commit -qm tools
 sel > /dev/null
 has "a change to the tools says why it runs everything" "everything runs" "$(cat "$X/sel.out")"
 check "it runs every crate's tests" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 check "that pass is of everything, so the guard has it" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
 branch_with sel-docs
 echo d >> docs/notes.md && git add . && git commit -qm docs-only
@@ -676,7 +729,7 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-ci
 CI=true sel_full > "$X/sel.out"; cp "$CALLS" "$X/sel.calls"
 has "on CI the same change runs everything" "CI runs everything" "$(cat "$X/sel.out")"
 check "every crate" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session -j 4$')"
+check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
 # main runs everything, whatever changed since it: it is what gets pushed.
 git checkout -q main
 echo mm >> crates/beta/src/lib.rs && git add . && git commit -qm beta-on-main
@@ -815,7 +868,7 @@ check "core runs the gate and the workspace" "1 1" "$(grep -c '^clippy --workspa
 check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$CALLS")"
 : > "$CALLS"
 CHECK_PART=window full > /dev/null
-check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
+check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
 check "with the notices, and no gate or workspace tests" "1 0 0" "$(grep -c -- '--test notices' "$CALLS") $(grep -c '^clippy' "$CALLS") $(grep -c -- '--workspace' "$CALLS")"
 check "and no tools' tests" "0" "$(grep -c '^check-test$' "$CALLS")"
 check "and no registrations" "0" "$(grep -c -- '--test registrations' "$CALLS")"
@@ -836,7 +889,7 @@ all_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; done
 parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
-check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session -j 4$' "$CALLS")"
+check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session --test evidence -j 4$' "$CALLS")"
 
 # Failure: CI ran the tools' own tests on every run, 173 s of core whatever changed (run 43195226598), or skips them when what they test changed since CI's
 # base, or when that base can't be worked out. The base: on main the commit the push came after, on a branch where it left origin/main. What they test is
@@ -880,6 +933,196 @@ check "a before that isn't in HEAD's history runs them" "1 1" "$(on_main "$(git 
 check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF_NAME=main GITHUB_EVENT_PATH="$(event "$before")")"
 check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
 check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
+
+# Failure (PLAN R0.7b): the slow stage's seed can't be given, so an order of arrivals it found can't be replayed; or a seed is drawn when none was asked.
+commit_code slow-seed
+rm -f "$CALLS.slow"
+out=$(CHECK_SLOW_SEED=4242 full --why "seed"); rc=$?
+has "a seed asked for goes to the slow stage as the profile's jitter" "ci,jitter=4242 nextest run" "$(cat "$CALLS.slow")"
+has "and is said" "check: slow: RECTO_QA_SLOW=ci,jitter=4242" "$out"
+check "a seed that isn't a number is refused" "2" "$(CHECK_SLOW_SEED=x full --why "bad seed" > /dev/null; echo $?)"
+rm -f "$CALLS.slow"
+# Failure (PLAN R0.7c): a failed test on CI says only that it failed, and its rate is learned by rerunning the job by hand; or a failed app tier hides the
+# registrations stage after it, whose result is evidence about leaks; or the reruns turn a failure into a pass, or run here when nobody asked.
+git checkout -q main
+git checkout -qb rerun-cases
+commit_code rerun-base
+: > "$CALLS"; rm -f "$CALLS.reruns"
+out=$(STUB_JUNIT_FAIL="--test app" full --why "rerun: local"); rc=$?
+check "a failed app tier still fails the run" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "and the ledger names the stage that failed, not the one after" "fail:app-tests" "$(last_ledger_field 4)"
+check "the registrations stage runs after a failed app tier" "1" "$(grep -c -- '--test registrations' "$CALLS")"
+check "the slow stage doesn't, as it's the same tests late" "0" "$(grep -c -- '--test app --test restore -j 4 -E' "$CALLS")"
+check "here, nothing is run again unless asked" "0" "$(grep -c 'binary_id(=' "$CALLS")"
+has "the failure says where its evidence is" "evidence of 1 failed test run(s), one folder each, in $PWD/target/recto-evidence" "$out"
+has "with the command that runs it again" "run it again here as it ran: tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --jobs 4" "$out"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+commit_code rerun-asked
+out=$(CHECK_RERUN=4 STUB_RERUN_FAILS=1 STUB_JUNIT_FAIL="--test app" full --why "rerun: asked"); rc=$?
+check "asked, the failed test alone runs again that many times" "4" "$(grep -c 'binary_id(=recto-cli::app) & test(=flaky_one)' "$CALLS")"
+check "and only it: the test that passed isn't named" "0" "$(grep 'binary_id(=' "$CALLS" | grep -c steady_one)"
+check "with the stage's arguments but its own filter" "4" "$(grep 'binary_id(=' "$CALLS" | grep -c -- '-p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 -E')"
+has "the table gives the rate, counting the first run" "recto-cli::app flaky_one" "$out"
+has "as N of M" "failed 2 of 5" "$(printf '%s' "$out" | tr -s ' ')"
+check "and the run still fails" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "each round keeps its own evidence, and the first run's is there too" "yes yes yes" "$([ -f target/recto-evidence/app-tests/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-rerun-1/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-reruns.txt ] && echo yes)"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+commit_code rerun-budget
+out=$(CHECK_RERUN_SECONDS=0 CHECK_RERUN=4 STUB_JUNIT_FAIL="--test app" full --why "rerun: budget"); rc=$?
+check "the reruns stop at their time bound" "0" "$(grep -c 'binary_id(=' "$CALLS")"
+has "and say so" "reruns stopped after 0 of 4 rounds" "$out"
+has "the table then counts the first run only" "failed 1 of 1" "$(printf '%s' "$out" | tr -s ' ')"
+check "and what the last run left is gone: no round's evidence from the run before" "no" "$([ -d target/recto-evidence/app-tests-rerun-1 ] && echo yes || echo no)"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+commit_code rerun-ci
+STUB_RERUN_FAILS=9 STUB_JUNIT_FAIL="--test app" CI=true CHECK_PART=lifecycle tools/check.sh --full > "$X/ci.out" 2>&1; rc=$?
+check "on CI a failed test runs again 4 times without being asked" "4" "$(grep -c 'binary_id(=' "$CALLS")"
+has "failing every time, it says so" "failed 5 of 5" "$(tr -s ' ' < "$X/ci.out")"
+check "and in the lifecycle part the registrations stage still runs" "1" "$(grep -c -- '--test registrations' "$CALLS")"
+check "and the part fails" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+mkdir -p "$X/given"; echo keep > "$X/given/mine"
+: > "$CALLS"
+commit_code rerun-given
+RECTO_EVIDENCE="$X/given" STUB_JUNIT_FAIL="--test app" CI=true CHECK_RERUN=0 CHECK_PART=window tools/check.sh --full > "$X/ci.out" 2>&1
+check "a root given in RECTO_EVIDENCE (CI's) is never emptied, and gets the evidence" "keep yes" "$(cat "$X/given/mine") $([ -f "$X/given/app-tests/recto-cli--app--flaky_one/rerun.txt" ] && echo yes)"
+check "the reruns' junit helpers find the failed test" "recto-cli::app	flaky_one" "$(printf '<testcase name="a" classname="x"/>\n<testcase name="flaky_one" classname="recto-cli::app" time="1">\n<failure type="t">b</failure>\n</testcase>\n<testcase name="c" classname="x">\n</testcase>\n' > "$X/j.xml"; . tools/check-rerun.sh; junit_failed "$X/j.xml")"
+check "and take a stage's filter off its arguments, keeping the rest" "--locked -p recto-cli -j 4" "$(. tools/check-rerun.sh; args_without_filter --locked -p recto-cli -j 4 -E 'test(x)' --no-tests=pass | tr '\0' ' ' | sed 's/ $//')"
+
+# Failure (PLAN R0.7e): main's CI is red and nothing says so, so the next merge is checked, stamped and pushed over it (four times by 2026-11-12); or a
+# red marked known never ends; or gh missing, signed out or offline hangs the check or stops the stamp; or a branch's check asks GitHub at all.
+git checkout -q main
+git push -q origin main
+pushed=$(git rev-parse origin/main)
+run_of() { printf '[{"conclusion":"%s","databaseId":%s,"headSha":"%s","status":"%s","url":"https://ci/%s"}]' "$1" "$2" "$3" "${4:-completed}" "$2"; }
+red=$(run_of failure 7 "$pushed")
+commit_code after-red
+out=$(STUB_GH_RUNS=$red full --why "red main"); rc=$?
+check "on main, a pass while the last pushed commit's CI is red isn't stamped" "4 no" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "and says why, with the run" "not stamped for the push guard: main's CI is red on $(printf '%s' "$pushed" | cut -c1-12) (https://ci/7)" "$out"
+check "the pass is still remembered" "pass" "$(last_ledger_field 4)"
+check "so the push guard refuses it" "no" "$(hook_accepts)"
+: > "$CALLS"
+out=$(STUB_GH_RUNS=$red full); rc=$?
+check "the same code again runs nothing and still doesn't stamp" "4 0 no" "$rc $(ran) $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+check "a known red can't be marked past a week" "2" "$(tools/push-main.sh --known "$pushed" --until "$(date -j -v+8d '+%Y-%m-%d')" --why "x" > /dev/null 2>&1; echo $?)"
+check "nor for a day gone" "2" "$(tools/push-main.sh --known "$pushed" --until "$(date -j -v-1d '+%Y-%m-%d')" --why "x" > /dev/null 2>&1; echo $?)"
+check "nor without saying what is known" "2" "$(tools/push-main.sh --known "$pushed" --until "$(date -j -v+2d '+%Y-%m-%d')" > /dev/null 2>&1; echo $?)"
+tools/push-main.sh --known "$(printf '%s' "$pushed" | cut -c1-12)" --until "$(date -j -v+2d '+%Y-%m-%d')" --why "the contents pane, tracked in PLAN" > /dev/null
+out=$(STUB_GH_RUNS=$red full); rc=$?
+check "marked known with a date, it stamps" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "and says it's red and known" "marked known until $(date -j -v+2d '+%Y-%m-%d'): the contents pane, tracked in PLAN" "$out"
+printf '%s\t%s\t%s\t%s\n' "$pushed" "$(date -j -v-1d '+%Y-%m-%d')" "old" "x" > .git/recto-ci-known
+commit_code after-known
+out=$(STUB_GH_RUNS=$red full --why "due mark"); rc=$?
+check "a mark past its date doesn't count" "4" "$rc"
+rm -f .git/recto-ci-known
+commit_code after-green
+out=$(STUB_GH_RUNS="$(run_of success 8 "$pushed")" full --why "green main"); rc=$?
+check "green, it stamps" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "and says so" "main's CI is green on" "$out"
+commit_code after-running
+out=$(STUB_GH_RUNS="$(run_of "" 9 "$pushed" in_progress)" full --why "running main"); rc=$?
+check "still running, it stamps, and says so" "0 yes" "$rc $(printf '%s' "$out" | grep -q "still running on" && echo yes)"
+commit_code after-other
+out=$(STUB_GH_RUNS="$(run_of failure 10 1234567890123456789012345678901234567890)" full --why "unrelated red"); rc=$?
+check "a red run of a commit that isn't in main's history doesn't count" "0" "$rc"
+commit_code after-cancelled
+out=$(STUB_GH_RUNS="[{\"conclusion\":\"cancelled\",\"databaseId\":11,\"headSha\":\"$pushed\",\"status\":\"completed\",\"url\":\"u\"},$(run_of failure 12 "$pushed" | tr -d '[]')]" full --why "cancelled then red"); rc=$?
+check "a cancelled run is passed over for the one before it" "4" "$rc"
+commit_code no-gh
+out=$(PUSH_MAIN_GH=/nonexistent/gh full --why "no gh"); rc=$?
+check "with no gh it stamps" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "with a plain warning" "check: warning: gh isn't installed, so main's CI can't be read." "$out"
+commit_code gh-hangs
+began=$(date +%s)
+out=$(STUB_GH_HANG=1 PUSH_MAIN_GH_TIMEOUT=1 full --why "gh hangs"); rc=$?
+check "a gh that never answers costs its bound, not a hang" "0 yes" "$rc $([ $(($(date +%s) - began)) -lt 20 ] && echo yes)"
+has "and says so" "gh didn't answer within 1 s" "$out"
+commit_code gh-fails
+out=$(STUB_GH_FAIL=1 full --why "gh fails"); rc=$?
+check "a gh that fails (signed out) warns and stamps" "0" "$rc"
+has "saying so" "signed out, offline, or no access" "$out"
+git checkout -qb not-main
+commit_code branch-change
+rm -f "$CALLS.gh"
+STUB_GH_RUNS=$red sel_full > /dev/null
+check "a branch's check never asks GitHub" "no" "$([ -s "$CALLS.gh" ] && echo yes || echo no)"
+# The watcher: the pushed commit's run to its end, the result, and on a failure the jobs, the tests, their rates and the artifacts.
+out=$(STUB_GH_RUNS="$(run_of failure 13 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a red watch ends with 1" "1" "$rc"
+has "naming the run" "CI is RED on main $(printf '%s' "$pushed" | cut -c1-12) (failure): https://ci/13" "$out"
+has "the failed job" "  check (lifecycle)" "$out"
+has "the failed test, without the log's colours" "check (lifecycle): FAIL recto-cli::registrations no_copy" "$out"
+has "its rate" "failed 3 of 5" "$out"
+has "and where its evidence is" "check-logs-lifecycle-1 (4 KiB): gh run download 13 -n check-logs-lifecycle-1" "$out"
+check "and keeps the result" "failure" "$(tail -1 .git/recto-ci-main | cut -f4)"
+out=$(STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a green watch ends with 0 and says so" "0 yes" "$rc $(printf '%s' "$out" | grep -q "CI is green on main" && echo yes)"
+out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH_MAIN_LIMIT=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"
+out=$(PUSH_MAIN_GH=/nonexistent/gh tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a watch with no gh says so at once" "2 yes" "$rc $(printf '%s' "$out" | grep -q "gh isn't installed" && echo yes)"
+# Failure (coordinator, 2026-11-12, run 43248252599): a run whose macOS jobs never got a runner, cancelled after 15 minutes, ends as `failure` with no test
+# run, and was read as red; or as green. It never ran: neither, said plainly, run again once, and the push guard isn't held by it.
+never_jobs='check (window)\tcancelled\t0\t0\t3\ncheck (core)\tcancelled\t0\t0\t4\ncheck (lifecycle)\tcancelled\t0\t0\t5\nsandbox (macos-15)\tsuccess\t17\t0\t6\n'
+rm -f "$CALLS.gh-rerun"
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 16 "$pushed")" STUB_GH_RUNS_AFTER="$(run_of success 16 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "a run that never ran is said to have never run" "CI NEVER RAN on main $(printf '%s' "$pushed" | cut -c1-12) (failure, but no test ran): https://ci/16" "$out"
+has "with each job and GitHub's annotation" "check (window) (cancelled, 0 steps: The job was not acquired by Runner of type hosted even after multiple attempts)" "$out"
+check "it's run again once, and the watch follows it to its end" "0 yes yes" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes) $(printf '%s' "$out" | grep -q "CI is green on main" && echo yes)"
+check "and it's never kept as a failure" "no" "$(grep -q $'\t16\tfailure\t' .git/recto-ci-main && echo yes || echo no)"
+rm -f "$CALLS.gh-rerun"
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 17 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "never running twice ends the watch with 2 and says how to go on" "2 yes" "$rc $(printf '%s' "$out" | grep -q "gh run rerun 17 --failed" && echo yes)"
+rm -f "$CALLS.gh-rerun"
+out=$(PUSH_MAIN_RERUN=0 STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 18 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "with PUSH_MAIN_RERUN=0 it only offers the rerun" "2 no" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes || echo no)"
+out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t15\t1\t2\n' STUB_GH_RUNS="$(run_of failure 19 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "a run where a part ran and failed is red, not rerun" "1 no" "$rc $([ -f "$CALLS.gh-rerun" ] && echo yes || echo no)"
+out=$(STUB_GH_JOBS='check (lifecycle)\tfailure\t9\t1\t2\n' STUB_GH_RUNS="$(run_of timed_out 20 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "and so is one whose part was cut off mid-step (a hang to the job's limit)" "1" "$rc"
+git checkout -q main
+commit_code after-never
+out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 21 "$pushed")" full --why "never ran"); rc=$?
+check "on main, a run that never ran doesn't hold the stamp" "0 yes" "$rc $(grep -qx "$(git rev-parse HEAD)" "$CHECKED" && echo yes || echo no)"
+has "and the check says it's neither red nor green" "main's CI never ran on $(printf '%s' "$pushed" | cut -c1-12) (https://ci/21): no part got a runner or ran a step, so it's neither red nor green" "$out"
+commit_code after-real-red
+out=$(STUB_GH_RUNS="$(run_of failure 22 "$pushed")" full --why "real red"); rc=$?
+check "while a run whose part failed still does" "4" "$rc"
+
+# Failure (PLAN R0.7d): a CI-like run isn't CI's profile, concurrency or limits, holds the build to the limits too, runs the slow stage CI doesn't, counts
+# as a pass for the push guard, or doesn't say what it can't give; or a test filter's rerun can't be repeated to give its rate here.
+git checkout -q main
+git checkout -qb like-ci-cases
+commit_code like-ci-part
+rm -f "$CALLS.policy" "$CALLS.slow"; : > "$CALLS"
+runs_before=$(runs_in_ledger); checked_before=$(wc -l < "$CHECKED" | tr -d ' ')
+out=$(tools/check.sh --like-ci lifecycle 2>&1); rc=$?
+check "a part like CI passes as the part does" "0" "$rc"
+has "it says what it can't give" "a clean user" "$out"
+has "and a clean Launch Services database" "clean Launch Services" "$out"
+check "it runs the part's tests, held by the limits, with CI's profile" "1" "$(grep -c -- '^taskpolicy -c background cargo nextest run .*long_session -j 4 -E test(~life_test) profile=ci$' "$CALLS.policy")"
+check "and builds them first without the limits (the app tests', the registrations')" "2 0" "$(grep -c -- '^nextest run --no-run' "$CALLS") $(grep -c -- '--no-run' "$CALLS.policy")"
+check "with no slow stage, as on CI" "no" "$([ -s "$CALLS.slow" ] && echo yes || echo no)"
+check "and it's never a run, a pass or a stamp" "$runs_before $checked_before" "$(runs_in_ledger) $(wc -l < "$CHECKED" | tr -d ' ')"
+check "an unknown option is refused" "2" "$(tools/check.sh --like-ci lifecycle --fast > /dev/null 2>&1; echo $?)"
+commit_code like-ci-filter
+rm -f "$CALLS.policy" "$CALLS.reruns"; : > "$CALLS"
+# This repository's app binaries are none; for this case, the real one's first.
+echo "APP_BINARIES='app'" >> tools/check-scope.sh
+out=$(STUB_LIST='recto-cli::app flaky_one' STUB_JUNIT_FAIL='binary_id(=recto-cli::app)' STUB_RERUN_FAILS=1 tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --times 3 2>&1); rc=$?
+check "a filter like CI, N times: the failure fails it" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "it builds the app for an app binary's test" "1" "$(grep -c '^app-build$' "$CALLS")"
+check "and runs it that many times under the limits, 4 at once for the app's tests" "3" "$(grep -c -- '-j 4 -E binary_id(=recto-cli::app) & test(=flaky_one) profile=ci$' "$CALLS.policy")"
+has "with its rate" "failed 1 of 3" "$(printf '%s' "$out" | tr -s ' ')"
+has "and its evidence, with the line that runs it again" "evidence of 1 failed test run(s)" "$out"
+git checkout -q -- tools/check-scope.sh
+commit_code like-ci-none
+out=$(STUB_LIST='' tools/check.sh --like-ci 'test(=nothing_here)' 2>&1); rc=$?
+check "a filter that matches nothing says so" "2 yes" "$rc $(printf '%s' "$out" | grep -q 'no test matches' && echo yes)"
+rm -f "$CALLS.policy"; : > "$CALLS"
+LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' > /dev/null 2>&1
+check "with the limits off (LIKE_CI_LIMITS=''), no taskpolicy, and 3 at once for a test that isn't the app's" "no 1" "$([ -s "$CALLS.policy" ] && echo yes || echo no) $(grep -c -- '--workspace -j 3 -E test(=t1)' "$CALLS")"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

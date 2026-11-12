@@ -157,6 +157,24 @@ impl Profile {
         Ok(profile.ms.iter().any(|ms| *ms > 0).then_some(profile))
     }
 
+    /// **The switch that gives this profile again:** each slow seam's delay by name, and the jitter's seed, as [`Profile::read`] reads them. What a failure prints to be run again as it ran (PLAN R0.7b).
+    pub fn switch(&self) -> String {
+        let mut items: Vec<String> = Seam::ALL
+            .iter()
+            .filter(|seam| self.ms(**seam) > 0)
+            .map(|seam| format!("{}={}", seam.name(), self.ms(*seam)))
+            .collect();
+        if let Some(seed) = self.jitter {
+            items.push(format!("jitter={seed}"));
+        }
+        items.join(",")
+    }
+
+    /// The jitter's seed, if there is one.
+    pub fn seed(&self) -> Option<u64> {
+        self.jitter
+    }
+
     /// Its own delay for a seam, before any jitter.
     pub fn ms(&self, seam: Seam) -> u64 {
         self.ms[seam.index()]
@@ -592,6 +610,24 @@ mod tests {
         let huge = Profile::read(Some("99999999"), None, None).unwrap().unwrap();
         assert_eq!(huge.delay(Seam::State, 0), Some(Duration::from_secs(30)));
         assert_eq!(huge.delay(Seam::Worker, 0), Some(Duration::from_secs(10)));
+    }
+
+    /// Failure: a failure's rerun line (PLAN R0.7b) doesn't give back the run it came from: the switch a profile writes reads as another profile, or with another seed, so the same arrivals in the same order can't be had again.
+    #[test]
+    fn a_profile_written_back_as_a_switch_gives_the_same_delays() {
+        for asked in ["ci", "ci,jitter=12345", "worker=7,state=0,draw=3,jitter=0", "250"] {
+            let profile = Profile::read(Some(asked), None, None).unwrap().unwrap();
+            let again = Profile::read(Some(&profile.switch()), None, None).unwrap().unwrap();
+            assert_eq!(again, profile, "{asked} as {}", profile.switch());
+            for seam in Seam::ALL {
+                let draws = |p: &Profile| (0..16).map(|n| p.delay(seam, n)).collect::<Vec<_>>();
+                assert_eq!(draws(&again), draws(&profile), "{asked}: {}", seam.name());
+            }
+        }
+        let seeded = Profile::read(Some("ci,jitter=99"), None, None).unwrap().unwrap();
+        assert_eq!(seeded.seed(), Some(99));
+        assert!(seeded.switch().ends_with(",jitter=99"), "{}", seeded.switch());
+        assert_eq!(Profile::read(Some("ci"), None, None).unwrap().unwrap().seed(), None);
     }
 
     /// Failure: a seam's pause put on the UI thread hangs the app for its delay (AGENTS rule 3), where it should be refused and counted.

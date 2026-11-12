@@ -56,6 +56,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | Generated contents | [`generated-contents.md`](generated-contents.md) |
 | The agent interface | [`agent-interface.md`](agent-interface.md) |
 | Slow mode | [`slow-mode.md`](slow-mode.md) |
+| One failure is enough: evidence, reruns, like-CI, main's CI | [`failures.md`](failures.md) |
 | Notices (each dependency is in its crate file) | [`dependencies.md`](dependencies.md) |
 | Machine notes | [`machine-notes.md`](machine-notes.md) |
 

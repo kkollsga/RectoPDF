@@ -11,6 +11,7 @@
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
 #   CHECK_PART=core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
+#   tools/check.sh --like-ci <part or filter> [--times N]   CI's profile, concurrency and slower machine, by limits on the process (tools/check-like-ci.sh); never a pass.
 #
 # A pass counts for identical code: --full on a clean tree whose code has already passed says so, lets the push guard accept this commit and runs
 # nothing. Documents don't count as code, as in tools/hooks/pre-push. CHECK_AGAIN=1 runs it for real anyway. A dirty tree always runs and is never recorded.
@@ -23,10 +24,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,16p' "$0"; exit 2; }
+usage() { sed -n '2,17p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
+like_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --why)
@@ -36,6 +38,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     *)
+      if [ "$mode" = --like-ci ]; then like_args+=("$1"); shift; continue; fi
       [ -z "$mode" ] || usage
       mode=$1
       shift
@@ -101,6 +104,29 @@ docs_only_since() {
   git merge-base --is-ancestor "$1" HEAD 2>/dev/null && [ -z "$(git diff --name-only "$1" HEAD | grep -vE '^docs/|\.md$')" ]
 }
 branch=$(git symbolic-ref --short -q HEAD || echo detached)
+# On `main`, a pass is stamped for the push guard only while the last pushed main commit's CI isn't red, unless that red is marked known with a date
+# (tools/push-main.sh --known, at most 7 days; PLAN R0.7e): merges went on over a red main four times, and one red went unseen (2026-11-12). The pass
+# is still remembered, so once CI is green or the red is marked, the same code stamps without running again. gh missing, signed out or offline is a
+# warning, never a wait: push-main.sh bounds every call.
+main_ci_allows_stamp() {
+  [ "$branch" = main ] && [ -x tools/push-main.sh ] || return 0
+  local said rc=0
+  said=$(tools/push-main.sh --status 2>&1) || rc=$?
+  said=${said#push-main: }
+  case "$rc" in
+    0) echo "check: $said" ;;
+    1)
+      {
+        echo "check: not stamped for the push guard: $said"
+        echo "Fix main first (tools/push-main.sh --watch shows the failure, its rates and its evidence), or, if the failure is understood and tracked, mark it"
+        echo "known for at most a week: tools/push-main.sh --known <sha> --until YYYY-MM-DD --why \"what is known\". The pass is remembered: run this again then."
+      } >&2
+      return 1
+      ;;
+    3) echo "check: warning: $said The pass is stamped: a run that never ran says nothing of the code." >&2 ;;
+    *) echo "check: warning: $said The pass is stamped without knowing it." >&2 ;;
+  esac
+}
 
 # Whether a ledger line's commit still counts against this branch's budget. Only a run of code still in HEAD's history counts: a merge taken back off, or
 # commits set aside, aren't what's being checked now (on main, a merge identical to a passed branch was refused, its count made of runs of two merges that
@@ -160,6 +186,18 @@ crates_in() {
 . tools/check-scope.sh
 # shellcheck source=tools/check-times.sh
 . tools/check-times.sh
+# shellcheck source=tools/check-rerun.sh
+. tools/check-rerun.sh
+# shellcheck source=tools/check-like-ci.sh
+. tools/check-like-ci.sh
+# Where a failing test that started the app leaves its evidence, one folder a test under its stage's name (crates/recto-cli/tests/common/evidence.rs): the tree's
+# own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload. And how often a failed stage's tests run again to measure the failure:
+# CI 4 times (tools/check-rerun.sh has the bounds), here only when asked.
+CHECK_EVIDENCE_ROOT=${RECTO_EVIDENCE:-$PWD/${CARGO_TARGET_DIR:-target}/recto-evidence}
+case "$CHECK_EVIDENCE_ROOT" in /*) ;; *) CHECK_EVIDENCE_ROOT=$PWD/$CHECK_EVIDENCE_ROOT ;; esac
+CHECK_RERUN=${CHECK_RERUN:-$([ -n "${CI:-}" ] && echo 4 || echo 0)}
+case "${CHECK_SLOW_SEED:-0}" in '' | *[!0-9]*) echo "check: CHECK_SLOW_SEED is a number, the slow mode's jitter seed, not '$CHECK_SLOW_SEED'." >&2; exit 2 ;; esac
+export CHECK_EVIDENCE_ROOT CHECK_RERUN
 if [ "$mode" = --slow ]; then
   times_report
   exit 0
@@ -223,6 +261,10 @@ case "$mode" in
         passed_at=$(printf '%s' "$known" | cut -f3)
         known_scope=$(printf '%s' "$known" | cut -f4)
         if [ -z "$known_scope" ] || [ "$known_scope" = all ]; then
+          if ! main_ci_allows_stamp; then
+            echo "check: this code already passed, on commit $passed_commit at $passed_at, so nothing ran, but this commit isn't stamped." >&2
+            exit 4
+          fi
           stamp_checked
           echo "check: this code already passed, on commit $passed_commit at $passed_at. Only documents, if anything, have changed since, so nothing ran and this commit counts as checked. CHECK_AGAIN=1 runs it for real."
         else
@@ -286,6 +328,13 @@ case "$mode" in
       lifecycle) slow_filter="($SLOW_TESTS) & ($LIFECYCLE_TESTS)" ;;
     esac
     ;;
+  --like-ci)
+    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_rounds like_ci_note
+    status=0
+    like_ci_main "${like_args[@]}" || status=$?
+    evidence_report "$status"
+    exit "$status"
+    ;;
   --failed)
     log=$(tools/sysguard/heavy.sh --last-failure) || exit 1
     names=$(sed -nE 's/^ *(FAIL|SIGKILL|SIGABRT|SIGSEGV|TIMEOUT|ABORT) +\[[^]]*\] +(\([^)]*\) +)?[^ ]+ +([^ ]+) *$/\3/p' "$log" | sort -u)
@@ -342,6 +391,9 @@ run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
+  # This run's evidence only: what the last run left in the tree's own folder goes (one given in RECTO_EVIDENCE, such as CI's, is never emptied).
+  [ -n "${RECTO_EVIDENCE:-}" ] || rm -rf "$CHECK_EVIDENCE_ROOT"
+  mkdir -p "$CHECK_EVIDENCE_ROOT"
   tracked_tree > "$check_mark.tree"
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   stage workers
@@ -373,33 +425,42 @@ run() {
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
+    # A failure here doesn't hide the registrations stage below, which is about what these tests left (a leak seen one run in three on CI, 2026-11-12):
+    # it runs anyway, and the run fails with this stage's name. The slow stage, the same tests late, is left out after a failure here.
     stage app-tests
+    local app_status=0
     case "$app_mode" in
-      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 ;;
-      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare -j 4 -E "$WINDOW_TESTS" ;;
-      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
+      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 || app_status=$? ;;
+      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test evidence -j 4 -E "$WINDOW_TESTS" || app_status=$? ;;
+      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" || app_status=$? ;;
     esac
+    [ "$app_status" = 0 ] || echo app-tests > "$check_mark.failed"
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
     # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
     # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
     # Not on CI, which is the slow machine already: the profile on top of it doubled up, and two tests waited past their bounds there for slowness
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
-    if [ -z "${CI:-}" ]; then
+    if [ -z "${CI:-}" ] && [ -z "${CHECK_LIKE_CI:-}" ] && [ "$app_status" = 0 ]; then
       stage slow
-      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
+      # The ci profile exactly, so the gate fails the same way each run; a seed for the profile's jitter only when asked (CHECK_SLOW_SEED), said either
+      # way, so a failure's seams and seed are in its rerun line and the same seed gives the same delays (PLAN R0.7b).
+      local slow_switch="ci${CHECK_SLOW_SEED:+,jitter=$CHECK_SLOW_SEED}"
+      echo "check: slow: RECTO_QA_SLOW=$slow_switch$([ -n "${CHECK_SLOW_SEED:-}" ] || echo ' (no jitter; CHECK_SLOW_SEED=<n> adds jitter=<n>)')"
+      RECTO_QA_SLOW=$slow_switch RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
     fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     if [ "$app_mode" = both ] || [ "$app_mode" = lifecycle ]; then
       stage registrations
       RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test registrations
     fi
+    [ "$app_status" = 0 ] || { echo "check: app-tests failed (above), and the stages after it that don't depend on it ran." >&2; return "$app_status"; }
   fi
   stage done
 }
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit"' EXIT
+trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed"' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
@@ -441,11 +502,12 @@ if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree
+export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
 export check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
+evidence_report "$status"
 [ "$mode" = --full ] || exit "$status"
 # Nothing ran: the queue refused it, or it was stopped while waiting. So there's no run to count.
 read -r started started_commit started_state < "$check_mark" || exit "$status"
@@ -453,7 +515,7 @@ case "$status" in
   0) result=pass ;;
   # Stopped from outside says nothing about the code, so it isn't held against it.
   130|137|143) result=stopped ;;
-  *) result="fail:$(tail -1 "$check_mark")" ;;
+  *) result="fail:$(cat "$check_mark.failed" 2>/dev/null || tail -1 "$check_mark")" ;;
 esac
 # The tests' durations are kept for every run that started, a part too (tools/check-times.sh, `check.sh --slow`). Not for one stopped from outside.
 [ "$result" = stopped ] || ( times_record "$started_commit" "$([ "$scope_key" = all ] && echo all || echo selective)" "$part" "$result" ) || true
@@ -483,7 +545,9 @@ if [ "$ledger_commit" = "$started_commit" ]; then
     # The scope goes with the pass: only a pass of everything is remembered for any scope, and only it lets `main` be pushed. A selective pass is
     # remembered for the same selection and never stamps the push guard: the same code on `main`, or with other changes under it, still runs everything.
     printf '%s\t%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" "$scope_key" >> "$passes"
-    [ "$scope_key" != all ] || stamp_checked "$started_commit"
+    if [ "$scope_key" = all ]; then
+      if main_ci_allows_stamp; then stamp_checked "$started_commit"; else status=4; fi
+    fi
   fi
 fi
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" "$([ "$scope_key" = all ] && echo all || echo selective)" >> "$ledger"
