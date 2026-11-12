@@ -521,7 +521,9 @@ fn a_wait_with_no_time_still_looks_first() {
     let (reply, code) = state.json(&["wait", "tab-open", "doc", "--timeout", "0s"]);
     assert_eq!(code, 0, "what's already true: {reply}");
     // The race is between the deadline and the look, inside the session, so the rounds that hunt it go over one connection, as `recto` sends them.
-    let line = recto_agent::table::parse_cli(&["wait", "tab-open", "doc", "--timeout", "0s"].map(String::from)).unwrap().wire();
+    let line = recto_agent::table::parse_cli(&["wait", "tab-open", "doc", "--timeout", "0s"].map(String::from))
+        .unwrap()
+        .wire();
     let mut raw = Raw::connect(&state);
     for _ in 0..50 {
         let reply = raw.call(&serde_json::from_str(&line).unwrap());

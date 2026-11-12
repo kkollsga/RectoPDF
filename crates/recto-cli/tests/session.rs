@@ -1034,7 +1034,10 @@ fn help_works_for_every_command_without_a_session() {
     let (all, _, code) = state.text(&["help"]);
     assert_eq!(code, 0);
     assert!(all.contains("recto status") && all.contains("Exit codes"), "{all}");
-    for spec in TABLE.iter().filter(|spec| !spec.hidden && (spec.route == Route::Here || spec.name == "page move")) {
+    for spec in TABLE
+        .iter()
+        .filter(|spec| !spec.hidden && (spec.route == Route::Here || spec.name == "page move"))
+    {
         let words: Vec<&str> = std::iter::once("help").chain(spec.name.split(' ')).collect();
         let (shown, said, code) = state.text(&words);
         assert_eq!(code, 0, "{}: {said}", spec.name);
