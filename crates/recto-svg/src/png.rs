@@ -11,7 +11,7 @@ const CHUNK: usize = 64 * 1024;
 const FILTER_UP: u8 = 2;
 /// The longest row this will hold. It holds three at a time, so this is what it costs at most, whatever a caller says the size is.
 const MAX_ROW: u64 = 64 * 1024 * 1024;
-/// Compression. Lossless either way: this trades size for time. 6 is zlib's own default; see `docs/ENGINEERING.md` for what it costs.
+/// Compression. Lossless either way: this trades size for time. 6 is zlib's own default; see `docs/engineering/crates/recto-svg.md` for what it costs.
 const LEVEL: u32 = 3;
 
 fn write_chunk(out: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> io::Result<()> {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The renderer helper: PDFium's worker in a small app of its own inside RectoPDF.app, signed with the App Sandbox. One place for its layout, its signing and its check, so the
-# app build, the release and the tests can't lay it out three ways. docs/ENGINEERING.md, "Renderer", says why it's built this way.
+# app build, the release and the tests can't lay it out three ways. docs/engineering/sandbox.md says why it's built this way.
 #
 #   app/render-helper.sh --layout <Contents> <worker> <libpdfium>   Puts the helper in <Contents>/Helpers/RectoRender.app and signs it ad hoc, always.
 #   app/render-helper.sh --sign <Contents>                          Signs it again: with RECTO_SIGN_IDENTITY if it's set, else ad hoc.

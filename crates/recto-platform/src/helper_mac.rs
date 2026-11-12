@@ -6,7 +6,7 @@
 //! the indexer and the headings helper for minutes: `recto wait indexing-done` timed out at 60 s on a four-page file in three runs in one day. Here,
 //! with another process reading the same SSD, 64 MiB of uncached reads took 12 s at Darwin background, 3.5 s at utility and 1.2 s at the default
 //! level. QoS utility is still below whatever the person is looking at, and its I/O tier is the lightest of the throttled ones (5 ms an I/O on an
-//! SSD, 40 ms on another disk), so it's never starved. `docs/ENGINEERING.md`, under the search index, has the numbers.
+//! SSD, 40 ms on another disk), so it's never starved. `docs/engineering/search-index.md` has the numbers.
 //!
 //! `posix_spawnattr_set_qos_class_np` clamps the whole process at that level, every thread, including any thread pool a library starts, and
 //! whatever it starts in turn inherits the clamp: `ps -M` shows the helper's threads and its render worker's at priority 20, against 31 for an

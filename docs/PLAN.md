@@ -411,7 +411,7 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [x] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
 - [x] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
 - [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
-- [ ] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
+- [x] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
 - [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
 
 **R1. The app core out of the bridge (track A)**
