@@ -1,5 +1,7 @@
 //! The UI thread's hang watchdog. The host says when its thread starts and stops working, from a run-loop observer, and one thread watches while it's busy.
 //!
+//! It moved here from `recto-ffi` whole, with its thread, which it starts itself on the first stretch of work; the bridge forwards the host's two calls and `qa state` reads its counts.
+//!
 //! **At rest this costs nothing:** the watching thread is parked while the UI thread sleeps, so no timer ticks. It wakes only for a stretch of work, and looks every quarter second for as long as that lasts.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,7 +32,14 @@ struct Shared {
 #[derive(Clone)]
 pub struct Watchdog(Arc<Shared>);
 
+impl Default for Watchdog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Watchdog {
+    #[must_use]
     pub fn new() -> Self {
         Self(Arc::new(Shared {
             epoch: Instant::now(),
@@ -74,6 +83,8 @@ impl Watchdog {
         }
     }
 
+    /// Stalls past [`NOTE_MS`], stalls past [`FAIL_MS`], and the worst in ms.
+    #[must_use]
     pub fn report(&self) -> (u64, u64, u64) {
         (
             self.0.over_note.load(Ordering::Relaxed),
@@ -115,7 +126,7 @@ fn watch(shared: &Shared) {
             std::thread::park();
             continue;
         }
-        std::thread::sleep(LOOK_EVERY);
+        std::thread::sleep(LOOK_EVERY); // ratchet: poll (the watcher's look while the UI thread works; parked at rest)
         look(shared, shared.epoch.elapsed().as_millis() as u64 + 1);
     }
 }
