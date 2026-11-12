@@ -155,7 +155,10 @@ impl State {
         [&paths.server_messages, &paths.log, &paths.old_log, &paths.other_log, &paths.old_other_log]
             .into_iter()
             .cloned()
-            .chain([self.root.join("update.log")])
+            .chain([
+                self.root.join("update.log"),
+                paths.server_messages.with_file_name("server-messages.previous.txt"),
+            ])
             .collect()
     }
 

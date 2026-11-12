@@ -68,6 +68,8 @@ struct Launch {
 fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Value), AgentError> {
     paths.prepare()?;
     levels::store(paths, Level::Full).map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
+    // The run before's messages are kept for one launch more: a test that compares runs on one state folder fails once the next has started, and what the run before said went with this launch's truncation (CI, 2026-11-12: the contents' report on a restart, silent in the logs kept).
+    let _ = std::fs::rename(&paths.server_messages, paths.server_messages.with_file_name("server-messages.previous.txt"));
     let messages = std::fs::OpenOptions::new()
         .create(true)
         .write(true)

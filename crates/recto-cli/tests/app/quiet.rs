@@ -402,3 +402,25 @@ fn a_change_landing_in_the_put_back_is_put_back_too() {
     let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(messages.contains("back took 2 tries: after the first it read accessory"), "{messages}");
 }
+
+/// Failure: what a run said is gone once the next run on its state folder starts, so a test that compares runs and fails after the next one's up shows nothing of what the run before said (CI run 43203636562: `quitting_twice_in_a_row_changes_nothing`'s report of a restart, and the contents' own message about it, silent in the logs kept). The run before's messages are kept for one launch more.
+#[test]
+fn the_run_befores_messages_are_kept_for_one_launch() {
+    let Some(app) = app_path() else { return };
+    let app = app.to_str().unwrap().to_owned();
+    let state = super::common::State::new();
+    let mut owner = std::process::Command::new("/bin/sleep").arg("120").spawn().unwrap();
+    let owner_pid = owner.id().to_string();
+    let (reply, code) = state.json(&["qa", "start", "--app", &app, "--time-limit", "2m", "--owner", &owner_pid]);
+    assert_eq!(code, 0, "{reply}");
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    ends(pid, "the process it was started for was killed");
+    let said = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(said.contains("this quiet run ended"), "the first run said why it ended: {said:?}");
+    let run = Run::on(&state).unwrap();
+    let previous = std::fs::read_to_string(state.paths.server_messages.with_file_name("server-messages.previous.txt")).unwrap_or_default();
+    assert_eq!(previous, said, "the run before's words, as they were");
+    run.quit();
+}
