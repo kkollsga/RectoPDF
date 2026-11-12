@@ -43,4 +43,56 @@ impl Inner {
     pub fn state_read(&self) -> bool {
         self.life.restored.load(Ordering::SeqCst)
     }
+
+    /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
+    pub fn window_should_open(&self) -> bool {
+        let reopened = self.updates.reopened_by_update();
+        let mut app = lock(&self.window.app);
+        app.window_decided = true;
+        !(app.window_closed && reopened)
+    }
+
+    /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
+    pub fn window_opened(&self) {
+        let engines = self.panes.engines(&self.engine);
+        for engine in &engines {
+            engine.window_opened();
+        }
+        let held = std::mem::take(&mut lock(&self.window.app).selections_held);
+        for (pane, range) in held {
+            if let Some(engine) = engines.get(pane) {
+                engine.restore_selection((range.start.page, range.start.at), (range.end.page, range.end.at));
+            }
+        }
+        // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
+        let contents_y = lock(&self.window.app).contents_y;
+        if let Some(y) = contents_y {
+            let mut follow = lock(&self.window.contents_follow);
+            let following = follow.is_following();
+            follow.new_contents();
+            follow.resume_at(y, following);
+        }
+        lock(&self.window.app).window_closed = false;
+        self.saver.view_changed();
+    }
+
+    /// The window closed, by the person or QA: what it showed goes, and the record says it's closed.
+    pub fn window_closed(&self) {
+        for engine in self.panes.engines(&self.engine) {
+            engine.window_closed();
+        }
+        let mut app = lock(&self.window.app);
+        app.window_closed = true;
+        // A window opened again isn't in the Dock.
+        if let Some(window) = app.window.as_mut() {
+            window.minimised = false;
+        }
+        drop(app);
+        self.saver.view_changed();
+    }
+
+    /// What the host shows has been made from the state that was read.
+    pub fn shown_with_state(&self) {
+        self.life.shown_with_state.store(true, Ordering::SeqCst);
+    }
 }

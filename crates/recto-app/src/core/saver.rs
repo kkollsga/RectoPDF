@@ -205,6 +205,11 @@ impl Saver {
         }
     }
 
+    /// Whether a writing thread is there, or asked for.
+    pub fn is_writing(&self) -> bool {
+        self.writer_alive.load(Ordering::SeqCst)
+    }
+
     pub fn has_failed(&self) -> bool {
         lock(&self.last_error).is_some()
     }

@@ -200,6 +200,11 @@ impl Sleeper {
         self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    /// Looks at woken tabs' files under way now.
+    pub fn looks_running(&self) -> usize {
+        self.looks.running()
+    }
+
     pub fn set_budget(&self, bytes: u64) {
         self.budget_bytes.store(bytes, Ordering::SeqCst);
     }

@@ -1,6 +1,8 @@
 //! **Fakes of what the app core is given by its host,** for tests here and in other crates (the `testkit` feature): a clock that moves only when told, a listener that records
 //! what it heard, and a page view's hooks that hear nothing. The headless app of step R1.3 is built from these.
 
+pub mod headless;
+
 use crate::clock::Clock;
 use crate::listener::{Listener, QuitAnswer};
 use std::sync::Mutex;

@@ -19,6 +19,8 @@ pub mod updates;
 
 mod comparison;
 mod editing;
+#[cfg(test)]
+mod headless;
 mod launching;
 mod navigation;
 mod opening;
@@ -206,6 +208,8 @@ pub struct Lifecycle {
     pub(crate) qa_hold_reads: AtomicBool,
     /// Files being read now, which a hand-off waits for.
     pub(crate) reads_running: AtomicU32,
+    /// The one pass over the other tabs' files after a restore, while it's under way: what a test waits for, as nothing else does.
+    pub(crate) others_looking: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
     pub sheets: AtomicU32,
     /// When the user last touched the app, in milliseconds of `started`. One number, set by what the event monitor calls, with no timer.
@@ -275,6 +279,7 @@ impl Lifecycle {
             update_facts: Mutex::new(None),
             hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
             reads_running: AtomicU32::new(0),
+            others_looking: AtomicU32::new(0),
             sheets: AtomicU32::new(0),
             qa_hold_reads: AtomicBool::new(false),
         }

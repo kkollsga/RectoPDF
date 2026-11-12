@@ -7,8 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# The fakes in `testkit`, for other crates' tests.
-testkit = []
+# The fakes in `testkit`, and the headless app made of them, for other crates' tests.
+testkit = ["dep:recto-testpdf"]
 
 [lints]
 workspace = true
@@ -25,6 +25,8 @@ recto-render-service.workspace = true
 recto-session.workspace = true
 recto-update.workspace = true
 serde_json.workspace = true
+# The headless app's test files, with `testkit` only.
+recto-testpdf = { workspace = true, optional = true }
 
 [dev-dependencies]
 recto-testpdf.workspace = true

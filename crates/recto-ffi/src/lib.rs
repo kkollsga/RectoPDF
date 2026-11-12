@@ -1189,17 +1189,7 @@ impl AppCore {
     }
 
     pub fn window_closed(&self) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
-            engine.window_closed();
-        }
-        let mut app = lock(&self.inner.window.app);
-        app.window_closed = true;
-        // A window opened again isn't in the Dock.
-        if let Some(window) = app.window.as_mut() {
-            window.minimised = false;
-        }
-        drop(app);
-        self.inner.saver.view_changed();
+        self.inner.window_closed();
     }
 
     /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
@@ -1259,34 +1249,12 @@ impl AppCore {
     }
 
     pub fn window_opened(&self) {
-        let engines = self.inner.panes.engines(&self.inner.engine);
-        for engine in &engines {
-            engine.window_opened();
-        }
-        let held = std::mem::take(&mut lock(&self.inner.window.app).selections_held);
-        for (pane, range) in held {
-            if let Some(engine) = engines.get(pane) {
-                engine.restore_selection((range.start.page, range.start.at), (range.end.page, range.end.at));
-            }
-        }
-        // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
-        let contents_y = lock(&self.inner.window.app).contents_y;
-        if let Some(y) = contents_y {
-            let mut follow = lock(&self.inner.window.contents_follow);
-            let following = follow.is_following();
-            follow.new_contents();
-            follow.resume_at(y, following);
-        }
-        lock(&self.inner.window.app).window_closed = false;
-        self.inner.saver.view_changed();
+        self.inner.window_opened();
     }
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
-        let reopened = self.inner.updates.reopened_by_update();
-        let mut app = lock(&self.inner.window.app);
-        app.window_decided = true;
-        !(app.window_closed && reopened)
+        self.inner.window_should_open()
     }
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
@@ -1296,7 +1264,7 @@ impl AppCore {
 
     /// What the host shows has been made from the state that was read.
     pub fn shown_with_state(&self) {
-        self.inner.life.shown_with_state.store(true, Ordering::SeqCst);
+        self.inner.shown_with_state();
     }
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
