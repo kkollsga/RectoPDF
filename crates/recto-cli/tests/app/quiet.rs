@@ -146,26 +146,15 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     assert!(actives.iter().all(|active| active == false), "the app was never the active one: {actives:?}");
 }
 
-/// Failure: the system's opening the bundle again, as `open` does for whoever runs it, reaches a quiet run and makes it a regular app, with a Dock icon and a place in the menu bar, or opens its window. LaunchServices hands the reopen to the running app, and AppKit's own handling of it turned a quiet run regular (measured 2026-11-08, and seen in a full check's restore test while another worktree's update tests were opening their copies). Launch Services itself makes the run regular before it hands over the reopen, and the run's guard puts it back about a millisecond later (2026-11-11, from the change's own stack), so a report read the policy in that moment: 1 of 200 on CI (run 43085841110), here 9 of 1,800 with 240 reopens, read at the end of a report's build after the guard had looked at its start. The run is opened again every few looks, and every look says prohibited, never active and off every screen, for two seconds.
+/// Failure: the system's opening the bundle again, as `open` does for whoever runs it, reaches a quiet run and makes it a regular app, with a Dock icon and a place in the menu bar, or opens its window. LaunchServices hands the reopen to the running app, and AppKit's own handling of it turned a quiet run regular (measured 2026-11-08, and seen in a full check's restore test while another worktree's update tests were opening their copies). Launch Services itself makes the run regular before it hands over the reopen, and the run's guard puts it back about a millisecond later (2026-11-11, from the change's own stack), so a report read the policy in that moment: 1 of 200 on CI (run 43085841110), here 9 of 1,800 with 240 reopens, read at the end of a report's build after the guard had looked at its start. The run is opened again every few looks, and every look says prohibited, never active and off every screen, for two seconds. The copy is an accessory app (`OwnCopy`: a regular one would leave Dock tiles), so Launch Services makes it `accessory` here, not `regular`, and the guard puts it back the same way.
 #[test]
 fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     // A copy of its own: the system's open reaches a run of the bundle opened, and with the build's it could be any other test's (likeliest for CI run 43085841110, where another test's report said `regular`: nothing else in the suite opens the build).
     let Some(copy) = OwnCopy::new() else { return };
-    let (bundle, app) = (copy.bundle.clone(), copy.executable());
+    let app = copy.executable();
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
     let run = Run::start_of(&app, Duration::from_secs(120), &[]);
-    // On this run's own state and quiet, should it start a copy rather than reach the one running.
-    let open_again = || {
-        let opened = std::process::Command::new("/usr/bin/open")
-            .arg("-g")
-            .arg("--env")
-            .arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display()))
-            .arg(&bundle)
-            .args(["--args", "--qa"])
-            .output()
-            .unwrap();
-        assert!(opened.status.success(), "{opened:?}");
-    };
+    let open_again = || copy.open_quietly(&run.state.root);
     open_again();
     let began = std::time::Instant::now();
     let mut looks = 0;
@@ -195,13 +184,30 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     drop(run);
     drop(copy);
     let (seen, samples, anything) = watch.finish();
-    assert!(messages.contains("changed to regular from outside, and put back"), "{messages}");
+    // The copy is an accessory app to Launch Services, so the Dock never gets a tile for it (`OwnCopy`): what it changed the run to is `accessory`, and never `regular`.
+    assert!(messages.contains("changed to accessory from outside, and put back"), "{messages}");
+    assert!(!messages.contains("changed to regular"), "{messages}");
     if !anything {
         eprintln!("skipped: the window server listed nothing on any screen");
         return;
     }
     assert!(looks > 5 && samples > 50, "{looks} reports, {samples} looks");
     assert!(seen.is_empty(), "a quiet run's windows were on screen: {:?}", &seen[..seen.len().min(8)]);
+}
+
+/// Failure: a test opens a copy of the app that Launch Services can make a regular app, and each such open leaves a tile in the owner's Dock for good (2026-11-12: "there is like a billion rectopdf instances"; 6 tiles from these two tests alone, gone only with a restart of the Dock, and every full check ran them). The Dock can't be read without an accessibility permission, so what's asserted is what was measured to keep it away: a copy is an accessory app (`LSUIElement`), on a plist that still says the rest the app's does, and a run of it that's reopened is never reported as `regular` (the reopen test below).
+#[test]
+fn a_copy_the_system_opens_is_never_a_regular_app() {
+    let Some(copy) = OwnCopy::new() else { return };
+    let plist = copy.bundle.join("Contents/Info.plist");
+    let asked = |key: &str| {
+        let output = std::process::Command::new("/usr/libexec/PlistBuddy").args(["-c", &format!("Print :{key}")]).arg(&plist).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(asked("LSUIElement"), "true", "a copy that's opened must not be a regular app");
+    assert_eq!(asked("CFBundleIdentifier"), "io.github.kkollsga.RectoPDF", "the copy is the app otherwise");
+    let valid = std::process::Command::new("/usr/bin/codesign").args(["--verify"]).arg(&copy.bundle).status().unwrap();
+    assert!(valid.success(), "the copy's own signature has to hold, or it won't start");
 }
 
 /// Failure: a test's own copy of the app is left registered with Launch Services after it's dropped, a second RectoPDF in Open With
@@ -213,15 +219,7 @@ fn a_copy_opened_and_dropped_at_once_is_forgotten() {
     let Some(copy) = OwnCopy::new() else { return };
     let bundle = copy.bundle.clone();
     let state = super::common::State::new();
-    let opened = std::process::Command::new("/usr/bin/open")
-        .arg("-g")
-        .arg("--env")
-        .arg(format!("{}={}", recto_control::state::STATE_ENV, state.root.display()))
-        .arg(&bundle)
-        .args(["--args", "--qa"])
-        .output()
-        .unwrap();
-    assert!(opened.status.success(), "{opened:?}");
+    copy.open_quietly(&state.root);
     drop(copy);
     assert!(!bundle.exists(), "the copy is still there");
     let left: Vec<_> = recto_platform::registry::registered()
