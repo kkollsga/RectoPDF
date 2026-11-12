@@ -17,7 +17,6 @@ fn crates/recto-agent/src/saving.rs::save 151
 fn crates/recto-agent/src/selecting.rs::run_counted 157
 fn crates/recto-app/src/core/host.rs::AppHost::run_counted 151
 fn crates/recto-app/src/core/reconcile.rs::reconcile 280
-fn crates/recto-app/src/core/session.rs::session_thread 347
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187

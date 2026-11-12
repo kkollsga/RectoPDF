@@ -210,48 +210,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
         let host = &inner.host;
         match call {
             CoreCall::Reconcile => {}
-            CoreCall::LookAtShown => {
-                if let Some(inner) = inner.saver.inner() {
-                    for id in host.session.with_session(|session| session.panes()) {
-                        sleeper::check_woken_file(&inner, id);
-                    }
-                }
-            }
-            CoreCall::Unlocked(ask, loaded, stamp, password) => match loaded {
-                Ok(facts) => {
-                    // Kept by which file it is, so a move keeps it and a new file in its place doesn't get it. A file with no such numbers can't have its password kept for drawing it, so it's said rather than asked again for ever.
-                    let identity = stamp.map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0));
-                    match identity {
-                        None => {
-                            lock(&inner.tools.prompts.passwords).failed(ask.id);
-                            *lock(&inner.window.open_failure) = Some(passwords::CANT_KEEP.to_string());
-                        }
-                        Some(identity) => {
-                            lock(&inner.tools.prompts.passwords).opened(ask.id);
-                            inner.keys.set(identity, password);
-                            for engine in inner.panes.engines(&inner.engine) {
-                                engine.key_given(&ask.path);
-                            }
-                            match ask.target {
-                                passwords::Target::File => match host.session.with_session(|session| session.open_unlocked(&ask.path, facts, stamp)) {
-                                    Ok(id) => events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id))),
-                                    Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
-                                },
-                                passwords::Target::Tab(id) => host.session.with_session(|session| session.unlock(id, facts, stamp)),
-                            }
-                        }
-                    }
-                }
-                Err(OpenError::PasswordNeeded) => {
-                    if lock(&inner.tools.prompts.passwords).wrong(ask.id) == passwords::Wrong::Stopped {
-                        *lock(&inner.window.action_notice) = Some(passwords::stopped_asking());
-                    }
-                }
-                Err(error) => {
-                    lock(&inner.tools.prompts.passwords).failed(ask.id);
-                    *lock(&inner.window.open_failure) = Some(error.message().to_string());
-                }
-            },
+            CoreCall::LookAtShown => look_at_shown(inner),
+            CoreCall::Unlocked(ask, loaded, stamp, password) => unlocked(inner, ask, loaded, stamp, password, &mut events),
             CoreCall::ClearRecent => {
                 host.session.with_session(|session| session.clear_recent());
                 inner.saver.write_soon();
@@ -273,162 +233,34 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 recto_platform::slow::pause(recto_platform::slow::Seam::Session);
                 continue;
             }
-            CoreCall::RestorePatienceOver => {
-                if !inner.life.restored.load(Ordering::SeqCst) {
-                    match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.life.started.elapsed()) {
-                        // The state hasn't come. The window goes up without it, and when it does come it's taken in.
-                        updates::Patience::ShowNow => updates::show_without_state(&inner.life.shown_without_state, &*inner.listener),
-                        updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
-                    }
-                }
-                // A tab's file not answering: on to what's on the record. The page says it isn't answering.
-                if lock(&inner.life.holding_tab).take().is_some() {
-                    host.session.with_session(|session| session.wake_active());
-                }
-            }
+            CoreCall::RestorePatienceOver => restore_patience_over(inner),
             CoreCall::Open(path) if !inner.life.restored.load(Ordering::SeqCst) => {
                 deferred.push(path);
                 continue;
             }
-            CoreCall::Tap(id) => {
-                inner.engine.note_wake(id.0, Instant::now());
-                // A cold tab's file is read on a thread of its own, as an `open` is, so a file on a dead volume holds up neither this thread nor anything that asks about tabs, and a later tap goes ahead.
-                match host.session.with_session(|session| session.wake_for_tap(id)) {
-                    Some((tab, path)) => {
-                        reads.wanted_tab = Some(tab);
-                        reads.start(inner, Reading::Tab(tab), path);
-                    }
-                    None => {
-                        reads.wanted_tab = None;
-                        tap_now(inner, id, &mut events);
-                    }
-                }
-            }
-            CoreCall::Jump(id, page, within) => {
-                // Where the reader is, as the page view has it now, is what Back comes back to. `jump` clamps: a contents entry can't send the reader off the end.
-                inner.take_places();
-                if let Ok(event) = host
-                    .session
-                    .with_session(|session| session.jump(id, page, within).map(|()| recto_agent::page_now(session, id)))
-                {
-                    events.push(event);
-                }
-            }
-            CoreCall::JumpTyped(id, typed) => {
-                inner.take_places();
-                let went = host.session.with_session(|session| {
-                    let page = session.page_for_typed(id, &typed)?;
-                    session.jump(id, page, 0.0).ok()?;
-                    Some(recto_agent::page_now(session, id))
-                });
-                match went {
-                    Some(event) => events.push(event),
-                    None => *lock(&inner.window.action_notice) = Some(linking::no_such_page(&typed)),
-                }
-            }
-            CoreCall::Step(back) => {
-                inner.take_places();
-                let moved = host.session.with_session(|session| {
-                    let id = session.active()?;
-                    let moved = if back { session.go_back(id) } else { session.go_forward(id) };
-                    moved.ok().filter(|moved| *moved).map(|_| recto_agent::page_now(session, id))
-                });
-                if let Some(event) = moved {
-                    events.push(event);
-                }
-            }
-            CoreCall::Open(path) => {
-                *lock(&inner.window.open_failure) = None;
-                // Opening a file again is what starts its password tries afresh (SPEC).
-                let (tab, own) = host.session.with_session(|session| {
-                    let tab = session.tab_for_path(&path);
-                    (tab, tab.and_then(|id| session.path_of(id)))
-                });
-                lock(&inner.tools.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
-                let cold = host
-                    .session
-                    .with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
-                if let Some((tab, file)) = cold {
-                    reads.wanted_tab = Some(tab);
-                    reads.start(inner, Reading::Tab(tab), file);
-                } else if host.session.with_session(|session| session.go_to_open_file(&path)).is_some() {
-                    reads.wanted_tab = None;
-                } else {
-                    // A link or a moved name is found once it's been looked at, on the thread reading it.
-                    reads.wanted_tab = None;
-                    reads.start(inner, Reading::File(path.clone()), path);
-                }
-            }
+            CoreCall::Tap(id) => tap(inner, &mut reads, id, &mut events),
+            CoreCall::Jump(id, page, within) => jump(inner, id, page, within, &mut events),
+            CoreCall::JumpTyped(id, typed) => jump_typed(inner, id, typed, &mut events),
+            CoreCall::Step(back) => step(inner, back, &mut events),
+            CoreCall::Open(path) => open(inner, &mut reads, path),
             CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
             CoreCall::SetPaper(paper) => set_view(inner, &mut events, |view| view.paper = Some(paper)),
             CoreCall::SleepTabs(tabs, why) => {
                 inner.go_dormant(&tabs, why);
             }
             CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
-            CoreCall::WokenFileIsOther(id, status) => {
-                host.session.with_session(|session| {
-                    session.apply_file_status(id, status);
-                    session.forget_read(id);
-                });
-                let reread = host.session.with_session(|session| {
-                    session
-                        .active()
-                        .filter(|active| *active == id)
-                        .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
-                });
-                if let Some((id, path, stamp)) = reread {
-                    reads.wanted_tab = Some(id);
-                    reads.start_restored(inner, id, path, stamp);
-                }
-            }
+            CoreCall::WokenFileIsOther(id, status) => woken_file_is_other(inner, &mut reads, id, status),
             CoreCall::LookAgain(id) => {
                 if let Some(inner) = inner.saver.inner() {
                     sleeper::check_woken_file(&inner, id);
                 }
             }
-            CoreCall::FileLength(id, pages, version) => {
-                // What a sleep file said of it is wrong, so it's read after all.
-                let wrong = host.session.with_session(|session| session.file_length_is(id, pages, version));
-                let reread = host.session.with_session(|session| {
-                    session
-                        .active()
-                        .filter(|active| wrong && *active == id)
-                        .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
-                });
-                if let Some((id, path, stamp)) = reread {
-                    reads.wanted_tab = Some(id);
-                    reads.start_restored(inner, id, path, stamp);
-                }
-            }
+            CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
             CoreCall::CloseTab(id, discard) => close_tab(host, id, discard, &mut events),
-            CoreCall::CloseAnswered(id, choice) => match choice {
-                crate::saving::CloseChoice::Save => {
-                    if let Some(inner) = inner.saver.inner() {
-                        saving::start_save(&inner, id, None, true);
-                    }
-                }
-                crate::saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
-                crate::saving::CloseChoice::Cancel | crate::saving::CloseChoice::SaveAs => {}
-            },
-            CoreCall::CloseAfterSave(id) => {
-                // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
-                let closed = host.session.with_session(|session| {
-                    session.close_after_save(id).inspect(|closed| {
-                        if let Some(closed) = closed {
-                            recto_agent::event::closed(session, *closed, &mut events);
-                        }
-                    })
-                });
-                if let Ok(None) = closed {
-                    *lock(&inner.window.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string());
-                }
-            }
-            CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
-                if let Some(id) = session.active() {
-                    session.clear_history(id, recto_session::ClearReason::UserAsked);
-                }
-            }),
+            CoreCall::CloseAnswered(id, choice) => close_answered(inner, id, choice, &mut events),
+            CoreCall::CloseAfterSave(id) => close_after_save(inner, id, &mut events),
+            CoreCall::ClearEditHistory => clear_edit_history(inner),
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
@@ -437,82 +269,12 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Find(call) => find::act(inner, call, &mut events),
             CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
             CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
-            CoreCall::Rotate(turns) => {
-                let refused = host.session.with_session(|session| match session.active() {
-                    None => Some(recto_session::SessionError::NoSuchTab),
-                    Some(id) => match session.rotate_from_panel(id, turns) {
-                        Ok(()) => {
-                            events.push(recto_agent::edits_changed(session, id));
-                            None
-                        }
-                        Err(error) => Some(error),
-                    },
-                });
-                // It says why, by the page, and goes by itself.
-                *lock(&inner.window.action_notice) = refused.map(|error| format!("Couldn't rotate: {}", error.message()));
-            }
-            CoreCall::UndoOrRedo(undo) => host.session.with_session(|session| {
-                if let Some(id) = session.active()
-                    && (if undo {
-                        session.undo_edit_as(id, recto_session::Author::Owner)
-                    } else {
-                        session.redo_edit_as(id, recto_session::Author::Owner)
-                    })
-                    .unwrap_or(false)
-                {
-                    events.push(recto_agent::edits_changed(session, id));
-                }
-            }),
-            CoreCall::CompareClick(id) => {
-                // The tab joining, or the pane read next if the one read leaves, is read first with the session free, as a tap's is.
-                let cold = host.session.with_session(|session| session.wake_for_compare_click(id));
-                match cold {
-                    Some((tab, path)) => {
-                        reads.wanted_tab = Some(tab);
-                        reads.start(inner, Reading::Compare(id, tab), path);
-                    }
-                    None => compare_click_now(inner, id, &mut events),
-                }
-            }
-            CoreCall::FocusPane(id) => {
-                let cold = host.session.with_session(|session| {
-                    session
-                        .comparison()
-                        .is_some_and(|comparison| comparison.contains(id))
-                        .then(|| session.wake_for_tap(id))
-                        .flatten()
-                });
-                match cold {
-                    Some((tab, path)) => {
-                        reads.wanted_tab = Some(tab);
-                        reads.start(inner, Reading::Pane(tab), path);
-                    }
-                    None => {
-                        events.extend(
-                            host.session
-                                .with_session(|session| session.focus_pane(id).then(|| recto_agent::event::tab_activated(session, id))),
-                        );
-                    }
-                }
-            }
-            CoreCall::SetSynced(on) => {
-                events.extend(host.session.with_session(|session| {
-                    session
-                        .set_compare_synced(on)
-                        .filter(|changed| *changed)
-                        .map(|_| recto_agent::event::comparison_changed(session))
-                }));
-            }
-            CoreCall::SetSpread(tab, spread) => host.session.with_session(|session| {
-                if let Some(id) = tab.filter(|tab| session.tab(*tab).is_some()).or(session.active())
-                    && session.set_spread(id, spread)
-                {
-                    events.push(Event::LayoutChanged {
-                        tab: id,
-                        layout: spread.name(),
-                    });
-                }
-            }),
+            CoreCall::Rotate(turns) => rotate(inner, turns, &mut events),
+            CoreCall::UndoOrRedo(undo) => undo_or_redo(inner, undo, &mut events),
+            CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
+            CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
+            CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),
+            CoreCall::SetSpread(tab, spread) => set_spread(inner, tab, spread, &mut events),
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
@@ -732,5 +494,21 @@ impl FileReads {
                 Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
             },
         }
+    }
+}
+
+/// `CoreCall::RestorePatienceOver`, on the session thread.
+pub fn restore_patience_over(inner: &Arc<Inner>) {
+    let host = &inner.host;
+    if !inner.life.restored.load(Ordering::SeqCst) {
+        match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.life.started.elapsed()) {
+            // The state hasn't come. The window goes up without it, and when it does come it's taken in.
+            updates::Patience::ShowNow => updates::show_without_state(&inner.life.shown_without_state, &*inner.listener),
+            updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
+        }
+    }
+    // A tab's file not answering: on to what's on the record. The page says it isn't answering.
+    if lock(&inner.life.holding_tab).take().is_some() {
+        host.session.with_session(|session| session.wake_active());
     }
 }

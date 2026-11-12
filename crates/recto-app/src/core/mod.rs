@@ -16,9 +16,20 @@ pub mod sleeper;
 pub mod snapshot_tool;
 pub mod updates;
 
+mod comparison;
+mod editing;
+mod navigation;
+mod opening;
+mod unlocking;
+
+use comparison::*;
+use editing::*;
 pub use host::*;
+use navigation::*;
+use opening::*;
 pub use reconcile::*;
 pub use session::*;
+use unlocking::*;
 
 use crate::RecentFile;
 use crate::SelectionNotice;
