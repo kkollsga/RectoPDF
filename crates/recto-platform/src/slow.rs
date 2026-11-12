@@ -10,6 +10,8 @@
 //! - `<seam>=<ms>`, for one seam, by [`Seam::name`];
 //! - `jitter=<seed>`: each delay is drawn from half to one and a half times its own, from that seed, so a run can be repeated exactly.
 //!
+//! **A hold.** `RECTO_QA_SLOW_HOLD=<seam>:<path>` holds that seam until the file at the path is there, not for a time, so a test that has to act while the app waits there can't run out of time on a slow machine (CI, 2026-11-12: a 10 s wait at the launch was over before the test acted). A hang is all its bound of [`HOLD_LIMIT`] is for.
+//!
 //! `RECTO_QA_RESTORE_DELAY_MS` and `RECTO_QA_REMAKE_DELAY_MS`, the first two seams' own switches from before this one, still work, and win over the list for their seam. What can't be read refuses the launch, so a slow run can't quietly be a fast one.
 
 use std::collections::BinaryHeap;
@@ -22,6 +24,10 @@ use std::time::{Duration, Instant};
 pub const RELEASE: bool = crate::RELEASE_BUILD;
 /// The switch: see the module's notes.
 pub const SWITCH: &str = "RECTO_QA_SLOW";
+/// A seam held until a file is there: `<seam>:<path>`.
+pub const HOLD_SWITCH: &str = "RECTO_QA_SLOW_HOLD";
+/// The most a hold waits, for a test that never lets go: past any test's own time, short of a run's.
+pub const HOLD_LIMIT: Duration = Duration::from_secs(120);
 /// The state read's own switch, from before [`SWITCH`].
 pub const STATE_SWITCH: &str = "RECTO_QA_RESTORE_DELAY_MS";
 /// The window remade from a late state, its own switch from before [`SWITCH`].
@@ -171,6 +177,40 @@ impl Profile {
     }
 }
 
+/// A seam held until a file's there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub seam: Seam,
+    pub until: std::path::PathBuf,
+}
+
+impl Hold {
+    /// From [`HOLD_SWITCH`]'s value: `None` with nothing asked, and an error that says what couldn't be read.
+    pub fn read(switch: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(value) = switch.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let (name, path) = value
+            .split_once(':')
+            .ok_or_else(|| format!("{HOLD_SWITCH}: `{value}` isn't `<seam>:<path>`."))?;
+        let seam = Seam::from_name(name).ok_or_else(|| format!("{HOLD_SWITCH}: `{name}` isn't a seam. They're {}.", names()))?;
+        let until = std::path::PathBuf::from(path);
+        if !until.is_absolute() {
+            return Err(format!("{HOLD_SWITCH}: `{path}` isn't a whole path."));
+        }
+        Ok(Some(Self { seam, until }))
+    }
+
+    /// Waits until its file's there, or the limit. How long it waited.
+    fn wait(&self) -> Duration {
+        let began = Instant::now();
+        while !self.until.exists() && began.elapsed() < HOLD_LIMIT {
+            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+        }
+        began.elapsed()
+    }
+}
+
 fn names() -> String {
     Seam::ALL.map(Seam::name).join(", ")
 }
@@ -204,6 +244,7 @@ pub struct Report {
 /// A profile in force, with what it's done.
 struct Armed {
     profile: Profile,
+    hold: Option<Hold>,
     ui: Option<ThreadId>,
     times: [AtomicU64; Seam::ALL.len()],
     waited_ms: [AtomicU64; Seam::ALL.len()],
@@ -211,9 +252,10 @@ struct Armed {
 }
 
 impl Armed {
-    fn new(profile: Profile, ui: Option<ThreadId>) -> Self {
+    fn new(profile: Profile, hold: Option<Hold>, ui: Option<ThreadId>) -> Self {
         Self {
             profile,
+            hold,
             ui,
             times: Default::default(),
             waited_ms: Default::default(),
@@ -262,7 +304,9 @@ pub fn arm(quiet: bool) -> Result<(), String> {
     }
     let var = |name| std::env::var(name).ok();
     let profile = Profile::read(var(SWITCH).as_deref(), var(STATE_SWITCH).as_deref(), var(REMAKE_SWITCH).as_deref())?;
-    let _ = ARMED.set(profile.map(|profile| Armed::new(profile, Some(std::thread::current().id()))));
+    let hold = Hold::read(var(HOLD_SWITCH).as_deref())?;
+    let armed = (profile.is_some() || hold.is_some()).then(|| Armed::new(profile.unwrap_or_default(), hold, Some(std::thread::current().id())));
+    let _ = ARMED.set(armed);
     Ok(())
 }
 
@@ -287,6 +331,11 @@ pub fn pause(seam: Seam) {
         armed.ui_refusals.fetch_add(1, Ordering::Relaxed);
         return;
     }
+    if let Some(hold) = armed.hold.as_ref().filter(|hold| hold.seam == seam) {
+        let waited = hold.wait();
+        armed.times[seam.index()].fetch_add(1, Ordering::Relaxed);
+        armed.waited_ms[seam.index()].fetch_add(waited.as_millis() as u64, Ordering::Relaxed);
+    }
     if let Some(delay) = armed.next(seam) {
         std::thread::sleep(delay);
     }
@@ -310,7 +359,7 @@ pub fn relaunch_env() -> Vec<(String, String)> {
     if RELEASE || !is_on() {
         return Vec::new();
     }
-    [SWITCH, STATE_SWITCH, REMAKE_SWITCH]
+    [SWITCH, STATE_SWITCH, REMAKE_SWITCH, HOLD_SWITCH]
         .into_iter()
         .filter_map(|name| Some((name.to_owned(), std::env::var(name).ok()?)))
         .collect()
@@ -461,6 +510,36 @@ mod tests {
         assert_eq!(mixed.delay(Seam::Draw, 0), None, "a seam at nothing doesn't wait");
     }
 
+    /// Failure: a hold reads something other than what it says, so a test that has to act while the app waits at a seam acts after it's gone on, or a typo holds the wrong seam or none. And a hold doesn't let go once its file is there.
+    #[test]
+    fn a_hold_says_which_seam_and_lets_go_when_its_file_is_there() {
+        assert_eq!(Hold::read(None), Ok(None));
+        assert_eq!(Hold::read(Some(" ")), Ok(None));
+        assert_eq!(
+            Hold::read(Some("launch:/t/go")),
+            Ok(Some(Hold {
+                seam: Seam::Launch,
+                until: "/t/go".into()
+            }))
+        );
+        for bad in ["launch", "lunch:/t/go", "launch:go"] {
+            assert!(Hold::read(Some(bad)).is_err(), "{bad}");
+        }
+        let dir = std::env::temp_dir().join(format!("recto-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let go = dir.join("go");
+        let hold = Hold {
+            seam: Seam::Launch,
+            until: go.clone(),
+        };
+        let (done, waited) = channel();
+        std::thread::spawn(move || done.send(hold.wait()).unwrap());
+        assert!(waited.recv_timeout(Duration::from_millis(200)).is_err(), "held while its file isn't there");
+        std::fs::write(&go, "").unwrap();
+        assert!(waited.recv_timeout(Duration::from_secs(10)).is_ok(), "let go once it is");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Failure: the two older switches stop working, and the restore tests that use them run fast without saying so.
     #[test]
     fn the_older_switches_still_work_and_win_for_their_seam() {
@@ -518,9 +597,13 @@ mod tests {
     /// Failure: a seam's pause put on the UI thread hangs the app for its delay (AGENTS rule 3), where it should be refused and counted.
     #[test]
     fn a_pause_on_the_ui_thread_is_refused_and_counted() {
-        let armed = Armed::new(Profile::read(Some("5000"), None, None).unwrap().unwrap(), Some(std::thread::current().id()));
+        let armed = Armed::new(
+            Profile::read(Some("5000"), None, None).unwrap().unwrap(),
+            None,
+            Some(std::thread::current().id()),
+        );
         assert!(armed.on_ui());
-        let elsewhere = Arc::new(Armed::new(armed.profile.clone(), armed.ui));
+        let elsewhere = Arc::new(Armed::new(armed.profile.clone(), None, armed.ui));
         let other = Arc::clone(&elsewhere);
         assert!(!std::thread::spawn(move || other.on_ui()).join().unwrap(), "another thread isn't the UI's");
         assert_eq!(armed.next(Seam::Worker), Some(Duration::from_secs(5)));
