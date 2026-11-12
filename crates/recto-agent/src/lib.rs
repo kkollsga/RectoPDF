@@ -6,6 +6,8 @@
 
 pub mod agreement;
 pub mod event;
+#[cfg(test)]
+mod event_agreement;
 pub use event::{Event, edits_changed, page_changed, page_now, view_changed};
 pub mod extract;
 pub mod find;
