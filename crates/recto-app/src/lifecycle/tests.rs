@@ -436,3 +436,35 @@ fn a_quit_and_a_hand_off_keep_each_others_freeze_in_every_order() {
     }
     assert!(orders > 30, "{orders} orders");
 }
+
+/// Failure: a test of a late state can't tell whether the window was made again from it, so it passes on the on-time path when the machine is quick enough to
+/// read the state first (`everything_comes_back_when_the_state_is_read_late`), or an update's launch, which waits for its state, is said to have been made again.
+/// [`Life::remade`] is the window having gone up without the state and been made again from it: never when the state came in time, or within an update's
+/// patience, or once the window has taken input without it, as then the host keeps the window it has.
+#[test]
+fn the_window_is_said_to_be_made_again_only_when_it_was() {
+    let patience = host_patience();
+    let input = ms(INPUT_PATIENCE);
+    for (reopened, state_at, remade) in [
+        (false, 0, false),
+        (false, patience - 1, false),
+        (false, patience + 1, true),
+        (false, patience + 500, true),
+        (false, input - 1, true),
+        (false, input, false),
+        (false, input + 2_000, false),
+        (true, patience + 500, false),
+        // Past an update's patience the window has been taking input for ten seconds already.
+        (true, ms(UPDATE_RESTORE_PATIENCE) + 1, false),
+    ] {
+        for patience_first in [false, true] {
+            let run = launch(reopened, state_at, patience_first);
+            assert_eq!(
+                run.life.remade(),
+                remade,
+                "reopened {reopened}, the state at {state_at} ms: heard {:?}",
+                run.heard
+            );
+        }
+    }
+}

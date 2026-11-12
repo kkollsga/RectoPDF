@@ -351,6 +351,9 @@ fn what_is_done_before_a_late_state_comes_in_isnt_lost() {
     run.quit();
 }
 
+/// **The real app's test of a window made again from a state that came in late,** for the slow stage's tests retired for headless twins (R1.4): it says, on each
+/// launch, that the window did go up without the state and was made again (`record.remade`), so it can't pass on the on-time path.
+///
 /// Failure (CI, main at f4b4d22): on a slower machine the state was read after the window's second of patience, the window went up without it, and what came in later didn't bring everything back: the sidebar's contents with no height there, and here, with the disk slow on purpose, the window's size and full screen, the appearance, Settings, every pane's place and the contents' scroll. Just past the patience, the window that went up without the state also wrote its own default size over what had come in. **The whole of `qa state` across a quit, with the state read 1.05 s and 1.5 s late**, so it comes in after the window's up. Everything comes back as from an on-time read.
 #[test]
 fn everything_comes_back_when_the_state_is_read_late() {
@@ -401,6 +404,15 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twic
         }
         assert_eq!(after["session"]["find"]["draft"], "typed but not run");
         assert_eq!(after["session"]["app"]["focus"]["view"], "find");
+        assert_eq!(
+            after["app"]["find"]["field_has_focus"], true,
+            "Find's field has the keyboard: {}",
+            after["app"]["find"]
+        );
+        // Read late, the window went up without the state and was made again from it: what's compared above is Swift's window made from a late state, and
+        // not an on-time launch on a quick machine.
+        let late = !second_launch.is_empty();
+        assert_eq!(after["record"]["remade"], late, "{look}: went up without the state and made again from it");
         // Round again: what a restored session writes is what it was restored from.
         let run = if twice && look == "light" {
             run.quit();

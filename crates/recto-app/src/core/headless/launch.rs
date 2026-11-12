@@ -100,6 +100,7 @@ fn a_late_state_and_a_late_remake_come_in_the_order_theyre_let_through() {
     app.let_through(Seam::Remake, 1);
     assert_eq!(app.listener().count(&Heard::RestoreReady), 2, "told again, late");
     assert!(app.core().life.shown_with_state(), "the window made again from the state");
+    assert_eq!(app.record_json()["remade"], true, "and said to have been: {}", app.record_json());
     assert_eq!(app.tabs().iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["late"]);
     drop(app.quit());
 }
