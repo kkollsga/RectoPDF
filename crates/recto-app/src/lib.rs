@@ -7,6 +7,7 @@ pub mod linking;
 pub mod menus;
 pub mod model;
 pub mod palette;
+pub mod panes;
 pub mod passwords;
 pub mod privacy;
 pub mod prompts;

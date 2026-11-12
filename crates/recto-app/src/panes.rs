@@ -24,7 +24,7 @@ struct Plan {
     magnification: Option<f64>,
 }
 
-pub(crate) struct Panes {
+pub struct Panes {
     /// Panes 1 and on. Pane 0 is the app's own page view.
     extra: Mutex<Vec<Engine>>,
     /// Which pane is being read, by its place, which the UI thread asks without the session.
@@ -37,7 +37,7 @@ pub(crate) struct Panes {
 }
 
 impl Panes {
-    pub(crate) fn new(hooks: Arc<dyn EngineEvents>, config: EngineConfig) -> Self {
+    pub fn new(hooks: Arc<dyn EngineEvents>, config: EngineConfig) -> Self {
         Self {
             extra: Mutex::new(Vec::new()),
             reading: AtomicUsize::new(0),
@@ -49,7 +49,7 @@ impl Panes {
     }
 
     /// The page view of a pane, if there's such a pane.
-    pub(crate) fn engine(&self, primary: &Engine, pane: usize) -> Option<Engine> {
+    pub fn engine(&self, primary: &Engine, pane: usize) -> Option<Engine> {
         if pane == 0 {
             Some(primary.clone())
         } else {
@@ -58,36 +58,36 @@ impl Panes {
     }
 
     /// Every page view there is, pane 0 first.
-    pub(crate) fn engines(&self, primary: &Engine) -> Vec<Engine> {
+    pub fn engines(&self, primary: &Engine) -> Vec<Engine> {
         std::iter::once(primary.clone()).chain(lock(&self.extra).iter().cloned()).collect()
     }
 
     /// The page view showing a tab, or pane 0's, which holds the warm tabs.
-    pub(crate) fn engine_for_tab(&self, primary: &Engine, tab: TabId) -> Engine {
+    pub fn engine_for_tab(&self, primary: &Engine, tab: TabId) -> Engine {
         let at = lock(&self.shown).iter().position(|shown| *shown == tab);
         at.and_then(|pane| self.engine(primary, pane)).unwrap_or_else(|| primary.clone())
     }
 
     /// The pane being read.
-    pub(crate) fn reading(&self) -> usize {
+    pub fn reading(&self) -> usize {
         self.reading.load(Ordering::SeqCst)
     }
 
     /// The page view of the pane being read: where Copy, Select All and the zoom level go.
-    pub(crate) fn reading_engine(&self, primary: &Engine) -> Engine {
+    pub fn reading_engine(&self, primary: &Engine) -> Engine {
         self.engine(primary, self.reading()).unwrap_or_else(|| primary.clone())
     }
 
-    pub(crate) fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         lock(&self.shown).len().max(1)
     }
 
-    pub(crate) fn tab_of(&self, pane: usize) -> Option<TabId> {
+    pub fn tab_of(&self, pane: usize) -> Option<TabId> {
         lock(&self.shown).get(pane).copied()
     }
 
     /// **As many page views as there are panes,** on the session thread. A new one starts on the paper showing and with the window as it is; one that's not needed ends now, with everything it held. Each shares the caps, and has a pane's margins.
-    pub(crate) fn set_count(&self, primary: &Engine, count: usize, paper: PaperKind, window_open: bool) {
+    pub fn set_count(&self, primary: &Engine, count: usize, paper: PaperKind, window_open: bool) {
         let count = count.clamp(1, MAX_PANES);
         let mut extra = lock(&self.extra);
         while extra.len() + 1 > count {
@@ -113,7 +113,7 @@ impl Panes {
     }
 
     /// What's side by side now, for the UI thread: which tab each pane shows, which is read, and the comparison with each pane's length.
-    pub(crate) fn lay_out(&self, shown: Vec<TabId>, reading: usize, comparison: Option<Comparison>, pages: Vec<u32>) {
+    pub fn lay_out(&self, shown: Vec<TabId>, reading: usize, comparison: Option<Comparison>, pages: Vec<u32>) {
         let changed = *lock(&self.shown) != shown;
         *lock(&self.shown) = shown;
         self.reading.store(reading, Ordering::SeqCst);
@@ -126,7 +126,7 @@ impl Panes {
     }
 
     /// **One zoom for every pane,** from the pane being read, when what's side by side has changed. Says what it is.
-    pub(crate) fn even_out_zoom(&self, primary: &Engine) -> Option<f64> {
+    pub fn even_out_zoom(&self, primary: &Engine) -> Option<f64> {
         if self.count() < 2 || lock(&self.plan).magnification.is_some() {
             return None;
         }
@@ -141,7 +141,7 @@ impl Panes {
     }
 
     /// A zoom from a key, the menu, the field or an agent: in the pane being read, and then the same in each other.
-    pub(crate) fn zoom_all(&self, primary: &Engine, zoom: Zoom) -> Option<f64> {
+    pub fn zoom_all(&self, primary: &Engine, zoom: Zoom) -> Option<f64> {
         let reading = self.reading_engine(primary);
         let value = reading.zoom(zoom)?;
         if self.count() > 1 {
@@ -157,7 +157,7 @@ impl Panes {
     }
 
     /// **A pane's view moved,** on the UI thread: a short lock on that pane, and for the reader's own scroll in a comparison, a short lock on each other pane to send it along. Says whether the pane being read changed, for the session to be told.
-    pub(crate) fn viewport(&self, primary: &Engine, pane: usize, by_reader: bool, viewport: Viewport) -> (Vec<recto_reader::Op>, Option<TabId>) {
+    pub fn viewport(&self, primary: &Engine, pane: usize, by_reader: bool, viewport: Viewport) -> (Vec<recto_reader::Op>, Option<TabId>) {
         let Some(engine) = self.engine(primary, pane) else {
             return (Vec::new(), None);
         };
@@ -191,7 +191,7 @@ impl Panes {
     }
 
     /// The reader's moved into a pane by the pointer: it's the one read. Says its tab if that's a change.
-    pub(crate) fn focus(&self, pane: usize) -> Option<TabId> {
+    pub fn focus(&self, pane: usize) -> Option<TabId> {
         if pane >= self.count() || self.reading.swap(pane, Ordering::SeqCst) == pane {
             return None;
         }
@@ -251,7 +251,7 @@ impl Panes {
 }
 
 /// Room either side of a pane's pages: a window's alone, a pane's in a comparison, and the corner's for the pane at the right.
-pub(crate) fn margins(pane: usize, count: usize) -> (f64, f64) {
+pub fn margins(pane: usize, count: usize) -> (f64, f64) {
     if count <= 1 {
         (MIN_SIDE_MARGIN, CORNER_MARGIN)
     } else if pane + 1 == count {
