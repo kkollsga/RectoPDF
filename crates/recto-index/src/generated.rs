@@ -452,21 +452,29 @@ mod tests {
         local::write_private_file(&name, b"{\"format\":\"recto-generated-contents\"}").unwrap();
         assert_eq!(read(&root, &pdf, key(2)), None);
         assert!(!name.exists());
-        // Something of someone else's is never looked at.
+        // Something of someone else's is never looked at. The folder's filled past its count by placing files as `write` names them, oldest first, so the
+        // one `write` after that holds it to its limit: a `write` for each cost 517 listings of a growing folder (3.7 s on CI).
         fs::write(root.join("notes.txt"), b"keep me").unwrap();
-        for n in 0..(MAX_FILES + 5) {
-            let other = temp.join(format!("{n}.pdf"));
-            fs::write(&other, b"%PDF").unwrap();
-            write(&root, &other, key((n % 250) as u8), &sample()).unwrap();
-        }
+        let line = sample().encode(key(3));
+        let placed: Vec<PathBuf> = (0..(MAX_FILES + 5))
+            .map(|n| {
+                let placed = root.join(file_name(&temp.join(format!("{n}.pdf")), key((n % 250) as u8)));
+                fs::write(&placed, line.as_bytes()).unwrap();
+                placed
+            })
+            .collect();
+        let newest = temp.join("newest.pdf");
+        fs::write(&newest, b"%PDF").unwrap();
+        write(&root, &newest, key(4), &sample()).unwrap();
         let ours = fs::read_dir(&root)
             .unwrap()
             .flatten()
             .filter(|entry| entry.file_name().to_str().is_some_and(is_ours))
             .count();
         assert!(ours <= MAX_FILES, "{ours} kept");
+        assert!(!placed[0].exists(), "the oldest goes first");
+        assert_eq!(read(&root, &newest, key(4)), Some(sample()), "and never the one just written");
         assert!(root.join("notes.txt").exists());
-        clear(&root, &temp.join(format!("{}.pdf", MAX_FILES + 4)));
         let _ = fs::remove_dir_all(&temp);
     }
 
