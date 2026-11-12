@@ -1,1 +1,2 @@
 update. The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name.
+app.settings.action An update waiting or under way, with its button: the updater's, held in memory, so a restart starts with none to show. What it shows is tested in `update`, by name (`settings_offers_update_now_for_a_waiting_build`).
