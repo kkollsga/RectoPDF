@@ -382,6 +382,9 @@ fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
 }
 
 /// The app's own objects and AppKit's views, scrollers, controls and gesture recognizers alive in the app's process, by class, as `heap` counts them. Nothing else: caches of strings, fonts and glyphs come and go with what's been drawn.
+/// The animation AppKit runs on a scroller's knob to fade it (`overlayScrollerKnobAlpha`), which holds the scroller it's for until it finishes.
+const FADE: &str = "NSAnimationManagerAnimation";
+
 fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
     let out = std::process::Command::new("/usr/bin/heap").arg(pid.to_string()).output().expect("heap runs");
     assert!(out.status.success(), "heap couldn't read the app: {}", String::from_utf8_lossy(&out.stderr));
@@ -410,7 +413,9 @@ fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
         let (kind, binary) = (fields[fields.len() - 2], fields[fields.len() - 1]);
         let class = fields[3..fields.len() - 2].join(" ");
         let ours = binary == "RectoPDF" && matches!(kind, "Swift" | "ObjC");
-        let views = binary == "AppKit" && kind == "ObjC" && ["View", "Scroller", "GestureRecognizer", "Control"].iter().any(|word| class.contains(word));
+        let views = binary == "AppKit"
+            && kind == "ObjC"
+            && (class == FADE || ["View", "Scroller", "GestureRecognizer", "Control"].iter().any(|word| class.contains(word)));
         if ours || views {
             *alive.entry(class).or_default() += count;
         }
@@ -419,25 +424,41 @@ fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
     alive
 }
 
-/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
+/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. **The scroller's fade:** a pane's overlay scroller left behind was held by its knob's fade (`FADE`), which scrolling starts, and which never finishes once the pane is out of the window. A fast Mac ends the comparison before the fade has begun, so it passed there and failed on a slow one (2026-11-12, run at background priority, 3 of 4). So each comparison waits, bounded, until the fade has begun if this Mac's panes fade at all (a count of `FADE` objects that rises), and ends then: the same on every Mac, and with panes' scrollers that don't fade, as now, the wait gives up after its bound once. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
 #[test]
 fn comparisons_leave_no_views_behind() {
     const STRETCH: u64 = 12;
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
+    // Long enough for a build whose scrollers fade, which waits on each comparison.
+    let Some(run) = Run::start_lasting(Duration::from_secs(600), &[]) else {
+        return;
+    };
     let (left, right) = (common::app::chaptered("left", 12, 6), common::app::chaptered("right", 10, 5));
     run.ok(&["open", left.0.to_str().unwrap()]);
     run.ok(&["open", right.0.to_str().unwrap()]);
     run.settled();
     // Thin scrollers that fade, the style the app asks for unless the Mac always shows them.
     run.ok(&["qa", "scroller-style", "overlay"]);
+    // Whether a scroll starts a fade in a pane's scroller on this build: found out once, with a bound, as a build whose panes' scrollers don't fade never will.
+    let fades = std::cell::Cell::new(true);
+    let first_wait = std::cell::Cell::new(true);
     let compare = |times: u64| {
         for _ in 0..times {
             run.ok(&["compare", "--tabs", "#1,#2"]);
             run.settled();
+            let before = views_alive(run.pid).get(FADE).copied().unwrap_or(0);
             // A scroll shows the scrollers, which then fade.
             run.ok(&["qa", "scroll", "400"]);
             run.settled();
+            if fades.get() {
+                let began = Instant::now();
+                let bound = Duration::from_secs(if first_wait.replace(false) { 5 } else { 3 });
+                while views_alive(run.pid).get(FADE).copied().unwrap_or(0) <= before && began.elapsed() < bound {
+                    std::thread::sleep(Duration::from_millis(100)); // ratchet: poll
+                }
+                if views_alive(run.pid).get(FADE).copied().unwrap_or(0) <= before {
+                    fades.set(false);
+                }
+            }
             run.ok(&["compare", "--off"]);
             run.settled();
         }

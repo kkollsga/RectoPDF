@@ -175,6 +175,7 @@ final class CenteringClipView: NSClipView {
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = scrollerStyle(system: scrollView.scrollerStyle)
         scrollView.allowsMagnification = true
         scrollView.minMagnification = limits.minZoom
         scrollView.maxMagnification = limits.maxZoom
@@ -593,6 +594,11 @@ final class CenteringClipView: NSClipView {
 
     func windowReady() {
         layoutChanged()
+    }
+
+    /// The style this pane's scrollers take, given the one asked for. A pane past the first is made when a comparison starts and let go when it ends, and its fading overlay scroller left one `NSScroller` behind each time (with its recognizers and tracking areas, about 6 KB): scrolling starts the knob's fade, an `NSAnimationManagerAnimation` on the scroller, and the animation never finishes once the pane is out of the window, nor does it let go of its target. Classic scrollers don't fade, so a pane that's let go leaves nothing. Found on `build/compare-leak`; it showed on a slow Mac, where the test's pane was gone before the fade began on a fast one.
+    func scrollerStyle(system: NSScroller.Style) -> NSScroller.Style {
+        pane > 0 ? .legacy : system
     }
 
     func windowClosing() {
