@@ -50,3 +50,15 @@ An untracked file stops a pass being remembered only if something could read it:
 A test that fails only sometimes can pass once and then be remembered, so a failure you've seen still gets a fix. CI and the reviews still run on everything.
 
 Never `git stash`, which is shared across worktrees. To compare with old code, use a temporary commit or a second worktree.
+
+## Call back at an edge case
+
+Owner, 2026-11-12: "Ask them to call back to you when they are touching edgecases, and you can give clear steer". Send the coordinator a short message as soon as you hit one (what you hit, the options, which you'd pick), and carry on with whatever doesn't depend on the answer. Don't decide these alone, and don't leave them for the hand-back:
+- a constraint in the brief you can't meet as written;
+- a guard that fails: the ratchet, a budget, the push guard, a refused command or permission. Never edit a baseline upward or go around a guard;
+- a test failure you can't explain, or are about to call load or flaky;
+- a change in behaviour, a wire format or a host-facing API beyond the brief;
+- a design choice with two reasonable answers that later steps will build on;
+- anything touching security, the owner's data or the owner's installed app;
+- running low on working room.
+
