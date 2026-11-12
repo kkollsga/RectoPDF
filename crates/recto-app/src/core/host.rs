@@ -210,70 +210,7 @@ impl AppHost {
             return Ok(answer);
         }
         if let Command::Palette { query, run, limit } = command {
-            if !recto_agent::allowed(level, command.access()) {
-                return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
-            }
-            let inner = self
-                .saver
-                .inner()
-                .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
-            // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
-            let whom = crate::palette::ForWhom {
-                hidden_tabs: self.session.with_session(|session| {
-                    session
-                        .tabs()
-                        .iter()
-                        .filter(|tab| session.withheld_from_agents(tab.id))
-                        .map(|tab| tab.id.0)
-                        .collect()
-                }),
-                recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
-            };
-            let rows = palette::found_for(&inner, query.as_deref().unwrap_or(""), &whom);
-            // A tab's name is the file's, so it's marked as the document's words.
-            let row_json = |row: &crate::palette::PaletteRow| {
-                if row.from_file {
-                    json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } })
-                } else {
-                    json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut })
-                }
-            };
-            let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
-            if *run {
-                let first = rows.first().ok_or_else(|| {
-                    AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
-                        .then("`recto palette` lists what there is.")
-                })?;
-                let reader = lock(&inner.published).reader.clone();
-                // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
-                let host = match palette::as_command(&first.id, &reader, &inner.recent_files()) {
-                    Some(direct) => {
-                        inner.tools.palette.close();
-                        self.run_counted(level, &direct, events)?;
-                        HostAction::None
-                    }
-                    None => {
-                        let needed = if first.id.starts_with("edit.copy") {
-                            recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access)
-                        } else {
-                            recto_agent::table::Access::At(Level::Full)
-                        };
-                        if !recto_agent::allowed(level, needed) {
-                            return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed)
-                                .then("Run that command itself, if it has one, at the level it needs."));
-                        }
-                        palette::run(&inner, &first.id)
-                    }
-                };
-                let ran = if first.from_file {
-                    json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) })
-                } else {
-                    json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) })
-                };
-                answer["ran"] = ran;
-                self.core.push(CoreCall::Reconcile);
-            }
-            return Ok(answer);
+            return self.run_palette(level, command, query, run, limit, events);
         }
         if matches!(
             command,
@@ -309,6 +246,82 @@ impl AppHost {
         }
         self.core.push(CoreCall::Reconcile);
         result
+    }
+
+    /// **`recto palette`:** what the query finds, as the window's palette ranks it, and with `--run` the first row run at the agent's level, as its own command where it has one.
+    fn run_palette(
+        &self,
+        level: Level,
+        command: &Command,
+        query: &Option<String>,
+        run: &bool,
+        limit: &Option<u32>,
+        events: &mut Vec<Event>,
+    ) -> Result<Value, AgentError> {
+        if !recto_agent::allowed(level, command.access()) {
+            return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
+        }
+        let inner = self
+            .saver
+            .inner()
+            .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
+        // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
+        let whom = crate::palette::ForWhom {
+            hidden_tabs: self.session.with_session(|session| {
+                session
+                    .tabs()
+                    .iter()
+                    .filter(|tab| session.withheld_from_agents(tab.id))
+                    .map(|tab| tab.id.0)
+                    .collect()
+            }),
+            recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
+        };
+        let rows = palette::found_for(&inner, query.as_deref().unwrap_or(""), &whom);
+        // A tab's name is the file's, so it's marked as the document's words.
+        let row_json = |row: &crate::palette::PaletteRow| {
+            if row.from_file {
+                json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } })
+            } else {
+                json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut })
+            }
+        };
+        let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
+        if *run {
+            let first = rows.first().ok_or_else(|| {
+                AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
+                    .then("`recto palette` lists what there is.")
+            })?;
+            let reader = lock(&inner.published).reader.clone();
+            // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
+            let host = match palette::as_command(&first.id, &reader, &inner.recent_files()) {
+                Some(direct) => {
+                    inner.tools.palette.close();
+                    self.run_counted(level, &direct, events)?;
+                    HostAction::None
+                }
+                None => {
+                    let needed = if first.id.starts_with("edit.copy") {
+                        recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access)
+                    } else {
+                        recto_agent::table::Access::At(Level::Full)
+                    };
+                    if !recto_agent::allowed(level, needed) {
+                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed)
+                            .then("Run that command itself, if it has one, at the level it needs."));
+                    }
+                    palette::run(&inner, &first.id)
+                }
+            };
+            let ran = if first.from_file {
+                json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) })
+            } else {
+                json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) })
+            };
+            answer["ran"] = ran;
+            self.core.push(CoreCall::Reconcile);
+        }
+        Ok(answer)
     }
 }
 
