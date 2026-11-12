@@ -201,12 +201,20 @@ fn a_copy_the_system_opens_is_never_a_regular_app() {
     let Some(copy) = OwnCopy::new() else { return };
     let plist = copy.bundle.join("Contents/Info.plist");
     let asked = |key: &str| {
-        let output = std::process::Command::new("/usr/libexec/PlistBuddy").args(["-c", &format!("Print :{key}")]).arg(&plist).output().unwrap();
+        let output = std::process::Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", &format!("Print :{key}")])
+            .arg(&plist)
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     assert_eq!(asked("LSUIElement"), "true", "a copy that's opened must not be a regular app");
     assert_eq!(asked("CFBundleIdentifier"), "io.github.kkollsga.RectoPDF", "the copy is the app otherwise");
-    let valid = std::process::Command::new("/usr/bin/codesign").args(["--verify"]).arg(&copy.bundle).status().unwrap();
+    let valid = std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify"])
+        .arg(&copy.bundle)
+        .status()
+        .unwrap();
     assert!(valid.success(), "the copy's own signature has to hold, or it won't start");
 }
 

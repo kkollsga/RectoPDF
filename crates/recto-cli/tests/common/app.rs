@@ -100,9 +100,17 @@ impl OwnCopy {
     pub fn new() -> Option<Self> {
         let copy = Self::clone_of_build()?;
         let plist = copy.bundle.join("Contents/Info.plist");
-        let edit = Command::new("/usr/libexec/PlistBuddy").args(["-c", "Add :LSUIElement bool true"]).arg(&plist).output().unwrap();
+        let edit = Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Add :LSUIElement bool true"])
+            .arg(&plist)
+            .output()
+            .unwrap();
         assert!(edit.status.success(), "{}", String::from_utf8_lossy(&edit.stderr));
-        let signed = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&copy.bundle).output().unwrap();
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&copy.bundle)
+            .output()
+            .unwrap();
         assert!(signed.status.success(), "{}", String::from_utf8_lossy(&signed.stderr));
         Some(copy)
     }
