@@ -80,6 +80,28 @@ echo 'sleep 1' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?
 check "a sleep in a qa script fails" "1" "$rc"
 echo 'sleep 1 # ratchet: poll' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?; check "and the marker exempts it there too" "0" "$rc"
 
+# a move
+fresh; { lines 30; echo 'fn s() { std::thread::sleep(D); }'; fn_of 10 long; } > "$X/t/crates/a/src/old.rs"
+printf "ffi crates/recto-ffi/src 0\nfile crates/a/src/old.rs 41\nfn crates/a/src/old.rs::long 10\nsleep crates/a/src/old.rs 1\n" > "$X/t/base.txt"
+cp "$X/t/crates/a/src/old.rs" "$X/t/crates/a/src/new.rs"; out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a move is refused while the old file is still there" "1" "$rc"; has "saying so" "still exists" "$out"
+rm "$X/t/crates/a/src/old.rs"; out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a moved file's entries are renamed" "0" "$rc"
+check "all of them, numbers kept, sorted" "ffi crates/recto-ffi/src 0|file crates/a/src/new.rs 41|fn crates/a/src/new.rs::long 10|sleep crates/a/src/new.rs 1|" "$(tr '\n' '|' < "$X/t/base.txt")"
+out=$(R); rc=$?; check "and the tree then passes" "0" "$rc"
+out=$(R --moved crates/a/src/gone.rs crates/a/src/new.rs); rc=$?
+check "a move of a path with no entry is refused" "1" "$rc"; has "saying so" "no entry" "$out"
+fresh; fn_of 10 long > "$X/t/crates/a/src/old.rs"; printf "ffi crates/recto-ffi/src 0\nfn crates/a/src/old.rs::long 10\n" > "$X/t/base.txt"
+mv "$X/t/crates/a/src/old.rs" "$X/t/crates/a/src/new.rs"; fn_of 12 long > "$X/t/crates/a/src/new.rs"; before=$(cat "$X/t/base.txt")
+out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a move to something bigger is refused" "1" "$rc"; has "saying so" "measures 12, more than the entry 10" "$out"
+check "and leaves the baseline alone" "$before" "$(cat "$X/t/base.txt")"
+fresh; { fn_of 10 long; echo 'fn tiny() {}'; } > "$X/t/crates/a/src/old.rs"; fn_of 3 other > "$X/t/crates/a/src/new.rs"; printf "ffi crates/recto-ffi/src 0\nfn crates/a/src/old.rs::long 10\n" > "$X/t/base.txt"
+out=$(R --moved crates/a/src/old.rs::long crates/a/src/new.rs::long); rc=$?
+check "one item's move is refused while it's still in the old file" "1" "$rc"
+echo 'fn tiny() {}' > "$X/t/crates/a/src/old.rs"; fn_of 10 long >> "$X/t/crates/a/src/new.rs"; out=$(R --moved crates/a/src/old.rs::long crates/a/src/new.rs::long); rc=$?
+check "and renamed once it moved, the old file staying" "fn crates/a/src/new.rs::long 10" "$(grep '^fn' "$X/t/base.txt")"
+
 # the baseline itself
 fresh; printf 'file b 1\nfile a 1\n' > "$X/t/base.txt"; out=$(R); rc=$?
 check "an unsorted baseline fails" "1" "$rc"; has "saying so" "out of order" "$out"

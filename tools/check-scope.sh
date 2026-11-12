@@ -37,7 +37,7 @@ TIER_BUDGETS='1:60 2:60 3:90 4:240'
 WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
 # sleeping, and the tests themselves. Not recto-core, recto-session in general or recto-agent: those reach the window tier.
-LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-ffi/src/(updates|sleeper|sleep_queue|saver)(\.rs|/)|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
+LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-ffi/src/(updates|sleeper|saver)(\.rs|/)|^crates/recto-app/src/(sleep_queue|saver|sleeper)\.rs$|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
 
 # Whether a line is in a list. Not `printf | grep -q`: grep quits at the first hit, printf dies of SIGPIPE, and under pipefail that reads as a miss.
 has_line() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; *) return 1 ;; esac; }

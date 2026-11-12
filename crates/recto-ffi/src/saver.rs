@@ -3,6 +3,8 @@
 //! **No thread at rest, and none waiting.** Saying something's changed is an atomic store, and the first time a nudge to the session thread, which is parked anyway. It keeps the one deadline there is, by parking with a timeout rather than for good, so there's nothing per tab and no timer. When it comes due, a one-shot thread does the writing and ends. So a scroll on the UI thread waits for nothing, and a window left reading has no extra thread for its minute.
 
 use crate::{CoreCall, CoreQueue, Inner, lock};
+use recto_app::clock::{Clock, SystemClock};
+use recto_app::saver as app;
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
 use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, PlaceRecord, Selection, SessionRecord};
@@ -11,20 +13,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-/// How long edits wait for a pause.
-const JOURNAL_QUIET: Duration = Duration::from_secs(2);
-/// The longest edits wait during a burst.
-const JOURNAL_LONGEST: Duration = Duration::from_secs(5);
-/// The least time between writes of places and the like.
-const RECORD_EVERY: Duration = Duration::from_secs(60);
-
 pub(crate) struct Saver {
     pub(crate) store: Arc<RecordStore>,
     core: Arc<CoreQueue>,
     inner: OnceLock<Weak<Inner>>,
     /// The record's been read, so what's written is what came of it. Nothing's written before that.
     started: AtomicBool,
-    clock: Instant,
+    /// What `recto_app::saver`'s decisions go by.
+    clock: SystemClock,
     /// A writing thread is there, or asked for.
     writer_alive: AtomicBool,
     /// The session thread knows there's a deadline. So saying it again is one atomic.
@@ -40,10 +36,6 @@ pub(crate) struct Saver {
     last_error: Mutex<Option<StoreError>>,
 }
 
-fn millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
 impl Saver {
     pub(crate) fn new(store: RecordStore, core: Arc<CoreQueue>) -> Self {
         Self {
@@ -51,7 +43,7 @@ impl Saver {
             core,
             inner: OnceLock::new(),
             started: AtomicBool::new(false),
-            clock: Instant::now(),
+            clock: SystemClock::new(),
             writer_alive: AtomicBool::new(false),
             armed: AtomicBool::new(false),
             view_changed: AtomicBool::new(false),
@@ -80,7 +72,7 @@ impl Saver {
     }
 
     fn now(&self) -> u64 {
-        millis(self.clock.elapsed()) + 1
+        self.clock.now_ms() + 1
     }
 
     /// A place, or something else in the record, has changed. Cheap enough for each scroll.
@@ -142,22 +134,21 @@ impl Saver {
         }
     }
 
-    /// How long until something's due, or `None` with nothing to write.
+    /// What's waiting, as the atomics say now, with the urgency given.
+    fn pending(&self, urgent: bool) -> app::Pending {
+        app::Pending {
+            first_edit: self.first_edit.load(Ordering::SeqCst),
+            last_edit: self.last_edit.load(Ordering::SeqCst),
+            urgent,
+            view_changed: self.view_changed.load(Ordering::Relaxed),
+            last_record_write: self.last_record_write.load(Ordering::SeqCst),
+        }
+    }
+
+    /// How long until something's due, or `None` with nothing to write: `recto_app::saver::next_due`.
     fn next_due(&self) -> Option<Duration> {
         let now = self.now();
-        let mut due = None::<u64>;
-        let first = self.first_edit.load(Ordering::SeqCst);
-        if first != 0 {
-            let last = self.last_edit.load(Ordering::SeqCst);
-            due = Some((last + millis(JOURNAL_QUIET)).min(first + millis(JOURNAL_LONGEST)));
-        }
-        if self.urgent.load(Ordering::SeqCst) {
-            due = Some(now);
-        } else if self.view_changed.load(Ordering::Relaxed) {
-            let at = self.last_record_write.load(Ordering::SeqCst) + millis(RECORD_EVERY);
-            due = Some(due.map_or(at, |due| due.min(at)));
-        }
-        due.map(|due| Duration::from_millis(due.saturating_sub(now)))
+        app::next_due(self.pending(self.urgent.load(Ordering::SeqCst)), now).map(Duration::from_millis)
     }
 
     fn run(&self) {
@@ -176,18 +167,14 @@ impl Saver {
             return;
         };
         let urgent = self.urgent.swap(false, Ordering::SeqCst);
-        let edit_due = {
-            let first = self.first_edit.load(Ordering::SeqCst);
-            first != 0 && now >= (self.last_edit.load(Ordering::SeqCst) + millis(JOURNAL_QUIET)).min(first + millis(JOURNAL_LONGEST))
-        };
-        let record_due = self.view_changed.load(Ordering::Relaxed) && (urgent || now >= self.last_record_write.load(Ordering::SeqCst) + millis(RECORD_EVERY));
+        let due = app::pass(self.pending(urgent), now);
         let _gate = lock(&self.gate);
         let mut failed = None;
-        if edit_due || urgent {
+        if due.journals {
             self.first_edit.store(0, Ordering::SeqCst);
             failed = self.write_journals(&inner, false);
         }
-        if record_due {
+        if due.record {
             self.view_changed.store(false, Ordering::Relaxed);
             self.last_record_write.store(self.now(), Ordering::SeqCst);
             let (record, delta) = inner.gather_record();

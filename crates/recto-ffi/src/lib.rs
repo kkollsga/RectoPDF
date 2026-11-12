@@ -18,15 +18,14 @@ mod records;
 mod saver;
 mod saving;
 mod sidebar_access;
-mod sleep_queue;
 mod sleeper;
 mod snapshot_tool;
 pub mod updates;
-mod watchdog;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
@@ -56,7 +55,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
 
@@ -1377,7 +1375,7 @@ struct Inner {
     /// ⌘K's palette, on the UI thread.
     palette: recto_app::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
-    find_field: Mutex<find::Field>,
+    find_field: Mutex<recto_app::find::Field>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -2033,7 +2031,7 @@ impl AppCore {
             prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
             palette: recto_app::palette::Palette::default(),
-            find_field: Mutex::new(find::Field::default()),
+            find_field: Mutex::new(recto_app::find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -2620,7 +2618,7 @@ impl AppCore {
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
     pub fn save_panel(&self) -> saving::SavePanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
+        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note).into()
     }
 
     /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
@@ -2644,6 +2642,7 @@ impl AppCore {
             save_off,
             self.inner.save_ui.disagreement_now().as_deref(),
         )
+        .into()
     }
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
@@ -4584,7 +4583,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = inner.save_ui.problem();
+    reader.save_problem = inner.save_ui.problem().map(Into::into);
     reader.link_prompt = lock(&inner.prompts.link).clone().map(Into::into);
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();

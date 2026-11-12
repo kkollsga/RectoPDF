@@ -347,6 +347,59 @@ def write_baseline(path, entries):
     with open(path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
+# ---- A move ------------------------------------------------------------------------------------------------------------------------------
+def moved(root, bpath, old, new):
+    """Renames the baseline entries of code that moved unchanged, from `old` to `new`: a file's path (every entry under it: the file, its sleeps, its
+    functions, structs, enums and impls) or one item's key (`path::Name`). Refused unless the old one is gone from the tree, the new one is there, and
+    no number measured at the new place is higher than its entry. It never raises a number; --update lowers it later as usual."""
+    base, problems = read_baseline(bpath)
+    if problems:
+        print('ratchet --moved: the baseline has problems, fix them first:')
+        for p in problems:
+            print('  - ' + p)
+        return 1
+    cur = measure(root)
+    item = '::' in old or '::' in new
+    under = (lambda key: key == old) if item else (lambda key: key == old or key.startswith(old + '::'))
+    picked = sorted((k, key) for (k, key) in base if k != 'ffi' and under(key))
+    if not picked:
+        print('ratchet --moved: refused: the baseline has no entry for %s' % old)
+        return 1
+    if item:
+        if any((k, old) in cur for k, _ in picked):
+            print('ratchet --moved: refused: %s is still in the tree, so it was copied, not moved' % old)
+            return 1
+        if not all((k, new) in cur for k, _ in picked):
+            print('ratchet --moved: refused: nothing at %s to take the entry' % new)
+            return 1
+    else:
+        if os.path.exists(os.path.join(root, old)):
+            print('ratchet --moved: refused: %s still exists, so it was copied, not moved' % old)
+            return 1
+        if not os.path.exists(os.path.join(root, new)):
+            print('ratchet --moved: refused: %s does not exist' % new)
+            return 1
+    renamed, refused = [], []
+    for k, key in picked:
+        nkey = new + key[len(old):]
+        n = cur.get((k, nkey), 0)
+        if (k, nkey) in base:
+            refused.append('%s %s already has an entry' % (k, nkey))
+        elif n > base[(k, key)]:
+            refused.append('%s %s measures %d, more than the entry %d it would take: a move is not a way to grow' % (k, nkey, n, base[(k, key)]))
+        else:
+            renamed.append((k, key, nkey))
+    if refused:
+        print('ratchet --moved: refused, nothing renamed:')
+        for r in refused:
+            print('  - ' + r)
+        return 1
+    for k, key, nkey in renamed:
+        base[(k, nkey)] = base.pop((k, key))
+        print('ratchet --moved: %s %s -> %s (%d)' % (k, key, nkey, base[(k, nkey)]))
+    write_baseline(bpath, base)
+    return 0
+
 # ---- Report -------------------------------------------------------------------------------------------------------------------------------
 def report(root, ref):
     r = subprocess.run(['git', '-C', root, 'diff', '--numstat', ref + '...HEAD'], capture_output=True, text=True)
@@ -383,16 +436,23 @@ def main(argv):
             i += 1; bpath = argv[i]
         elif a == '--update':
             mode = 'update'
+        elif a == '--moved':
+            mode = 'moved'
+            if i + 2 >= len(argv):
+                print('usage: tools/ratchet.sh --moved <old path or path::Item> <new path or path::Item>'); return 2
+            ref = (argv[i + 1], argv[i + 2]); i += 2
         elif a == '--report':
             mode = 'report'; i += 1; ref = argv[i] if i < len(argv) else None
             if ref is None:
                 print('usage: tools/ratchet.sh --report <base-ref>'); return 2
         else:
-            print(__doc__); print('usage: tools/ratchet.sh [--update | --report <base-ref>] [--root DIR] [--baseline FILE]'); return 2
+            print(__doc__); print('usage: tools/ratchet.sh [--update | --report <base-ref> | --moved <old> <new>] [--root DIR] [--baseline FILE]'); return 2
         i += 1
     bpath = bpath or os.path.join(root, 'tools', 'ratchet', 'baseline.txt')
     if mode == 'report':
         return report(root, ref)
+    if mode == 'moved':
+        return moved(root, bpath, ref[0], ref[1])
     cur = measure(root)
     base, problems = read_baseline(bpath)
     if os.environ.get('RATCHET_BOOTSTRAP') and not os.path.exists(bpath):

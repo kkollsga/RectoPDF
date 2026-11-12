@@ -1,11 +1,11 @@
 enum crates/recto-agent/src/lib.rs::Command 68
-ffi crates/recto-ffi/src 10231
+ffi crates/recto-ffi/src 9238
 file crates/recto-agent/src/lib.rs 2403
 file crates/recto-agent/src/table.rs 4530
 file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 4635
+file crates/recto-ffi/src/lib.rs 4634
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
@@ -54,6 +54,7 @@ sleep crates/recto-agent/src/agreement.rs 1
 sleep crates/recto-agent/src/generated.rs 1
 sleep crates/recto-agent/src/index.rs 1
 sleep crates/recto-agent/src/render.rs 1
+sleep crates/recto-app/src/sleep_queue.rs 2
 sleep crates/recto-cli/src/qa.rs 12
 sleep crates/recto-cli/tests/app.rs 8
 sleep crates/recto-cli/tests/app/marks.rs 1
@@ -78,11 +79,8 @@ sleep crates/recto-core/src/save.rs 1
 sleep crates/recto-core/tests/save.rs 2
 sleep crates/recto-ffi/src/lib.rs 2
 sleep crates/recto-ffi/src/qa.rs 5
-sleep crates/recto-ffi/src/saving.rs 3
-sleep crates/recto-ffi/src/sleep_queue.rs 2
-sleep crates/recto-ffi/src/sleeper.rs 3
+sleep crates/recto-ffi/src/sleeper.rs 2
 sleep crates/recto-ffi/src/updates.rs 2
-sleep crates/recto-ffi/src/watchdog.rs 1
 sleep crates/recto-fuzz/src/targets/control.rs 1
 sleep crates/recto-headings/examples/sample.rs 1
 sleep crates/recto-headings/src/main.rs 1

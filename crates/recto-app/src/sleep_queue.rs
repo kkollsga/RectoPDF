@@ -16,9 +16,9 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 /// Tabs whose sleep files may wait to be written at once. Each is a tab off screen, so a handful covers going through tabs at any pace a person does; past it, tabs are leaving faster than the disk takes their files, and the oldest go.
-pub(crate) const MAX_LEAVING_TABS: usize = 8;
+pub const MAX_LEAVING_TABS: usize = 8;
 /// Pictures that may wait to be written, in all, the one being written with them, whatever comes of the tabs leaving: four tabs' worth at their most (`DocView::left_pictures` keeps 4 MiB a tab), and about twenty letter pages at a Retina window's fit, 730 KiB each.
-pub(crate) const MAX_LEAVING_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_LEAVING_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One tab's sleep file, waiting.
 struct Leaving {
@@ -44,7 +44,7 @@ fn bytes_of(facts: &SleepFacts, material: &SleepMaterial) -> u64 {
 
 /// **The queue,** behind one lock in the sleeper.
 #[derive(Default)]
-pub(crate) struct LeavingQueue {
+pub struct LeavingQueue {
     queue: VecDeque<Leaving>,
     in_flight: Option<InFlight>,
     /// What's queued and in flight hold.
@@ -71,7 +71,7 @@ pub(crate) struct LeavingQueue {
 impl LeavingQueue {
     /// Queues a tab's sleep file, by the rules above. Says whether a writer has to be started: only when there isn't one.
     #[must_use]
-    pub(crate) fn push(&mut self, facts: SleepFacts, material: SleepMaterial) -> bool {
+    pub fn push(&mut self, facts: SleepFacts, material: SleepMaterial) -> bool {
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
             self.remove(at);
             self.replaced += 1;
@@ -107,7 +107,7 @@ impl LeavingQueue {
     }
 
     /// The writer's next, oldest first, which stays counted till [`Self::done`]. `None` is the writer's end, said here under the same lock as [`Self::push`], so whatever's queued after starts another.
-    pub(crate) fn next(&mut self) -> Option<(SleepFacts, SleepMaterial)> {
+    pub fn take_next(&mut self) -> Option<(SleepFacts, SleepMaterial)> {
         self.done();
         let Some(leaving) = self.queue.pop_front() else {
             self.writer = false;
@@ -123,26 +123,26 @@ impl LeavingQueue {
     }
 
     /// Whether the one in flight is still to be written: asked with the one-at-a-time lock held, so a newer write either came before, and this isn't written, or comes after it.
-    pub(crate) fn still_wanted(&mut self) -> bool {
+    pub fn still_wanted(&mut self) -> bool {
         let stale = self.in_flight.as_ref().is_some_and(|flight| flight.stale);
         self.stale_skipped += u64::from(stale);
         !stale
     }
 
     /// The one in flight is written, or skipped: what it held goes.
-    pub(crate) fn done(&mut self) {
+    pub fn done(&mut self) {
         if let Some(flight) = self.in_flight.take() {
             self.bytes -= flight.bytes;
         }
     }
 
     /// The writer couldn't be started, or what it needs has gone. What's queued stays, and the next tab queued starts one.
-    pub(crate) fn writer_gone(&mut self) {
+    pub fn writer_gone(&mut self) {
         self.writer = false;
     }
 
     /// A tab's sleep file's being written from what's newer than what's queued for it: that goes, and if it's been taken for writing already, it isn't written.
-    pub(crate) fn forget(&mut self, id: TabId) {
+    pub fn forget(&mut self, id: TabId) {
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == id) {
             self.remove(at);
         }
@@ -157,7 +157,7 @@ impl LeavingQueue {
         }
     }
 
-    pub(crate) fn report(&self) -> Value {
+    pub fn report(&self) -> Value {
         json!({
             "queued": self.queue.len(),
             "queued_bytes": self.bytes,
@@ -180,12 +180,12 @@ impl LeavingQueue {
 }
 
 /// **A writer thread, from its start:** counted as running, so two at once would show in `peak_writers`. Its end is [`LeavingQueue::next`]'s `None`; if it panics instead, this lets the next tab queued start another, as a writer marked there for good would stop every sleep file after.
-pub(crate) struct WriterRunning<'a> {
+pub struct WriterRunning<'a> {
     queue: &'a Mutex<LeavingQueue>,
 }
 
 impl<'a> WriterRunning<'a> {
-    pub(crate) fn enter(queue: &'a Mutex<LeavingQueue>) -> Self {
+    pub fn enter(queue: &'a Mutex<LeavingQueue>) -> Self {
         let mut held = lock(queue);
         held.running += 1;
         held.peak_running = held.peak_running.max(held.running);
@@ -291,12 +291,12 @@ mod tests {
         assert_eq!(queue.queue.len(), 2);
         assert_eq!(queue.bytes, 2 * MIB as u64);
         assert_eq!(queue.report()["replaced"], 1);
-        let (first, _) = queue.next().unwrap();
+        let (first, _) = queue.take_next().unwrap();
         assert_eq!(first.id, TabId(2), "the one queued again went to the back");
-        let (second, newest) = queue.next().unwrap();
+        let (second, newest) = queue.take_next().unwrap();
         assert_eq!(second.id, TabId(1));
         assert_eq!(newest.pictures[0].bgra[0], 2, "its newest pictures");
-        assert!(queue.next().is_none());
+        assert!(queue.take_next().is_none());
     }
 
     /// Failure: the cap on bytes is held by dropping whole tabs, or the newest, so tabs that could have had their facts written have none. Over the bytes, the oldest lose their pictures first and keep their place, and the newest keeps its own.
@@ -323,10 +323,10 @@ mod tests {
     fn the_writer_ends_with_the_queue_and_the_next_tab_starts_another() {
         let mut queue = LeavingQueue::default();
         assert!(queue.push(facts(1), material(10, 0)));
-        assert!(queue.next().is_some());
+        assert!(queue.take_next().is_some());
         assert!(!queue.push(facts(2), material(10, 0)), "still writing");
-        assert!(queue.next().is_some());
-        assert!(queue.next().is_none(), "nothing left, so it ends");
+        assert!(queue.take_next().is_some());
+        assert!(queue.take_next().is_none(), "nothing left, so it ends");
         assert_eq!(queue.report()["writer"], false);
         assert!(queue.push(facts(3), material(10, 0)), "a tab after its end starts another");
         // A writer that couldn't start leaves what's queued for the next.
@@ -345,7 +345,7 @@ mod tests {
         queue.forget(TabId(9));
         assert_eq!(queue.queue.len(), 1);
         assert_eq!(queue.bytes, MIB as u64);
-        assert_eq!(queue.next().unwrap().0.id, TabId(2));
+        assert_eq!(queue.take_next().unwrap().0.id, TabId(2));
     }
 
     /// Failure (review 1): the file being written isn't counted once it's taken from the queue, so what's held is the cap and one more tab's pictures, and the peak says less than there is. It counts till its write's done, and what's queued after it gives way.
@@ -354,7 +354,7 @@ mod tests {
         let mut queue = LeavingQueue::default();
         let big = MAX_LEAVING_BYTES as usize * 5 / 8;
         let _ = queue.push(facts(1), material(big, 0));
-        assert!(queue.next().is_some());
+        assert!(queue.take_next().is_some());
         assert_eq!(queue.bytes, big as u64, "still held while it's written");
         let _ = queue.push(facts(2), material(big, 0));
         assert!(queue.bytes <= MAX_LEAVING_BYTES, "{} held", queue.bytes);
@@ -362,8 +362,8 @@ mod tests {
         assert!(queue.report()["peak_bytes"].as_u64().unwrap() <= MAX_LEAVING_BYTES);
         queue.done();
         assert_eq!(queue.bytes, 0);
-        let _ = queue.next();
-        let _ = queue.next();
+        let _ = queue.take_next();
+        let _ = queue.take_next();
         assert_eq!(queue.bytes, 0, "nothing's held at rest");
         assert_eq!(queue.report()["in_flight"], false);
     }
@@ -374,13 +374,13 @@ mod tests {
         let mut queue = LeavingQueue::default();
         let _ = queue.push(facts(1), material(10, 0));
         let _ = queue.push(facts(2), material(10, 0));
-        assert_eq!(queue.next().unwrap().0.id, TabId(1));
+        assert_eq!(queue.take_next().unwrap().0.id, TabId(1));
         queue.forget(TabId(2));
         assert!(queue.still_wanted(), "another tab's write says nothing about this one");
         queue.forget(TabId(1));
         assert!(!queue.still_wanted(), "something newer's been written for it");
         assert_eq!(queue.report()["stale_skipped"], 1);
-        assert!(queue.next().is_none(), "and the other was forgotten");
+        assert!(queue.take_next().is_none(), "and the other was forgotten");
     }
 
     /// Failure (review 1): a writer that panics leaves the queue saying there's a writer for good, so no sleep file is ever written again. Its guard says it's gone, what it held goes, and the next tab queued starts another.
@@ -392,7 +392,7 @@ mod tests {
             scope
                 .spawn(|| {
                     let _running = WriterRunning::enter(&queue);
-                    let _taken = lock(&queue).next();
+                    let _taken = lock(&queue).take_next();
                     panic!("a writer panicking, on purpose");
                 })
                 .join()
@@ -414,7 +414,7 @@ mod tests {
         let write = || {
             let _running = WriterRunning::enter(&queue);
             loop {
-                let next = lock(&queue).next();
+                let next = lock(&queue).take_next();
                 if next.is_none() {
                     return;
                 }
