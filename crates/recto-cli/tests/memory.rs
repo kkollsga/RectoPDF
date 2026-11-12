@@ -240,7 +240,8 @@ fn out_of_descriptors_the_session_doesnt_spin() {
     );
     assert!(cpu < 100_000_000, "{} ms of CPU in 500 ms: it's spinning", cpu / 1_000_000);
     // One that arrives while it's still out of descriptors, and writes only after the session's accept has dropped it. On a slow runner the first try below can be this by chance; here it always is.
-    let mut early = Some(Raw::connect(&state));
+    // It can be dropped as it's accepted, before its timeout is set, which fails the connect here (`EINVAL` on macOS): the same drop, seen sooner, and the loop below goes on to the next try.
+    let mut early = Raw::try_connect(&state).ok();
     std::thread::sleep(Duration::from_millis(50));
     held.clear();
     // The session finds out they've gone as it next reads them, so the very next connection can still be one too many: dropped as it's accepted, it ends at the write or at the read, whichever comes after the drop.
