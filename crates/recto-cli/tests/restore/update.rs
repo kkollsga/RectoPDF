@@ -647,21 +647,19 @@ fn a_development_build_goes_in_by_the_same_hand_off() {
     run.quit();
 }
 
-/// Failure: with a development build waiting for its five idle minutes, Settings shows no way to install it (owner, 2026-11-12: "I dont see the update now button in settings"), the plain command installs it against the owner's rule, or the button does something the menu and `--now` don't. **The real app, through the real hand-over:** `recto update install <zip>` copies the zip into the app's folder and the app opens only that; Settings shows the build and an enabled Update now; the plain command only says what it waits for; the button goes at once and the new app comes up. With `RECTO_SHOTS_DIR` set, light and dark screenshots of Settings with and without the waiting build are written there.
+/// **The shots of Settings with and without a waiting development build,** light and dark, written to `RECTO_SHOTS_DIR` when it's set, and nothing otherwise: the real app, through the real hand-over (`recto update install <zip>` copies the zip into the app's folder and the app opens only that). What Settings, the menu, the plain command and Update now decide (owner, 2026-11-12: "I dont see the update now button in settings") is held by `recto-app`'s headless `settings_offers_update_now_for_a_waiting_build`, which fails on each.
 #[test]
 fn settings_offers_update_now_for_a_waiting_build() {
+    let Some(dir) = std::env::var_os("RECTO_SHOTS_DIR") else { return };
     let Some(bed) = Bed::new() else { return };
     let run = bed.start();
     let file = long_document("alpha", 20);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["goto", "4"]);
     run.ok(&["qa", "frontmost", "off"]);
-    run.settled();
     run.ok(&["update", "dev-builds", "on"]);
     run.ok(&["qa", "settings", "open"]);
     let shot = |name: &str| {
-        let Some(dir) = std::env::var_os("RECTO_SHOTS_DIR") else { return };
         std::fs::create_dir_all(&dir).unwrap();
         for look in ["light", "dark"] {
             run.ok(&["qa", "appearance", look]);
@@ -670,36 +668,16 @@ fn settings_offers_update_now_for_a_waiting_build() {
         }
         run.ok(&["qa", "appearance", "light"]);
     };
-    let action = || run.ok(&["qa", "state"])["app"]["settings"]["action"].clone();
-    assert!(action().is_null(), "nothing waits, so no button: {}", action());
     shot("without");
     let zip = bed.dev_build(DEV, Broken::Not);
-    let answer = run.ok(&["update", "install", zip.to_str().unwrap()]);
-    assert!(answer["waits_ms"].as_u64().unwrap() > 4 * 60_000, "{answer}");
-    let folder = PathBuf::from(bed.status(&run)["handover_dir"].as_str().unwrap());
-    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0, "the copy is gone once it was read");
-    // The plain command starts nothing: the five idle minutes are the owner's rule.
-    let plain = run.ok(&["update", "install"]);
-    assert_eq!(plain["started"], false, "{plain}");
-    assert!(plain["words"].as_str().unwrap().contains("Nothing was started"), "{plain}");
-    assert_eq!(bed.status(&run)["status"], "build_ready");
-    // Settings and the menu, from Rust's words.
+    run.ok(&["update", "install", zip.to_str().unwrap()]);
     let wanted = format!("Development build {DEV} is ready");
     let began = Instant::now();
-    while action()["title"] != json!(wanted) {
-        assert!(began.elapsed() < Duration::from_secs(10), "Settings never showed the build: {}", action());
+    while run.ok(&["qa", "state"])["app"]["settings"]["action"]["title"] != json!(wanted) {
+        assert!(began.elapsed() < Duration::from_secs(10), "Settings never showed the build");
         std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
     }
-    let shown = action();
-    assert_eq!((&shown["button"], &shown["enabled"]), (&json!("Update now"), &json!(true)), "{shown}");
-    let status = bed.status(&run);
-    assert_eq!(status["menu"], json!({ "title": format!("Update to {DEV}…"), "enabled": true }), "{status}");
     shot("with");
-    // The button is the menu's call and `--now`'s: it goes at once.
-    run.ok(&["qa", "settings", "update.now"]);
-    let run = bed.wait_for_new_app_of(run, DEV);
-    run.settled();
-    assert_eq!(bed.version(), DEV);
     run.quit();
 }
 
@@ -1049,7 +1027,7 @@ fn a_check_from_the_menu_with_no_window_says_so_in_an_alert() {
     run.quit();
 }
 
-/// Failure (review 1): a version being watched after an update counts a quit someone asked for, or a logout's or `killall`'s SIGTERM, as a run that ended early, so three ordinary quits in its first minutes send a good version back. A real `quit_requested`, from the menu or a SIGTERM, isn't counted; a kill is.
+/// Failure (review 1): a version being watched after an update counts a logout's or `killall`'s SIGTERM as a run that ended early, so a good version is sent back by ordinary logouts. A SIGTERM is the window's way to a real `quit_requested`, so it isn't counted. That the menu's quit isn't counted and a kill is, is held by `recto-app`'s headless `a_quit_isnt_an_early_end_and_a_kill_is`.
 #[test]
 fn a_quit_isnt_an_early_end_and_a_kill_is() {
     let Some(bed) = Bed::new() else { return };
@@ -1067,11 +1045,8 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
     }
     .write(&files.saved);
     let probation = || recto_update::saved::Saved::read(&files.saved).probation.unwrap();
-    let run = bed.start();
-    assert!(probation().running_since_ms.is_some(), "this run's watched");
-    run.quit();
-    assert_eq!(probation().running_since_ms, None, "the menu's quit isn't an early end");
     let mut run = bed.start();
+    assert!(probation().running_since_ms.is_some(), "this run's watched");
     assert!(Command::new("/bin/kill").args(["-TERM", &run.pid.to_string()]).status().unwrap().success());
     let began = Instant::now();
     while local::process_counters(run.pid).is_some() {
@@ -1079,13 +1054,8 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
         std::thread::sleep(Duration::from_millis(20));
     }
     run.ended();
-    assert_eq!(probation().running_since_ms, None, "nor is a SIGTERM's");
-    let run = bed.start();
+    assert_eq!(probation().running_since_ms, None, "a SIGTERM's quit isn't an early end");
     assert_eq!(probation().early_ends, 0);
-    run.kill();
-    let run = bed.start();
-    assert_eq!(probation().early_ends, 1, "a kill is");
-    run.quit();
 }
 
 /// Failure: an agent's installing or turning off updates isn't in the log of what changed things, which is where a person looks for what an agent did. That the refusals are logged too is in `a_development_build_only_asks_and_installing_needs_full`.
@@ -1095,11 +1065,17 @@ fn what_an_agent_changes_about_updates_goes_in_the_changes_log() {
     let run = bed.start();
     run.ok(&["settings", "--auto-update", "off"]);
     run.ok(&["settings"]);
-    bed.release_of(NEW, Broken::Not);
+    // A release whose zip isn't there: the install's started, and logged, and fails at the download without quitting the app, which is all this needs.
+    bed.server.latest(
+        format!(
+            r#"{{"version":"{NEW}","tag":"v{NEW}","minimum_macos":"15.0","zip":"RectoPDF-{NEW}.zip","sha256":"{}"}}"#,
+            "a".repeat(64)
+        )
+        .into_bytes(),
+    );
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
-    let run = bed.wait_for_new_app(run);
-    run.settled();
+    bed.wait_status(&run, "failed");
     let changes = std::fs::read_to_string(&bed.state.paths.log).unwrap();
     let lines: Vec<Value> = changes.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert!(lines.iter().any(|line| line["cmd"] == "update_install" && line["outcome"] == "ok"), "{changes}");

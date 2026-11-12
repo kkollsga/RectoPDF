@@ -394,3 +394,76 @@ fn coming_back_to_a_record_it_cant_read_takes_the_one_from_before() {
     let log = std::fs::read_to_string(&app.disk().update_files().log).unwrap_or_default();
     assert!(log.contains("record from before the update was put back"), "{log}");
 }
+
+/// Failure (owner, 2026-11-12: "I dont see the update now button in settings"): with a development build waiting for its five idle minutes, Settings shows no way
+/// to install it, the plain command installs it against the owner's rule, or the button does something the menu and `--now` don't. The build handed over by
+/// `recto`'s own hand-over, the copy gone once it's read; Settings and the menu in Rust's words; the plain command only says what it waits for; the button goes at
+/// once, through the same hand-off. (What the app test `settings_offers_update_now_for_a_waiting_build` held besides its shots; it keeps the shots.)
+#[test]
+fn settings_offers_update_now_for_a_waiting_build() {
+    let (app, bed) = running_with_a_document(4);
+    at_full(&app);
+    full(&app, r#"{"cmd":"update_dev_builds","set":"on"}"#);
+    assert_eq!(app.core().settings_model().action, None, "nothing waits, so no button");
+    let zip = app.disk().hand_over_build(DEV);
+    let answer = full(&app, &format!(r#"{{"cmd":"update_install","zip":{}}}"#, serde_json::json!(zip)));
+    assert!(answer["waits_ms"].as_u64().is_some_and(|waits| waits > 4 * 60_000), "{answer}");
+    let folder = std::path::PathBuf::from(app.update_status()["handover_dir"].as_str().expect("the hand-over folder"));
+    assert_eq!(
+        std::fs::read_dir(&folder).map(Iterator::count).ok(),
+        Some(0),
+        "the copy is gone once it was read"
+    );
+    // The plain command starts nothing: the five idle minutes are the owner's rule.
+    let plain = full(&app, r#"{"cmd":"update_install"}"#);
+    assert_eq!(plain["started"], false, "{plain}");
+    assert!(plain["words"].as_str().unwrap_or_default().contains("Nothing was started"), "{plain}");
+    assert_eq!(app.update_status()["status"], "build_ready");
+    let action = app.core().settings_model().action.expect("Settings shows the waiting build");
+    assert_eq!(action.title, format!("Development build {DEV} is ready"));
+    assert_eq!((action.button.as_str(), action.enabled), ("Update now", true), "{action:?}");
+    assert_eq!(
+        app.update_status()["menu"],
+        serde_json::json!({ "title": format!("Update to {DEV}…"), "enabled": true })
+    );
+    // The button is the menu's call and `--now`'s: it goes at once.
+    app.core().setting_chosen(crate::core::updates::UPDATE_NOW_ROW, true);
+    let (plan, disk) = app.handed_off(&bed);
+    assert_eq!(plan.to, DEV);
+    disk.install(&plan, Installed::Swapped);
+    let app = disk.builder().update(&bed).start();
+    assert_eq!(app.disk().app_version().as_deref(), Some(DEV));
+}
+
+/// Failure (review 1): a version being watched after an update counts a quit someone asked for as a run that ended early, so three ordinary quits in its first
+/// minutes send a good version back; or a kill isn't counted, and a crash loop is never caught. A quit isn't counted; a kill is. (What the app test
+/// `a_quit_isnt_an_early_end_and_a_kill_is` held besides SIGTERM's being a quit, which is the window's; it keeps that.)
+#[test]
+fn a_quit_isnt_an_early_end_and_a_kill_is() {
+    let disk = Disk::new();
+    disk.install_app(OLD);
+    let bed = UpdateBed::new();
+    let files = disk.update_files();
+    recto_update::saved::Saved {
+        proven: Some(OLD.to_owned()),
+        probation: Some(recto_update::saved::Probation {
+            version: OLD.to_owned(),
+            since_ms: recto_update::wall_ms(),
+            running_since_ms: None,
+            early_ends: 0,
+        }),
+        ..recto_update::saved::Saved::default()
+    }
+    .write(&files.saved);
+    let probation = || recto_update::saved::Saved::read(&files.saved).probation.expect("watched");
+    let app = disk.builder().update(&bed).start();
+    assert!(probation().running_since_ms.is_some(), "this run's watched");
+    let (_, disk) = app.quit();
+    assert_eq!(probation().running_since_ms, None, "the menu's quit isn't an early end");
+    let app = disk.builder().update(&bed).start();
+    assert_eq!(probation().early_ends, 0);
+    let disk = app.kill();
+    let app = disk.builder().update(&bed).start();
+    assert_eq!(probation().early_ends, 1, "a kill is");
+    drop(app);
+}
