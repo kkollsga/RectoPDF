@@ -98,3 +98,44 @@ fn an_agents_jumps_give_way_to_the_persons() {
     let record = s.to_record();
     assert!(record.tabs[0].back.iter().any(|stop| stop.by_agent), "who left each is kept");
 }
+
+/// Failure: a page past the end leaves the reader nowhere, or a zero-page file underflows.
+#[test]
+fn going_to_a_page_clamps_to_the_document() {
+    let mut s = session(10);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.go_to(id, 500).unwrap();
+    assert_eq!(s.tab(id).unwrap().page, 9);
+    assert_eq!(s.sidebar().place, "10 of 10");
+    let mut empty = session(0);
+    let id = empty.open(Path::new("/d/empty.pdf")).unwrap();
+    empty.go_to(id, 3).unwrap();
+    assert_eq!(empty.tab(id).unwrap().page, 0);
+}
+
+/// Failure: a place for an old page is used after a `goto` moved a cold tab, so the reader lands on the wrong page. And a place that's the same doesn't count as a change, so nothing's written for it.
+#[test]
+fn a_place_is_only_used_on_its_own_page_and_only_written_when_it_moves() {
+    let mut s = session(9);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.take_place_delta(1);
+    let place = PlaceRecord {
+        page: 0,
+        anchor_page: 0,
+        within: 0.5,
+        x: 0.0,
+        y: 10.0,
+        document_height: 900.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    s.note_place(a, place);
+    assert_eq!(s.take_place_delta(2).places.len(), 1);
+    s.note_place(a, place);
+    assert!(s.take_place_delta(3).places.is_empty(), "it didn't move");
+    assert_eq!(s.place_to_show(a), Some(place));
+    s.go_to(a, 4).unwrap();
+    assert_eq!(s.place_to_show(a), None, "it's for page 1, and the reader's on page 5");
+    assert_eq!(s.take_place_delta(4).places.len(), 1);
+}
