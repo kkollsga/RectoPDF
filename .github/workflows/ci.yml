@@ -1,6 +1,13 @@
 # A clean checkout on someone else's Mac: what passes here doesn't depend on this machine's folders.
 # Runs on main and on build/* branches before they merge (owner, 2026-11-11), never on outside pull requests, skips docs, and a newer
 # push to the same branch cancels an older run.
+#
+# The cache, and its limit. GitHub keeps 10 GB of cache for the repository and evicts the least recently used beyond it. On 2026-11-12 it held 10.81 GB in 8
+# caches, the Rust ones about 3.1 GB each, and a part's cache saved on a branch was evicted within 20 minutes, so the next run fell back to an old one and
+# saved again (70 to 80 s a part). So: two Rust caches per Cargo.lock, `check-core-<hash>` and `check-app-<hash>` (window and lifecycle build the same
+# things and share one), saved only on main and only on a miss. Every job restores, a branch from main's, falling back by prefix to main's latest when its
+# Cargo.lock differs, so it starts warm. With the sandbox jobs' (about 0.15 and 0.22 GB) and PDFium's (3 MB) that is about 6.6 GB a lock. A new cache, a
+# cache per job or per branch, or a save on branches puts it past 10 GB again: count it against this first.
 name: CI
 on:
   push:
@@ -56,16 +63,19 @@ jobs:
         with:
           path: target/pdfium
           key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
-      # One cache a part: three jobs saving under one key would keep only the first's. The plain `check-` prefix is the old single job's, which a part falls back to.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Two caches, core's and the app parts', saved only on main (the cache at the top of this file). A branch restores main's, the same lock's or by prefix
+      # the latest; the plain `check-` prefix is the old single job's, for the first run of this layout.
+      - name: Rust's cache, restored
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ matrix.part }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: check-${{ matrix.part == 'core' && 'core' || 'app' }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: |
-            check-${{ matrix.part }}-
+            check-${{ matrix.part == 'core' && 'core' || 'app' }}-
             check-
       - name: Full check, this part
         run: tools/check.sh --full
@@ -74,6 +84,16 @@ jobs:
           RECTO_TEST_LOGS: ${{ runner.temp }}/recto-test-logs
       # What CI saw, when it fails: run 43054237265 said only that the app had gone, so a crash, a time limit and a test looking too late
       # couldn't be told apart (2026-11-11). The quiet runs' logs above, and the system's crash reports for the app and its helpers.
+      # Before the logs and artifacts, so a failure there can't lose it. The second app part to get here finds the key taken and only says so.
+      - name: Rust's cache, saved on main
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Crash reports, when the check failed
         if: failure()
         run: |
