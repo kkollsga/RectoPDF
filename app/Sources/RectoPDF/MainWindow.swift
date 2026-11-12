@@ -645,7 +645,7 @@ final class BookMark: NSView {
             let label = index < paneLabels.count && !paneLabels[index].isHidden ? paneLabels[index] : nil
             let report = area.report()
             let note = index < paneNotes.count && !paneNotes[index].isHidden ? paneNotes[index].label.text : nil
-            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
+            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroller_style": report["scroller_style"] ?? "", "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
         }
     }
 

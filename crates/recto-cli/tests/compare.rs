@@ -424,7 +424,7 @@ fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
     alive
 }
 
-/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. **The scroller's fade:** a pane's overlay scroller left behind was held by its knob's fade (`FADE`), which scrolling starts, and which never finishes once the pane is out of the window. A fast Mac ends the comparison before the fade has begun, so it passed there and failed on a slow one (2026-11-12, run at background priority, 3 of 4). So each comparison waits, bounded, until the fade has begun if this Mac's panes fade at all (a count of `FADE` objects that rises), and ends then: the same on every Mac, and with panes' scrollers that don't fade, as now, the wait gives up after its bound once. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
+/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. **The scroller's fade:** a pane's overlay scroller left behind was held by its knob's fade (`FADE`), which scrolling starts, and which never finishes once the pane is out of the window. A fast Mac ends the comparison before the fade has begun, so it passed there and failed on a slow one (2026-11-12, run at background priority, 3 of 4). So while a pane past the first has a scroller that fades (`scroller_style` overlay), each comparison waits, bounded, until the fade has begun (a rise in the count of `FADE` objects) and ends then: the same on every Mac. Panes past the first have classic scrollers now, which don't fade, so there's no wait. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
 #[test]
 fn comparisons_leave_no_views_behind() {
     const STRETCH: u64 = 12;
@@ -438,13 +438,14 @@ fn comparisons_leave_no_views_behind() {
     run.settled();
     // Thin scrollers that fade, the style the app asks for unless the Mac always shows them.
     run.ok(&["qa", "scroller-style", "overlay"]);
-    // Whether a scroll starts a fade in a pane's scroller on this build: found out once, with a bound, as a build whose panes' scrollers don't fade never will.
-    let fades = std::cell::Cell::new(true);
-    let first_wait = std::cell::Cell::new(true);
+    // Whether a pane past the first has a scroller that fades, which a scroll then starts to fade.
+    let fades = std::cell::Cell::new(false);
     let compare = |times: u64| {
         for _ in 0..times {
             run.ok(&["compare", "--tabs", "#1,#2"]);
             run.settled();
+            // A pane past the first with a scroller that fades is the failure this once was, so it's waited for.
+            fades.set(panes(&run.report()).iter().skip(1).any(|pane| pane["scroller_style"] == "overlay"));
             let before = if fades.get() {
                 views_alive(run.pid).get(FADE).copied().unwrap_or(0)
             } else {
@@ -455,12 +456,9 @@ fn comparisons_leave_no_views_behind() {
             run.settled();
             if fades.get() {
                 let began = Instant::now();
-                let bound = Duration::from_secs(if first_wait.replace(false) { 5 } else { 3 });
+                let bound = Duration::from_secs(5);
                 while views_alive(run.pid).get(FADE).copied().unwrap_or(0) <= before && began.elapsed() < bound {
                     std::thread::sleep(Duration::from_millis(100)); // ratchet: poll
-                }
-                if views_alive(run.pid).get(FADE).copied().unwrap_or(0) <= before {
-                    fades.set(false);
                 }
             }
             run.ok(&["compare", "--off"]);
