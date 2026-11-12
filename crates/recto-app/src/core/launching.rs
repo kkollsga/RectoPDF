@@ -41,7 +41,7 @@ impl Inner {
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
     pub fn state_read(&self) -> bool {
-        self.life.restored.load(Ordering::SeqCst)
+        self.life.state_read()
     }
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
@@ -93,6 +93,20 @@ impl Inner {
 
     /// What the host shows has been made from the state that was read.
     pub fn shown_with_state(&self) {
-        self.life.shown_with_state.store(true, Ordering::SeqCst);
+        self.carry_out(self.life.step(crate::lifecycle::Event::ShownWithState));
+    }
+
+    /// **What the app's life came to, carried out** once its lock is let go of ([`crate::lifecycle::Out`]).
+    pub fn carry_out(&self, out: Option<crate::lifecycle::Out>) {
+        match out {
+            None => {}
+            // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
+            Some(crate::lifecycle::Out::RestoreReady { late: true, .. }) => {
+                let listener = Arc::clone(&self.listener);
+                recto_platform::slow::later(recto_platform::slow::Seam::Remake, move || listener.restore_ready());
+            }
+            Some(crate::lifecycle::Out::RestoreReady { .. }) => self.listener.restore_ready(),
+            Some(crate::lifecycle::Out::Freeze(frozen)) => self.set_frozen(frozen),
+        }
     }
 }

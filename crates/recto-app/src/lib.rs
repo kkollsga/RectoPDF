@@ -8,6 +8,7 @@ pub mod find;
 pub mod generated_contents;
 pub mod hand_off;
 pub mod launch;
+pub mod lifecycle;
 pub mod linking;
 pub mod listener;
 pub mod menus;

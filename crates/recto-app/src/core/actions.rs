@@ -156,7 +156,7 @@ impl Inner {
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
     pub fn window_interactive(&self) -> bool {
-        updates::takes_input(self.life.shown_with_state.load(Ordering::SeqCst), self.life.since_start())
+        self.life.takes_input()
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.

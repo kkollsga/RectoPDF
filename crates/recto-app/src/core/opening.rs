@@ -94,7 +94,7 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
 impl Inner {
     pub fn open_file(&self, path: PathBuf) {
         // Asked for before the state's read: what a launch that goes back passes on.
-        if !self.life.restored.load(Ordering::SeqCst) {
+        if !self.life.state_read() {
             updates::note_asked_to_open(std::slice::from_ref(&path));
         }
         self.core.push(CoreCall::Open(path));

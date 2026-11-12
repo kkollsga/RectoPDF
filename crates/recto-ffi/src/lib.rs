@@ -1325,7 +1325,7 @@ impl AppCore {
         if self.inner.life.started.elapsed() >= SHOW_PATIENCE + RESTORE_PATIENCE {
             return true;
         }
-        if !self.inner.life.restored.load(Ordering::SeqCst) || lock(&self.inner.life.holding_tab).is_some() {
+        if !self.inner.state_read() || lock(&self.inner.life.holding_tab).is_some() {
             return false;
         }
         // It's asked on the UI thread, which doesn't wait for whatever has the session: this comes round again.
