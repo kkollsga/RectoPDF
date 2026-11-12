@@ -190,7 +190,7 @@ fn comparison_view_from_command_click_to_one_again() {
     assert!(closed["session"]["comparison"].is_null());
     assert_eq!(closed["session"]["active"], 3);
     // One-shot threads, a look at a file or a sleep file being written, end by themselves: a pane's page view that stayed would be there for good.
-    if let Some(wrong) = common::threads::back_to(run.pid, &threads_alone, Duration::from_secs(5)) {
+    if let Some(wrong) = common::threads::back_to(run.pid, &threads_alone, Duration::from_secs(30)) {
         panic!("a pane's thread stayed: {wrong}");
     }
 

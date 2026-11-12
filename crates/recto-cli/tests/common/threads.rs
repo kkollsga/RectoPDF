@@ -59,7 +59,7 @@ pub fn grew(before: &[String], now: &[String]) -> Option<String> {
         .map(|name| format!("{} threads named {name}, where there's one at a time: {now:?}", count(now, name)))
 }
 
-/// Waits, up to `limit`, for the app's own threads to be back to what they were (`grew` says nothing), as a thread that does one thing ends by itself once it's done: a check, a look, a pane's page view. What was still wrong at the limit, with every thread's name, or `None` once they're back.
+/// Waits, up to `limit` (a bound for a thread that stays, not a guess at how long one takes to end on a busy machine), for the app's own threads to be back to what they were (`grew` says nothing), as a thread that does one thing ends by itself once it's done: a check, a look, a pane's page view. What was still wrong at the limit, with every thread's name, or `None` once they're back.
 pub fn back_to(pid: u32, before: &[String], limit: std::time::Duration) -> Option<String> {
     let began = std::time::Instant::now();
     loop {

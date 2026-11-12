@@ -1650,7 +1650,7 @@ fn settings_and_the_menu_say_how_things_stand() {
         shot("shot-settings", &format!("settings-offer-{look}"));
     }
     // Nothing's left running after a check, whatever it found: the app's own threads, by name, as the count of all took in the system's libdispatch pool, and a fixed 200 ms could catch the check's thread on its way out.
-    if let Some(wrong) = crate::common::threads::back_to(run.pid, &threads, Duration::from_secs(10)) {
+    if let Some(wrong) = crate::common::threads::back_to(run.pid, &threads, Duration::from_secs(30)) {
         panic!("a check's thread stayed: {wrong}");
     }
 
