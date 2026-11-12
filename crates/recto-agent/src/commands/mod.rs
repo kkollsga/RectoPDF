@@ -5,8 +5,10 @@
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
 
 pub mod access;
+pub mod editing;
 pub mod export;
 pub mod linking;
+pub mod measure;
 pub mod reading;
 pub mod session;
 pub mod sync;
@@ -221,6 +223,26 @@ family! {
 }
 
 family! {
+    /// Changing pages: `page move`, `page delete`, `page insert`, `edits` and `discard`. Rotate, undo, redo, clear-history and save join when the app's own code stops naming them.
+    pub enum Edit {
+        PageMove(editing::PageMove),
+        PageDelete(editing::PageDelete),
+        PageInsert(editing::PageInsert),
+        Edits(editing::Edits),
+        Discard(editing::Discard),
+    }
+}
+
+family! {
+    /// Measuring what things cost: `budget`, `budget render` and `budget viewport`.
+    pub enum Measure {
+        Budget(measure::Budget),
+        BudgetRender(measure::BudgetRender),
+        BudgetViewport(measure::BudgetViewport),
+    }
+}
+
+family! {
     /// Waiting instead of polling.
     pub enum Waits {
         Wait(sync::Wait),
@@ -291,6 +313,8 @@ const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Start::TAGS, Start::parse, Start::human),
     (Read::TAGS, Read::parse, Read::human),
     (Move::TAGS, Move::parse, Move::human),
+    (Edit::TAGS, Edit::parse, Edit::human),
+    (Measure::TAGS, Measure::parse, Measure::human),
     (Waits::TAGS, Waits::parse, Waits::human),
     (Rights::TAGS, Rights::parse, Rights::human),
     (Session::TAGS, Session::parse, Session::human),
@@ -339,14 +363,14 @@ const PARTS: &[&[Spec]] = &[
     <tabs::Recent as Cmd>::ROWS,
     <tabs::RecentClear as Cmd>::ROWS,
     <tabs::Close as Cmd>::ROWS,
-    table::ROWS_PAGE_MOVE,
+    <editing::PageMove as Cmd>::ROWS,
     table::ROWS_PAGE_ROTATE,
-    table::ROWS_PAGE_DELETE,
-    table::ROWS_PAGE_INSERT,
+    <editing::PageDelete as Cmd>::ROWS,
+    <editing::PageInsert as Cmd>::ROWS,
     table::ROWS_UNDO,
     table::ROWS_REDO,
-    table::ROWS_EDITS,
-    table::ROWS_DISCARD,
+    <editing::Edits as Cmd>::ROWS,
+    <editing::Discard as Cmd>::ROWS,
     table::ROWS_CLEAR_HISTORY,
     table::ROWS_SAVE,
     <sync::Wait as Cmd>::ROWS,
@@ -360,10 +384,10 @@ const PARTS: &[&[Spec]] = &[
     table::CLI_SERVE,
     <session::Stop as Cmd>::ROWS,
     table::CLI_LOCAL,
-    table::ROWS_BUDGET,
+    <measure::Budget as Cmd>::ROWS,
     table::CLI_BUDGET_TABS,
-    table::ROWS_BUDGET_RENDER,
-    table::ROWS_BUDGET_VIEWPORT,
+    <measure::BudgetRender as Cmd>::ROWS,
+    <measure::BudgetViewport as Cmd>::ROWS,
     table::ROWS_COMPARE,
     table::ROWS_VIEW,
     table::ROWS_PALETTE,

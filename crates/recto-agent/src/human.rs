@@ -247,23 +247,16 @@ pub fn render(tag: &str, data: &Value) -> String {
             }
             out
         }
-        "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "clear_history" => edit_state(data),
-        "edits" => edits(data),
+        "page_rotate" | "undo" | "redo" | "clear_history" => edit_state(data),
         "permission_set" => format!("Agent access is now {} (was {}).", text(&data["label"]), text(&data["was_label"])),
         "serve" => {
             let word = if data["already"] == true { "already running" } else { "running" };
             format!("RectoPDF is {word}, process {}, on {}", number(&data["pid"]), text(&data["socket"]))
         }
         "skill_install" => skill_install(data),
-        "budget" => format!(
-            "{}, footprint {}, {}",
-            count(number(&data["tabs"]), "tab", "tabs"),
-            bytes(number(&data["footprint_bytes"])),
-            count(number(&data["open_handles"]), "handle", "handles")
-        ),
         "budget_tabs" => budget_tabs(data),
         // These measurements are numbers for a person comparing runs, and JSON is the clearest way to show every field.
-        "budget_render" | "budget_viewport" | "budget_index" => serde_json::to_string_pretty(data).unwrap_or_default(),
+        "budget_index" => serde_json::to_string_pretty(data).unwrap_or_default(),
         _ => serde_json::to_string_pretty(data).unwrap_or_default(),
     }
 }
@@ -426,26 +419,6 @@ pub(crate) fn sidebar(data: &Value) -> String {
         }
     }
     out.push_str(QUOTED_NAMES);
-    out
-}
-
-fn edits(data: &Value) -> String {
-    let mut out = edit_state(data);
-    for run in data["runs"].as_array().map_or(&[][..], Vec::as_slice) {
-        let _ = write!(out, "\n  pages {}: ", text(&run["pages"]));
-        match run["untrusted"]["added_file"].as_str() {
-            Some(file) => {
-                let _ = write!(out, "added from {file:?}, its pages {}", text(&run["from_file_pages"]));
-            }
-            None => {
-                let _ = write!(out, "this file's pages {}", text(&run["from_file_pages"]));
-            }
-        }
-        let degrees = number(&run["rotation_degrees"]);
-        if degrees != 0 {
-            let _ = write!(out, ", turned {degrees} degrees");
-        }
-    }
     out
 }
 

@@ -357,35 +357,6 @@ pub(crate) const ROWS_TAP: &[Spec] = &[Spec {
     ..BASE
 }];
 
-pub(crate) const ROWS_PAGE_MOVE: &[Spec] = &[Spec {
-    name: "page move",
-    tag: "page_move",
-    group: GROUP_EDIT,
-    access: Access::At(Level::Control),
-    summary: "Moves pages, so the first of them ends up at `--to`.",
-    args: &[
-        Arg {
-            key: "pages",
-            flag: None,
-            kind: Kind::Pages,
-            required: true,
-            help: "Which: `4` or `4-6`.",
-        },
-        Arg {
-            key: "to",
-            flag: Some("--to"),
-            kind: Kind::Page,
-            required: true,
-            help: "Where the first of them lands, counted from 1 in the new order.",
-        },
-        TAB,
-    ],
-    data: EDIT_STATE,
-    emits: &["edits_changed"],
-    examples: &["recto page move 3 --to 1", "recto page move 4-6 --to 10 --tab report"],
-    ..BASE
-}];
-
 pub(crate) const ROWS_PAGE_ROTATE: &[Spec] = &[Spec {
     name: "page rotate",
     tag: "page_rotate",
@@ -419,57 +390,6 @@ pub(crate) const ROWS_PAGE_ROTATE: &[Spec] = &[Spec {
     ..BASE
 }];
 
-pub(crate) const ROWS_PAGE_DELETE: &[Spec] = &[Spec {
-    name: "page delete",
-    tag: "page_delete",
-    group: GROUP_EDIT,
-    access: Access::At(Level::Control),
-    summary: "Removes pages from the edited document. A document keeps at least one page. Below Full, an edit that would clear undone steps of the user's is refused.",
-    args: &[
-        Arg {
-            key: "pages",
-            flag: None,
-            kind: Kind::Pages,
-            required: true,
-            help: "Which: `4` or `4-6`.",
-        },
-        TAB,
-    ],
-    data: EDIT_STATE,
-    emits: &["edits_changed"],
-    examples: &["recto page delete 5", "recto page delete 2-3 --tab report"],
-    ..BASE
-}];
-
-pub(crate) const ROWS_PAGE_INSERT: &[Spec] = &[Spec {
-    name: "page insert",
-    tag: "page_insert",
-    group: GROUP_EDIT,
-    access: Access::At(Level::Control),
-    summary: "Adds every page of another PDF.",
-    args: &[
-        Arg {
-            key: "path",
-            flag: None,
-            kind: Kind::Path,
-            required: true,
-            help: "The PDF to add.",
-        },
-        Arg {
-            key: "at",
-            flag: Some("--at"),
-            kind: Kind::Page,
-            required: true,
-            help: "Where its first page lands, counted from 1. One past the last page adds to the end.",
-        },
-        TAB,
-    ],
-    data: EDIT_STATE,
-    emits: &["edits_changed"],
-    examples: &["recto page insert appendix.pdf --at 4"],
-    ..BASE
-}];
-
 pub(crate) const ROWS_UNDO: &[Spec] = &[Spec {
     name: "undo",
     tag: "undo",
@@ -493,30 +413,6 @@ pub(crate) const ROWS_REDO: &[Spec] = &[Spec {
     data: EDIT_STATE,
     emits: &["edits_changed"],
     examples: &["recto redo"],
-    ..BASE
-}];
-
-pub(crate) const ROWS_EDITS: &[Spec] = &[Spec {
-    name: "edits",
-    tag: "edits",
-    group: GROUP_EDIT,
-    summary: "A tab's unsaved edits, as runs of pages.",
-    args: &[TAB],
-    data: "`{ ...same as undo, runs: [ { pages, from_file_pages, rotation_degrees, added, untrusted: { added_file } } ], runs_truncated }`.",
-    examples: &["recto edits", "recto edits --json"],
-    ..BASE
-}];
-
-pub(crate) const ROWS_DISCARD: &[Spec] = &[Spec {
-    name: "discard",
-    tag: "discard",
-    group: GROUP_EDIT,
-    access: Access::At(Level::Control),
-    summary: "Throws away a tab's edits, undone ones included. They can't be got back. Below Full it's refused, and throws nothing away, if any are the user's.",
-    args: &[TAB],
-    data: EDIT_STATE,
-    emits: &["edits_changed"],
-    examples: &["recto discard --tab report"],
     ..BASE
 }];
 
@@ -719,16 +615,6 @@ pub(crate) const CLI_LOCAL: &[Spec] = &[
     },
 ];
 
-pub(crate) const ROWS_BUDGET: &[Spec] = &[Spec {
-    name: "budget",
-    tag: "budget",
-    group: GROUP_MEASURE,
-    summary: "The session's own footprint, tabs and handles right now.",
-    data: "`{ tabs, footprint_bytes, open_handles }`.",
-    examples: &["recto budget --json"],
-    ..BASE
-}];
-
 pub(crate) const CLI_BUDGET_TABS: &[Spec] = &[
     Spec {
         name: "budget tabs",
@@ -811,100 +697,6 @@ pub(crate) const CLI_BUDGET_TABS: &[Spec] = &[
         ..BASE
     },
 ];
-
-pub(crate) const ROWS_BUDGET_RENDER: &[Spec] = &[Spec {
-    name: "budget render",
-    tag: "budget_render",
-    group: GROUP_MEASURE,
-    summary: "Measures a worker on a tab's document: idle, pages, peak and retirement. Choosing limits needs Full.",
-    args: &[
-        Arg {
-            key: "pages",
-            flag: Some("--count"),
-            kind: Kind::Count(1_000_000),
-            required: true,
-            help: "How many pages.",
-        },
-        FIRST,
-        SCALE,
-        Arg {
-            key: "fresh",
-            flag: Some("--fresh"),
-            kind: Kind::Switch,
-            required: false,
-            help: "A fresh worker per page.",
-        },
-        Arg {
-            key: "tiles",
-            flag: Some("--tiles"),
-            kind: Kind::Switch,
-            required: false,
-            help: "512 px tiles, not whole pages.",
-        },
-        Arg {
-            key: "samples",
-            flag: Some("--samples"),
-            kind: Kind::Switch,
-            required: false,
-            help: "Each page's numbers too.",
-        },
-        Arg {
-            key: "limit_mib",
-            flag: Some("--limit-mib"),
-            kind: Kind::Count(1_000_000),
-            required: false,
-            help: "The memory limit, in MiB. Needs Full.",
-        },
-        Arg {
-            key: "retire_mib",
-            flag: Some("--retire-mib"),
-            kind: Kind::Count(1_000_000),
-            required: false,
-            help: "The retirement footprint, in MiB. Needs Full.",
-        },
-        TAB,
-    ],
-    data: "Footprints in `*_bytes`, kills, tiles, and `ms: { p50, p95, max }`. `walled` says every worker it started was sandboxed with its Mach rights dropped, as the app's helper is, and a bare development worker isn't.",
-    examples: &[
-        "recto budget render --count 200 --samples",
-        "recto budget render --count 5 --limit-mib 512 --tab \"#1\"",
-    ],
-    client_wait_s: 1800,
-    ..BASE
-}];
-
-pub(crate) const ROWS_BUDGET_VIEWPORT: &[Spec] = &[Spec {
-    name: "budget viewport",
-    tag: "budget_viewport",
-    group: GROUP_MEASURE,
-    summary: "Measures a reader's window: first view, one scroll step, one zoom step.",
-    args: &[
-        Arg {
-            key: "viewport",
-            flag: Some("--viewport"),
-            kind: Kind::Size,
-            required: true,
-            help: "`WIDTHxHEIGHT` in device pixels, such as `3024x1964`.",
-        },
-        FIRST,
-        SCALE,
-        Arg {
-            key: "strategy",
-            flag: Some("--strategy"),
-            kind: Kind::Choice(&["per_tile", "region"]),
-            required: false,
-            help: "`per_tile` or `region`. Picked by page if left out.",
-        },
-        TAB,
-    ],
-    data: "`{ strategy, largest_image_pixels, viewport, scale, steps: [ { step, ms, tiles, passes, blank, grey, colour, low_res, failed, peak_footprint_bytes } ], spawns, retirements, host_footprint_bytes }`.",
-    examples: &[
-        "recto budget viewport --viewport 3024x1964",
-        "recto budget viewport --viewport 1600x1000 --strategy region --first 2",
-    ],
-    client_wait_s: 600,
-    ..BASE
-}];
 
 pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
     name: "compare",
