@@ -16,6 +16,7 @@ pub mod passwords;
 mod printing;
 mod privacy;
 mod qa;
+mod records;
 mod saver;
 mod saving;
 mod sidebar_access;
@@ -28,6 +29,7 @@ mod watchdog;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_app::{ContentsEntry, PaneSnapshot};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
@@ -36,7 +38,6 @@ use recto_control::server::{Announcer, Limits, Server, Stopper};
 use recto_core::{DocFacts, OpenError};
 use recto_platform::FileStamp;
 use recto_reader::engine::EngineEvents;
-use recto_reader::tiles::SavedPlace;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
@@ -46,8 +47,8 @@ use recto_session::record::{
     place_window,
 };
 use recto_session::{
-    CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, DrawNote, FollowMove, Paper, RowKind as SessionRowKind, SessionError,
-    TAB_ROW_HEIGHT, TabId, ViewSettings, WARM_PAPER, row_full_text, sidebar_heights_with_note,
+    CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, DrawNote, FollowMove, Paper, SessionError, TAB_ROW_HEIGHT, TabId,
+    ViewSettings, row_full_text, sidebar_heights_with_note,
 };
 use saver::Saver;
 use serde_json::{Value, json};
@@ -274,19 +275,6 @@ pub struct SidebarRow {
     pub expanded: bool,
     /// A tab side by side with others, which reads as the active one does.
     pub in_comparison: bool,
-}
-
-/// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ContentsEntry {
-    tab: u32,
-    text: Box<str>,
-    page: Option<u32>,
-    depth: u8,
-    /// Its entry in the list, and whether it folds and is open.
-    entry: u32,
-    expandable: bool,
-    expanded: bool,
 }
 
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
@@ -1317,8 +1305,8 @@ struct Published {
     recent_key: Option<(u64, u64)>,
     /// Each pane's contents and page labels, for a link's hint: the UI thread reads them here and never asks the session.
     pane_tocs: Vec<Option<Arc<recto_core::Toc>>>,
-    sidebar: Arc<SidebarView>,
-    tabs: Arc<Vec<SidebarRow>>,
+    sidebar: Arc<recto_app::SidebarView>,
+    tabs: Arc<Vec<recto_app::SidebarRow>>,
     contents: Arc<Vec<ContentsEntry>>,
     rail_filled: u32,
     reader: ReaderView,
@@ -1989,22 +1977,7 @@ impl AppCore {
                 contents: Arc::new(Vec::new()),
                 rail_filled: 0,
                 tabs: Arc::new(Vec::new()),
-                sidebar: Arc::new(SidebarView {
-                    tabs_version: 0,
-                    tab_count: 0,
-                    active_index: None,
-                    contents_version: 0,
-                    contents_count: 0,
-                    contents_changed_from: 0,
-                    contents_removed: 0,
-                    contents_inserted: 0,
-                    contents_place_shift: 0,
-                    contents_current: None,
-                    toc_open: false,
-                    edited: false,
-                    undone_owner_steps: false,
-                    contents_note: None,
-                }),
+                sidebar: Arc::new(recto_app::empty_sidebar()),
                 reader: ReaderView {
                     panes: Vec::new(),
                     compare_synced: false,
@@ -2142,13 +2115,13 @@ impl AppCore {
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
     pub fn sidebar(&self) -> SidebarView {
-        (*lock(&self.inner.published).sidebar).clone()
+        SidebarView::from((*lock(&self.inner.published).sidebar).clone())
     }
 
     /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
     pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
         let tabs = Arc::clone(&lock(&self.inner.published).tabs);
-        (*tabs).clone()
+        tabs.iter().cloned().map(SidebarRow::from).collect()
     }
 
     /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
@@ -4291,67 +4264,6 @@ fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
     }
 }
 
-/// By how many rows a change moved the place, for the host to take back so it stays put on screen: the place's row if it was listed before, or else the row it came from if that's listed still, or else the nearest chapter of it that was.
-fn place_shift(
-    before: &[ContentsEntry],
-    after: &[ContentsEntry],
-    (from, removed, inserted): (u32, u32, u32),
-    place_before: Option<u32>,
-    place_after: Option<u32>,
-) -> i32 {
-    let (from, removed, inserted) = (from as usize, removed as usize, inserted as usize);
-    let rows = |count: usize| i32::try_from(count).unwrap_or(i32::MAX);
-    let Some(place) = place_after.map(|row| row as usize).filter(|&row| row < after.len()) else {
-        return 0;
-    };
-    if place < from {
-        return 0;
-    }
-    if place >= from + inserted {
-        return rows(inserted) - rows(removed);
-    }
-    let (gone, came) = (&before[from..from + removed], &after[from..from + inserted]);
-    let find = |list: &[ContentsEntry], wanted: &ContentsEntry| list.iter().position(|entry| entry == wanted);
-    if let Some(was) = find(gone, &after[place]) {
-        return rows(place - from) - rows(was);
-    }
-    match place_before.map(|row| row as usize) {
-        Some(old) if old >= from + removed => return rows(inserted) - rows(removed),
-        Some(old) if old >= from => {
-            if let Some(now) = find(came, &before[old]) {
-                return rows(now) - rows(old - from);
-            }
-        }
-        _ => {}
-    }
-    let mut depth = after[place].depth;
-    for (index, entry) in came[..place - from].iter().enumerate().rev() {
-        if entry.depth < depth {
-            depth = entry.depth;
-            if let Some(was) = find(gone, entry) {
-                return rows(index) - rows(was);
-            }
-        }
-    }
-    0
-}
-
-/// Where two lists of contents rows differ: from which row, how many went, and how many came. Their matching starts and ends are compared, and it's only asked when the lists differ, which is when a chapter closes or opens.
-fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32, u32) {
-    if std::ptr::eq(before, after) {
-        return (0, 0, 0);
-    }
-    let start = before.iter().zip(after).take_while(|(one, two)| one == two).count();
-    let end = before[start..]
-        .iter()
-        .rev()
-        .zip(after[start..].iter().rev())
-        .take_while(|(one, two)| one == two)
-        .count();
-    let count = |list: &[ContentsEntry]| u32::try_from(list.len() - start - end).unwrap_or(u32::MAX);
-    (u32::try_from(start).unwrap_or(u32::MAX), count(before), count(after))
-}
-
 /// The session's word for a layout, as the page view has it.
 fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
     match spread {
@@ -4359,25 +4271,6 @@ fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
         record::Spread::TwoUp => recto_reader::layout::Spread::TwoUp,
         record::Spread::TwoUpCover => recto_reader::layout::Spread::TwoUpCover,
     }
-}
-
-/// What a pane shows, from the session.
-struct PaneSnapshot {
-    id: TabId,
-    pages: u32,
-    page: u32,
-    map: PageMap,
-    /// Tabs this pane's page view keeps warm besides: pane 0 has the warm tabs off screen, and the others none.
-    warm: Vec<u32>,
-    problem: Option<String>,
-    saved: Option<SavedPlace>,
-    spread: record::Spread,
-    /// Its file's name, cleaned, for its pane's label.
-    title: String,
-    /// A jump the page view hasn't taken: where to land, as far down the page as it says.
-    jump: Option<recto_session::trail::Stop>,
-    /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
-    toc: Option<Arc<recto_core::Toc>>,
 }
 
 /// What a page view was last told about the tab in its pane.
@@ -4389,100 +4282,6 @@ struct PaneSynced {
     map: PageMap,
     warm: Vec<u32>,
     spread: Option<record::Spread>,
-}
-
-fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
-    let tab = session.tab(id)?;
-    let own = session.path_of(id)?;
-    let same_file = session.own_stamp(id).map(sleeper::version_of);
-    // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
-    let follows = session.saved_from(id).map(sleeper::version_of);
-    let mut map = match session.page_edits(id) {
-        None => PageMap {
-            files: vec![own],
-            slots: None,
-            own: same_file,
-            turns: None,
-            expected: Vec::new(),
-            follows,
-        },
-        Some(edits) => {
-            let mut files = vec![own];
-            files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
-            // A page's quarter turns, one byte a page of an edited tab, and none at all while nothing's turned.
-            let turns = edits
-                .slots()
-                .iter()
-                .any(|slot| slot.quarter_turns % 4 != 0)
-                .then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
-            // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
-            let own_order = edits.added_sources().is_empty()
-                && edits.len() == edits.file_pages()
-                && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
-            let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
-            // What each added PDF was when its pages were added: a page from one that's changed since isn't drawn.
-            let mut expected = vec![None];
-            expected.extend(edits.added_sources().iter().map(|added| added.stamp));
-            PageMap {
-                files,
-                slots,
-                own: same_file,
-                turns,
-                expected,
-                follows,
-            }
-        }
-    };
-    // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
-    let view_turns = tab.view_rotation % 4;
-    if view_turns != 0 {
-        let pages = session.pages_in(id) as usize;
-        let turns: Arc<[u8]> = (0..pages)
-            .map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4)
-            .collect();
-        map.turns = Some(turns);
-    }
-    // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
-    let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
-    let problem = session
-        .tab_notice_message(id)
-        .map(str::to_string)
-        .or_else(|| tab.problem.map(|problem| problem.message().to_string()));
-    let saved = session.place_to_show(id).map(|place| SavedPlace {
-        page: place.page,
-        anchor: (place.anchor_page, place.within),
-        x: place.x,
-        y: place.y,
-        document_height: place.document_height,
-        magnification: place.zoom,
-        page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox {
-            width: place.page_width,
-            height: place.page_height,
-        }),
-    });
-    // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
-    let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
-    Some(PaneSnapshot {
-        id,
-        pages,
-        page: tab.page,
-        map,
-        warm,
-        problem,
-        saved,
-        spread: tab.spread,
-        title: tab.name.to_string(),
-        jump: None,
-        toc: session.warm_toc(id),
-    })
-}
-
-/// The warm tabs off screen that pane 0's page view keeps: most recent first, and only as many as leave the panes and these at [`recto_session::MAX_WARM`] live documents (SPEC §2).
-fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
-    warm.filter(|other| !panes.contains(other))
-        .take(recto_session::MAX_WARM.saturating_sub(panes.len()))
-        .map(|other| other.0)
-        .collect()
 }
 
 /// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
@@ -4612,8 +4411,17 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // What the page views hold of tabs they're about to let go of goes in the session first, as a cold tab holds nothing there.
     inner.take_places();
     let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
-    let (snapshots, plan, sidebar, tabs, contents, rail_filled, view, place) = inner.host.session.with_session(|session| {
-        let active = session.active();
+    let held = {
+        let published = lock(&inner.published);
+        recto_app::Held {
+            tabs: Arc::clone(&published.tabs),
+            contents: Arc::clone(&published.contents),
+            sidebar: Arc::clone(&published.sidebar),
+            recent_key: published.recent_key,
+        }
+    };
+    // One look at the session for the whole pass, so what's projected is of one moment: the places the page views moved first, then everything the window shows.
+    let mut facts = inner.host.session.with_session(|session| {
         let panes = session.panes();
         for (pane, page) in &moved {
             if let (Some(id), Some(Some(shown))) = (panes.get(*pane).copied(), shown_before.get(*pane))
@@ -4627,209 +4435,25 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 events.push(recto_agent::page_changed(session, id, page + 1));
             }
         }
-        let mut snapshots: Vec<PaneSnapshot> = panes
-            .iter()
-            .enumerate()
-            .filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes))
-            .collect();
-        for snapshot in &mut snapshots {
+        let mut facts = recto_app::read(session, &held);
+        for snapshot in &mut facts.panes {
             snapshot.jump = session.take_jump(snapshot.id);
         }
-        let plan = (
-            session.comparison().cloned(),
-            panes.iter().map(|id| session.pages_in(*id)).collect::<Vec<u32>>(),
-            session.compare_note(),
-            active,
-        );
-        let model = session.sidebar();
-        let mut current = None;
-        let mut active_index = None;
-        let (mut tab_count, mut contents_row_count) = (0u32, 0u32);
-        for row in &model.rows {
-            if row.kind == SessionRowKind::Note {
-                continue;
-            }
-            if row.kind == SessionRowKind::Contents {
-                if row.current {
-                    current = Some(contents_row_count);
-                }
-                contents_row_count += 1;
-            } else {
-                if row.current {
-                    active_index = Some(tab_count);
-                }
-                tab_count += 1;
-            }
-        }
-        // Copied only when they've changed: a page crossed mustn't mean thousands of strings, for a long outline or for many tabs.
-        let (held_tabs, held, was) = {
-            let published = lock(&inner.published);
-            (Arc::clone(&published.tabs), Arc::clone(&published.contents), Arc::clone(&published.sidebar))
-        };
-        let tab_rows = || model.rows.iter().filter(|row| row.kind == SessionRowKind::Tab);
-        let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
-        let same_tabs = held_tabs.len() == tab_count as usize
-            && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| {
-                row.tab.0 == tab.tab
-                    && row.current == tab.current
-                    && row.text == tab.text.as_str()
-                    && row.notice == tab.notice.as_deref()
-                    && compared(row.tab) == tab.in_comparison
-            });
-        let tabs = if same_tabs {
-            held_tabs
-        } else {
-            Arc::new(
-                tab_rows()
-                    .map(|row| SidebarRow {
-                        kind: RowKind::Tab,
-                        tab: row.tab.0,
-                        text: row.text.to_string(),
-                        page: row.page,
-                        depth: row.depth,
-                        current: row.current,
-                        rail_filled: false,
-                        rail_first: false,
-                        rail_last: false,
-                        notice: row.notice.map(str::to_string),
-                        action: None,
-                        expandable: false,
-                        expanded: false,
-                        in_comparison: compared(row.tab),
-                    })
-                    .collect(),
-            )
-        };
-        let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
-        let same = held.len() == contents_row_count as usize
-            && model
-                .rows
-                .iter()
-                .filter(|row| row.kind == SessionRowKind::Contents)
-                .zip(held.iter())
-                .all(|(row, entry)| {
-                    row.tab.0 == entry.tab
-                        && row.page == entry.page
-                        && row.depth == entry.depth
-                        && row.text == entry.text.as_ref()
-                        && row.entry == entry.entry
-                        && row.expanded == entry.expanded
-                        && row.expandable == entry.expandable
-                });
-        let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
-        let (contents, contents_version, change, contents_place_shift) = if same {
-            (
-                held,
-                was.contents_version,
-                (was.contents_changed_from, was.contents_removed, was.contents_inserted),
-                was.contents_place_shift,
-            )
-        } else {
-            let list: Arc<Vec<ContentsEntry>> = Arc::new(
-                model
-                    .rows
-                    .iter()
-                    .filter(|row| row.kind == SessionRowKind::Contents)
-                    .map(|row| ContentsEntry {
-                        tab: row.tab.0,
-                        text: row.text.into(),
-                        page: row.page,
-                        depth: row.depth,
-                        entry: row.entry,
-                        expandable: row.expandable,
-                        expanded: row.expanded,
-                    })
-                    .collect(),
-            );
-            let change = rows_changed(&held, &list);
-            let shift = place_shift(&held, &list, change, was.contents_current, current);
-            (list, was.contents_version + 1, change, shift)
-        };
-        // The note over the contents stays put while they scroll, so it's drawn apart from them.
-        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow {
-            kind: RowKind::Note,
-            tab: row.tab.0,
-            text: row.text.to_string(),
-            page: None,
-            depth: 0,
-            current: false,
-            rail_filled: false,
-            rail_first: false,
-            rail_last: false,
-            notice: row.notice.map(str::to_string),
-            action: row.action.map(|action| action.id().to_string()),
-            expandable: false,
-            expanded: false,
-            in_comparison: false,
-        });
-        let view = SidebarView {
-            contents_note,
-            tabs_version,
-            tab_count,
-            active_index,
-            contents_count: contents_row_count,
-            contents_version,
-            contents_changed_from: change.0,
-            contents_removed: change.1,
-            contents_inserted: change.2,
-            contents_place_shift,
-            contents_current: current,
-            toc_open: model.toc_open,
-            edited: model.edited,
-            undone_owner_steps: model.undone_owner_steps,
-        };
-        (snapshots, plan, view, tabs, contents, rail_filled, session.view(), model.place.clone())
+        facts
     });
     // The paper first, so what's asked for next is drawn right.
-    let dark = inner.dark.load(Ordering::SeqCst);
-    let shown = Paper::resolved(view.paper, dark);
-    // Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
-    let (paper, page_tint) = match shown {
-        Paper::White => (PaperKind::White, None),
-        Paper::Warm => (PaperKind::White, Some(WARM_PAPER)),
-        Paper::Dark => (PaperKind::Dark, None),
-    };
+    let look = recto_app::paper_look(facts.chosen_paper, inner.dark.load(Ordering::SeqCst));
+    let paper = look.kind;
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
         for engine in inner.panes.engines(&inner.engine) {
             engine.set_paper(paper);
         }
     }
-    let (comparison, pane_pages, compare_note, active) = plan;
-    let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
-    let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, needs_rewrite, (can_go_back, can_go_forward), page_text) =
-        inner.host.session.with_session(|session| {
-            let edit_mode = session.edit_mode();
-            match reading_snapshot {
-                Some(shown) => {
-                    let page = session.tab(shown.id).map_or(0, |tab| tab.page);
-                    let page_text = session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string());
-                    (
-                        session.is_edited(shown.id),
-                        session.undo_and_redo(shown.id),
-                        edit_mode,
-                        session.can_edit_pages(shown.id),
-                        session.is_saving(shown.id),
-                        session
-                            .path_of(shown.id)
-                            .zip(session.own_stamp(shown.id))
-                            .map(|(path, stamp)| (shown.id, path, stamp)),
-                        session.needs_rewrite(shown.id),
-                        session.can_go_back_and_forward(shown.id),
-                        page_text,
-                    )
-                }
-                None => (false, (false, false), edit_mode, false, false, None, false, (false, false), String::new()),
-            }
-        });
-    let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| {
-        (
-            id.0,
-            path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
-            path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(),
-        )
-    });
+    let active = facts.active;
+    let comparison = facts.comparison.take();
+    let pane_pages = std::mem::take(&mut facts.pane_pages);
+    let shown_tab = facts.reading.shown_tab();
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
     if inner.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
         lock(&inner.action_notice).take();
@@ -4838,8 +4462,11 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
     // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.
     let core_queue = Arc::clone(&inner.core);
-    let facts = if edited {
-        file.as_ref()
+    let reading = &facts.reading;
+    let signature = if reading.edited {
+        reading
+            .file
+            .as_ref()
             .and_then(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile)))
             .unwrap_or_default()
     } else {
@@ -4847,12 +4474,16 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     let core_queue = Arc::clone(&inner.core);
     let save = inner.save_ui.save_state(
-        facts,
-        needs_rewrite,
-        file.as_ref().filter(|_| edited).map(|(_, path, stamp)| (path.as_path(), *stamp)),
+        signature,
+        reading.needs_rewrite,
+        reading
+            .file
+            .as_ref()
+            .filter(|_| reading.edited)
+            .map(|(_, path, stamp)| (path.as_path(), *stamp)),
         move || core_queue.push(CoreCall::Reconcile),
     );
-    let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
+    let problem = facts.reading_pane().and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
     if synced.active != active && active.is_some() && holding_now != active {
@@ -4866,26 +4497,26 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         synced.active = active;
     }
     // A page view for each pane, and no more: one that's gone ends with what it held.
-    let count = snapshots.len().max(1);
+    let count = facts.panes.len().max(1);
     if synced.count != count {
         let window_open = !lock(&inner.app).window_closed;
         inner.panes.set_count(&inner.engine, count, paper, window_open);
         synced.count = count;
     }
     synced.panes.resize_with(count, PaneSynced::default);
-    if snapshots.is_empty() && synced.panes[0].tab.take().is_some() {
+    if facts.panes.is_empty() && synced.panes[0].tab.take().is_some() {
         inner.engine.deactivate();
     }
     let mut panes_changed = false;
-    for (pane, snapshot) in snapshots.iter().enumerate() {
+    for (pane, snapshot) in facts.panes.iter().enumerate() {
         let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
         panes_changed |= synced.panes[pane].tab != Some(snapshot.id);
         show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot);
     }
-    let shown_tabs: Vec<TabId> = snapshots.iter().map(|shown| shown.id).collect();
-    let reading = active.and_then(|id| shown_tabs.iter().position(|shown| *shown == id)).unwrap_or(0);
+    let shown_tabs: Vec<TabId> = facts.panes.iter().map(|shown| shown.id).collect();
+    let reading_pane = active.and_then(|id| shown_tabs.iter().position(|shown| *shown == id)).unwrap_or(0);
     let comparing = comparison.is_some();
-    inner.panes.lay_out(shown_tabs, reading, comparison, pane_pages);
+    inner.panes.lay_out(shown_tabs, reading_pane, comparison, pane_pages);
     if panes_changed && comparing {
         inner.panes.even_out_zoom(&inner.engine);
     }
@@ -4938,126 +4569,71 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         });
         inner.keys.keep_only(&open);
     }
-    let session_notice = lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string);
-    let save_failed = inner.saver.has_failed().then(|| record::notices::SAVE_FAILED.to_string());
     let reading_engine = inner.panes.reading_engine(&inner.engine);
-    let note = lock(&inner.open_failure)
-        .clone()
-        .or(save_failed)
-        .or(problem)
-        .or(session_notice)
-        .or(compare_note)
-        .or_else(|| reading_engine.note());
-    let holding = lock(&inner.holding_tab).is_some();
-    let sidebar_width = lock(&inner.app).sidebar_width;
-    let highlight = paper.highlight();
-    let selection_notice = reading_engine
-        .selection_notice()
-        .map(|notice| SelectionNotice {
+    let note = recto_app::NoteSources {
+        open_failure: lock(&inner.open_failure).clone(),
+        save_failed: inner.saver.has_failed(),
+        problem,
+        session: lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string),
+        compare: facts.compare_note.take(),
+        engine: reading_engine.note(),
+    }
+    .note();
+    let selection_notice = recto_app::SelectionSources {
+        copy: reading_engine.selection_notice().map(|notice| recto_app::CopyNotice {
             text: notice.text,
-            action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()),
-            action_id: notice.offers_copy_anyway.then(|| "edit.copy_anyway".to_string()),
+            offers_copy_anyway: notice.offers_copy_anyway,
             fades: notice.fades,
-        })
-        .or_else(|| inner.printing.selection_notice())
-        .or_else(|| inner.tool.selection_notice())
-        .or_else(|| {
-            lock(&inner.action_notice).clone().map(|text| SelectionNotice {
-                text,
-                action_title: None,
-                action_id: None,
-                fades: true,
-            })
-        })
-        .or_else(|| {
-            inner.updates.notice().map(|notice| SelectionNotice {
-                text: notice.text,
-                action_title: None,
-                action_id: None,
-                fades: notice.fades,
-            })
-        });
-    let pane_views: Vec<PaneView> = if comparing {
-        snapshots
-            .iter()
-            .enumerate()
-            .map(|(pane, shown)| PaneView {
-                tab: shown.id.0,
-                title: shown.title.clone(),
-                reading: Some(shown.id) == active,
-                layout: shown.spread.name().to_string(),
-                note: shown
-                    .problem
-                    .clone()
-                    .or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())),
-            })
+        }),
+        printing: inner.printing.selection_notice().map(Into::into),
+        tool: inner.tool.selection_notice().map(Into::into),
+        action: lock(&inner.action_notice).clone(),
+        update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
+    }
+    .notice();
+    let engine_notes: Vec<Option<String>> = if comparing {
+        (0..facts.panes.len())
+            .map(|pane| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note()))
             .collect()
     } else {
         Vec::new()
     };
-    let compare_synced = inner
-        .host
-        .session
-        .with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView {
-        panes: pane_views,
-        compare_synced,
-        home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding,
-        note,
-        sidebar_hidden: view.sidebar_hidden,
-        layout,
-        edited,
-        can_undo,
-        can_redo,
-        edit_mode,
-        can_rotate,
-        place,
-        paper: shown.name().to_string(),
-        paper_rgb: paper.rgb(),
-        page_tint,
-        agent_icon_hidden: view.agent_icon_hidden,
-        sidebar_width,
-        highlight_dark_colour: highlight.dark_colour,
-        highlight_lighten: highlight.lighten,
-        selection_notice,
-        saving: saving_now,
-        save_tooltip: save.tooltip,
-        save_problem: inner.save_ui.problem(),
-        save_as_note: save.note,
-        shown_tab,
-        document_name,
-        document_folder,
-        save_button: shown_tab != 0 && (edited || saving_now),
-        save_enabled: !save.off && !saving_now,
-        print_ready: inner.printing.has_ready(),
-        can_go_back,
-        can_go_forward,
-        link_prompt: lock(&inner.link_prompt).clone(),
-        page_text,
-        password_prompt,
-    };
-    // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
-    let recent_key = (inner.host.session.with_session(|session| session.recent_version()), sidebar.tabs_version);
-    let recent = (lock(&inner.published).recent_key != Some(recent_key)).then(|| {
-        inner
-            .host
-            .session
-            .with_session(|session| session.recent_files())
-            .into_iter()
-            .map(|file| RecentFile {
-                key: menus::recent_key(&file.path),
-                name: recto_core::clean_line(&file.name),
-                folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(),
-                path: file.path.to_string_lossy().into_owned(),
-                open: file.open.is_some(),
-            })
-            .collect::<Vec<RecentFile>>()
-    });
-    let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = snapshots.iter().map(|shown| shown.toc.clone()).collect();
+    let model = recto_app::reader_view(
+        &facts,
+        recto_app::Surfaces {
+            paper: look,
+            note,
+            selection_notice,
+            pane_views: recto_app::pane_views(&facts.panes, active, comparing, &engine_notes),
+            holding: lock(&inner.holding_tab).is_some(),
+            first_pane_empty: synced.panes.first().is_none_or(|pane| pane.tab.is_none()),
+            sidebar_width: lock(&inner.app).sidebar_width,
+            save: recto_app::SaveFacts {
+                off: save.off,
+                note: save.note,
+                tooltip: save.tooltip,
+            },
+            print_ready: inner.printing.has_ready(),
+        },
+    );
+    // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
+    let mut reader = ReaderView::from(model);
+    reader.save_problem = inner.save_ui.problem();
+    reader.link_prompt = lock(&inner.link_prompt).clone();
+    reader.password_prompt = password_prompt;
+    let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
+    let recto_app::SidebarParts {
+        view: sidebar,
+        tabs,
+        contents,
+        rail_filled,
+    } = facts.sidebar;
     let mut published = lock(&inner.published);
     published.pane_tocs = pane_tocs;
-    published.recent_key = Some(recent_key);
-    let recent_changed = recent.is_some_and(|recent| {
+    // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
+    published.recent_key = Some(facts.recent_key);
+    let recent_changed = facts.recent.is_some_and(|recent| {
+        let recent: Vec<RecentFile> = recent.into_iter().map(RecentFile::from).collect();
         let changed = *published.recent != recent;
         if changed {
             published.recent = Arc::new(recent);
@@ -5085,10 +4661,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     inner.rearm_dormancy();
     inner.look_at_budget();
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
-    if inner.host.session.with_session(|session| session.has_retired_journals()) {
+    let (retired, journal_work) = inner
+        .host
+        .session
+        .with_session(|session| (session.has_retired_journals(), session.has_journal_work()));
+    if retired {
         inner.saver.write_soon();
     } else {
-        if inner.host.session.with_session(|session| session.has_journal_work()) {
+        if journal_work {
             inner.saver.edit_made();
         }
         inner.saver.view_changed();
@@ -5132,62 +4712,6 @@ mod tests {
     fn a_hand_off_waits_for_a_print() {
         let busy = hand_off_check_parts(0, 0, 0, 0, true);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["printing"]);
-    }
-
-    /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
-    #[test]
-    fn opening_and_closing_rows_says_what_changed() {
-        let row = |text: &str| ContentsEntry {
-            tab: 1,
-            text: text.into(),
-            page: Some(1),
-            depth: 0,
-            entry: 0,
-            expandable: false,
-            expanded: false,
-        };
-        let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
-        let before = list(&["1", "2", "3"]);
-        assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
-        assert_eq!(rows_changed(&list(&["1", "2", "2.1", "2.2", "3"]), &before), (2, 2, 0));
-        assert_eq!(
-            rows_changed(&list(&["1", "2", "2.1", "3", "4"]), &list(&["1", "2", "3", "3.1", "4"])),
-            (2, 2, 2),
-            "2.1 and 3 go, and 3 and 3.1 come"
-        );
-        assert_eq!(rows_changed(&before, &before), (0, 0, 0));
-        assert_eq!(rows_changed(&[], &before), (0, 0, 3));
-        assert_eq!(rows_changed(&before, &[]), (0, 3, 0));
-    }
-
-    /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
-    #[test]
-    fn a_row_change_says_how_far_it_carried_the_place() {
-        let row = |text: &str| ContentsEntry {
-            tab: 1,
-            text: text.into(),
-            page: Some(1),
-            depth: u8::try_from(text.matches('.').count()).unwrap(),
-            entry: 0,
-            expandable: false,
-            expanded: false,
-        };
-        let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
-        let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
-            let (before, after) = (list(one), list(two));
-            place_shift(&before, &after, rows_changed(&before, &after), Some(place_before), Some(place_after))
-        };
-        let in_two = ["1", "2", "2.1", "2.2", "3", "4"];
-        let in_three = ["1", "2", "3", "3.1", "4"];
-        assert_eq!(shift(&in_two, 3, &in_three, 2), -2, "forward: 3 was listed, two rows further down");
-        assert_eq!(shift(&in_two, 3, &in_three, 3), -2, "forward, to a section that wasn't listed: its chapter was");
-        assert_eq!(
-            shift(&in_three, 2, &in_two, 3),
-            2,
-            "back: 2.2 wasn't listed, but 3, the row it came from, still is"
-        );
-        assert_eq!(shift(&in_two, 5, &["1", "2", "2.1", "2.2", "3", "4", "4.1"], 5), 0, "everything happened below");
-        assert_eq!(shift(&in_two, 5, &in_three, 4), -1, "everything happened above");
     }
 
     /// Failure: notes of tiles drawn fill the session thread's queue, and past the cap what a person did is thrown away: a tap, an open, the appearance. A look dropped when it's full leaves "a look is queued" set, so none is ever queued again. Only those notes can go, and repeats of one don't take a place.
@@ -5445,29 +4969,6 @@ mod tests {
         queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1)));
         queue.push(CoreCall::Page(4, None, TabId(1)));
         assert_eq!(lock(&queue.calls).len(), 3);
-    }
-
-    /// Failure (review 1): pane 0's page view keeps every warm tab off screen beside a comparison's panes, so three panes and two recent tabs are five live documents where SPEC §2 allows three.
-    #[test]
-    fn panes_and_warm_tabs_stay_within_the_live_documents() {
-        let tabs = |ids: &[u32]| ids.iter().copied().map(TabId).collect::<Vec<_>>();
-        assert_eq!(
-            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[5])),
-            vec![4, 3],
-            "one tab showing keeps two recent"
-        );
-        assert_eq!(
-            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2])),
-            vec![5],
-            "two panes leave room for one"
-        );
-        assert!(
-            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2, 3])).is_empty(),
-            "three panes are all of them"
-        );
-        for panes in [tabs(&[1]), tabs(&[1, 2]), tabs(&[1, 2, 3])] {
-            assert!(panes.len() + warm_beside_panes(tabs(&[9, 8, 7, 6]).into_iter(), &panes).len() <= recto_session::MAX_WARM);
-        }
     }
 
     struct TestEngineEvents;

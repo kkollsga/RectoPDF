@@ -415,8 +415,8 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
 
 **R1. The app core out of the bridge (track A)**
-- [ ] R1.1 [4] The pure part of `reconcile` (500 lines) into a `model` function, with 20 unit tests (notice precedence, Save icon, pane labels, contents changes). 2–3 d
-- [ ] R1.2 [11] A toolkit-free `recto-app` crate with `Listener`, `Clock` and host-service traits; `recto-ffi`'s feature modules move, `Inner`'s 45 fields become narrow handles, `recto-ffi` adapts only. 5–7 d, in 3–4 merges
+- [x] R1.1 [4] The pure part of `reconcile` (500 lines) into a `model` function, with 20 unit tests (notice precedence, Save icon, pane labels, contents changes). 2–3 d
+- [ ] R1.2 [11] (first slice done 2026-11-12 with R1.1: the `recto-app` crate exists and holds the view model, with plain view types and `From` conversions in `recto-ffi/src/records.rs`; the feature modules and `Inner` remain) A toolkit-free `recto-app` crate with `Listener`, `Clock` and host-service traits; `recto-ffi`'s feature modules move, `Inner`'s 45 fields become narrow handles, `recto-ffi` adapts only. 5–7 d, in 3–4 merges
 - [ ] R1.3 A headless app for tests (fake listener, clock and disk); the about 90 app tests that check a Rust rule ported to it, each shown failing on its seeded bug; the whole-state restore guard in process. 3–4 d
 - [ ] R1.4 [14] Launch and late state, quit and hand-off, update, and the sleep writer as state machines with the clock passed in, arrivals tested in every order; about 20 update tests ported; the window drawn from Rust's state alone. 4–6 d
 

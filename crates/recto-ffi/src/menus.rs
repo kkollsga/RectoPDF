@@ -288,14 +288,6 @@ pub(crate) struct RecentItem<'a> {
     pub name: &'a str,
 }
 
-/// The key a file in Open Recent goes by: from its path, so it's the same file however the list has moved since the menu was made, and an item can't open another file than the one it showed. Sixteen hex digits, never a path, so nothing of where someone keeps their files is in a menu item's id.
-pub(crate) fn recent_key(path: &std::path::Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
 /// Open Recent's submenu: each file by its name, newest first, then Clear Menu, as on any Mac. Names come from file names, cleaned. Empty, it's Clear Menu alone, greyed out.
 fn recent_entries(recent: &[RecentItem]) -> Vec<MenuEntry> {
     let in_recent = |item: MenuEntry| MenuEntry {
@@ -962,9 +954,16 @@ mod tests {
     /// Failure: File has no Open Recent, it doesn't list the files newest first under it, Clear Menu isn't there, a name with control characters reaches the menu, or an id past the list does something.
     #[test]
     fn open_recent_lists_files_and_clears() {
-        let (a, b) = (recent_key(std::path::Path::new("/d/report.pdf")), recent_key(std::path::Path::new("/e/a.pdf")));
+        let (a, b) = (
+            recto_app::recent_key(std::path::Path::new("/d/report.pdf")),
+            recto_app::recent_key(std::path::Path::new("/e/a.pdf")),
+        );
         assert_ne!(a, b);
-        assert_eq!(a, recent_key(std::path::Path::new("/d/report.pdf")), "the same file's key every time");
+        assert_eq!(
+            a,
+            recto_app::recent_key(std::path::Path::new("/d/report.pdf")),
+            "the same file's key every time"
+        );
         let file = menu_bar_with(
             ViewSettings::default(),
             None,
