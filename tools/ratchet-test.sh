@@ -117,6 +117,13 @@ fresh; { lines 30; echo 'fn s() { std::thread::sleep(D); }'; } > "$X/t/crates/a/
 printf "ffi crates/recto-ffi/src 0\nfile crates/a/src/old.rs 31\nsleep crates/a/src/old.rs 1\n" > "$X/t/base.txt"
 out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
 check "and while the old path still has a fixed sleep" "1" "$rc"; has "naming it" "sleep crates/a/src/old.rs measures 1" "$out"
+fresh; { lines 30; fn_of 10 long; } > "$X/t/crates/a/src/old.rs"; echo 'fn s() { std::thread::sleep(D); }' > "$X/t/crates/a/src/new.rs"
+printf "ffi crates/recto-ffi/src 0\nfile crates/a/src/old.rs 41\nfn crates/a/src/old.rs::long 10\nsleep crates/a/src/old.rs 1\n" > "$X/t/base.txt"
+out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs --kind sleep); rc=$?
+check "--kind moves one kind's entries while the file keeps its others" "0" "$rc"
+check "and only that kind's" "ffi crates/recto-ffi/src 0|file crates/a/src/old.rs 41|fn crates/a/src/old.rs::long 10|sleep crates/a/src/new.rs 1|" "$(tr '\n' '|' < "$X/t/base.txt")"
+out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs --kind fn); rc=$?
+check "--kind is refused when the old path still holds that kind's offender" "1" "$rc"
 fresh; fn_of 10 long > "$X/t/crates/a/src/old.rs"; printf "ffi crates/recto-ffi/src 0\nfn crates/a/src/old.rs::long 10\n" > "$X/t/base.txt"
 mv "$X/t/crates/a/src/old.rs" "$X/t/crates/a/src/new.rs"; fn_of 12 long > "$X/t/crates/a/src/new.rs"; before=$(cat "$X/t/base.txt")
 out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
