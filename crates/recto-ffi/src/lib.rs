@@ -25,6 +25,7 @@ pub mod updates;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+pub use recto_app::RecentFile;
 use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
@@ -429,7 +430,7 @@ pub struct ReaderView {
 }
 
 /// A file opened lately, for File > Open Recent and for ⌘K to offer. The worker building ⌘K calls `AppCore::recent_files` and opens one with `AppCore::open_recent`.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct RecentFile {
     /// Which file this is, however the list moves: what its Open Recent item's id carries, as `recent.<key>`.
     pub key: String,
@@ -4271,7 +4272,6 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
     published.recent_key = Some(facts.recent_key);
     let recent_changed = facts.recent.is_some_and(|recent| {
-        let recent: Vec<RecentFile> = recent.into_iter().map(RecentFile::from).collect();
         let changed = *published.recent != recent;
         if changed {
             published.recent = Arc::new(recent);

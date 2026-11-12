@@ -2,7 +2,7 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, PaneView, QuitAnswer, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
+use crate::{AppListener, PaneView, QuitAnswer, ReaderView, RowKind, SelectionNotice, SidebarRow, SidebarView};
 use recto_app as app;
 use std::sync::Arc;
 
@@ -137,18 +137,6 @@ impl From<SelectionNotice> for app::SelectionNotice {
             action_title: notice.action_title,
             action_id: notice.action_id,
             fades: notice.fades,
-        }
-    }
-}
-
-impl From<app::RecentFile> for RecentFile {
-    fn from(file: app::RecentFile) -> Self {
-        Self {
-            key: file.key,
-            name: file.name,
-            folder: file.folder,
-            path: file.path,
-            open: file.open,
         }
     }
 }
