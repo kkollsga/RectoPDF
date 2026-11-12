@@ -21,10 +21,14 @@ mod reading;
 mod render;
 pub mod saving;
 pub use render::{output_exists, publish_picture, svg_in_memory};
+mod route;
 mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
+pub use route::{Runs, qa_needs_app, update_needs_app};
+#[cfg(test)]
+mod registry_golden;
 
 use recto_session::{Author, DocLoader, DrawNote, PageSource, RowKind, Session, SessionError, TabId};
 use serde::Deserialize;
@@ -1311,22 +1315,6 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         find_json["draft"] = json!(find.draft);
     }
     json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "sidebar": !session.view().sidebar_hidden })
-}
-
-/// Updates and settings are the app's. A session with no window has nothing to replace, and nothing to set.
-pub fn update_needs_app() -> AgentError {
-    AgentError::new(
-        "needs_app",
-        "Updates and settings belong to the app, and this session has no window.",
-        exit::FAILED,
-    )
-    .then("Open RectoPDF, and `recto` will talk to that.")
-}
-
-/// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
-pub fn qa_needs_app() -> AgentError {
-    AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED)
-        .then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }
 
 /// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
