@@ -316,7 +316,11 @@ fn a_quit_answers_by_what_it_kept_and_stay_takes_back_only_a_question() {
         let go = written || unsaved_tabs == 0;
         assert_eq!(
             life.step(Event::QuitWritten { written, unsaved_tabs }, 2),
-            Some(Out::QuitAnswer { go, unsaved_tabs }),
+            Some(Out::QuitAnswer {
+                go,
+                unsaved_tabs,
+                unfreeze: !go
+            }),
             "written {written}, {unsaved_tabs} unsaved"
         );
         if go {
@@ -371,8 +375,64 @@ fn a_quit_at_any_moment_of_a_launch_leaves_the_launch_as_it_was() {
                     }
                 }
                 assert_eq!(launch_outs, alone, "{launch:?}, asked at {asked_at}, written at {written_at}");
-                assert_eq!(answer, Some(Out::QuitAnswer { go: true, unsaved_tabs: 1 }));
+                assert_eq!(
+                    answer,
+                    Some(Out::QuitAnswer {
+                        go: true,
+                        unsaved_tabs: 1,
+                        unfreeze: false
+                    })
+                );
             }
         }
     }
+}
+
+/// Failure: a quit and a hand-off let go of each other's freeze. A quit that asks while an update's hand-off is writing takes what a person does again, and what's
+/// done then is lost, as what's on disk is what the new version comes back to; or a hand-off that gives up while a quit is writing does the same to the quit. Every
+/// order a hand-off's steps (writing, then written or given up, and given up after it was written) and a quit's (asked, written, and a Stay when it asks) can
+/// interleave in, the quit's write ending each way: after every step, what's held back is what the rule says (held while either holds it), and what the host
+/// is told comes to that.
+#[test]
+fn a_quit_and_a_hand_off_keep_each_others_freeze_in_every_order() {
+    let hand_offs: [&[Event]; 3] = [
+        &[Event::HandOffWriting, Event::HandOffUndone],
+        &[Event::HandOffWriting, Event::HandOffWritten],
+        &[Event::HandOffWriting, Event::HandOffWritten, Event::HandOffUndone],
+    ];
+    let mut orders = 0;
+    for hand_off in hand_offs {
+        for (written, unsaved_tabs) in [(true, 1), (false, 1)] {
+            let quit = [Event::QuitAsked, Event::QuitWritten { written, unsaved_tabs }, Event::QuitStayed];
+            // Every interleaving of the two, each in its own order: which of the steps are the hand-off's.
+            let steps = hand_off.len() + quit.len();
+            for mask in 0u32..(1 << steps) {
+                if mask.count_ones() as usize != hand_off.len() {
+                    continue;
+                }
+                orders += 1;
+                let (mut life, mut held) = (Life::default(), false);
+                let (mut next_hand_off, mut next_quit) = (0, 0);
+                for step in 0..steps {
+                    let event = if mask & (1 << step) != 0 {
+                        next_hand_off += 1;
+                        hand_off[next_hand_off - 1]
+                    } else {
+                        next_quit += 1;
+                        quit[next_quit - 1]
+                    };
+                    match life.step(event, 0) {
+                        Some(Out::Freeze(frozen)) => held = frozen,
+                        Some(Out::QuitBegins) => held = true,
+                        Some(Out::QuitAnswer { unfreeze: true, .. }) => held = false,
+                        _ => {}
+                    }
+                    let rule = life.hand_off() != HandOff::Idle || matches!(life.quit(), Quit::Writing | Quit::Going);
+                    assert_eq!(life.frozen(), rule, "{hand_off:?} and {quit:?} by {mask:b}, after {event:?}");
+                    assert_eq!(held, rule, "what the host was told: {hand_off:?} and {quit:?} by {mask:b}, after {event:?}");
+                }
+            }
+        }
+    }
+    assert!(orders > 30, "{orders} orders");
 }

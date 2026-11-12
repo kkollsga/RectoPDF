@@ -44,11 +44,13 @@ impl Inner {
     /// The quit's answer and the stay, carried out: see [`Out::QuitAnswer`] and [`Out::QuitStayed`].
     pub(crate) fn carry_out_quit_answer(&self, out: Out) {
         match out {
-            Out::QuitAnswer { go, unsaved_tabs } => {
+            Out::QuitAnswer { go, unsaved_tabs, unfreeze } => {
                 // Asked for, Quit Anyway included, so this run of a version being watched didn't end early. Stay says otherwise.
                 self.updates.quitting_as_asked();
-                if !go {
+                if unfreeze {
                     self.set_frozen(false);
+                }
+                if !go {
                     self.updates.stop_over();
                 }
                 self.listener.quit_answer(crate::listener::QuitAnswer::for_quit(go, unsaved_tabs));

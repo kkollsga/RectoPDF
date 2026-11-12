@@ -98,9 +98,9 @@ pub enum Out {
     /// A quit begins: commands and what a person does held back, an install under way and the tools stood down, and everything written on a thread of its own,
     /// which says [`Event::QuitWritten`].
     QuitBegins,
-    /// What the quit comes to, for the host (`QuitAnswer::for_quit`). Either way it was asked for, so it's no early end; when it asks, what a person does is taken
-    /// again first, and an install may go on.
-    QuitAnswer { go: bool, unsaved_tabs: usize },
+    /// What the quit comes to, for the host (`QuitAnswer::for_quit`). Either way it was asked for, so it's no early end; when it asks, an install may go on, and
+    /// what a person does is taken again first if `unfreeze`: not while a hand-off holds it.
+    QuitAnswer { go: bool, unsaved_tabs: usize, unfreeze: bool },
     /// The quit stayed: the run's watched again, as one that hasn't ended.
     QuitStayed,
 }
@@ -153,9 +153,10 @@ impl Life {
                 self.hand_off = HandOff::Done;
                 None
             }
+            // Taken again, unless a quit that's writing or going holds it.
             Event::HandOffUndone => {
                 self.hand_off = HandOff::Idle;
-                Some(Out::Freeze(false))
+                (!self.frozen()).then_some(Out::Freeze(false))
             }
             Event::QuitAsked => {
                 self.quit = Quit::Writing;
@@ -164,7 +165,11 @@ impl Life {
             Event::QuitWritten { written, unsaved_tabs } => {
                 let go = written || unsaved_tabs == 0;
                 self.quit = if go { Quit::Going } else { Quit::Asking };
-                Some(Out::QuitAnswer { go, unsaved_tabs })
+                Some(Out::QuitAnswer {
+                    go,
+                    unsaved_tabs,
+                    unfreeze: !self.frozen(),
+                })
             }
             // Only a question asked has an answer: a Stay that comes with none changes nothing.
             Event::QuitStayed if self.quit == Quit::Asking => {
@@ -208,5 +213,12 @@ impl Life {
     #[must_use]
     pub fn quit(&self) -> Quit {
         self.quit
+    }
+
+    /// **Whether commands and what a person does are held back:** while a hand-off is writing or has written, and while a quit is writing or going. Either holds
+    /// it, so the other's end doesn't let go of it.
+    #[must_use]
+    pub fn frozen(&self) -> bool {
+        self.hand_off != HandOff::Idle || matches!(self.quit, Quit::Writing | Quit::Going)
     }
 }
