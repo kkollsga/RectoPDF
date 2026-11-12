@@ -94,10 +94,10 @@ impl Seam {
         self as usize
     }
 
-    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it), the window remade 300 ms after it, the session thread 300 ms late after it, the launch looked at 300 ms late, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, and a sleep file read and written as by a disk that's busy.
+    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it: 1.2 s here and the launch's 300 ms before it on the same thread), the window remade 300 ms after it, the session thread 300 ms late after it, the launch looked at 300 ms late, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, and a sleep file read and written as by a disk that's busy.
     pub const fn ci_ms(self) -> u64 {
         match self {
-            Self::State => 1500,
+            Self::State => 1200,
             Self::Remake => 300,
             Self::Worker => 60,
             Self::Headings => 1500,

@@ -8,7 +8,7 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 
 | Seam | Where | How it's late | `ci` |
 |---|---|---|---:|
-| `state` | `begin_restore`, before the record's read | the restore thread waits | 1500 ms |
+| `state` | `begin_restore`, before the record's read | the restore thread waits | 1200 ms (with `launch`'s 300 before it, 1.5 s in all) |
 | `remake` | the window that went up without the state, made again from it | `restore_ready` arrives late | 300 ms |
 | `worker` | `DocRenderer::run_job_with`, a job's answer | the caller gets it late | 60 ms |
 | `headings` | the generator's thread, after the helper's done | the session hears late | 1500 ms |
@@ -18,6 +18,8 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 | `sleep_read`, `sleep_write` | `RecordStore::read_sleep` and `write_sleep` | the reading or writing thread waits | 150, 300 ms |
 | `session` | the session thread, after the state's taken in and the host told | what it does next is late, as on a starved machine | 300 ms |
 | `launch` | `Updater::launched`, on the restore thread, before the state's read | what this copy is (its bundle, its version) is known late | 300 ms |
+
+`launch` and `state` wait on the same thread, one after the other, so they add up: in `ci`, 300 ms and 1.2 s are the state at 1.5 s, as before `launch` was there.
 
 **The switch.** `RECTO_QA_SLOW` is a comma list: a number of milliseconds for every seam, `ci` for the profile above, `<seam>=<ms>` for one, and `jitter=<seed>` for delays drawn from half to one and a half times each, repeatably. `RECTO_QA_RESTORE_DELAY_MS` and `RECTO_QA_REMAKE_DELAY_MS` still work, and win for their seam. A switch that can't be read refuses the launch, so a slow run can't pass as a fast one. Each seam is capped (30 s for the state, 10 s for the rest).
 
