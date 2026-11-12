@@ -4,6 +4,7 @@
 pub mod chrome;
 pub mod clock;
 pub mod find;
+pub mod generated_contents;
 pub mod linking;
 pub mod listener;
 pub mod menus;
