@@ -4,7 +4,7 @@ For the coordinator who picks this up in a fresh session. Read `AGENTS.md` first
 
 ## The state, in five lines
 
-- `main` is `edde0c1` plus this note, pushed. Its local full check passed. **GitHub's verdict on `edde0c1` was not read:** start with `tools/push-main.sh --status`.
+- `main` is `edde0c1` plus this note, pushed. Its local full check passed. GitHub's CI was green on `edde0c1` (read 2026-11-12, after the restart).
 - The Mac was restarted to clear macOS's `xprotectd` (3.9 GB, see "The machine"). Nothing of ours was running.
 - One worktree is left on purpose: `.worktrees/headless-kit` on `build/headless-kit`, with one commit, `6930625`, marked WIP: a predecessor's partly written constructor for the core. It may not build.
 - The owner's RectoPDF is on development build 0.1.0.4, agent access Full, development builds allowed.
@@ -50,7 +50,6 @@ Then R1.4 (launch, restore, quit, update and sleep as state machines on the cloc
 - **Not explained:** two restore tests failed once under other agents' app tests (a quit rewrote a sleep file; an old picture stayed). Evidence is kept in the main checkout's `target/handover-2026-11-12/evidence-kept/` (untracked; the temp folder it came from doesn't survive a restart), with the comparison-leak evidence, the bindings comparison scripts and today's screenshots beside it.
 - **Seen once on CI:** the UI thread waited over a second during a print.
 - **Small product bug:** an update can leave a dead Launch Services record for its unpacking folder; the owner's Mac has one.
-- **`tools/push-main.sh`** calls a run cancelled by a newer push "RED". It should say superseded and follow the newer run.
 - **The push guard** won't stamp a fix for a red `main` until the red run is marked known. It works, but it's clumsy.
 - **Follow-ups** from the Update now and comparison-leak merges are listed in the plan (Settings says "ready" twice; the thumb across isn't in the entry-points check and its drag has no test).
 
