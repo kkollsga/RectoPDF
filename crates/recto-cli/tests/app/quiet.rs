@@ -280,26 +280,18 @@ fn a_quiet_run_ends_with_what_started_it() {
 }
 
 /// Failure: a quiet run that ends with what started it leaves its copy registered with Launch Services, a second RectoPDF in Open With: the
-/// run exited without the forgetting a quit does, and no test's guard forgets a run that ended by itself (CI run 43195226598: the lifecycle tests
-/// alone left `app/build.noindex/RectoPDF.app` registered after `a_quiet_run_ends_with_what_started_it`; with every app test, a later test's
-/// guard had forgotten it by chance). A copy of its own, so no other test's run of the built app is counted: it's registered while it runs,
-/// and once its starter has ended, and the run with it, it isn't.
-#[test]
-fn a_quiet_run_that_ends_with_its_starter_forgets_its_copy() {
-    ends_with_its_starter_and_is_forgotten(false);
-}
-
-/// Failure (CI, main at 05c44f2, run 43211139256: `app/build.noindex/RectoPDF.app` left registered after the lifecycle tier, now and then): a
+/// run exited without the forgetting a quit does (CI run 43195226598, after `a_quiet_run_ends_with_what_started_it`). Or (CI, main at 05c44f2,
+/// run 43211139256: `app/build.noindex/RectoPDF.app` left registered after the lifecycle tier, now and then): a
 /// quiet run that ended with its starter before its launch had been looked at forgot nothing, as what it forgot was the bundle the updater
 /// is told on the restore thread, and the system registers a copy as it starts. The two short runs of `a_quiet_run_ends_with_what_started_it`
 /// end that soon on a machine as busy as CI's. With the launch held until the test lets go, which it never does (`RECTO_QA_SLOW_HOLD`), the run ends before its launch is looked at on any machine, however slow, and its copy is forgotten all the same. A 10 s hold by the clock ran out on CI before the test had ended the starter (run 43225124901).
 #[test]
 fn a_quiet_run_that_ends_before_its_launch_is_looked_at_forgets_its_copy() {
-    ends_with_its_starter_and_is_forgotten(true);
+    ends_with_its_starter_and_is_forgotten();
 }
 
-/// A copy of its own, started for a process of the test's (with its launch held, if asked, until a file that's never made), seen registered, its starter ended, and the copy forgotten. The waits are bounds only a hang reaches: a registry's dump takes seconds on a busy machine, and the forgetting runs in the background.
-fn ends_with_its_starter_and_is_forgotten(launch_held: bool) {
+/// A copy of its own, started for a process of the test's with its launch held until a file that's never made, seen registered, its starter ended, and the copy forgotten. The waits are bounds only a hang reaches: a registry's dump takes seconds on a busy machine, and the forgetting runs in the background.
+fn ends_with_its_starter_and_is_forgotten() {
     let Some(copy) = OwnCopy::new() else { return };
     let registered = || recto_platform::registry::registered().iter().any(|found| found.path.starts_with(&copy.bundle));
     let within = |limit: Duration, holds: &dyn Fn() -> bool| {
@@ -328,9 +320,7 @@ fn ends_with_its_starter_and_is_forgotten(launch_held: bool) {
         &owner_pid,
         "--json",
     ]);
-    if launch_held {
-        command.env(recto_platform::slow::HOLD_SWITCH, format!("launch:{}", state.root.join("never-made").display()));
-    }
+    command.env(recto_platform::slow::HOLD_SWITCH, format!("launch:{}", state.root.join("never-made").display()));
     let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output.status.code(), Some(0), "{reply}");
