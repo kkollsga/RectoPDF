@@ -373,6 +373,7 @@ impl Watchdog {
             let (state, channel, limit, deadline) = (self.state.clone(), self.channel.clone(), self.limit, self.deadline);
             // Without this thread the host still holds every limit, so failing to start it isn't fatal.
             let spawned = std::thread::Builder::new()
+                .name("recto-worker-watch".into())
                 .stack_size(64 * 1024)
                 .spawn(move || watch(&state, &channel, limit, deadline));
             self.thread = spawned.ok().map(|handle| handle.thread().clone());
