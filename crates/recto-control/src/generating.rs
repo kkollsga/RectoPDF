@@ -20,7 +20,7 @@ use crate::indexing::Notifier;
 
 /// Documents waiting their turn. Past this the oldest ask gives way: whoever still wants them asks again.
 pub const MAX_WAITING: usize = 8;
-/// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/ENGINEERING.md`.
+/// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/engineering/generated-contents.md`.
 pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 /// A job's time: three minutes, and a second for each page, up to half an hour, so one file can't hold the only slot for long. It's there for a helper that's stuck, not to hurry one: a busy Mac slows it, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
 pub fn time_limit(pages: u32) -> Duration {

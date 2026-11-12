@@ -61,7 +61,7 @@ One source: `version` under `[workspace.package]` in `Cargo.toml`. `app/build.sh
 
 ## How updates work
 
-The app reads `<repo>/releases/latest/download/latest.json` once a day: `version`, `tag`, `minimum_macos`, `zip`, `sha256`, all written by `release-zip.sh`. See `docs/ENGINEERING.md`, "Updates", for the rest.
+The app reads `<repo>/releases/latest/download/latest.json` once a day: `version`, `tag`, `minimum_macos`, `zip`, `sha256`, all written by `release-zip.sh`. See `docs/engineering/updates.md`, for the rest.
 
 **A release build is whatever `RECTO_RELEASE=1` compiled.** `app/build.sh` on its own makes a local build, for tests and QA, which checks only when asked and never replaces itself. `app/release-zip.sh` and `tools/dev-build.sh` are the only two that set it. Don't set it by hand.
 
