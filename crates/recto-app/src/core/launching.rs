@@ -107,6 +107,9 @@ impl Inner {
             }
             Some(crate::lifecycle::Out::RestoreReady { .. }) => self.listener.restore_ready(),
             Some(crate::lifecycle::Out::Freeze(frozen)) => self.set_frozen(frozen),
+            // Begun only from the host's call, which has the core's own handle: see `carry_out_quit`.
+            Some(crate::lifecycle::Out::QuitBegins) => {}
+            Some(out @ (crate::lifecycle::Out::QuitAnswer { .. } | crate::lifecycle::Out::QuitStayed)) => self.carry_out_quit_answer(out),
         }
     }
 }

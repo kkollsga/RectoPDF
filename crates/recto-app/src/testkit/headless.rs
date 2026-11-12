@@ -567,13 +567,25 @@ impl HeadlessApp {
     }
 
     /// **A quit, as the menu asks for one:** everything written on the quit's thread, the answer heard, the socket ended, and the core let go of as the process would
-    /// be ended, so its disk can be started on again in this process. Says what the quit answered, beside the disk.
+    /// be ended, so its disk can be started on again in this process. Says what the quit answered, beside the disk. A quiet run's host goes whatever the answer, and
+    /// so does this: [`Self::ask_to_quit`] is for a test of the question.
     ///
     /// # Panics
     ///
     /// If no answer comes in [`WAIT_LIMIT`], or something keeps the core past it.
     #[must_use]
-    pub fn quit(mut self) -> (QuitAnswer, Disk) {
+    pub fn quit(self) -> (QuitAnswer, Disk) {
+        let answer = self.ask_to_quit();
+        (answer, self.quit_anyway())
+    }
+
+    /// **A quit asked for, and its answer,** with the app left running as the host's question leaves it: go, or the words of Quit Anyway or Stay.
+    ///
+    /// # Panics
+    ///
+    /// If no answer comes in [`WAIT_LIMIT`].
+    #[must_use]
+    pub fn ask_to_quit(&self) -> QuitAnswer {
         let answers = || {
             self.listener
                 .heard()
@@ -587,11 +599,20 @@ impl HeadlessApp {
         let before = answers().len();
         self.core().quit_requested();
         self.wait_until("the quit's answer", || answers().len() > before);
-        let answer = answers().pop().expect("an answer");
-        // `applicationWillTerminate`, which a quiet run reaches whatever the answer.
+        answers().pop().expect("an answer")
+    }
+
+    /// The quit's question answered with Stay, as the host's alert says it.
+    pub fn stay(&self) {
+        self.core().quit_stayed();
+    }
+
+    /// The host's way out once a quit's answered (go, or Quit Anyway): `applicationWillTerminate`, which a quiet run reaches whatever the answer, and the process
+    /// gone.
+    #[must_use]
+    pub fn quit_anyway(mut self) -> Disk {
         self.core().shutdown();
-        let disk = self.end();
-        (answer, disk)
+        self.end()
     }
 
     /// **The app killed:** nothing more is written, and the disk is as the last write left it.

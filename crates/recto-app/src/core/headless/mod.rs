@@ -6,5 +6,6 @@ mod launch;
 mod levels;
 mod palette;
 mod passwords;
+mod quit;
 mod recent;
 mod update;

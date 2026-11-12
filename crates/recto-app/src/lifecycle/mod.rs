@@ -1,5 +1,5 @@
 //! **Where the app is in its life, as a state machine on the clock** (step R1.4): the state's coming in at launch, the window's patience for it, the window going up
-//! with or without it, whether the window takes input, and a hand-off's freeze. One small value, [`Life`], and one pure function, [`Life::step`], of the state, an
+//! with or without it, whether the window takes input, a hand-off's freeze, and a quit the host asked for: its freeze, its write and its answer. One small value, [`Life`], and one pure function, [`Life::step`], of the state, an
 //! event and `now` in milliseconds of the app's [`crate::clock::Clock`]: no lock, no thread, no listener, no I/O. What it comes to is an [`Out`] for the caller to
 //! carry out. So every order the arrivals can come in (the state read before the patience, at it, after it, with an update's 20 s or without) is tested here in
 //! microseconds, on numbers, and not by launching the app on a loaded machine (`tests`).
@@ -36,6 +36,20 @@ pub enum HandOff {
     Done,
 }
 
+/// Where a quit the host asked for has got to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quit {
+    /// None asked for, or one that stayed.
+    #[default]
+    No,
+    /// Everything's being written, on the quit's thread, with what a person does held back.
+    Writing,
+    /// The state couldn't be written and there are edits a quit would lose: the host asks, Quit Anyway or Stay.
+    Asking,
+    /// Answered go: the app's on its way out.
+    Going,
+}
+
 /// **The app's life, as it stands.** A `Copy` value of a few bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Life {
@@ -46,6 +60,7 @@ pub struct Life {
     /// its own.
     patience_due_ms: Option<u64>,
     hand_off: HandOff,
+    quit: Quit,
 }
 
 /// What happens to the app's life.
@@ -63,6 +78,13 @@ pub enum Event {
     HandOffWritten,
     /// It isn't going ahead: something came in, the state couldn't be written, or the updater gave up.
     HandOffUndone,
+    /// The host asks to quit, by the menu or the system (a SIGTERM is one).
+    QuitAsked,
+    /// The quit's write is over: the state `written` (or this copy isn't the one keeping it), or not, by the flush's end or the quit's patience; and how many
+    /// tabs have edits that aren't saved.
+    QuitWritten { written: bool, unsaved_tabs: usize },
+    /// The quit's question was answered with Stay.
+    QuitStayed,
 }
 
 /// What the caller does, once it has let go of the lock.
@@ -73,6 +95,14 @@ pub enum Out {
     RestoreReady { with_state: bool, late: bool },
     /// Commands and what a person does are held back, or taken again.
     Freeze(bool),
+    /// A quit begins: commands and what a person does held back, an install under way and the tools stood down, and everything written on a thread of its own,
+    /// which says [`Event::QuitWritten`].
+    QuitBegins,
+    /// What the quit comes to, for the host (`QuitAnswer::for_quit`). Either way it was asked for, so it's no early end; when it asks, what a person does is taken
+    /// again first, and an install may go on.
+    QuitAnswer { go: bool, unsaved_tabs: usize },
+    /// The quit stayed: the run's watched again, as one that hasn't ended.
+    QuitStayed,
 }
 
 impl Life {
@@ -127,6 +157,21 @@ impl Life {
                 self.hand_off = HandOff::Idle;
                 Some(Out::Freeze(false))
             }
+            Event::QuitAsked => {
+                self.quit = Quit::Writing;
+                Some(Out::QuitBegins)
+            }
+            Event::QuitWritten { written, unsaved_tabs } => {
+                let go = written || unsaved_tabs == 0;
+                self.quit = if go { Quit::Going } else { Quit::Asking };
+                Some(Out::QuitAnswer { go, unsaved_tabs })
+            }
+            // Only a question asked has an answer: a Stay that comes with none changes nothing.
+            Event::QuitStayed if self.quit == Quit::Asking => {
+                self.quit = Quit::No;
+                Some(Out::QuitStayed)
+            }
+            Event::QuitStayed => None,
         }
     }
 
@@ -158,5 +203,10 @@ impl Life {
     #[must_use]
     pub fn hand_off(&self) -> HandOff {
         self.hand_off
+    }
+
+    #[must_use]
+    pub fn quit(&self) -> Quit {
+        self.quit
     }
 }
