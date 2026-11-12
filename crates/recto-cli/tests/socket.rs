@@ -956,17 +956,24 @@ fn the_log_records_every_action_and_never_document_text() {
     assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
 }
 
-/// Failure: an agent at Off erases its own record through the real socket: enough `status` calls and bad lines push out an earlier edit. Far past what would have rotated the old single log.
+/// Failure: an agent at Off erases its own record through the real socket: `status` calls, bad lines and refused reads reach the file of
+/// changes, so enough of them push out an earlier edit. Here, through the real server, none of them writes a byte there, and each is counted.
+/// What 60,000 of them do to the log is `log::tests::no_flood_can_erase_an_earlier_edit`'s, without a socket: this is that the server names
+/// each as the log's rules expect (a few hundred, not the 60,000 that took 13 s on CI).
 #[test]
 fn a_flood_at_off_cant_erase_an_earlier_edit() {
+    const ROUNDS: u64 = 100;
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = doc();
     state.json(&["open", file.0.to_str().unwrap()]);
     state.json(&["page", "rotate", "1", "--by", "90"]);
+    let changes = || std::fs::metadata(&state.paths.log).map(|meta| meta.len()).unwrap_or(0);
+    let before = changes();
+    assert!(before > 0, "the edit is in the file of changes");
     state.set_level(Level::Off);
     let mut raw = Raw::connect(&state);
-    for _ in 0..20_000 {
+    for _ in 0..ROUNDS {
         raw.send(r#"{"cmd":"status"}"#);
         raw.send("not json");
         raw.send(r#"{"cmd":"text","page":1}"#);
@@ -974,8 +981,7 @@ fn a_flood_at_off_cant_erase_an_earlier_edit() {
             assert!(raw.read().is_some());
         }
     }
-    let lines = state.log_text().lines().count();
-    assert!(lines < 200, "{lines} lines for 60,000 commands");
+    assert_eq!(changes(), before, "a flood at Off wrote to the file of changes");
     state.set_level(Level::ReadOnly);
     let (log, code) = state.json(&["log", "--last", "5000"]);
     assert_eq!(code, 0, "{log}");
@@ -991,9 +997,9 @@ fn a_flood_at_off_cant_erase_an_earlier_edit() {
             .map(|entry| entry["count"].as_u64().unwrap_or(1))
             .sum::<u64>()
     };
-    assert!(total("status") >= 20_000, "{}", total("status"));
-    assert!(total("unknown") >= 20_000, "{}", total("unknown"));
-    assert!(total("text") >= 20_000, "{}", total("text"));
+    assert!(total("status") >= ROUNDS, "{}", total("status"));
+    assert!(total("unknown") >= ROUNDS, "{}", total("unknown"));
+    assert!(total("text") >= ROUNDS, "{}", total("text"));
 }
 
 /// Failure: with the session stopped, the same log can't be read, or it can be read at Off.
