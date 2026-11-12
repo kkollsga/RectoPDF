@@ -91,6 +91,8 @@ case "$*" in
   # A commit's own runs when the case set them (STUB_GH_COMMITS/<sha>), for a watch that moves from one commit's run to another's.
   "run list"*"--commit"*) c=$(printf '%s' "$*" | sed -E 's/.*--commit ([0-9a-f]+).*/\1/'); if [ -n "${STUB_GH_COMMITS:-}" ] && [ -f "$STUB_GH_COMMITS/$c" ]; then cat "$STUB_GH_COMMITS/$c"; elif [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
   "run list"*) if [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
+  # How long a run's check job took, in seconds: nothing unless the case says (STUB_GH_CHECK_SECS).
+  "run view"*"fromdate"*) echo "${STUB_GH_CHECK_SECS:-}" ;;
   # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
   "run view"*"--json jobs"*"steps"*) printf "${STUB_GH_JOBS:-check (core)\tsuccess\t15\t0\t1\ncheck (lifecycle)\tfailure\t15\t1\t2\n}" ;;
   "run view"*"--json jobs"*) echo "check (lifecycle)" ;;
@@ -1060,6 +1062,19 @@ has "and where its evidence is" "check-logs-lifecycle-1 (4 KiB): gh run download
 check "and keeps the result" "failure" "$(tail -1 .git/recto-ci-main | cut -f4)"
 out=$(STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a green watch ends with 0 and says so" "0 yes" "$rc $(printf '%s' "$out" | grep -q "CI is green on main" && echo yes)"
+# Failure (owner, 2026-11-12: "Add a rule so the ci doesnt regress in the future"): CI's check went from about 14 minutes to 18 to 33 in a day and
+# nothing said so. A green run's time is kept and said against the budget; the median of the last five decides, so one slow runner isn't an alarm.
+rm -f .git/recto-ci-times
+out=$(STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "a green run's check time is said against the budget" "CI's check took 10 min 0 s; the median of the last 1 green runs is 10 min 0 s, and the budget is 15 min 0 s." "$out"
+check "under it, nothing more is said, and the time is kept" "no 600" "$(printf '%s' "$out" | grep -q "OVER ITS BUDGET" && echo yes || echo no) $(tail -1 .git/recto-ci-times | cut -f4)"
+out=$(STUB_GH_CHECK_SECS=2000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "one slow run among fast ones isn't over the budget, and never fails the watch" "0 no" "$rc $(printf '%s' "$out" | grep -q "OVER ITS BUDGET" && echo yes || echo no)"
+out=$(STUB_GH_CHECK_SECS=1000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "a median over the budget is said loudly, with by how much and where to look" "CI IS OVER ITS BUDGET by 1 min 40 s. Bringing it back is the next task" "$out"
+check "and the watch is still green" "0" "$rc"
+out=$(STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
+check "a time gh can't give is neither said nor kept" "no 3" "$(printf '%s' "$out" | grep -q "CI's check took" && echo yes || echo no) $(wc -l < .git/recto-ci-times | tr -d ' ')"
 out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH_MAIN_LIMIT=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"
 out=$(PUSH_MAIN_GH=/nonexistent/gh tools/push-main.sh --watch "$pushed" 2>&1); rc=$?

@@ -26,6 +26,11 @@ HUBS = [
 ]
 POLL = "ratchet: poll"
 FFI_DIR = "crates/recto-ffi/src"
+# The test binaries that launch the real app, the most expensive tests there are: 75% of all test time for 10% of the tests (2026-11-12). Their count
+# only goes down: a rule Rust decides is tested in process, and what only the real app shows joins a launch that is already there.
+APPTEST_DIR = "crates/recto-cli/tests"
+APPTEST_BINARIES = ("app", "restore", "compare", "evidence", "long_session")
+TEST_ATTR = re.compile(r'^\s*#\[\s*test\s*\]', re.M)
 
 # ---- Rust masking -------------------------------------------------------------------------------------------------------------------------
 MASK = re.compile(
@@ -226,8 +231,9 @@ def rust_files(root):
             yield from walk(root, os.path.join('crates', c, sub), ('.rs',))
 
 def measure(root):
-    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, sleep, ffi."""
+    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, sleep, ffi, apptest."""
     m = {}
+    apptests = 0
     srcs, test_mods = {}, set()
     for rel in rust_files(root):
         with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as f:
@@ -243,6 +249,8 @@ def measure(root):
         if n:
             m[('sleep', rel)] = n
         parts = rel.split(os.sep)
+        if rel.startswith(APPTEST_DIR + '/') and parts[3].split('.')[0] in APPTEST_BINARIES:
+            apptests += len(TEST_ATTR.findall(mask(raw)))
         if len(parts) > 3 and parts[2] == 'src':
             srcs[rel] = raw
     for rel, raw in srcs.items():
@@ -267,6 +275,8 @@ def measure(root):
             k = (kind, rel + '::' + key)
             m[k] = max(m.get(k, 0), n)
     m[('ffi', FFI_DIR)] = ffi_total
+    if apptests:
+        m[('apptest', APPTEST_DIR)] = apptests
     for rel in walk(root, 'app/Sources', ('.swift',), skip=('Generated',)):
         with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as f:
             raw = f.read()
@@ -326,6 +336,17 @@ def compare(cur, base, bootstrap_ffi=False):
             elif n < base[('ffi', key)]:
                 shrunk.append(('ffi', key, base[('ffi', key)], n))
             continue
+        if kind == 'apptest':
+            if (kind, key) not in base:
+                if not bootstrap_ffi:
+                    fails.append('apptest %s: no baseline entry (add "apptest %s %d" by hand)' % (key, key, n))
+            elif n > base[(kind, key)]:
+                fails.append('tests that launch the app grew: %d in %s (%s), baseline %d. Test what Rust decides in process, with the headless app '
+                             '(the testkit in recto-app); what only the real app shows joins a launch that is already there, or replaces one (AGENTS.md, '
+                             '"CI does not get slower").' % (n, key, ', '.join(APPTEST_BINARIES), base[(kind, key)]))
+            elif n < base[(kind, key)]:
+                shrunk.append((kind, key, base[(kind, key)], n))
+            continue
         lim = limit(kind, key, base)
         inb = (kind, key) in base
         if kind == 'sleep':
@@ -353,7 +374,7 @@ def wanted(cur):
     """Entries the baseline should hold: everything over its budget, every fixed-sleep file, and the binding total."""
     out = {}
     for (kind, key), n in cur.items():
-        if kind in ('ffi', 'sleep') or n > BUDGET[kind]:
+        if kind in ('ffi', 'sleep', 'apptest') or n > BUDGET[kind]:
             out[(kind, key)] = n
     return out
 
@@ -378,7 +399,7 @@ def moved(root, bpath, old, new, kind=None):
     cur = measure(root)
     item = '::' in old or '::' in new
     under = (lambda key: key == old) if item else (lambda key: key == old or key.startswith(old + '::'))
-    picked = sorted((k, key) for (k, key) in base if k != 'ffi' and under(key) and kind in (None, k))
+    picked = sorted((k, key) for (k, key) in base if k not in ('ffi', 'apptest') and under(key) and kind in (None, k))
     if not picked:
         print('ratchet --moved: refused: the baseline has no %sentry for %s' % (kind + ' ' if kind else '', old))
         return 1

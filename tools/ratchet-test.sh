@@ -88,6 +88,25 @@ printf 'fn t() { std::thread::sleep(D); }\nfn u() { std::thread::sleep(D); }\n' 
 check "a second sleep in a file that has one fails" "1" "$rc"; has "with old and new" "2 fixed sleeps, baseline 1" "$out"
 printf 'fn t() { std::thread::sleep(D); } // ratchet: poll\n// std::thread::sleep(D)\n' > "$X/t/crates/a/tests/t.rs"; out=$(R); rc=$?
 check "a poll marker and a comment don't count" "0" "$rc"; has "and the entry shrank" "sleep crates/a/tests/t.rs: 1 -> 0" "$out"
+# Failure (owner, 2026-11-12: "Add a rule so the ci doesnt regress"): app-launching tests were 10% of the tests and 75% of the test time, and nothing
+# stopped one more. Their count only goes down; a test elsewhere, or in a binary that doesn't launch the app, isn't counted.
+fresh; mkdir -p "$X/t/crates/recto-cli/tests/app" "$X/t/crates/recto-cli/src"
+printf '#[test]\nfn a() {}\n// #[test]\n#[test]\nfn b() {}\n' > "$X/t/crates/recto-cli/tests/app.rs"
+printf '#[test]\nfn c() {}\n' > "$X/t/crates/recto-cli/tests/app/quiet.rs"
+printf '#[test]\nfn d() {}\n#[test]\nfn e() {}\n' > "$X/t/crates/recto-cli/tests/socket.rs"
+out=$(R); rc=$?
+check "app-launching tests with no baseline entry fail" "1" "$rc"; has "saying the line to add, counting the binary's modules and no comment" "apptest crates/recto-cli/tests 3" "$out"
+echo "apptest crates/recto-cli/tests 3" > "$X/t/base.txt"; echo "ffi crates/recto-ffi/src 0" >> "$X/t/base.txt"
+check "at the baseline it passes" "0" "$(R >/dev/null; echo $?)"
+printf '#[test]\nfn f() {}\n' >> "$X/t/crates/recto-cli/tests/socket.rs"
+check "a new test that doesn't launch the app is free" "0" "$(R >/dev/null; echo $?)"
+printf '#[test]\nfn g() {}\n' >> "$X/t/crates/recto-cli/tests/app/quiet.rs"; out=$(R); rc=$?
+check "one more app-launching test fails" "1" "$rc"; has "with old, new and what to do instead" "tests that launch the app grew: 4 in crates/recto-cli/tests" "$out"
+has "naming the headless app" "headless app" "$out"
+R --update >/dev/null 2>&1; has "update refuses to raise it" "apptest crates/recto-cli/tests 3" "$(cat "$X/t/base.txt")"
+printf '#[test]\nfn c() {}\n' > "$X/t/crates/recto-cli/tests/app/quiet.rs"; : > "$X/t/crates/recto-cli/tests/app.rs"; out=$(R); rc=$?
+check "fewer passes" "0" "$rc"; has "and says it shrank" "apptest crates/recto-cli/tests: 3 -> 1" "$out"
+R --update >/dev/null; has "and update locks the lower number in" "apptest crates/recto-cli/tests 1" "$(cat "$X/t/base.txt")"
 echo 'sleep 1' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?
 check "a sleep in a qa script fails" "1" "$rc"
 echo 'sleep 1 # ratchet: poll' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?; check "and the marker exempts it there too" "0" "$rc"

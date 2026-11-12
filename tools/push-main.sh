@@ -10,7 +10,7 @@
 #
 # A finished watch prints the result, the failed jobs, the failed tests with their "failed N of M" lines (tools/check-rerun.sh) and the artifacts with how
 # to fetch them, and keeps the result in the git common dir (recto-ci-main). Every call to `gh` is bounded (PUSH_MAIN_GH_TIMEOUT, 20 s), and `gh` missing,
-# signed out or offline is said plainly, never waited on. A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
+# signed out or offline is said plainly, never waited on. A green run's check time is kept (recto-ci-times) and said against CI's budget (CI_BUDGET). A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GH=${PUSH_MAIN_GH:-gh}
@@ -21,6 +21,10 @@ WORKFLOW=CI
 common=$(git rev-parse --git-common-dir)
 results="$common/recto-ci-main"
 known="$common/recto-ci-known"
+# How long CI's check job may take, in seconds, and where each green run's time is kept. Owner, 2026-11-12: "Add a rule so the ci doesnt regress in the
+# future." The one place to edit the budget, and it only goes down: lower it when a merge makes CI faster (25 min on 2026-11-12, when runs took 18 to 33).
+CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1500}
+times="$common/recto-ci-times"
 
 # Runs gh with a bound. Its output on stdout; 124 if it took too long, 127 if there's no gh.
 gh_bounded() {
@@ -187,6 +191,23 @@ newer_run_than() {
   done < <(printf '%s' "$runs" | objects)
 }
 
+mins() { echo "$(($1 / 60)) min $(($1 % 60)) s"; }
+
+# A green run's check job against the budget: its seconds are kept, and the median of the last five green runs is what counts, as one slow runner says
+# little. Over the budget is said loudly and fails nothing: a runner's speed isn't the commit's fault, but a median over it is the next task (AGENTS.md).
+ci_time() {
+  local secs median n
+  secs=$(gh_bounded run view "$1" --json jobs --jq '[.jobs[] | select(.name == "check") | ((.completedAt | fromdate) - (.startedAt | fromdate))] | max // empty') || return 0
+  [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -gt 0 ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$secs" >> "$times"
+  n=$(tail -5 "$times" | wc -l | tr -d ' ')
+  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  echo "push-main: CI's check took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
+  if [ "$median" -gt "$CI_BUDGET" ]; then
+    echo "push-main: CI IS OVER ITS BUDGET by $(mins $((median - CI_BUDGET))). Bringing it back is the next task, before another feature: the run's stages are its log's 'check: ... took' lines, and the slowest tests are in tools/check.sh --slow."
+  fi
+}
+
 watch() {
   sha=$(git rev-parse "$1") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
   began=$(date +%s) reruns=0
@@ -221,6 +242,7 @@ watch_loop() {
   if [ "$conclusion" = success ]; then
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" success "$(($(date +%s) - began))" >> "$results"
     echo "push-main: CI is green on main $(printf '%s' "$sha" | cut -c1-12): $url"
+    ci_time "$id" "$sha"
     return 0
   fi
   # A newer push cancels an older commit's run. That says nothing of the older commit: the verdict on main is the newer run's, so the watch follows it.
