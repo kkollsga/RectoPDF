@@ -3,6 +3,7 @@
 use crate::queue::CoreCall;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use crate::testkit::update_bed::{OLD, UpdateBed};
+use recto_platform::slow::Seam;
 use recto_update::saved::{Probation, Saved};
 use std::sync::atomic::Ordering;
 
@@ -61,5 +62,61 @@ fn quit_anyway_isnt_an_early_end_and_stay_is_watched_again() {
     let disk = app.quit_anyway();
     let app = disk.builder().update(&bed).start();
     assert_eq!(probation().early_ends, 0, "Quit Anyway isn't an early end");
+    drop(app.quit());
+}
+
+/// How many tabs the record on disk names: the newest of its two slots, as the next launch reads it.
+fn tabs_on_disk(app: &HeadlessApp) -> usize {
+    let folder = app.core().saver.store.main_folder();
+    ["record.a.json", "record.b.json"]
+        .iter()
+        .filter_map(|name| std::fs::read(folder.join(name)).ok())
+        .filter_map(|bytes| recto_session::record::decode_record(&bytes, recto_session::record::CURRENT_VERSION).ok())
+        .max_by_key(|decoded| decoded.seq)
+        .map_or(0, |decoded| decoded.record.tabs.len())
+}
+
+/// Failure (slow mode, 2026-11-11, 80af1aa and d65da39: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits for the state, and goes
+/// without it when nothing's unsaved, and the state was written after the tab on screen's sleep file, which waited behind every sleep file the tabs just opened
+/// had queued, one at a time; with sleep files slow to write, as on a busy disk, a quit after opening tabs lost them all. Two tabs and back from a quit with them,
+/// then the rest opened one after another with every sleep file's write held at its seam: the quit's state is on disk with every tab before a single sleep file
+/// is let through, and every tab comes back. (Replaces the app test `tabs_just_opened_come_back_when_sleep_files_are_slow`.)
+#[test]
+fn tabs_just_opened_come_back_when_their_sleep_files_are_late() {
+    const TABS: usize = 6;
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..TABS).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
+    let app = disk.start();
+    app.open(&docs[0]);
+    app.open(&docs[1]);
+    let (answer, disk) = app.quit();
+    assert!(answer.go);
+    // Each has its sleep file to wake from now, read as it wakes; the writes are held.
+    let app = disk.builder().hold(&[Seam::SleepWrite]).start();
+    assert_eq!(app.tabs().len(), 2, "both back");
+    for doc in &docs[2..] {
+        app.open(doc);
+    }
+    assert_eq!(app.tabs().len(), TABS);
+    app.wait_until("sleep files waiting to be written", || app.waiting(Seam::SleepWrite) > 0);
+    // The quit's asked for, and the host's call returns at once: the state goes to the disk while not one sleep file has been written.
+    app.core().quit_requested();
+    app.wait_until("the quit's state on disk with every tab, with the sleep files still held", || {
+        tabs_on_disk(&app) == TABS
+    });
+    assert_eq!(
+        recto_platform::slow::gate::arrived(Seam::SleepWrite),
+        app.waiting(Seam::SleepWrite),
+        "none let through"
+    );
+    recto_platform::slow::gate::open(Seam::SleepWrite);
+    app.wait_until("the quit's answer", || {
+        app.heard()
+            .iter()
+            .any(|heard| matches!(heard, crate::testkit::Heard::QuitAnswer(answer) if answer.go))
+    });
+    let disk = app.quit_anyway();
+    let app = disk.start();
+    assert_eq!(app.tabs().len(), TABS, "every tab came back");
     drop(app.quit());
 }
