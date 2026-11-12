@@ -405,6 +405,18 @@ fn an_adversarial_page_fails_alone_and_says_so() {
         + done["data"]["no_text_pages"].as_u64().unwrap();
     assert!(said >= 1, "the bomb's page must show up in what's said: {done}");
     assert!(started.elapsed() < Duration::from_secs(120), "{:?}", started.elapsed());
+    // No total is given over a page that couldn't be counted, in either form (`no_total_is_given_over_a_page_that_couldnt_be_counted`'s first case).
+    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
+    assert_eq!(
+        (
+            found["data"]["coverage"]["hits_total"].clone(),
+            found["data"]["coverage"]["hits_at_least"].as_u64()
+        ),
+        (Value::Null, Some(1)),
+        "{found}"
+    );
+    let (plain, _, _) = state.text(&["search", "ordinary page"]);
+    assert!(!plain.contains("in all"), "{plain}");
 }
 
 /// Failure: opening a file starts an indexer, so 200 tabs start 200 of them, or leave a process, a thread or a folder behind. **Only asking starts one.** And once it's done there's nothing left of it in the session.
@@ -1096,23 +1108,6 @@ fn lowering_to_off_stops_indexing() {
 fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
-    let bomb = TempPdf::new("no-total.pdf", &form_bomb());
-    state.json(&["open", path(&bomb)]);
-    wait_done(&state, "active");
-    let (found, code) = state.json(&["search", "ordinary"]);
-    assert_eq!(code, 0, "{found}");
-    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
-    assert_eq!(
-        (
-            found["data"]["coverage"]["hits_total"].clone(),
-            found["data"]["coverage"]["hits_at_least"].as_u64()
-        ),
-        (Value::Null, Some(1)),
-        "{found}"
-    );
-    let (plain, _, _) = state.text(&["search", "ordinary"]);
-    assert!(!plain.contains("in all"), "{plain}");
-
     // Past the limit, a corpus's failed page is only counted, and it can't be.
     let file = doc("uncounted.pdf", 5);
     corpus_with_a_failed_page(&state, &file, 4);
