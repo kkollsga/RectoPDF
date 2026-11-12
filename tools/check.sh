@@ -243,6 +243,9 @@ run() {
   tracked_tree > "$check_mark.tree"
   # One layout, so two branches that each add a field to a struct literal merge without a conflict (guide §2.8). Seconds, and nothing builds.
   # `cargo fmt --all` fixes it.
+  # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails before anything is queued.
+  stage ratchet
+  tools/ratchet.sh
   stage fmt
   cargo fmt --all --check
   cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check
