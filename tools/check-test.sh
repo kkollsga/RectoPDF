@@ -900,6 +900,14 @@ check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=
 check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
 check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
 
+# Failure (PLAN R0.7b): the slow stage's seed can't be given, so an order of arrivals it found can't be replayed; or a seed is drawn when none was asked.
+commit_code slow-seed
+rm -f "$CALLS.slow"
+out=$(CHECK_SLOW_SEED=4242 full --why "seed"); rc=$?
+has "a seed asked for goes to the slow stage as the profile's jitter" "ci,jitter=4242 nextest run" "$(cat "$CALLS.slow")"
+has "and is said" "check: slow: RECTO_QA_SLOW=ci,jitter=4242" "$out"
+check "a seed that isn't a number is refused" "2" "$(CHECK_SLOW_SEED=x full --why "bad seed" > /dev/null; echo $?)"
+rm -f "$CALLS.slow"
 # Failure (PLAN R0.7c): a failed test on CI says only that it failed, and its rate is learned by rerunning the job by hand; or a failed app tier hides the
 # registrations stage after it, whose result is evidence about leaks; or the reruns turn a failure into a pass, or run here when nobody asked.
 git checkout -q main

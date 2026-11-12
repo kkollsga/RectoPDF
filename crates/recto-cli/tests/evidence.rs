@@ -110,6 +110,37 @@ fn check_the_folder(root: &Path, status: &std::process::ExitStatus, said: &str) 
     assert!(size <= common::evidence::FOLDER_CAP, "{size} bytes");
 }
 
+/// Failure (PLAN R0.7b): the command a failure prints doesn't run it again as it ran: the slow seams it met, written back from `qa state`'s report, read as another profile or lose the seed, or the line misses the test, its binary or the profile. No app needed.
+#[test]
+fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
+    use recto_platform::slow::{Profile, Seam};
+    let asked = "state=1200,worker=60,draw=40,jitter=31337";
+    let profile = Profile::read(Some(asked), None, None).unwrap().unwrap();
+    // As `qa state` reports a run's slow mode: every seam, its delay, how often and how long it was waited at.
+    let seams: serde_json::Map<String, serde_json::Value> = Seam::ALL
+        .iter()
+        .map(|seam| {
+            (
+                seam.name().to_owned(),
+                serde_json::json!({ "ms": profile.ms(*seam), "times": 3, "waited_ms": 99 }),
+            )
+        })
+        .collect();
+    let report = serde_json::json!({ "seams": seams, "jitter": 31337, "ui_refusals": 0 });
+    let switch = common::evidence::slow_switch(&report).unwrap();
+    assert_eq!(Profile::read(Some(&switch), None, None).unwrap().unwrap(), profile, "{switch}");
+    assert_eq!(common::evidence::slow_switch(&serde_json::Value::Null), None, "no slow mode, no switch");
+    let line = common::evidence::rerun_line(&report);
+    for part in [
+        format!("RECTO_QA_SLOW='{switch}'"),
+        "tools/check.sh --like-ci".to_owned(),
+        format!("binary_id(=recto-cli::evidence) & test(={})", common::evidence::test_name()),
+        "--profile ".to_owned(),
+    ] {
+        assert!(line.contains(&part), "{part}: {line}");
+    }
+}
+
 /// Every file under a folder, relative to it.
 fn listing(folder: &Path) -> Vec<String> {
     fn walk(base: &Path, at: &Path, into: &mut Vec<String>) {

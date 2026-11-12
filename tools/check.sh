@@ -168,6 +168,7 @@ crates_in() {
 CHECK_EVIDENCE_ROOT=${RECTO_EVIDENCE:-$PWD/${CARGO_TARGET_DIR:-target}/recto-evidence}
 case "$CHECK_EVIDENCE_ROOT" in /*) ;; *) CHECK_EVIDENCE_ROOT=$PWD/$CHECK_EVIDENCE_ROOT ;; esac
 CHECK_RERUN=${CHECK_RERUN:-$([ -n "${CI:-}" ] && echo 4 || echo 0)}
+case "${CHECK_SLOW_SEED:-0}" in '' | *[!0-9]*) echo "check: CHECK_SLOW_SEED is a number, the slow mode's jitter seed, not '$CHECK_SLOW_SEED'." >&2; exit 2 ;; esac
 export CHECK_EVIDENCE_ROOT CHECK_RERUN
 if [ "$mode" = --slow ]; then
   times_report
@@ -402,7 +403,11 @@ run() {
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
     if [ -z "${CI:-}" ] && [ "$app_status" = 0 ]; then
       stage slow
-      RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
+      # The ci profile exactly, so the gate fails the same way each run; a seed for the profile's jitter only when asked (CHECK_SLOW_SEED), said either
+      # way, so a failure's seams and seed are in its rerun line and the same seed gives the same delays (PLAN R0.7b).
+      local slow_switch="ci${CHECK_SLOW_SEED:+,jitter=$CHECK_SLOW_SEED}"
+      echo "check: slow: RECTO_QA_SLOW=$slow_switch$([ -n "${CHECK_SLOW_SEED:-}" ] || echo ' (no jitter; CHECK_SLOW_SEED=<n> adds jitter=<n>)')"
+      RECTO_QA_SLOW=$slow_switch RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
     fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     if [ "$app_mode" = both ] || [ "$app_mode" = lifecycle ]; then
