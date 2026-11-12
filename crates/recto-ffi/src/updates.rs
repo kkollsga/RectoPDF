@@ -414,9 +414,13 @@ impl Inner {
         self.core.push(CoreCall::Reconcile);
     }
 
-    /// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process.
+    /// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12).
     pub(crate) fn forget_a_quiet_copy(&self) {
-        if let Some(app) = self.updates.app()
+        let own = std::env::current_exe()
+            .ok()
+            .and_then(|program| program.canonicalize().ok())
+            .and_then(|program| recto_update::rules::bundle_of(&program));
+        if let Some(app) = own.or_else(|| self.updates.app())
             && recto_update::rules::forgets_itself(self.qa.is_some(), &app)
         {
             recto_platform::registry::forget_soon(&app);

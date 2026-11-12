@@ -1629,7 +1629,7 @@ fn settings_and_the_menu_say_how_things_stand() {
         assert!(began.elapsed() < Duration::from_secs(10), "it says so");
         std::thread::sleep(Duration::from_millis(20));
     }
-    let threads = run.report()["memory"]["threads"].as_u64().unwrap();
+    let threads = crate::common::threads::own(run.pid);
     bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "menu", "app.update"]);
     bed.wait_status(&run, "available");
@@ -1649,9 +1649,10 @@ fn settings_and_the_menu_say_how_things_stand() {
         shot("shot-menu", &format!("menu-update-{look}"));
         shot("shot-settings", &format!("settings-offer-{look}"));
     }
-    // Nothing's left running after a check, whatever it found.
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(run.report()["memory"]["threads"].as_u64().unwrap() <= threads + 2, "threads gone");
+    // Nothing's left running after a check, whatever it found: the app's own threads, by name, as the count of all took in the system's libdispatch pool, and a fixed 200 ms could catch the check's thread on its way out.
+    if let Some(wrong) = crate::common::threads::back_to(run.pid, &threads, Duration::from_secs(30)) {
+        panic!("a check's thread stayed: {wrong}");
+    }
 
     // The switch: in the window, by the switch, and the command agrees with it. And after a restart.
     let on = |run: &Run<'_>| run.ok(&["qa", "state"])["app"]["settings"]["rows"][0]["on"].clone();

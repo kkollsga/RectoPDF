@@ -8,7 +8,7 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 
 | Seam | Where | How it's late | `ci` |
 |---|---|---|---:|
-| `state` | `begin_restore`, before the record's read | the restore thread waits | 1500 ms |
+| `state` | `begin_restore`, before the record's read | the restore thread waits | 1200 ms (with `launch`'s 300 before it, 1.5 s in all) |
 | `remake` | the window that went up without the state, made again from it | `restore_ready` arrives late | 300 ms |
 | `worker` | `DocRenderer::run_job_with`, a job's answer | the caller gets it late | 60 ms |
 | `headings` | the generator's thread, after the helper's done | the session hears late | 1500 ms |
@@ -17,8 +17,13 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 | `draw` | `EngineHooks::ops_ready`, layers to draw | `ops_ready` arrives late | 40 ms |
 | `sleep_read`, `sleep_write` | `RecordStore::read_sleep` and `write_sleep` | the reading or writing thread waits | 150, 300 ms |
 | `session` | the session thread, after the state's taken in and the host told | what it does next is late, as on a starved machine | 300 ms |
+| `launch` | `Updater::launched`, on the restore thread, before the state's read | what this copy is (its bundle, its version) is known late | 300 ms |
+
+`launch` and `state` wait on the same thread, one after the other, so they add up: in `ci`, 300 ms and 1.2 s are the state at 1.5 s, as before `launch` was there.
 
 **The switch.** `RECTO_QA_SLOW` is a comma list: a number of milliseconds for every seam, `ci` for the profile above, `<seam>=<ms>` for one, and `jitter=<seed>` for delays drawn from half to one and a half times each, repeatably. `RECTO_QA_RESTORE_DELAY_MS` and `RECTO_QA_REMAKE_DELAY_MS` still work, and win for their seam. A switch that can't be read refuses the launch, so a slow run can't pass as a fast one. Each seam is capped (30 s for the state, 10 s for the rest).
+
+**A hold.** `RECTO_QA_SLOW_HOLD=<seam>:<path>` holds one seam until the file at the path is there, rather than for a time, for a test that has to act while the app waits at that seam: on a slow machine any fixed wait can be over before the test acts (CI, 2026-11-12: a 10 s wait at `launch` ran out first, run 43225124901). Its bound, 120 s, is for a test that never lets go. A bad value refuses the launch, as the switch's does, and an update's relaunch carries it over.
 
 **Where it's never on.** A release build (`recto_platform::RELEASE_BUILD`, compiled in from `RECTO_RELEASE`, the one constant the updater and the renderer's host go by too), any launch that isn't a quiet run, and `recto` itself: the app arms it once, at its start, from its own arguments. Unarmed, each seam is one load of a `OnceLock`. A `pause` asked on the UI thread is refused and counted as `slow.ui_refusals` in `qa state`, which also has each seam's delay, how often it was waited at and how long in all. An update's relaunch of a quiet run carries the switches over. The thread that makes late calls exists only while one's waiting, and goes half a second after the last.
 

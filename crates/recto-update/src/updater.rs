@@ -430,6 +430,7 @@ impl Updater {
 
     /// What the host knows of this copy. Given once, before anything else asks. Reads what's remembered, says what became of an install that's just ended, and tidies up. All of it files, so never on the UI thread, and none of it holding what the UI thread asks through.
     pub fn launched(&self, mut facts: Facts) -> AtLaunch {
+        recto_platform::slow::pause(recto_platform::slow::Seam::Launch);
         let now = self.now_ms();
         facts.app = facts.app.canonicalize().unwrap_or(facts.app);
         let mut saved = Saved::read(&self.files.saved);
