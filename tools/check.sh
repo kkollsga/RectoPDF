@@ -160,11 +160,15 @@ crates_in() {
 . tools/check-scope.sh
 # shellcheck source=tools/check-times.sh
 . tools/check-times.sh
+# shellcheck source=tools/check-rerun.sh
+. tools/check-rerun.sh
 # Where a failing test that started the app leaves its evidence, one folder a test under its stage's name (crates/recto-cli/tests/common/evidence.rs): the tree's
-# own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload.
+# own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload. And how often a failed stage's tests run again to measure the failure:
+# CI 4 times (tools/check-rerun.sh has the bounds), here only when asked.
 CHECK_EVIDENCE_ROOT=${RECTO_EVIDENCE:-$PWD/${CARGO_TARGET_DIR:-target}/recto-evidence}
 case "$CHECK_EVIDENCE_ROOT" in /*) ;; *) CHECK_EVIDENCE_ROOT=$PWD/$CHECK_EVIDENCE_ROOT ;; esac
-export CHECK_EVIDENCE_ROOT
+CHECK_RERUN=${CHECK_RERUN:-$([ -n "${CI:-}" ] && echo 4 || echo 0)}
+export CHECK_EVIDENCE_ROOT CHECK_RERUN
 if [ "$mode" = --slow ]; then
   times_report
   exit 0
@@ -381,18 +385,22 @@ run() {
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
+    # A failure here doesn't hide the registrations stage below, which is about what these tests left (a leak seen one run in three on CI, 2026-11-12):
+    # it runs anyway, and the run fails with this stage's name. The slow stage, the same tests late, is left out after a failure here.
     stage app-tests
+    local app_status=0
     case "$app_mode" in
-      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 ;;
-      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test evidence -j 4 -E "$WINDOW_TESTS" ;;
-      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" ;;
+      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 || app_status=$? ;;
+      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test evidence -j 4 -E "$WINDOW_TESTS" || app_status=$? ;;
+      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" || app_status=$? ;;
     esac
+    [ "$app_status" = 0 ] || echo app-tests > "$check_mark.failed"
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
     # window goes up without it and is made again from it, workers', the helpers' and the socket's answers late, drawing late, sleep files slow. Main went
     # red on such paths, unseen here, three pushes running (2026-11-11), and this mode's first run found five more.
     # Not on CI, which is the slow machine already: the profile on top of it doubled up, and two tests waited past their bounds there for slowness
     # alone, as they did here with the profile doubled (CI run 43080381613, 2026-11-11). The stage is how this Mac takes CI's paths.
-    if [ -z "${CI:-}" ]; then
+    if [ -z "${CI:-}" ] && [ "$app_status" = 0 ]; then
       stage slow
       RECTO_QA_SLOW=ci RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
     fi
@@ -401,13 +409,14 @@ run() {
       stage registrations
       RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test registrations
     fi
+    [ "$app_status" = 0 ] || { echo "check: app-tests failed (above), and the stages after it that don't depend on it ran." >&2; return "$app_status"; }
   fi
   stage done
 }
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit"' EXIT
+trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed"' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
@@ -449,14 +458,12 @@ if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree nt_jobs
+export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
 export check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
-if [ "$status" != 0 ] && [ -n "$(find "$CHECK_EVIDENCE_ROOT" -mindepth 2 -maxdepth 2 -type d -name '*--*' 2>/dev/null)" ]; then
-  echo "check: evidence of the failed tests that started the app, a folder each: $CHECK_EVIDENCE_ROOT" >&2
-fi
+evidence_report "$status"
 [ "$mode" = --full ] || exit "$status"
 # Nothing ran: the queue refused it, or it was stopped while waiting. So there's no run to count.
 read -r started started_commit started_state < "$check_mark" || exit "$status"
@@ -464,7 +471,7 @@ case "$status" in
   0) result=pass ;;
   # Stopped from outside says nothing about the code, so it isn't held against it.
   130|137|143) result=stopped ;;
-  *) result="fail:$(tail -1 "$check_mark")" ;;
+  *) result="fail:$(cat "$check_mark.failed" 2>/dev/null || tail -1 "$check_mark")" ;;
 esac
 # The tests' durations are kept for every run that started, a part too (tools/check-times.sh, `check.sh --slow`). Not for one stopped from outside.
 [ "$result" = stopped ] || ( times_record "$started_commit" "$([ "$scope_key" = all ] && echo all || echo selective)" "$part" "$result" ) || true

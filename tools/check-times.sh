@@ -18,8 +18,9 @@ times_dir() { echo "$common_dir/recto-test-times"; }
 
 # Runs nextest and keeps the JUnit it wrote for the stage that is running, whether it passed or not. A failing test that started the app leaves its evidence
 # under the stage's name (RECTO_EVIDENCE, crates/recto-cli/tests/common/evidence.rs), and says how to run it again with the stage's concurrency (CHECK_STAGE_JOBS).
+# When the stage fails, its failed tests run again CHECK_RERUN times (tools/check-rerun.sh), and the stage still fails.
 nt() {
-  local rc=0 junit n kept
+  local rc=0 junit n kept=""
   RECTO_EVIDENCE="${CHECK_EVIDENCE_ROOT:-${CARGO_TARGET_DIR:-target}/recto-evidence}/${stage_name:-run}" CHECK_STAGE="${stage_name:-run}" CHECK_STAGE_JOBS="$(nt_jobs "$@")" \
     cargo nextest run "$@" || rc=$?
   junit="${CARGO_TARGET_DIR:-target}/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
@@ -29,6 +30,9 @@ nt() {
     kept="$check_mark.junit/$(printf '%02d' "$n")-${stage_name:-run}.xml"
     cp "$junit" "$kept"
     rm -f "$junit"
+  fi
+  if [ "$rc" -ne 0 ] && [ "${CHECK_RERUN:-0}" != 0 ]; then
+    rerun_failed "$kept" "$@" || true
   fi
   return "$rc"
 }

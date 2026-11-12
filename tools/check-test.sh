@@ -37,6 +37,24 @@ if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
   mkdir -p target/nextest/default
   printf '<testsuites>\n<testsuite name="alpha">\n<testcase name="t1" classname="alpha" timestamp="2026-11-12T10:00:00.000+01:00" time="0.500"/>\n<testcase name="p1" classname="alpha::proc" timestamp="2026-11-12T10:00:01.000+01:00" time="1.500"/>\n</testsuite>\n</testsuites>\n' > target/nextest/default/junit.xml
 fi
+# With STUB_JUNIT_FAIL, the nextest run whose line has it fails one test, `flaky_one`, in its JUnit, and leaves its evidence as the harness would. A rerun of
+# it (its line names the test by binary_id) fails while fewer than STUB_RERUN_FAILS reruns have, and passes after.
+if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && [[ "$*" == *"$STUB_JUNIT_FAIL"* ]]; then
+  junit="target/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
+  mkdir -p "$(dirname "$junit")"
+  verdict=fail
+  if [[ "$*" == *"binary_id(="* ]]; then
+    n=$(( $(cat "$CALLS.reruns" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS.reruns"
+    [ "$n" -le "${STUB_RERUN_FAILS:-0}" ] || verdict=pass
+  fi
+  if [ "$verdict" = fail ]; then
+    printf '<testsuites>\n<testsuite name="recto-cli::app">\n<testcase name="steady_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="0.5"/>\n<testcase name="flaky_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="1.0">\n<failure type="test failure">boom</failure>\n</testcase>\n</testsuite>\n</testsuites>\n' > "$junit"
+    mkdir -p "$RECTO_EVIDENCE/recto-cli--app--flaky_one" && echo "tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --jobs ${CHECK_STAGE_JOBS:-}" > "$RECTO_EVIDENCE/recto-cli--app--flaky_one/rerun.txt"
+    exit 100
+  fi
+  printf '<testsuites>\n<testsuite name="recto-cli::app">\n<testcase name="flaky_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="1.0"/>\n</testsuite>\n</testsuites>\n' > "$junit"
+  exit 0
+fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
@@ -62,6 +80,7 @@ cp "$SOURCE/tools/check.sh" tools/check.sh
 # The real rules, with this repository's own guards and tiers: alpha has a guard, gamma is what the lifecycle tier is about, beta is a window crate.
 cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
 cp "$SOURCE/tools/check-times.sh" tools/check-times.sh
+cp "$SOURCE/tools/check-rerun.sh" tools/check-rerun.sh
 echo "fn p1() {}" > crates/alpha/tests/proc.rs
 cat >> tools/check-scope.sh <<'SCOPE'
 GUARD_TESTS='test(~guard_one) | test(~stale::)'
@@ -880,6 +899,48 @@ check "a before that isn't in HEAD's history runs them" "1 1" "$(on_main "$(git 
 check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF_NAME=main GITHUB_EVENT_PATH="$(event "$before")")"
 check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
 check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
+
+# Failure (PLAN R0.7c): a failed test on CI says only that it failed, and its rate is learned by rerunning the job by hand; or a failed app tier hides the
+# registrations stage after it, whose result is evidence about leaks; or the reruns turn a failure into a pass, or run here when nobody asked.
+git checkout -q main
+git checkout -qb rerun-cases
+commit_code rerun-base
+: > "$CALLS"; rm -f "$CALLS.reruns"
+out=$(STUB_JUNIT_FAIL="--test app" full --why "rerun: local"); rc=$?
+check "a failed app tier still fails the run" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "and the ledger names the stage that failed, not the one after" "fail:app-tests" "$(last_ledger_field 4)"
+check "the registrations stage runs after a failed app tier" "1" "$(grep -c -- '--test registrations' "$CALLS")"
+check "the slow stage doesn't, as it's the same tests late" "0" "$(grep -c -- '--test app --test restore -j 4 -E' "$CALLS")"
+check "here, nothing is run again unless asked" "0" "$(grep -c 'binary_id(=' "$CALLS")"
+has "the failure says where its evidence is" "evidence of 1 failed test run(s), one folder each, in $PWD/target/recto-evidence" "$out"
+has "with the command that runs it again" "run it again here as it ran: tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --jobs 4" "$out"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+out=$(CHECK_RERUN=4 STUB_RERUN_FAILS=1 STUB_JUNIT_FAIL="--test app" full --why "rerun: asked"); rc=$?
+check "asked, the failed test alone runs again that many times" "4" "$(grep -c 'binary_id(=recto-cli::app) & test(=flaky_one)' "$CALLS")"
+check "and only it: the test that passed isn't named" "0" "$(grep 'binary_id(=' "$CALLS" | grep -c steady_one)"
+check "with the stage's arguments but its own filter" "4" "$(grep 'binary_id(=' "$CALLS" | grep -c -- '-p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 -E')"
+has "the table gives the rate, counting the first run" "recto-cli::app flaky_one" "$out"
+has "as N of M" "failed 2 of 5" "$(printf '%s' "$out" | tr -s ' ')"
+check "and the run still fails" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "each round keeps its own evidence, and the first run's is there too" "yes yes yes" "$([ -f target/recto-evidence/app-tests/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-rerun-1/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-reruns.txt ] && echo yes)"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+out=$(CHECK_RERUN_SECONDS=0 CHECK_RERUN=4 STUB_JUNIT_FAIL="--test app" full --why "rerun: budget"); rc=$?
+check "the reruns stop at their time bound" "0" "$(grep -c 'binary_id(=' "$CALLS")"
+has "and say so" "reruns stopped after 0 of 4 rounds" "$out"
+has "the table then counts the first run only" "failed 1 of 1" "$(printf '%s' "$out" | tr -s ' ')"
+check "and what the last run left is gone: no round's evidence from the run before" "no" "$([ -d target/recto-evidence/app-tests-rerun-1 ] && echo yes || echo no)"
+: > "$CALLS"; rm -f "$CALLS.reruns"
+STUB_RERUN_FAILS=9 STUB_JUNIT_FAIL="--test app" CI=true CHECK_PART=lifecycle tools/check.sh --full > "$X/ci.out" 2>&1; rc=$?
+check "on CI a failed test runs again 4 times without being asked" "4" "$(grep -c 'binary_id(=' "$CALLS")"
+has "failing every time, it says so" "failed 5 of 5" "$(tr -s ' ' < "$X/ci.out")"
+check "and in the lifecycle part the registrations stage still runs" "1" "$(grep -c -- '--test registrations' "$CALLS")"
+check "and the part fails" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+mkdir -p "$X/given"; echo keep > "$X/given/mine"
+: > "$CALLS"
+RECTO_EVIDENCE="$X/given" STUB_JUNIT_FAIL="--test app" CI=true CHECK_RERUN=0 CHECK_PART=window tools/check.sh --full > "$X/ci.out" 2>&1
+check "a root given in RECTO_EVIDENCE (CI's) is never emptied, and gets the evidence" "keep yes" "$(cat "$X/given/mine") $([ -f "$X/given/app-tests/recto-cli--app--flaky_one/rerun.txt" ] && echo yes)"
+check "the reruns' junit helpers find the failed test" "recto-cli::app	flaky_one" "$(printf '<testcase name="a" classname="x"/>\n<testcase name="flaky_one" classname="recto-cli::app" time="1">\n<failure type="t">b</failure>\n</testcase>\n<testcase name="c" classname="x">\n</testcase>\n' > "$X/j.xml"; . tools/check-rerun.sh; junit_failed "$X/j.xml")"
+check "and take a stage's filter off its arguments, keeping the rest" "--locked -p recto-cli -j 4" "$(. tools/check-rerun.sh; args_without_filter --locked -p recto-cli -j 4 -E 'test(x)' --no-tests=pass | tr '\0' ' ' | sed 's/ $//')"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
