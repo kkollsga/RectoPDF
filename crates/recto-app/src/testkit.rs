@@ -2,7 +2,7 @@
 //! what it heard, and a page view's hooks that hear nothing. The headless app of step R1.3 is built from these.
 
 use crate::clock::Clock;
-use crate::listener::Listener;
+use crate::listener::{Listener, QuitAnswer};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,11 +35,18 @@ impl Clock for FakeClock {
     }
 }
 
-/// One call the host heard, by its name in [`Listener`]. It grows with the trait.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One call the host heard, by its name in [`Listener`], with what it carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Heard {
     ModelChanged,
+    OpsReady,
+    QaRequest { id: u64, verb: String, value: String },
+    SessionEnded,
+    CopyReady,
+    RestoreReady,
+    QuitAnswer(QuitAnswer),
+    HandOffQuit,
 }
 
 /// What a check run inside each call is given: the call.
@@ -77,8 +84,8 @@ impl FakeListener {
 
     /// How many of one call.
     #[must_use]
-    pub fn count(&self, what: Heard) -> usize {
-        crate::lock(&self.heard).iter().filter(|heard| **heard == what).count()
+    pub fn count(&self, what: &Heard) -> usize {
+        crate::lock(&self.heard).iter().filter(|heard| *heard == what).count()
     }
 
     /// Every call so far, forgetting them, so a test can ask what one step alone made.
@@ -88,7 +95,7 @@ impl FakeListener {
 
     fn hear(&self, what: Heard) {
         if let Some(check) = &self.check {
-            check(what);
+            check(what.clone());
         }
         crate::lock(&self.heard).push(what);
     }
@@ -97,6 +104,34 @@ impl FakeListener {
 impl Listener for FakeListener {
     fn model_changed(&self) {
         self.hear(Heard::ModelChanged);
+    }
+
+    fn ops_ready(&self) {
+        self.hear(Heard::OpsReady);
+    }
+
+    fn qa_request(&self, id: u64, verb: String, value: String) {
+        self.hear(Heard::QaRequest { id, verb, value });
+    }
+
+    fn session_ended(&self) {
+        self.hear(Heard::SessionEnded);
+    }
+
+    fn copy_ready(&self) {
+        self.hear(Heard::CopyReady);
+    }
+
+    fn restore_ready(&self) {
+        self.hear(Heard::RestoreReady);
+    }
+
+    fn quit_answer(&self, answer: QuitAnswer) {
+        self.hear(Heard::QuitAnswer(answer));
+    }
+
+    fn hand_off_quit(&self) {
+        self.hear(Heard::HandOffQuit);
     }
 }
 
@@ -124,10 +159,20 @@ mod tests {
             counted.fetch_add(1, Ordering::SeqCst);
         });
         listener.model_changed();
+        listener.restore_ready();
         listener.model_changed();
-        assert_eq!(listener.count(Heard::ModelChanged), 2);
-        assert_eq!(seen.load(Ordering::SeqCst), 2, "the check runs in each call");
-        assert_eq!(listener.take(), vec![Heard::ModelChanged; 2]);
+        listener.quit_answer(QuitAnswer::go());
+        assert_eq!(listener.count(&Heard::ModelChanged), 2);
+        assert_eq!(seen.load(Ordering::SeqCst), 4, "the check runs in each call");
+        assert_eq!(
+            listener.take(),
+            vec![
+                Heard::ModelChanged,
+                Heard::RestoreReady,
+                Heard::ModelChanged,
+                Heard::QuitAnswer(QuitAnswer::go())
+            ]
+        );
         assert!(listener.heard().is_empty());
     }
 

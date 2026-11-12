@@ -96,7 +96,7 @@ fn opening_find_with_the_sidebar_hidden_shows_the_sidebar() {
     assert_eq!(rig.views_set.load(Ordering::SeqCst), 1, "through the app's set_view");
     assert!(events.iter().any(|event| matches!(event, Event::FindOpened { .. })), "{events:?}");
     assert!(is_open(&rig.field), "the UI thread's mirror is open");
-    assert!(listener.count(Heard::ModelChanged) >= 1);
+    assert!(listener.count(&Heard::ModelChanged) >= 1);
     // With the sidebar showing, opening again leaves the view alone.
     rig.with(&listener, |find| find.act(FindCall::Open, &mut events));
     assert_eq!(rig.views_set.load(Ordering::SeqCst), 1);
@@ -148,7 +148,7 @@ fn the_host_is_told_with_the_field_let_go() {
         find.act(FindCall::Step(true, Going::Step), &mut events);
         find.act(FindCall::Close, &mut events);
     });
-    assert!(listener.count(Heard::ModelChanged) >= 3, "{:?}", listener.heard());
+    assert!(listener.count(&Heard::ModelChanged) >= 3, "{:?}", listener.heard());
     assert!(events.iter().any(|event| matches!(event, Event::FindClosed)), "{events:?}");
     assert!(!is_open(&rig.field));
 }

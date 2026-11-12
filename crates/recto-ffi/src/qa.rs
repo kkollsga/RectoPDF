@@ -1,6 +1,6 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
-use crate::{AppCore, AppListener, CoreQueue, Inner, lock};
+use crate::{AppCore, CoreQueue, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
 use recto_app::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_control::state::is_in_real_home;
@@ -226,7 +226,7 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
 }
 
 pub(crate) struct QaBridge {
-    listener: Arc<dyn AppListener>,
+    listener: Arc<dyn recto_app::Listener>,
     engine: Engine,
     watchdog: Watchdog,
     core: Arc<CoreQueue>,
@@ -239,7 +239,7 @@ pub(crate) struct QaBridge {
 }
 
 impl QaBridge {
-    pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
+    pub(crate) fn new(listener: Arc<dyn recto_app::Listener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
         Self {
             listener,
             engine,

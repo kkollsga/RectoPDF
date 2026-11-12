@@ -83,7 +83,7 @@ const UPDATE_FRAME_STACK: usize = 1024 * 1024;
 /// How long a socket that's taken is tried again, in case what has it is on its way out.
 const SOCKET_PATIENCE: Duration = Duration::from_secs(1);
 /// How long a quit waits for the state to go out, before asking.
-const QUIT_PATIENCE: Duration = Duration::from_secs(5);
+const QUIT_PATIENCE: Duration = Duration::from_millis(recto_app::listener::QUIT_PATIENCE_MS);
 
 /// The most contents rows one call hands over. More than any screen shows.
 const MAX_CONTENTS_FETCH: u32 = 256;
@@ -1243,7 +1243,7 @@ impl CoreQueue {
 
 struct EngineHooks {
     core: Arc<CoreQueue>,
-    listener: Arc<dyn AppListener>,
+    listener: Arc<dyn recto_app::Listener>,
 }
 
 impl EngineEvents for EngineHooks {
@@ -1308,6 +1308,58 @@ struct Published {
     reader: ReaderView,
 }
 
+impl Published {
+    /// What's published before the session thread's first pass: no tabs, the home screen, white paper.
+    fn empty() -> Self {
+        Self {
+            recent: Arc::new(Vec::new()),
+            recent_key: None,
+            pane_tocs: Vec::new(),
+            contents: Arc::new(Vec::new()),
+            rail_filled: 0,
+            tabs: Arc::new(Vec::new()),
+            sidebar: Arc::new(recto_app::empty_sidebar()),
+            reader: ReaderView {
+                panes: Vec::new(),
+                compare_synced: false,
+                home: true,
+                note: None,
+                sidebar_hidden: false,
+                layout: String::new(),
+                edited: false,
+                can_undo: false,
+                can_redo: false,
+                edit_mode: false,
+                can_rotate: false,
+                place: String::new(),
+                paper: Paper::White.name().to_string(),
+                paper_rgb: PaperKind::White.rgb(),
+                page_tint: None,
+                agent_icon_hidden: false,
+                sidebar_width: record::SIDEBAR_WIDTH,
+                highlight_dark_colour: false,
+                highlight_lighten: false,
+                selection_notice: None,
+                saving: false,
+                save_tooltip: String::new(),
+                save_problem: None,
+                save_as_note: None,
+                shown_tab: 0,
+                document_name: String::new(),
+                document_folder: String::new(),
+                save_button: false,
+                save_enabled: false,
+                print_ready: false,
+                can_go_back: false,
+                can_go_forward: false,
+                link_prompt: None,
+                page_text: String::new(),
+                password_prompt: None,
+            },
+        }
+    }
+}
+
 struct Inner {
     /// Small state, and no thread or timer of its own at rest.
     updates: Arc<recto_update::updater::Updater>,
@@ -1318,7 +1370,7 @@ struct Inner {
     /// A comparison's panes past the first, and what the UI thread needs to keep them in step.
     panes: panes::Panes,
     core: Arc<CoreQueue>,
-    listener: Arc<dyn AppListener>,
+    listener: Arc<dyn recto_app::Listener>,
     published: Mutex<Published>,
     contents_follow: Mutex<ContentsFollow>,
     started: Instant,
@@ -1782,73 +1834,16 @@ pub struct AppCore {
     start_with: Vec<PathBuf>,
 }
 
-/// What a launch was asked for.
-#[derive(Debug, Default, PartialEq)]
-struct LaunchArgs {
-    qa: bool,
-    memory_limit_mib: Option<u64>,
-    time_limit: Option<Duration>,
-    /// The process a quiet run ends with, as its test or script: see [`qa::end_with_starter`].
-    owner_pid: Option<u32>,
-    open: Vec<PathBuf>,
-}
-
-fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
-    let mut parsed = LaunchArgs::default();
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        match word.as_str() {
-            "--qa" => parsed.qa = true,
-            "--qa-memory-limit-mib" => {
-                parsed.memory_limit_mib = Some(
-                    words
-                        .next()
-                        .and_then(|value| value.parse().ok())
-                        .ok_or("--qa-memory-limit-mib takes a number.")?,
-                )
-            }
-            "--qa-time-limit-ms" => {
-                parsed.time_limit = Some(Duration::from_millis(
-                    words.next().and_then(|value| value.parse().ok()).ok_or("--qa-time-limit-ms takes a number.")?,
-                ))
-            }
-            "--qa-owner-pid" => {
-                parsed.owner_pid = Some(
-                    words
-                        .next()
-                        .and_then(|value| value.parse().ok())
-                        .filter(|pid| *pid > 1)
-                        .ok_or("--qa-owner-pid takes a process number.")?,
-                )
-            }
-            // What macOS adds to a launch from elsewhere, and a file to open.
-            other if other.starts_with("-psn_") || other.starts_with("-NS") || other.starts_with("-Apple") => {
-                let _ = words.next();
-            }
-            other if other.starts_with('-') => return Err(format!("`{}` isn't an option of this app.", cleaned(other))),
-            other => parsed.open.push(PathBuf::from(other)),
-        }
-    }
-    if !parsed.qa && (parsed.memory_limit_mib.is_some() || parsed.time_limit.is_some() || parsed.owner_pid.is_some()) {
-        return Err("Those options are only for a QA run.".into());
-    }
-    Ok(parsed)
-}
-
 /// Whether this launch is a quiet run, which is decided before AppKit does anything. The same parser as the rest of the launch, so the two can't disagree. A launch that won't parse ends straight away, and shows nothing on the way.
 #[uniffi::export]
 pub fn launch_is_quiet(args: Vec<String>) -> bool {
-    parse_args(&args).map_or(true, |parsed| parsed.qa)
+    recto_app::launch::parse(&args).map_or(true, |parsed| parsed.qa)
 }
 
 /// What a launch answers and ends with, before AppKit does anything: `--build-kind`, which says whether this was built as a release and takes a test's hooks, for `app/release-zip.sh` to check the app's own library and not only the installer's. Nothing for any other launch.
 #[uniffi::export]
 pub fn launch_answers_at_once(args: Vec<String>) -> Option<String> {
     (args == ["--build-kind"]).then(|| json!({ "release_build": recto_update::RELEASE_BUILD, "takes_test_hooks": !recto_update::RELEASE_BUILD }).to_string())
-}
-
-fn cleaned(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).take(64).collect()
 }
 
 /// What a QA run must be: on a state folder that was set on purpose, never the real one. `recto qa start` writes the level there, since nothing else can.
@@ -1866,7 +1861,8 @@ impl AppCore {
     #[uniffi::constructor]
     pub fn start(args: Vec<String>, listener: Arc<dyn AppListener>) -> Result<Arc<Self>, StartError> {
         let refused = |message: String| StartError::Refused { message };
-        let args = parse_args(&args).map_err(refused)?;
+        let listener: Arc<dyn recto_app::Listener> = Arc::new(records::HostListener(listener));
+        let args = recto_app::launch::parse(&args).map_err(refused)?;
         recto_platform::slow::arm(args.qa).map_err(refused)?;
         let paths = state_for(args.qa).map_err(refused)?;
         let server = match Server::bind(&paths) {
@@ -1967,52 +1963,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published {
-                recent: Arc::new(Vec::new()),
-                recent_key: None,
-                pane_tocs: Vec::new(),
-                contents: Arc::new(Vec::new()),
-                rail_filled: 0,
-                tabs: Arc::new(Vec::new()),
-                sidebar: Arc::new(recto_app::empty_sidebar()),
-                reader: ReaderView {
-                    panes: Vec::new(),
-                    compare_synced: false,
-                    home: true,
-                    note: None,
-                    sidebar_hidden: false,
-                    layout: String::new(),
-                    edited: false,
-                    can_undo: false,
-                    can_redo: false,
-                    edit_mode: false,
-                    can_rotate: false,
-                    place: String::new(),
-                    paper: Paper::White.name().to_string(),
-                    paper_rgb: PaperKind::White.rgb(),
-                    page_tint: None,
-                    agent_icon_hidden: false,
-                    sidebar_width: record::SIDEBAR_WIDTH,
-                    highlight_dark_colour: false,
-                    highlight_lighten: false,
-                    selection_notice: None,
-                    saving: false,
-                    save_tooltip: String::new(),
-                    save_problem: None,
-                    save_as_note: None,
-                    shown_tab: 0,
-                    document_name: String::new(),
-                    document_folder: String::new(),
-                    save_button: false,
-                    save_enabled: false,
-                    print_ready: false,
-                    can_go_back: false,
-                    can_go_forward: false,
-                    link_prompt: None,
-                    page_text: String::new(),
-                    password_prompt: None,
-                },
-            }),
+            published: Mutex::new(Published::empty()),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -3403,23 +3354,7 @@ impl AppCore {
                 inner.set_frozen(false);
                 inner.updates.stop_over();
             }
-            inner.listener.quit_answer(if fine || unsaved.is_empty() {
-                QuitAnswer {
-                    go: true,
-                    title: String::new(),
-                    message: String::new(),
-                    quit_button: String::new(),
-                    stay_button: String::new(),
-                }
-            } else {
-                QuitAnswer {
-                    go: false,
-                    title: "Your unsaved edits couldn't be kept".into(),
-                    message: "RectoPDF couldn't write them to the state folder. If you quit now, they'll be lost.".into(),
-                    quit_button: "Quit Anyway".into(),
-                    stay_button: "Stay".into(),
-                }
-            });
+            inner.listener.quit_answer(recto_app::listener::QuitAnswer::for_quit(fine, unsaved.len()));
         });
     }
 
@@ -5012,26 +4947,5 @@ mod tests {
         assert_eq!(answer["takes_test_hooks"], !recto_update::RELEASE_BUILD);
         assert_eq!(launch_answers_at_once(vec![]), None);
         assert_eq!(launch_answers_at_once(vec!["--qa".into(), "--build-kind".into()]), None);
-    }
-
-    /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.
-    #[test]
-    fn qa_options_only_go_with_a_qa_run() {
-        let words = |list: &[&str]| list.iter().map(|word| (*word).to_string()).collect::<Vec<_>>();
-        assert!(parse_args(&words(&["--qa-memory-limit-mib", "64"])).is_err());
-        assert!(parse_args(&words(&["--qa-time-limit-ms", "5"])).is_err());
-        assert!(parse_args(&words(&["--qa-owner-pid", "5"])).is_err());
-        assert_eq!(parse_args(&words(&["--qa", "--qa-owner-pid", "77"])).unwrap().owner_pid, Some(77));
-        assert!(
-            parse_args(&words(&["--qa", "--qa-owner-pid", "1"])).is_err(),
-            "launchd adopts orphans, so it'd be no owner"
-        );
-        let parsed = parse_args(&words(&["--qa", "--qa-memory-limit-mib", "64", "/d/a.pdf"])).unwrap();
-        assert!(parsed.qa);
-        assert_eq!(parsed.memory_limit_mib, Some(64));
-        assert_eq!(parsed.open, vec![PathBuf::from("/d/a.pdf")]);
-        assert!(parse_args(&words(&["--nope"])).is_err());
-        assert!(parse_args(&words(&["--qa-memory-limit-mib"])).is_err());
-        assert_eq!(parse_args(&words(&["-psn_0_12345"])).unwrap(), LaunchArgs::default(), "what macOS adds");
     }
 }

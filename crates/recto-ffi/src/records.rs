@@ -2,13 +2,56 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, PaneView, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
+use crate::{AppListener, PaneView, QuitAnswer, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
 use recto_app as app;
+use std::sync::Arc;
 
-/// The app core's listener is the host's: one call each, through the UniFFI listener. The core takes it as a generic, so there's no second trait object.
-impl recto_app::Listener for dyn AppListener {
+/// The app core's listener is the host's: each call forwards, one for one and on the thread it was made on, to the UniFFI listener. The promises are `recto_app::Listener`'s.
+pub(crate) struct HostListener(pub(crate) Arc<dyn AppListener>);
+
+impl app::Listener for HostListener {
     fn model_changed(&self) {
-        AppListener::model_changed(self);
+        self.0.model_changed();
+    }
+
+    fn ops_ready(&self) {
+        self.0.ops_ready();
+    }
+
+    fn qa_request(&self, id: u64, verb: String, value: String) {
+        self.0.qa_request(id, verb, value);
+    }
+
+    fn session_ended(&self) {
+        self.0.session_ended();
+    }
+
+    fn copy_ready(&self) {
+        self.0.copy_ready();
+    }
+
+    fn restore_ready(&self) {
+        self.0.restore_ready();
+    }
+
+    fn quit_answer(&self, answer: app::listener::QuitAnswer) {
+        self.0.quit_answer(answer.into());
+    }
+
+    fn hand_off_quit(&self) {
+        self.0.hand_off_quit();
+    }
+}
+
+impl From<app::listener::QuitAnswer> for QuitAnswer {
+    fn from(answer: app::listener::QuitAnswer) -> Self {
+        Self {
+            go: answer.go,
+            title: answer.title,
+            message: answer.message,
+            quit_button: answer.quit_button,
+            stay_button: answer.stay_button,
+        }
     }
 }
 
