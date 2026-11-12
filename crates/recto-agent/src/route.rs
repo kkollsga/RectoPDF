@@ -37,7 +37,7 @@ impl Command {
             | Self::UpdateDevBuilds { .. }
             | Self::Settings { .. }
             | Self::View { zoom: Some(_), .. } => Runs::App,
-            Self::Open { .. } | Self::Tap { .. } | Self::View { zoom: None, .. } | Self::Find { .. } | Self::Compare { .. } => Runs::Session,
+            Self::View { zoom: None, .. } | Self::Find { .. } => Runs::Session,
         }
     }
 }

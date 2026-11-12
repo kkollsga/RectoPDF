@@ -452,7 +452,12 @@ fn run_local(invocation: &Invocation) -> i32 {
         let mut log = ActivityLog::new(&paths);
         let command = inner.command()?;
         let mut session = Session::new(DrawableLoader);
-        local::run_here(&mut session, &paths, &mut log, &Command::Open { path: file, page: None })?;
+        local::run_here(
+            &mut session,
+            &paths,
+            &mut log,
+            &Command::from(recto_agent::commands::tabs::Open { path: file, page: None }),
+        )?;
         local::run_here(&mut session, &paths, &mut log, &command)
     })();
     finish(tag, json_wanted, &result)
@@ -553,10 +558,10 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         recto_agent::run(
             &mut session,
             Level::Full,
-            &Command::Open {
+            &Command::from(recto_agent::commands::tabs::Open {
                 path: file.clone(),
                 page: None,
-            },
+            }),
         )?;
         let mut searches = Vec::new();
         for query in queries.split(',').filter(|query| !query.trim().is_empty()) {
@@ -621,7 +626,12 @@ fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -
     let mut samples = Vec::new();
     for index in 0..count {
         let link = make_link(file, dir, index)?;
-        local::run_here(&mut session, paths, &mut log, &Command::Open { path: link, page: None })?;
+        local::run_here(
+            &mut session,
+            paths,
+            &mut log,
+            &Command::from(recto_agent::commands::tabs::Open { path: link, page: None }),
+        )?;
         if index + 1 == 2 || index + 1 == count {
             samples.push(json!({ "tabs": index + 1, "footprint_bytes": recto_platform::footprint_bytes() }));
         }

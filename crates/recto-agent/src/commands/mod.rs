@@ -5,6 +5,7 @@
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
 
 pub mod access;
+pub mod compare;
 pub mod editing;
 pub mod export;
 pub mod linking;
@@ -216,6 +217,7 @@ family! {
 family! {
     /// Opening and moving around.
     pub enum Move {
+        Open(tabs::Open),
         Goto(linking::Goto),
         Back(linking::Back),
         Forward(linking::Forward),
@@ -223,6 +225,8 @@ family! {
         Recent(tabs::Recent),
         RecentClear(tabs::RecentClear),
         Close(tabs::Close),
+        Tap(tabs::Tap),
+        Compare(compare::Compare),
     }
 }
 
@@ -344,9 +348,8 @@ const PARTS: &[&[&[Spec]]] = &[
     Start::ROWS,
     &[table::CLI_HELP],
     Read::ROWS,
-    &[table::ROWS_OPEN],
     Move::ROWS,
-    &[table::ROWS_TAP, table::ROWS_COMPARE, table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
+    &[table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
     Edit::ROWS,
     Waits::ROWS,
     Rights::ROWS,

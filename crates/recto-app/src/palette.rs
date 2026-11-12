@@ -278,16 +278,16 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
         "paper.white" => view(Some("white"), None, None, None, None),
         "paper.warm" => view(Some("warm"), None, None, None, None),
         "paper.dark" => view(Some("dark"), None, None, None, None),
-        "compare.separate" => Command::Compare {
+        "compare.separate" => Command::from(recto_agent::commands::compare::Compare {
             tabs: None,
             sync: Some("off".into()),
             off: false,
-        },
-        "compare.synced" => Command::Compare {
+        }),
+        "compare.synced" => Command::from(recto_agent::commands::compare::Compare {
             tabs: None,
             sync: Some("on".into()),
             off: false,
-        },
+        }),
         "edit.undo" => Command::from(recto_agent::commands::editing::Undo { tab: active() }),
         "edit.redo" => Command::from(recto_agent::commands::editing::Redo { tab: active() }),
         "edit.clear_history" => Command::from(recto_agent::commands::editing::ClearHistory { tab: active() }),
@@ -313,13 +313,13 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             pages: "all".into(),
             degrees: 90,
         }),
-        file if file.starts_with(RECENT) => Command::Open {
+        file if file.starts_with(RECENT) => Command::from(recto_agent::commands::tabs::Open {
             path: recent.iter().find(|(key, _)| *key == &file[RECENT.len()..])?.1.into(),
             page: None,
-        },
-        tab if tab.starts_with("tab:") => Command::Tap {
+        }),
+        tab if tab.starts_with("tab:") => Command::from(recto_agent::commands::tabs::Tap {
             tab: format!("#{}", tab.trim_start_matches("tab:")),
-        },
+        }),
         _ => return None,
     })
 }

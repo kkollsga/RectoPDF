@@ -310,53 +310,6 @@ pub(crate) const CLI_HELP: &[Spec] = &[
     },
 ];
 
-pub(crate) const ROWS_OPEN: &[Spec] = &[Spec {
-    name: "open",
-    tag: "open",
-    group: GROUP_MOVE,
-    access: Access::At(Level::Control),
-    summary: "Opens a PDF as the active tab, or goes to its tab if it's already open. A `--page` it doesn't have opens nothing.",
-    args: &[
-        Arg {
-            key: "path",
-            flag: None,
-            kind: Kind::Path,
-            required: true,
-            help: "The PDF.",
-        },
-        Arg {
-            key: "page",
-            flag: Some("--page"),
-            kind: Kind::Page,
-            required: false,
-            help: "The page to land on, counted from 1.",
-        },
-    ],
-    data: AGENT_EXITS_PAGE,
-    emits: &["tab_opened", "tab_activated", "page_changed"],
-    examples: &["recto open report.pdf", "recto open /Users/me/report.pdf --page 12 --json"],
-    ..BASE
-}];
-
-pub(crate) const ROWS_TAP: &[Spec] = &[Spec {
-    name: "tap",
-    tag: "tap",
-    group: GROUP_MOVE,
-    access: Access::At(Level::Control),
-    summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.",
-    args: &[Arg {
-        key: "tab",
-        flag: None,
-        kind: Kind::Tab,
-        required: true,
-        help: "Which tab: `#3`, or part of its name.",
-    }],
-    data: "The sidebar, as `sidebar` gives it.",
-    emits: &["tab_activated"],
-    examples: &["recto tap \"#2\"", "recto tap report"],
-    ..BASE
-}];
-
 pub(crate) const CLI_PERMISSION_SET: &[Spec] = &[Spec {
     name: "permission set",
     tag: "permission_set",
@@ -580,47 +533,6 @@ pub(crate) const CLI_BUDGET_TABS: &[Spec] = &[
         ..BASE
     },
 ];
-
-pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
-    name: "compare",
-    tag: "compare",
-    group: GROUP_MOVE,
-    access: Access::At(Level::ReadOnly),
-    summary: "Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same. Separate scroll, or synced, which keeps them page for page from where it went on. A plain `tap` goes back to one. With no flags it only says. To change it needs Control.",
-    args: &[
-        Arg {
-            key: "tabs",
-            flag: Some("--tabs"),
-            kind: Kind::Text,
-            required: false,
-            help: "Two or three tabs, with commas between, left to right: `#1,#3`, or parts of their names. The active tab stays the one read if it's one of them, and otherwise the first.",
-        },
-        Arg {
-            key: "sync",
-            flag: Some("--sync"),
-            kind: Kind::Choice(&["on", "off"]),
-            required: false,
-            help: "`on` for synced scroll, from where each pane is now, or `off` for separate, the default.",
-        },
-        Arg {
-            key: "off",
-            flag: Some("--off"),
-            kind: Kind::Switch,
-            required: false,
-            help: "Back to one tab, the one being read.",
-        },
-    ],
-    data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length.",
-    emits: &["view_changed"],
-    examples: &[
-        "recto compare",
-        "recto compare --tabs \"#1,#2\"",
-        "recto compare --tabs \"#1,#2,#4\" --sync on",
-        "recto compare --sync off",
-        "recto compare --off",
-    ],
-    ..BASE
-}];
 
 pub(crate) const ROWS_VIEW: &[Spec] = &[Spec {
     name: "view",

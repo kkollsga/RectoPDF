@@ -366,10 +366,10 @@ mod tests {
         run_command(
             &mut session,
             Level::Control,
-            &Command::Open {
+            &Command::from(crate::commands::tabs::Open {
                 path: file.0.clone(),
                 page: None,
-            },
+            }),
         )
         .unwrap();
         session

@@ -178,16 +178,6 @@ pub enum Command {
     Move(commands::Move),
     #[serde(skip)]
     Read(commands::Read),
-    Open {
-        path: PathBuf,
-        /// One-based page to land on.
-        #[serde(default)]
-        page: Option<u32>,
-    },
-    Tap {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
     /// How the app shows pages.
     View {
         #[serde(default)]
@@ -223,18 +213,6 @@ pub enum Command {
         close: bool,
         #[serde(default)]
         limit: Option<u32>,
-    },
-    /// Tabs side by side: which, and separate or synced scroll. With nothing, only says.
-    Compare {
-        /// Tabs by selector, with commas between: `#1,#3`.
-        #[serde(default)]
-        tabs: Option<String>,
-        /// `on` for synced scroll, `off` for separate.
-        #[serde(default)]
-        sync: Option<String>,
-        /// Back to one tab, the one being read.
-        #[serde(default)]
-        off: bool,
     },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
@@ -296,7 +274,7 @@ pub fn acted_tab<L: DocLoader>(session: &Session<L>, command: &Command) -> Optio
 /// Puts the tab a command really acted on in its log entry. `open` learns its tab from its answer.
 pub fn with_acted_tab(mut details: Value, acted: Option<TabId>, result: &Result<Value, AgentError>, command: &Command) -> Value {
     let id = match (command, result) {
-        (Command::Open { .. }, Ok(data)) => data["tab"].as_u64(),
+        (Command::Move(commands::Move::Open(_)), Ok(data)) => data["tab"].as_u64(),
         _ => acted.map(|id| u64::from(id.0)),
     };
     if let Some(id) = id {
@@ -677,17 +655,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Open { path, page } => open(access, path, *page, events),
-        Command::Tap { tab } => {
-            let id = access.with(|s| select(s, tab))?;
-            read_ahead(access, |s| s.wake_for_tap(id));
-            access.with(|s| {
-                let id = select(s, tab)?;
-                let switched = s.tap(id)?;
-                event::switched(s, switched, events);
-                Ok(sidebar_json(s))
-            })
-        }
         Command::View { zoom: Some(_), .. } => {
             Err(
                 AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED)
@@ -701,7 +668,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             zoom: None,
             layout,
         } => view::set(access, [paper, sidebar, agent_icon, layout], events),
-        Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
         Command::Palette { .. } => Err(AgentError::new(
             "palette_needs_app",
             "The palette lists the app's commands, and this session has no app.",
@@ -819,63 +785,6 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
     }
 }
 
-/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
-/// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
-const MAX_COMPARE_SELECTORS: usize = 8;
-
-/// `recto compare`: what the sidebar's ⌘-click and the right-click menu's scroll items do, for an agent. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
-fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>, off: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let usage = |words: String| AgentError::new("usage", words, exit::USAGE);
-    let refused = |error: recto_session::compare::CompareError| AgentError::new(error.code(), error.message(), exit::FAILED);
-    if off && (tabs.is_some() || sync.is_some()) {
-        return Err(usage("`--off` goes alone: it ends the comparison.".into()));
-    }
-    let sync = match sync {
-        None => None,
-        Some("on") => Some(true),
-        Some("off") => Some(false),
-        Some(other) => return Err(usage(format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other)))),
-    };
-    let mut changed = false;
-    if off {
-        changed |= access.with(|s| s.end_compare());
-    }
-    if let Some(list) = tabs {
-        let selectors: Vec<&str> = list
-            .split(',')
-            .map(str::trim)
-            .filter(|word| !word.is_empty())
-            .take(MAX_COMPARE_SELECTORS + 1)
-            .collect();
-        if selectors.len() > MAX_COMPARE_SELECTORS {
-            return Err(refused(recto_session::compare::CompareError::TooMany));
-        }
-        let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
-        recto_session::compare::Comparison::check(&ids).map_err(refused)?;
-        // Each pane is a live document, so each cold one is read here with the session free, as a tap's is, and none with it held.
-        let reading = access.with(|s| s.active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
-        let cold = access.with(|s| s.wake_for_compare(&ids));
-        let loader = access.with(|s| s.loader().clone());
-        for (id, path) in cold {
-            let stamp = recto_platform::file_stamp(&path).ok();
-            let loaded = loader.load(&path);
-            access.with(|s| s.give_woken(id, loaded, stamp));
-        }
-        changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
-    }
-    if let Some(on) = sync {
-        changed |= access.with(|s| s.set_compare_synced(on)).ok_or_else(|| {
-            AgentError::new("not_comparing", "There's no comparison to sync.", exit::NOT_FOUND)
-                .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
-        })?;
-    }
-    let after = access.with(|s| compare_json(s));
-    if changed {
-        events.push(access.with(|s| event::comparison_changed(s)));
-    }
-    Ok(after)
-}
-
 /// What's side by side: each pane's tab, its page and length, the one being read, synced or separate, and what's said about lengths.
 pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     let panes: Vec<Value> = session
@@ -893,77 +802,13 @@ pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     })
 }
 
+/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
 fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
     let Some((id, path)) = access.with(|s| plan(s)) else { return };
     let loader = access.with(|s| s.loader().clone());
     let stamp = recto_platform::file_stamp(&path).ok();
     let loaded = loader.load(&path);
     access.with(|s| s.give_woken(id, loaded, stamp));
-}
-
-fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    require_absolute(path)?;
-    let wrong_page = |pages: u32| {
-        AgentError::new(
-            "no_such_page",
-            format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)),
-            exit::NOT_FOUND,
-        )
-        .then("Open it with a page it has, or with no `--page`.")
-    };
-    let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
-    // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
-    let stamp = recto_platform::file_stamp(path).ok();
-    // A file already open, in a tab gone cold, is read with the session free too.
-    read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)));
-    // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
-    let existing = access.with(|s| {
-        let id = s.tab_for_file(path, stamp)?;
-        // Whether a page is in a protected document would say how long it is.
-        if page.is_some() && s.withheld_from_agents(id) {
-            return Some(Err(protected_refusal()));
-        }
-        let pages = s.pages_in(id);
-        if !fits(pages) {
-            return Some(Err(wrong_page(pages)));
-        }
-        s.go_to_file(path, stamp);
-        Some(Ok(id))
-    });
-    let (id, is_new) = match existing {
-        Some(found) => (found?, false),
-        None => {
-            // The file is read outside the session, so a slow or hostile one holds nobody else up.
-            let loader = access.with(|s| s.loader().clone());
-            let facts = loader.load(path)?;
-            // No tab for a page that isn't there: failing here leaves nothing to explain.
-            if !fits(facts.page_count) {
-                return Err(wrong_page(facts.page_count));
-            }
-            let before = access.with(|s| s.tabs().len());
-            // A closed PDF's history comes back on this route as on any, read with the session free too.
-            let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
-            let history = source.and_then(|source| source.history_of(stamp, path));
-            let id = access.with(|s| s.open_with_facts(path, facts, stamp, history))?;
-            (id, access.with(|s| s.tabs().len()) > before)
-        }
-    };
-    access.with(|s| {
-        if let Some(page) = page {
-            go_to(s, id, page)?;
-        }
-        events.push(if is_new { event::tab_opened(s, id) } else { event::tab_activated(s, id) });
-        if page.is_some() {
-            events.push(page_now(s, id));
-        }
-        let mut data = where_json(s, id);
-        // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
-        if !is_new {
-            data["already_open"] = json!(true);
-            data["open_note"] = json!("That PDF was already open, so this is its tab. A link to a file is the same file.");
-        }
-        Ok(data)
-    })
 }
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
@@ -1552,15 +1397,15 @@ mod tests {
             gate.armed.store(false, Ordering::SeqCst);
             assert_eq!(gate.reads.load(Ordering::SeqCst), 1, "read once");
         };
-        wake(Command::Tap { tab: "#1".into() });
+        wake(Command::from(crate::commands::tabs::Tap { tab: "#1".into() }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(1));
         wake(Command::from(crate::commands::tabs::Close { tab: "#1".into() }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(2));
         // Opening a file whose tab has gone cold.
-        wake(Command::Open {
+        wake(Command::from(crate::commands::tabs::Open {
             path: PathBuf::from("/d/c.pdf"),
             page: None,
-        });
+        }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(3));
     }
 
@@ -1678,19 +1523,31 @@ mod tests {
     #[test]
     fn ambiguous_names_list_candidates_and_never_guess() {
         let mut session = with_tabs(&["Report 2025", "Report 2026", "Invoice"]);
-        let error = run(&mut session, Level::Control, &Command::Tap { tab: "report".into() }).unwrap_err();
+        let error = run(
+            &mut session,
+            Level::Control,
+            &Command::from(crate::commands::tabs::Tap { tab: "report".into() }),
+        )
+        .unwrap_err();
         assert_eq!(error.code, "ambiguous");
         assert_eq!(error.exit, exit::AMBIGUOUS);
         assert_eq!(error.candidates, ["#1", "#2"], "ids to use, and no names outside `untrusted`");
         assert_eq!(error.untrusted.unwrap()["candidates"][0]["name"], "Report 2025");
-        assert!(run(&mut session, Level::Control, &Command::Tap { tab: "invoice".into() }).is_ok());
+        assert!(
+            run(
+                &mut session,
+                Level::Control,
+                &Command::from(crate::commands::tabs::Tap { tab: "invoice".into() })
+            )
+            .is_ok()
+        );
     }
 
     /// Failure: the tap command doesn't reach the session's rule, so agents and QA test something the UI doesn't do.
     #[test]
     fn tap_uses_the_sidebar_rule() {
         let mut session = with_tabs(&["a"]);
-        let result = run(&mut session, Level::Control, &Command::Tap { tab: "#1".into() }).unwrap();
+        let result = run(&mut session, Level::Control, &Command::from(crate::commands::tabs::Tap { tab: "#1".into() })).unwrap();
         assert_eq!(result["toc_open"], false);
     }
 
@@ -1708,13 +1565,13 @@ mod tests {
     fn every_command() -> Vec<Command> {
         let tab = || "#1".to_string();
         vec![
-            Command::Open {
+            Command::from(crate::commands::tabs::Open {
                 path: "/d/a.pdf".into(),
                 page: None,
-            },
+            }),
             Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
             Command::from(crate::commands::reading::Sidebar {}),
-            Command::Tap { tab: tab() },
+            Command::from(crate::commands::tabs::Tap { tab: tab() }),
             Command::from(crate::commands::linking::Goto {
                 tab: tab(),
                 page: Some(1),
@@ -1728,16 +1585,16 @@ mod tests {
             Command::from(crate::commands::tabs::RecentClear {}),
             Command::from(crate::commands::tabs::Close { tab: tab() }),
             Command::from(crate::commands::measure::Budget {}),
-            Command::Compare {
+            Command::from(crate::commands::compare::Compare {
                 tabs: None,
                 sync: None,
                 off: false,
-            },
-            Command::Compare {
+            }),
+            Command::from(crate::commands::compare::Compare {
                 tabs: None,
                 sync: None,
                 off: true,
-            },
+            }),
             Command::from(crate::commands::export::Render {
                 tab: tab(),
                 page: 1,
@@ -2050,10 +1907,12 @@ mod tests {
     #[test]
     fn compare_puts_tabs_side_by_side_and_says_so() {
         let mut session = with_tabs(&["a", "b", "c", "d"]);
-        let compare = |tabs: Option<&str>, sync: Option<&str>, off: bool| Command::Compare {
-            tabs: tabs.map(str::to_string),
-            sync: sync.map(str::to_string),
-            off,
+        let compare = |tabs: Option<&str>, sync: Option<&str>, off: bool| {
+            Command::from(crate::commands::compare::Compare {
+                tabs: tabs.map(str::to_string),
+                sync: sync.map(str::to_string),
+                off,
+            })
         };
         let asked = run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap();
         assert_eq!(asked["comparing"], false);
@@ -2108,7 +1967,7 @@ mod tests {
             "not_comparing"
         );
         run(&mut session, Level::Control, &compare(Some("#2,#4"), None, false)).unwrap();
-        run(&mut session, Level::Control, &Command::Tap { tab: "#4".into() }).unwrap();
+        run(&mut session, Level::Control, &Command::from(crate::commands::tabs::Tap { tab: "#4".into() })).unwrap();
         assert_eq!(
             run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap()["comparing"],
             false,
@@ -3149,10 +3008,10 @@ mod tests {
             "by name",
             "two tabs matched, and saying there's no such tab would be false"
         );
-        let open = Command::Open {
+        let open = Command::from(crate::commands::tabs::Open {
             path: "/d/new.pdf".into(),
             page: None,
-        };
+        });
         let opened = run(&mut s, Level::Control, &open);
         assert_eq!(with_acted_tab(open.log_details(), None, &opened, &open)["tab"], "#3");
     }
@@ -3275,7 +3134,7 @@ mod tests {
         let names: Vec<String> = (0..100).map(|i| format!("same {i}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut s = with_tabs(&names);
-        let error = run(&mut s, Level::Control, &Command::Tap { tab: "same".into() }).unwrap_err();
+        let error = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Tap { tab: "same".into() })).unwrap_err();
         assert_eq!(error.code, "ambiguous");
         assert!(error.candidates.len() <= MAX_CANDIDATES);
     }
@@ -3296,10 +3155,10 @@ mod tests {
             true
         );
         let hostile = format!("/d/a{}\nb.pdf", char::from_u32(0xE0041).unwrap());
-        let open = Command::Open {
+        let open = Command::from(crate::commands::tabs::Open {
             path: hostile.into(),
             page: Some(3),
-        }
+        })
         .log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");
         assert_eq!(open["page"], 3);
@@ -3509,19 +3368,19 @@ mod protected_tests {
                 },
                 Command::from(crate::commands::editing::Edits { tab: tab.clone() }),
                 Command::from(crate::commands::reading::Signatures { tab: tab.clone() }),
-                Command::Open {
+                Command::from(crate::commands::tabs::Open {
                     path: "/d/locked.pdf".into(),
                     page: Some(7),
-                },
-                Command::Open {
+                }),
+                Command::from(crate::commands::tabs::Open {
                     path: "/d/locked.pdf".into(),
                     page: None,
-                },
-                Command::Compare {
+                }),
+                Command::from(crate::commands::compare::Compare {
                     tabs: Some("#1,#2".into()),
                     sync: None,
                     off: false,
-                },
+                }),
             ];
             for command in &commands {
                 match run(&mut session, level, command) {
@@ -3565,11 +3424,11 @@ mod protected_tests {
             let _ = run(
                 &mut session,
                 Level::Full,
-                &Command::Compare {
+                &Command::from(crate::commands::compare::Compare {
                     tabs: None,
                     sync: None,
                     off: true,
-                },
+                }),
             );
             if session.active() != Some(id) {
                 session.tap(id).unwrap();

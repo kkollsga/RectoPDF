@@ -143,7 +143,6 @@ pub fn render(tag: &str, data: &Value) -> String {
     }
     match tag {
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
-        "open" => place(data),
         "palette" => {
             let mut out = String::new();
             if let Some(ran) = data["ran"].as_object() {
@@ -171,34 +170,6 @@ pub fn render(tag: &str, data: &Value) -> String {
             out.trim_end().to_string()
         }
         "find" => find(data),
-        "tap" => sidebar(data),
-        "compare" => match data["panes"].as_array() {
-            Some(panes) if !panes.is_empty() => {
-                let list: Vec<String> = panes
-                    .iter()
-                    .map(|pane| {
-                        format!(
-                            "#{} {} ({}){}",
-                            pane["tab"],
-                            text(&pane["untrusted"]["name"]),
-                            if pane["protected"] == true {
-                                "protected".to_string()
-                            } else {
-                                format!("page {} of {}", pane["page"], pane["pages"])
-                            },
-                            if pane["reading"] == true { ", read" } else { "" }
-                        )
-                    })
-                    .collect();
-                format!(
-                    "Side by side: {}. Scroll: {}.{}",
-                    list.join(", "),
-                    if data["sync"] == "on" { "synced" } else { "separate" },
-                    data["note"].as_str().map(|note| format!(" {note}")).unwrap_or_default()
-                )
-            }
-            _ => "One tab showing, no comparison.".to_string(),
-        },
         "view" => format!(
             "Paper: {}. Sidebar: {}. Agent icon: {}.{}",
             text(&data["paper"]),

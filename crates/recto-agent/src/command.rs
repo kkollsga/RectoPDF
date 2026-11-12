@@ -16,10 +16,7 @@ impl Command {
             Self::Waits(command) => command.tag(),
             Self::Rights(command) => command.tag(),
             Self::Session(command) => command.tag(),
-            Self::Open { .. } => "open",
-            Self::Tap { .. } => "tap",
             Self::View { .. } => "view",
-            Self::Compare { .. } => "compare",
             Self::Palette { .. } => "palette",
             Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
@@ -59,12 +56,6 @@ impl Command {
                 layout: None,
             } => row(),
             Self::View { .. } => Access::At(Level::Control),
-            Self::Compare {
-                tabs: None,
-                sync: None,
-                off: false,
-            } => row(),
-            Self::Compare { .. } => Access::At(Level::Control),
             // Running a command is doing it, as its menu item would.
             Self::Palette { run: true, .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
@@ -74,8 +65,6 @@ impl Command {
             Self::Palette { .. }
             | Self::Settings { .. }
             | Self::UpdateDevBuilds { .. }
-            | Self::Open { .. }
-            | Self::Tap { .. }
             | Self::Find { .. }
             | Self::QaRead { .. }
             | Self::QaDrive { .. }
@@ -101,10 +90,7 @@ impl Command {
             Self::Waits(command) => command.draws(),
             Self::Rights(command) => command.draws(),
             Self::Session(command) => command.draws(),
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
+            Self::View { .. }
             | Self::Palette { .. }
             | Self::Find { .. }
             | Self::QaRead { .. }
@@ -133,10 +119,7 @@ impl Command {
             Self::Waits(command) => command.reads_pages(),
             Self::Rights(command) => command.reads_pages(),
             Self::Session(command) => command.reads_pages(),
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
+            Self::View { .. }
             | Self::Palette { .. }
             | Self::Find { .. }
             | Self::QaRead { .. }
@@ -165,10 +148,7 @@ impl Command {
             Self::Waits(command) => command.protected_ok(),
             Self::Rights(command) => command.protected_ok(),
             Self::Session(command) => command.protected_ok(),
-            Self::Tap { .. } => true,
-            Self::Open { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
+            Self::View { .. }
             | Self::Palette { .. }
             | Self::Find { .. }
             | Self::QaRead { .. }
@@ -197,10 +177,8 @@ impl Command {
             Self::Waits(command) => command.tab(),
             Self::Rights(command) => command.tab(),
             Self::Session(command) => command.tab(),
-            Self::Tap { tab } | Self::SessionSleep { tab } => Some(tab),
-            Self::Open { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
+            Self::SessionSleep { tab } => Some(tab),
+            Self::View { .. }
             | Self::Palette { .. }
             | Self::Find { .. }
             | Self::QaRead { .. }
@@ -219,7 +197,6 @@ impl Command {
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
     pub fn log_details(&self) -> Value {
-        let file = crate::commands::log_file;
         let tab_of = crate::commands::log_tab;
         match self {
             Self::Measure(command) => command.log_details(),
@@ -230,13 +207,11 @@ impl Command {
             Self::Waits(command) => command.log_details(),
             Self::Rights(command) => command.log_details(),
             Self::Session(command) => command.log_details(),
-            Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
-            Self::Tap { tab } | Self::SessionSleep { tab } => json!({ "tab": tab_of(tab) }),
+            Self::SessionSleep { tab } => json!({ "tab": tab_of(tab) }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
             Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),
-            Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
             Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
             // Not what's looked for: that's the document's business, as a search's words are.
             Self::Find {
