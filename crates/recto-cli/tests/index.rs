@@ -428,11 +428,13 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     let file = doc("tabs.pdf", 3);
     let folder = file.0.parent().unwrap().join("links");
     std::fs::create_dir_all(&folder).unwrap();
+    // Over one connection: what's held is the session's, and a process for each open cost 3 s on CI.
+    let mut raw = Raw::connect(&state);
     for at in 0..200 {
         let link = folder.join(format!("t{at}.pdf"));
         std::fs::copy(&file.0, &link).unwrap();
-        let (opened, code) = state.json(&["open", link.to_str().unwrap()]);
-        assert_eq!(code, 0, "{opened}");
+        let opened = raw.call(&common::open_cmd(&link));
+        assert_eq!(opened["ok"], true, "{opened}");
     }
     assert!(!state.paths.corpus.exists(), "opening 200 tabs wrote to the corpus folder");
     std::thread::sleep(Duration::from_millis(100));
