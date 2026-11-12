@@ -454,7 +454,7 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.password_asks)
+                let path = lock(&inner.prompts.passwords)
                     .showing()
                     .map(|ask| ask.path.clone())
                     .ok_or_else(|| bad("No password sheet is open."))?;

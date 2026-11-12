@@ -1363,14 +1363,10 @@ struct Inner {
     action_notice: Mutex<Option<String>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     keys: Arc<recto_reader::engine::Keyring>,
-    /// Passwords being asked for, in turn, on the system's sheet, and what each file's tries have come to.
-    password_asks: Mutex<passwords::Asks>,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
     notice_tab: AtomicU32,
-    /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
-    link_prompt: Mutex<Option<recto_app::linking::LinkPrompt>>,
-    /// Link sheets asked so far, which numbers each.
-    link_prompts_made: AtomicU64,
+    /// The sheets that ask: a password, or whether to open a link.
+    prompts: recto_app::prompts::Prompts,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
@@ -2029,10 +2025,8 @@ impl AppCore {
             chrome: recto_app::chrome::Chrome::default(),
             printing: printing::Printing::default(),
             keys,
-            password_asks: Mutex::new(passwords::Asks::default()),
             notice_tab: AtomicU32::new(0),
-            link_prompt: Mutex::new(None),
-            link_prompts_made: AtomicU64::new(0),
+            prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
             palette: Mutex::new(palette::State::default()),
             find_field: Mutex::new(find::Field::default()),
@@ -2435,7 +2429,7 @@ impl AppCore {
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        let mut asks = lock(&self.inner.password_asks);
+        let mut asks = lock(&self.inner.prompts.passwords);
         let Some(typed) = password else {
             asks.cancel(id);
             drop(asks);
@@ -2462,7 +2456,7 @@ impl AppCore {
             core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
         });
         if spawned.is_err() {
-            lock(&self.inner.password_asks).failed(id);
+            lock(&self.inner.prompts.passwords).failed(id);
         }
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -2783,7 +2777,7 @@ impl AppCore {
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        let mut asked = lock(&self.inner.link_prompt);
+        let mut asked = lock(&self.inner.prompts.link);
         // An answer is to the sheet that was shown: a later link's asking is left for its own answer.
         if asked.as_ref().is_none_or(|prompt| prompt.id != id) {
             return None;
@@ -3682,11 +3676,11 @@ fn session_thread(inner: &Arc<Inner>) {
                     let identity = stamp.map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0));
                     match identity {
                         None => {
-                            lock(&inner.password_asks).failed(ask.id);
+                            lock(&inner.prompts.passwords).failed(ask.id);
                             *lock(&inner.open_failure) = Some(passwords::CANT_KEEP.to_string());
                         }
                         Some(identity) => {
-                            lock(&inner.password_asks).opened(ask.id);
+                            lock(&inner.prompts.passwords).opened(ask.id);
                             inner.keys.set(identity, password);
                             for engine in inner.panes.engines(&inner.engine) {
                                 engine.key_given(&ask.path);
@@ -3702,12 +3696,12 @@ fn session_thread(inner: &Arc<Inner>) {
                     }
                 }
                 Err(OpenError::PasswordNeeded) => {
-                    if lock(&inner.password_asks).wrong(ask.id) == passwords::Wrong::Stopped {
+                    if lock(&inner.prompts.passwords).wrong(ask.id) == passwords::Wrong::Stopped {
                         *lock(&inner.action_notice) = Some(passwords::stopped_asking());
                     }
                 }
                 Err(error) => {
-                    lock(&inner.password_asks).failed(ask.id);
+                    lock(&inner.prompts.passwords).failed(ask.id);
                     *lock(&inner.open_failure) = Some(error.message().to_string());
                 }
             },
@@ -3806,7 +3800,7 @@ fn session_thread(inner: &Arc<Inner>) {
                     let tab = session.tab_for_path(&path);
                     (tab, tab.and_then(|id| session.path_of(id)))
                 });
-                lock(&inner.password_asks).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
+                lock(&inner.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
                 let cold = host
                     .session
                     .with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
@@ -4216,7 +4210,7 @@ impl FileReads {
                 }
                 // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
                 Err(SessionError::Open(OpenError::PasswordNeeded)) => {
-                    lock(&inner.password_asks).ask(passwords::Target::File, &path);
+                    lock(&inner.prompts.passwords).ask(passwords::Target::File, &path);
                 }
                 Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
             },
@@ -4288,7 +4282,7 @@ fn follow_link(inner: &Inner, pane: usize, engine: &Engine, hit: recto_reader::l
         },
         recto_core::nav::LinkTarget::History { back } => inner.core.push(CoreCall::Step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
-            *lock(&inner.link_prompt) = Some(linking::prompt_for(inner.link_prompts_made.fetch_add(1, Ordering::SeqCst) + 1, &address));
+            inner.prompts.ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
         recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
@@ -4523,7 +4517,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             active,
         )
     });
-    let asked = lock(&inner.password_asks).tabs_asked();
+    let asked = lock(&inner.prompts.passwords).tabs_asked();
     let closed: Vec<TabId> = if asked.is_empty() {
         Vec::new()
     } else {
@@ -4533,14 +4527,14 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             .with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect())
     };
     let password_prompt = {
-        let mut asks = lock(&inner.password_asks);
+        let mut asks = lock(&inner.prompts.passwords);
         asks.showing_tab(active_tab, &closed);
         if let Some((id, path)) = wants
             && !asks.declined(id)
         {
             asks.ask(passwords::Target::Tab(id), &path);
         }
-        asks.prompt()
+        asks.prompt().map(Into::into)
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
@@ -4604,7 +4598,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
     reader.save_problem = inner.save_ui.problem();
-    reader.link_prompt = lock(&inner.link_prompt).clone().map(Into::into);
+    reader.link_prompt = lock(&inner.prompts.link).clone().map(Into::into);
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
     let recto_app::SidebarParts {
