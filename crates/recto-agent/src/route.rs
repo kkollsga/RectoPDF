@@ -19,15 +19,11 @@ impl Command {
     /// Where this is answered. Spelled out for every command, so a new one can't go to the wrong place by default.
     pub fn route(&self) -> Runs {
         match self {
-            Self::Status {}
-            | Self::LevelChanged {}
-            | Self::PermissionShow {}
-            | Self::PermissionRequest { .. }
-            | Self::Wait { .. }
-            | Self::Watch { .. }
-            | Self::WatchStop {}
-            | Self::Log { .. }
-            | Self::Stop {} => Runs::Server,
+            Self::Read(command) => command.route(),
+            Self::Start(command) => command.route(),
+            Self::Waits(command) => command.route(),
+            Self::Rights(command) => command.route(),
+            Self::Session(command) => command.route(),
             Self::SessionSleep { .. } | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Runs::Record,
             Self::QaRead { .. }
             | Self::QaDrive { .. }
@@ -39,11 +35,8 @@ impl Command {
             | Self::Settings { .. }
             | Self::View { zoom: Some(_), .. } => Runs::App,
             Self::Open { .. }
-            | Self::Tabs { .. }
-            | Self::Sidebar {}
             | Self::Tap { .. }
             | Self::Goto { .. }
-            | Self::Links { .. }
             | Self::Follow { .. }
             | Self::Back { .. }
             | Self::Forward { .. }
@@ -54,25 +47,8 @@ impl Command {
             | Self::View { zoom: None, .. }
             | Self::Find { .. }
             | Self::Compare { .. }
-            | Self::Render { .. }
-            | Self::ExportSvg { .. }
-            | Self::Images { .. }
-            | Self::Image { .. }
-            | Self::Snapshot { .. }
-            | Self::Print { .. }
-            | Self::Text { .. }
-            | Self::Select { .. }
-            | Self::Copy { .. }
             | Self::BudgetRender { .. }
             | Self::BudgetViewport { .. }
-            | Self::Where { .. }
-            | Self::Facts { .. }
-            | Self::Contents { .. }
-            | Self::Search { .. }
-            | Self::Index { .. }
-            | Self::IndexStatus { .. }
-            | Self::IndexClear { .. }
-            | Self::Signatures { .. }
             | Self::Edits { .. }
             | Self::PageMove { .. }
             | Self::PageRotate { .. }
@@ -82,8 +58,7 @@ impl Command {
             | Self::Redo { .. }
             | Self::Discard { .. }
             | Self::ClearHistory { .. }
-            | Self::Save { .. }
-            | Self::Sign {} => Runs::Session,
+            | Self::Save { .. } => Runs::Session,
         }
     }
 }

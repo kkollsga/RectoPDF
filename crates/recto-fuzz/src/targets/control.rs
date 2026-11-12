@@ -5,6 +5,7 @@
 use crate::guard::{Budget, within};
 use crate::input::Take;
 use crate::targets::NamedLoader;
+use recto_agent::commands::{Rights, Waits};
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, parse};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost};
@@ -162,7 +163,12 @@ fn asks_to_wait(bytes: &[u8]) -> bool {
         std::str::from_utf8(line.trim_ascii())
             .ok()
             .and_then(|line| parse(line).ok())
-            .is_some_and(|command| matches!(command, Command::Wait { .. } | Command::Watch { .. } | Command::PermissionRequest { .. }))
+            .is_some_and(|command| {
+                matches!(
+                    command,
+                    Command::Waits(Waits::Wait(_) | Waits::Watch(_)) | Command::Rights(Rights::PermissionRequest(_))
+                )
+            })
     })
 }
 

@@ -5,6 +5,7 @@
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
 pub mod agreement;
+pub mod commands;
 pub mod event;
 #[cfg(test)]
 mod event_agreement;
@@ -26,6 +27,7 @@ mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
+mod view;
 pub use route::{Runs, qa_needs_app, update_needs_app};
 #[cfg(test)]
 mod registry_golden;
@@ -123,11 +125,11 @@ impl Level {
     }
 }
 
-fn active_tab() -> String {
+pub(crate) fn active_tab() -> String {
     "active".into()
 }
 
-fn default_wait_ms() -> u64 {
+pub(crate) fn default_wait_ms() -> u64 {
     DEFAULT_WAIT_MS
 }
 
@@ -158,21 +160,23 @@ pub enum Condition {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    // The families: each reads its own commands, by `parse`.
+    #[serde(skip)]
+    Start(commands::Start),
+    #[serde(skip)]
+    Waits(commands::Waits),
+    #[serde(skip)]
+    Rights(commands::Rights),
+    #[serde(skip)]
+    Session(commands::Session),
+    #[serde(skip)]
+    Read(commands::Read),
     Open {
         path: PathBuf,
         /// One-based page to land on.
         #[serde(default)]
         page: Option<u32>,
     },
-    Tabs {
-        /// Tabs to skip, from `next_from` in the last answer.
-        #[serde(default)]
-        from: Option<u32>,
-        #[serde(default)]
-        limit: Option<u32>,
-    },
-    // Empty braces, not unit variants: serde ignores extra fields on a unit variant, even with `deny_unknown_fields`.
-    Sidebar {},
     Tap {
         #[serde(default = "active_tab")]
         tab: String,
@@ -185,12 +189,6 @@ pub enum Command {
         page: Option<u32>,
         #[serde(default)]
         label: Option<String>,
-    },
-    /// A page's links, and where each goes.
-    Links {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
     },
     /// Follows a link within the document, as a click does. Never a web address.
     Follow {
@@ -279,137 +277,6 @@ pub enum Command {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Draws a page to a PNG file.
-    Render {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-        /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
-        #[serde(default = "render::default_scale", deserialize_with = "render::scale_or_max")]
-        scale: f32,
-        out: PathBuf,
-        /// Draws a page of a file that asks not to be copied. Only once the user has said to; logged.
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// Writes a page, or a box on it, to a new SVG file.
-    ExportSvg {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-        out: PathBuf,
-        /// `x, y, width, height`, in points from the page's top left.
-        #[serde(default)]
-        rect: Option<[f32; 4]>,
-        /// `both`, `paths` or `selectable`.
-        #[serde(default)]
-        text: Option<String>,
-        /// The scale of anything that has to go as a picture.
-        #[serde(default = "render::default_scale")]
-        scale: f32,
-        /// Takes out of JPEGs what isn't the picture, and the document's title.
-        #[serde(default)]
-        strip_metadata: bool,
-        /// Exports a page of a file that asks not to be copied. Only once the user has said to; logged.
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// Where a page's images are, and what each is.
-    Images {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-    },
-    /// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG.
-    Image {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-        /// From 1, as `images` lists them.
-        number: u32,
-        out: PathBuf,
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// A box on a page as PNG, JPG, SVG or text.
-    Snapshot {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-        /// `x, y, width, height`, in points from the page's top left, as it's shown.
-        rect: [f32; 4],
-        /// `png`, `jpg`, `svg` or `text`.
-        #[serde(rename = "as")]
-        format: String,
-        #[serde(default)]
-        out: Option<PathBuf>,
-        #[serde(default = "render::default_scale")]
-        scale: f32,
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// Pages printed to a new PDF, through what the app prints with.
-    Print {
-        #[serde(default = "active_tab")]
-        tab: String,
-        /// `4`, `4-6` or `4-`: all of them if left out.
-        #[serde(default)]
-        pages: Option<String>,
-        #[serde(default = "print::default_dpi")]
-        dpi: u32,
-        to_pdf: PathBuf,
-        /// Prints a file that asks not to be copied to a PDF. Only once the user has said to; logged. Print to paper never asks.
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// A page's text, normalised for search, with the hidden-text flag.
-    Text {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-    },
-    /// What a click, a drag or a range of characters takes: the text, and where it shows on each page.
-    Select {
-        #[serde(default = "active_tab")]
-        tab: String,
-        #[serde(default)]
-        page: Option<u32>,
-        #[serde(default)]
-        to_page: Option<u32>,
-        #[serde(default)]
-        chars: Option<String>,
-        #[serde(default)]
-        at: Option<String>,
-        #[serde(default)]
-        to: Option<String>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        all: bool,
-        #[serde(default)]
-        anyway: bool,
-    },
-    /// The text ⌘C would put on the clipboard for the same pick. It comes back here, and no clipboard is touched.
-    Copy {
-        #[serde(default = "active_tab")]
-        tab: String,
-        #[serde(default)]
-        page: Option<u32>,
-        #[serde(default)]
-        to_page: Option<u32>,
-        #[serde(default)]
-        chars: Option<String>,
-        #[serde(default)]
-        at: Option<String>,
-        #[serde(default)]
-        to: Option<String>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        all: bool,
-        #[serde(default)]
-        anyway: bool,
-    },
     /// What a worker costs: idle, per page, peak, and how often it was retired.
     BudgetRender {
         #[serde(default = "active_tab")]
@@ -450,80 +317,6 @@ pub enum Command {
         /// `per_tile` or `region`, for comparing with the default, which picks by page.
         #[serde(default)]
         strategy: Option<String>,
-    },
-    /// Where a tab is: its page, its length and whether it has unsaved edits.
-    Where {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// A document's facts: pages, size, version, what could be read of its structure.
-    Facts {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// A document's contents, in pieces.
-    Contents {
-        #[serde(default = "active_tab")]
-        tab: String,
-        /// Entries to skip, from `next_from` in the last answer.
-        #[serde(default)]
-        from: Option<u32>,
-        #[serde(default)]
-        limit: Option<u32>,
-        /// Deepest nesting to include. 0 is the top level.
-        #[serde(default)]
-        depth: Option<u8>,
-        /// The ones made from the document's headings, rather than the file's own.
-        #[serde(default)]
-        generated: bool,
-    },
-    /// Finds words across a document, from its index if that's finished, and otherwise by reading its pages.
-    Search {
-        #[serde(default = "active_tab")]
-        tab: String,
-        query: String,
-        /// `4` or `4-6`. All pages if left out.
-        #[serde(default)]
-        pages: Option<String>,
-        #[serde(default)]
-        limit: Option<u32>,
-        /// Reads the pages even if there's an index, to check one against the other.
-        #[serde(default)]
-        scan: bool,
-        /// The query is a regular expression, run by ripgrep's engine in this process.
-        #[serde(default)]
-        regex: bool,
-        /// Best pages first, by a count of the words, and not every hit.
-        #[serde(default)]
-        rank: bool,
-        /// Lines around each hit.
-        #[serde(default)]
-        context: Option<u32>,
-    },
-    /// Asks for a document's search index to be built if it isn't, and says where it stands. Never waits.
-    Index {
-        #[serde(default = "active_tab")]
-        tab: String,
-        /// Also writes the folder an agent reads, one file per page, once the index is finished.
-        #[serde(default)]
-        agent: bool,
-    },
-    /// Where a document's search index stands. Starts nothing.
-    IndexStatus {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// Throws away a document's search index, or all of them. It's extracted text, so someone may want it gone.
-    IndexClear {
-        #[serde(default = "active_tab")]
-        tab: String,
-        #[serde(default)]
-        all: bool,
-    },
-    /// What the file says about signatures. Facts only, never a verdict.
-    Signatures {
-        #[serde(default = "active_tab")]
-        tab: String,
     },
     /// The unsaved page edits on a tab.
     Edits {
@@ -587,47 +380,6 @@ pub enum Command {
         #[serde(default)]
         replace: bool,
     },
-    /// Never reachable by an agent. It exists to say so.
-    Sign {},
-    /// The session: is it there, which version, what level.
-    Status {},
-    PermissionShow {},
-    /// Asks the user for more access. Grants nothing by itself.
-    PermissionRequest {
-        level: Level,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-    },
-    /// The level's file changed: read it again. Carries no level, so it can't raise one.
-    LevelChanged {},
-    /// Blocks until a condition holds, or the time runs out.
-    Wait {
-        condition: Condition,
-        #[serde(default = "active_tab")]
-        tab: String,
-        #[serde(default)]
-        page: Option<u32>,
-        #[serde(default = "default_wait_ms")]
-        timeout_ms: u64,
-    },
-    /// Streams events, one line each.
-    Watch {
-        #[serde(default)]
-        events: Option<Vec<String>>,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-        #[serde(default)]
-        count: Option<u32>,
-    },
-    /// Ends every watch running on this session.
-    WatchStop {},
-    /// What agents have done, newest last.
-    Log {
-        #[serde(default)]
-        last: Option<u32>,
-    },
-    /// Ends the session.
-    Stop {},
     /// What the state record holds and what's become of it.
     SessionShow {},
     /// Writes the state record now and reads it back.
@@ -664,12 +416,14 @@ impl Command {
     /// The name on the wire, which is the first column of the command table with spaces as underscores. Spelled out so a new command can't compile without one.
     pub fn tag(&self) -> &'static str {
         match self {
+            Self::Read(command) => command.tag(),
+            Self::Start(command) => command.tag(),
+            Self::Waits(command) => command.tag(),
+            Self::Rights(command) => command.tag(),
+            Self::Session(command) => command.tag(),
             Self::Open { .. } => "open",
-            Self::Tabs { .. } => "tabs",
-            Self::Sidebar {} => "sidebar",
             Self::Tap { .. } => "tap",
             Self::Goto { .. } => "goto",
-            Self::Links { .. } => "links",
             Self::Follow { .. } => "follow",
             Self::Back { .. } => "back",
             Self::Forward { .. } => "forward",
@@ -683,25 +437,8 @@ impl Command {
             Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
-            Self::Render { .. } => "render",
-            Self::ExportSvg { .. } => "export_svg",
-            Self::Images { .. } => "images",
-            Self::Image { .. } => "image",
-            Self::Snapshot { .. } => "snapshot",
-            Self::Print { .. } => "print",
-            Self::Text { .. } => "text",
-            Self::Select { .. } => "select",
-            Self::Copy { .. } => "copy",
             Self::BudgetRender { .. } => "budget_render",
             Self::BudgetViewport { .. } => "budget_viewport",
-            Self::Where { .. } => "where",
-            Self::Facts { .. } => "facts",
-            Self::Contents { .. } => "contents",
-            Self::Search { .. } => "search",
-            Self::Index { .. } => "index",
-            Self::IndexStatus { .. } => "index_status",
-            Self::IndexClear { .. } => "index_clear",
-            Self::Signatures { .. } => "signatures",
             Self::Edits { .. } => "edits",
             Self::PageMove { .. } => "page_move",
             Self::PageRotate { .. } => "page_rotate",
@@ -713,16 +450,6 @@ impl Command {
             Self::ClearHistory { .. } => "clear_history",
             Self::SessionSleep { .. } => "session_sleep",
             Self::Save { .. } => "save",
-            Self::Sign {} => "sign",
-            Self::Status {} => "status",
-            Self::PermissionShow {} => "permission_show",
-            Self::PermissionRequest { .. } => "permission_request",
-            Self::LevelChanged {} => "level_changed",
-            Self::Wait { .. } => "wait",
-            Self::Watch { .. } => "watch",
-            Self::WatchStop {} => "watch_stop",
-            Self::Log { .. } => "log",
-            Self::Stop {} => "stop",
             Self::SessionShow {} => "session_show",
             Self::SessionSave {} => "session_save",
             Self::SessionRestore {} => "session_restore",
@@ -738,6 +465,11 @@ impl Command {
     /// Who may run this. From the command table, with the one case the table can't express.
     pub fn access(&self) -> Access {
         match self {
+            Self::Read(command) => command.access(),
+            Self::Start(command) => command.access(),
+            Self::Waits(command) => command.access(),
+            Self::Rights(command) => command.access(),
+            Self::Session(command) => command.access(),
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
             // Asking how things are shown changes nothing. Changing it is moving around.
@@ -761,8 +493,6 @@ impl Command {
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // The same for development builds: the switch is what lets a build that isn't a release replace the app.
             Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
-            // Text comes back in the answer, as `copy` gives it. A file written is an export.
-            Self::Snapshot { format, out: None, .. } if !extract::snapshot_writes(format) => Access::At(Level::ReadOnly),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -770,21 +500,15 @@ impl Command {
 
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
-        matches!(
-            self,
-            Self::Render { .. }
-                | Self::ExportSvg { .. }
-                | Self::Images { .. }
-                | Self::Image { .. }
-                | Self::Snapshot { .. }
-                | Self::Print { .. }
-                | Self::Text { .. }
-                | Self::Select { .. }
-                | Self::Copy { .. }
-                | Self::Search { .. }
-                | Self::BudgetRender { .. }
-                | Self::BudgetViewport { .. }
-        )
+        match self {
+            Self::Read(command) => return command.draws(),
+            Self::Start(command) => return command.draws(),
+            Self::Waits(command) => return command.draws(),
+            Self::Rights(command) => return command.draws(),
+            Self::Session(command) => return command.draws(),
+            _ => {}
+        }
+        matches!(self, Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
@@ -800,73 +524,23 @@ impl Command {
             }
         };
         match self {
+            Self::Read(command) => command.log_details(),
+            Self::Start(command) => command.log_details(),
+            Self::Waits(command) => command.log_details(),
+            Self::Rights(command) => command.log_details(),
+            Self::Session(command) => command.log_details(),
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            Self::Render { tab, page, out, anyway, .. } | Self::ExportSvg { tab, page, out, anyway, .. } => {
-                json!({ "tab": tab_of(tab), "page": page, "anyway": anyway, "untrusted": file(out) })
-            }
-            Self::Text { tab, page } | Self::Links { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             // A label is from the file, so it isn't kept: only that one was asked for.
             Self::Goto { tab, page, label } => json!({ "tab": tab_of(tab), "page": page, "by_label": label.is_some() }),
             Self::Follow { tab, page, link } => json!({ "tab": tab_of(tab), "page": page, "link": link }),
             Self::Back { tab } | Self::Forward { tab } => json!({ "tab": tab_of(tab) }),
-            Self::Images { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
-            Self::Image {
-                tab,
-                page,
-                number,
-                out,
-                anyway,
-            } => json!({ "tab": tab_of(tab), "page": page, "number": number, "anyway": anyway, "untrusted": file(out) }),
-            // Which page and format, and not where on it.
-            Self::Print {
-                tab,
-                pages,
-                dpi,
-                to_pdf,
-                anyway,
-            } => json!({ "tab": tab_of(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "anyway": anyway, "untrusted": file(to_pdf) }),
-            Self::Snapshot {
-                tab,
-                page,
-                format,
-                out,
-                anyway,
-                ..
-            } => json!({ "tab": tab_of(tab), "page": page, "as": recto_core::clean_line(format), "anyway": anyway, "untrusted": out.as_deref().map(file) }),
-            // Which pages, and not where on them or what's there.
-            Self::Select {
-                tab,
-                page,
-                to_page,
-                all,
-                anyway,
-                ..
-            }
-            | Self::Copy {
-                tab,
-                page,
-                to_page,
-                all,
-                anyway,
-                ..
-            } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            // Making generated contents starts a helper, which is heavier work than reading the file's own, so the log can tell them apart.
-            Self::Contents { tab, generated: true, .. } => json!({ "tab": tab_of(tab), "generated": true }),
             Self::Tap { tab }
             | Self::Close { tab }
-            | Self::Where { tab }
-            | Self::Facts { tab }
-            | Self::Contents { tab, .. }
-            | Self::Search { tab, .. }
-            | Self::Index { tab, .. }
-            | Self::IndexStatus { tab }
-            | Self::IndexClear { tab, .. }
-            | Self::Signatures { tab }
             | Self::Edits { tab }
             | Self::Undo { tab }
             | Self::Redo { tab }
@@ -876,7 +550,6 @@ impl Command {
             | Self::Save { tab, out: None, .. }
             | Self::BudgetRender { tab, .. }
             | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
-            Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
@@ -890,18 +563,7 @@ impl Command {
             Self::Recent {}
             | Self::RecentClear {}
             | Self::View { .. }
-            | Self::Wait { .. }
-            | Self::Watch { .. }
-            | Self::WatchStop {}
-            | Self::Log { .. }
-            | Self::Tabs { .. }
-            | Self::Sidebar {}
             | Self::Budget {}
-            | Self::Sign {}
-            | Self::Status {}
-            | Self::PermissionShow {}
-            | Self::LevelChanged {}
-            | Self::Stop {}
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -915,55 +577,41 @@ impl Command {
 impl Command {
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
-        matches!(
-            self,
-            Self::Text { .. }
-                | Self::Render { .. }
-                | Self::ExportSvg { .. }
-                | Self::Select { .. }
-                | Self::Copy { .. }
-                | Self::Search { .. }
-                | Self::Index { .. }
-                | Self::BudgetRender { .. }
-                | Self::BudgetViewport { .. }
-                | Self::Links { .. }
-                | Self::Follow { .. }
-                | Self::Images { .. }
-                | Self::Image { .. }
-                | Self::Snapshot { .. }
-                | Self::Print { .. }
-        )
+        match self {
+            Self::Read(command) => return command.reads_pages(),
+            Self::Start(command) => return command.reads_pages(),
+            Self::Waits(command) => return command.reads_pages(),
+            Self::Rights(command) => return command.reads_pages(),
+            Self::Session(command) => return command.reads_pages(),
+            _ => {}
+        }
+        matches!(self, Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Follow { .. })
+    }
+
+    /// Whether it reads nothing of a document, so it may act on one the user opened with its password.
+    fn protected_ok(&self) -> bool {
+        match self {
+            Self::Read(command) => command.protected_ok(),
+            Self::Start(command) => command.protected_ok(),
+            Self::Waits(command) => command.protected_ok(),
+            Self::Rights(command) => command.protected_ok(),
+            Self::Session(command) => command.protected_ok(),
+            _ => matches!(self, Self::Close { .. } | Self::Tap { .. }),
+        }
     }
 
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
+            Self::Read(command) => command.tab(),
             Self::Tap { tab }
             | Self::Goto { tab, .. }
-            | Self::Links { tab, .. }
             | Self::Follow { tab, .. }
             | Self::Back { tab }
             | Self::Forward { tab }
             | Self::Close { tab }
-            | Self::Render { tab, .. }
-            | Self::ExportSvg { tab, .. }
-            | Self::Images { tab, .. }
-            | Self::Image { tab, .. }
-            | Self::Snapshot { tab, .. }
-            | Self::Print { tab, .. }
-            | Self::Text { tab, .. }
-            | Self::Select { tab, .. }
-            | Self::Copy { tab, .. }
             | Self::BudgetRender { tab, .. }
             | Self::BudgetViewport { tab, .. }
-            | Self::Where { tab }
-            | Self::Facts { tab }
-            | Self::Contents { tab, .. }
-            | Self::Search { tab, .. }
-            | Self::Index { tab, .. }
-            | Self::IndexStatus { tab }
-            | Self::IndexClear { tab, .. }
-            | Self::Signatures { tab }
             | Self::Edits { tab }
             | Self::PageMove { tab, .. }
             | Self::PageRotate { tab, .. }
@@ -974,8 +622,11 @@ impl Command {
             | Self::Discard { tab }
             | Self::ClearHistory { tab }
             | Self::SessionSleep { tab }
-            | Self::Save { tab, .. }
-            | Self::Wait { tab, .. } => Some(tab),
+            | Self::Save { tab, .. } => Some(tab),
+            Self::Start(command) => command.tab(),
+            Self::Waits(command) => command.tab(),
+            Self::Rights(command) => command.tab(),
+            Self::Session(command) => command.tab(),
             _ => None,
         }
     }
@@ -1167,7 +818,12 @@ pub fn parse(line: &str) -> Result<Command, AgentError> {
     if line.len() > MAX_COMMAND_BYTES {
         return Err(AgentError::new("bad_command", "That command is too long.", exit::FAILED));
     }
-    serde_json::from_str(line).map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
+    // The tag first, then the line as the family that reads it. A tag no family has is a command not moved into one yet, or none.
+    let parsed = match commands::tag_of(line).as_deref().and_then(commands::parser_for) {
+        Some(family) => family(line),
+        None => serde_json::from_str(line),
+    };
+    parsed.map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
 }
 
 /// The refusal for a level that's too low: what's missing, and the one command that asks for it.
@@ -1327,7 +983,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
     let about = command.tab_selector().or_else(|| matches!(command, Command::Find { .. }).then_some("active"));
     if let Some(selector) = about
-        && !matches!(command, Command::Close { .. } | Command::Tap { .. } | Command::Where { .. })
+        && !command.protected_ok()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
     {
         return Err(protected_refusal());
@@ -1361,20 +1017,23 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
 
 fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     match command {
+        Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Open { path, page } => open(access, path, *page, events),
-        Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
-        Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
         Command::Tap { tab } => {
             let id = access.with(|s| select(s, tab))?;
             read_ahead(access, |s| s.wake_for_tap(id));
             access.with(|s| {
-            let id = select(s, tab)?;
-            let switched = s.tap(id)?;
-            event::switched(s, switched, events);
-            Ok(sidebar_json(s))
+                let id = select(s, tab)?;
+                let switched = s.tap(id)?;
+                event::switched(s, switched, events);
+                Ok(sidebar_json(s))
             })
         }
-        Command::Goto { tab, page: Some(page), label: None } => access.with(|s| {
+        Command::Goto {
+            tab,
+            page: Some(page),
+            label: None,
+        } => access.with(|s| {
             let id = select(s, tab)?;
             go_to(s, id, *page)?;
             events.push(page_now(s, id));
@@ -1385,9 +1044,17 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             let cleared = s.clear_recent();
             Ok(json!({ "cleared": cleared }))
         }),
-        Command::Goto { tab, page: None, label: Some(label) } => linking::goto_label(access, tab, label, events),
-        Command::Goto { .. } => Err(AgentError::new("usage", "`goto` takes a page number, or `goto label` what the file calls a page, and not both.", exit::USAGE).then("`recto goto 12`, or `recto goto label iv`.")),
-        Command::Links { tab, page } => linking::links(access, tab, *page),
+        Command::Goto {
+            tab,
+            page: None,
+            label: Some(label),
+        } => linking::goto_label(access, tab, label, events),
+        Command::Goto { .. } => Err(AgentError::new(
+            "usage",
+            "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
+            exit::USAGE,
+        )
+        .then("`recto goto 12`, or `recto goto label iv`.")),
         Command::Follow { tab, page, link } => linking::follow(access, tab, *page, *link, events),
         Command::Back { tab } => linking::step(access, tab, true, events),
         Command::Forward { tab } => linking::step(access, tab, false, events),
@@ -1400,55 +1067,55 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             })?;
             read_ahead(access, |s| s.wake_for_close(id));
             access.with(|s| {
-            let id = select(s, tab)?;
-            refuse_close_that_loses_something(s, id, level)?;
-            // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
-            if level >= Level::Full && s.has_undone_owner_steps(id) {
-                s.discard_edits(id);
-            }
-            let closed = s.close(id)?;
-            event::closed(s, closed, events);
-            // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
-            Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
+                let id = select(s, tab)?;
+                refuse_close_that_loses_something(s, id, level)?;
+                // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
+                if level >= Level::Full && s.has_undone_owner_steps(id) {
+                    s.discard_edits(id);
+                }
+                let closed = s.close(id)?;
+                event::closed(s, closed, events);
+                // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
+                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
             })
         }
-        Command::View { zoom: Some(_), .. } => Err(AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED).then("It works when `recto` is talking to the app.")),
-        Command::View { paper, sidebar, agent_icon, zoom: None, layout } => access.with(|s| {
-            let was = s.view();
-            if let Some(name) = layout.as_deref() {
-                let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
-                let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
-                if s.set_spread(id, spread) {
-                    events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
-                }
-            }
-            let mut view = was;
-            match paper.as_deref() {
-                Some("auto") => view.paper = None,
-                Some(name) => view.paper = Some(recto_session::Paper::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a paper. It's one of {}, or `auto`.", recto_core::clean_line(name), recto_session::Paper::ALL.map(recto_session::Paper::name).join(", ")), exit::USAGE))?),
-                None => {}
-            }
-            match sidebar.as_deref() {
-                Some("on") => view.sidebar_hidden = false,
-                Some("off") => view.sidebar_hidden = true,
-                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for the sidebar. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
-                None => {}
-            }
-            match agent_icon.as_deref() {
-                Some("on") => view.agent_icon_hidden = false,
-                Some("off") => view.agent_icon_hidden = true,
-                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for the agent icon. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
-                None => {}
-            }
-            s.set_view(view);
-            if view != was {
-                events.push(view_changed(view));
-            }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
-        }),
+        Command::View { zoom: Some(_), .. } => {
+            Err(
+                AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED)
+                    .then("It works when `recto` is talking to the app."),
+            )
+        }
+        Command::View {
+            paper,
+            sidebar,
+            agent_icon,
+            zoom: None,
+            layout,
+        } => view::set(access, [paper, sidebar, agent_icon, layout], events),
         Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
-        Command::Palette { .. } => Err(AgentError::new("palette_needs_app", "The palette lists the app's commands, and this session has no app.", exit::FAILED).then("It works when `recto` is talking to the app.")),
-        Command::Find { query, next, previous, close, limit } => find::command(access, &find::Asked { query: query.as_deref(), next: *next, previous: *previous, close: *close, limit: *limit }, events),
+        Command::Palette { .. } => Err(AgentError::new(
+            "palette_needs_app",
+            "The palette lists the app's commands, and this session has no app.",
+            exit::FAILED,
+        )
+        .then("It works when `recto` is talking to the app.")),
+        Command::Find {
+            query,
+            next,
+            previous,
+            close,
+            limit,
+        } => find::command(
+            access,
+            &find::Asked {
+                query: query.as_deref(),
+                next: *next,
+                previous: *previous,
+                close: *close,
+                limit: *limit,
+            },
+            events,
+        ),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
             Err(update_needs_app())
@@ -1458,92 +1125,31 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             "footprint_bytes": recto_platform::footprint_bytes(),
             "open_handles": recto_platform::open_handle_count(),
         })),
-        Command::Where { tab } => access.with(|s| Ok(where_json(s, select(s, tab)?))),
-        Command::Facts { tab } => reading::facts(access, tab),
-        Command::Contents { tab, from, limit, depth, generated } => reading::contents(access, tab, *from, *limit, *depth, *generated),
-        Command::Signatures { tab } => reading::signatures(access, tab),
-        Command::Search { tab, query, pages, limit, scan, regex, rank, context } => {
-            let mut answer = search::search(access, &search::Asked { tab, query, pages: pages.as_deref(), limit: *limit, scan: *scan, regex: *regex, rank: *rank, context: *context })?;
-            label_hits(access, tab, &mut answer);
-            Ok(answer)
-        }
-        Command::Index { tab, agent } => index::index(access, tab, true, *agent),
-        Command::IndexStatus { tab } => index::index(access, tab, false, false),
-        Command::IndexClear { tab, all } => index::clear(access, tab, *all),
         Command::Edits { tab } => access.with(|s| {
             let id = select(s, tab)?;
             Ok(edits_json(s, id))
         }),
-        Command::Render { tab, page, scale, out, anyway } => {
-            require_absolute(out)?;
-            let (id, position, source) = locate(access, tab, *page)?;
-            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
-            let drawn = render::render(&source.path, source.page + 1, *scale, out);
-            if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
-                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
-            }
-            let mut data = drawn?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata, anyway } => {
-            require_absolute(out)?;
-            let (id, position, source) = locate(access, tab, *page)?;
-            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
-            let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale, strip_metadata: *strip_metadata };
-            let drawn = render::export_svg(&args);
-            if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
-                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
-            }
-            let mut data = drawn?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::Images { tab, page } => {
-            let (_, _, source) = locate(access, tab, *page)?;
-            let mut data = extract::images(&source.path, source.page + 1)?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::Image { tab, page, number, out, anyway } => {
-            require_absolute(out)?;
-            let (_, _, source) = locate(access, tab, *page)?;
-            let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::Snapshot { tab, page, rect, format, out, scale, anyway } => {
-            if let Some(out) = out {
-                require_absolute(out)?;
-            }
-            let (_, _, source) = locate(access, tab, *page)?;
-            let mut data = extract::snapshot_command(&extract::SnapshotAsked { path: &source.path, page: source.page + 1, rect: *rect, format, out: out.as_deref(), scale: *scale, anyway: *anyway })?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::Print { tab, pages, dpi, to_pdf, anyway } => {
-            require_absolute(to_pdf)?;
-            let list = print::print_pages(access, tab, pages.as_deref())?;
-            print::print_to_file(&list, *dpi, to_pdf, *anyway)
-        }
-        Command::Text { tab, page } => {
-            let (id, position, source) = locate(access, tab, *page)?;
-            let read = render::text(&source.path, source.page + 1);
-            let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
-            if drew || read.is_err() {
-                note_draw(access, id, position, read.as_ref().err().map(|error| error.code), events);
-            }
-            let mut data = read?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
-        }
-        Command::Select { tab, page, to_page, chars, at, to, unit, all, anyway } => selecting::run(access, &selecting::Pick { tab, page: *page, to_page: *to_page, chars: chars.as_deref(), at: at.as_deref(), to: to.as_deref(), unit: unit.as_deref(), all: *all, anyway: *anyway }, true),
-        Command::Copy { tab, page, to_page, chars, at, to, unit, all, anyway } => selecting::run(access, &selecting::Pick { tab, page: *page, to_page: *to_page, chars: chars.as_deref(), at: at.as_deref(), to: to.as_deref(), unit: unit.as_deref(), all: *all, anyway: *anyway }, false),
-        Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
+        Command::BudgetViewport {
+            tab,
+            viewport,
+            first,
+            scale,
+            strategy,
+        } => {
             let path = access.with(|s| tab_path(s, select(s, tab)?))?;
             render::budget_viewport(&path, viewport, *first, *scale, strategy.as_deref())
         }
-        Command::BudgetRender { tab, pages, first, scale, fresh, tiles, samples, limit_mib, retire_mib } => {
+        Command::BudgetRender {
+            tab,
+            pages,
+            first,
+            scale,
+            fresh,
+            tiles,
+            samples,
+            limit_mib,
+            retire_mib,
+        } => {
             let path = access.with(|s| tab_path(s, select(s, tab)?))?;
             let args = BudgetArgs {
                 pages: *pages,
@@ -1560,21 +1166,36 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::PageMove { tab, pages, to } => {
             let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
-            let did = if start == destination { format!("{} already at {to}, so nothing changed.", which_pages(pages, "is", "are")) } else { format!("Moved {} to {to}.", which_pages(pages, "", "")) };
+            let did = if start == destination {
+                format!("{} already at {to}, so nothing changed.", which_pages(pages, "is", "are"))
+            } else {
+                format!("Moved {} to {to}.", which_pages(pages, "", ""))
+            };
             edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
             let turns = quarter_turns(*degrees)?;
             // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
             if pages == "all" {
-                return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| e.rotate(0, e.len(), turns));
+                return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| {
+                    e.rotate(0, e.len(), turns)
+                });
             }
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, level, tab, events, format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")), |e| e.rotate(start, len, turns))
+            edit(
+                access,
+                level,
+                tab,
+                events,
+                format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")),
+                |e| e.rotate(start, len, turns),
+            )
         }
         Command::PageDelete { tab, pages } => {
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, level, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| e.delete(start, len))
+            edit(access, level, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| {
+                e.delete(start, len)
+            })
         }
         Command::PageInsert { tab, path, at } => {
             require_absolute(path)?;
@@ -1590,7 +1211,14 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
                 s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
                 events.push(edits_changed(s, id));
                 let mut data = edit_state_json(s, id);
-                data["did"] = json!(format!("Added {} at page {at}.", if facts.page_count == 1 { "1 page".to_string() } else { format!("{} pages", facts.page_count) }));
+                data["did"] = json!(format!(
+                    "Added {} at page {at}.",
+                    if facts.page_count == 1 {
+                        "1 page".to_string()
+                    } else {
+                        format!("{} pages", facts.page_count)
+                    }
+                ));
                 Ok(with_place_note(s, id, data))
             })
         }
@@ -1623,7 +1251,11 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             s.discard_edits(id);
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
-            data["did"] = json!(if had_any { "Threw away this tab's edits." } else { "There were no edits to throw away." });
+            data["did"] = json!(if had_any {
+                "Threw away this tab's edits."
+            } else {
+                "There were no edits to throw away."
+            });
             Ok(with_place_note(s, id, data))
         }),
         Command::ClearHistory { tab } => access.with(|s| {
@@ -1633,19 +1265,29 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             s.clear_history(id, recto_session::ClearReason::UserAsked);
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
-            data["did"] = json!(if had_any { "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now." } else { "There was no edit history to clear." });
+            data["did"] = json!(if had_any {
+                "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now."
+            } else {
+                "There was no edit history to clear."
+            });
             Ok(with_place_note(s, id, data))
         }),
         Command::Save { tab, out, replace } => {
             let to = match out {
-                Some(out) => saving::SaveTo::As { out: out.clone(), replace: *replace },
+                Some(out) => saving::SaveTo::As {
+                    out: out.clone(),
+                    replace: *replace,
+                },
                 None if *replace => return Err(AgentError::new("usage", "`--replace` goes with Save As's `--out`.", exit::USAGE)),
                 None => saving::SaveTo::Same,
             };
             saving::save(access, level, tab, &to, events)
         }
-        Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
-        Command::SessionSleep { .. } | Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
+        Command::Start(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Session(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
@@ -1685,7 +1327,7 @@ fn describe_source(data: &mut Value, page: u32, source: &PageSource) {
 }
 
 /// A file's name, made safe to pass on. It's still only what the file is called.
-fn file_label(path: &Path) -> String {
+pub(crate) fn file_label(path: &Path) -> String {
     path.file_name()
         .map_or_else(String::new, |name| recto_core::clean_line(&name.to_string_lossy()))
 }
@@ -2488,31 +2130,38 @@ mod tests {
     #[test]
     fn levels_refuse_what_they_dont_allow() {
         let mut session = with_tabs(&["a"]);
-        let off = run(&mut session, Level::Off, &Command::Sidebar {}).unwrap_err();
+        let off = run(&mut session, Level::Off, &Command::from(crate::commands::reading::Sidebar {})).unwrap_err();
         assert_eq!(off.code, "permission_denied");
         assert_eq!(off.exit, exit::PERMISSION);
         let read_only = run(&mut session, Level::ReadOnly, &Command::Close { tab: "#1".into() }).unwrap_err();
         assert_eq!(read_only.code, "permission_denied");
         assert_eq!(session.tabs().len(), 1);
-        assert!(run(&mut session, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).is_ok());
+        assert!(
+            run(
+                &mut session,
+                Level::ReadOnly,
+                &Command::from(crate::commands::reading::Tabs { from: None, limit: None })
+            )
+            .is_ok()
+        );
     }
 
     /// Failure: an agent the user turned off reads a page's text, the one thing Off exists to stop. Asserted on the level itself and on the
     /// call, which must refuse before any worker starts.
     #[test]
     fn reading_page_text_needs_more_than_off() {
-        let text = Command::Text { tab: "#1".into(), page: 1 };
+        let text = Command::from(crate::commands::text::Text { tab: "#1".into(), page: 1 });
         assert_eq!(text.access(), Access::At(Level::ReadOnly));
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
-        let render = Command::Render {
+        let render = Command::from(crate::commands::export::Render {
             tab: "#1".into(),
             page: 1,
             scale: 2.0,
             out: "/tmp/x.png".into(),
             anyway: false,
-        };
+        });
         assert_eq!(
             run(&mut session, Level::Control, &render).unwrap_err().code,
             "permission_denied",
@@ -2558,10 +2207,15 @@ mod tests {
     /// Failure: a mistyped or extra field on the new commands is silently ignored, and an agent believes it did something.
     #[test]
     fn render_commands_parse_strictly() {
-        assert!(matches!(parse(r##"{"cmd":"text","tab":"#1","page":2}"##), Ok(Command::Text { page: 2, .. })));
+        assert!(matches!(
+            parse(r##"{"cmd":"text","tab":"#1","page":2}"##),
+            Ok(Command::Read(crate::commands::Read::Text(crate::commands::text::Text { page: 2, .. })))
+        ));
         assert!(parse(r##"{"cmd":"text","tab":"#1"}"##).is_err(), "the page is required");
         assert!(parse(r##"{"cmd":"text","tab":"#1","page":1,"extra":1}"##).is_err());
-        let Ok(Command::Render { scale, .. }) = parse(r##"{"cmd":"render","tab":"#1","page":1,"out":"a.png"}"##) else {
+        let Ok(Command::Read(crate::commands::Read::Render(crate::commands::export::Render { scale, .. }))) =
+            parse(r##"{"cmd":"render","tab":"#1","page":1,"out":"a.png"}"##)
+        else {
             panic!()
         };
         assert_eq!(scale, DEFAULT_SCALE);
@@ -2597,7 +2251,10 @@ mod tests {
     fn unknown_commands_and_fields_are_refused() {
         assert_eq!(parse(r#"{"cmd":"format_disk"}"#).unwrap_err().code, "bad_command");
         assert_eq!(parse(r#"{"cmd":"tabs","extra":1}"#).unwrap_err().code, "bad_command");
-        assert!(matches!(parse(r#"{"cmd":"tabs"}"#), Ok(Command::Tabs { .. })));
+        assert!(matches!(
+            parse(r#"{"cmd":"tabs"}"#),
+            Ok(Command::Read(crate::commands::Read::Tabs(crate::commands::reading::Tabs { .. })))
+        ));
     }
 
     fn every_command() -> Vec<Command> {
@@ -2607,15 +2264,15 @@ mod tests {
                 path: "/d/a.pdf".into(),
                 page: None,
             },
-            Command::Tabs { from: None, limit: None },
-            Command::Sidebar {},
+            Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
+            Command::from(crate::commands::reading::Sidebar {}),
             Command::Tap { tab: tab() },
             Command::Goto {
                 tab: tab(),
                 page: Some(1),
                 label: None,
             },
-            Command::Links { tab: tab(), page: 1 },
+            Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
             Command::Follow { tab: tab(), page: 1, link: 1 },
             Command::Back { tab: tab() },
             Command::Forward { tab: tab() },
@@ -2633,14 +2290,14 @@ mod tests {
                 sync: None,
                 off: true,
             },
-            Command::Render {
+            Command::from(crate::commands::export::Render {
                 tab: tab(),
                 page: 1,
                 scale: 2.0,
                 out: "/d/x.png".into(),
                 anyway: false,
-            },
-            Command::ExportSvg {
+            }),
+            Command::from(crate::commands::export::ExportSvg {
                 tab: tab(),
                 page: 1,
                 out: "/d/x.svg".into(),
@@ -2649,16 +2306,16 @@ mod tests {
                 scale: 2.0,
                 strip_metadata: false,
                 anyway: false,
-            },
-            Command::Images { tab: tab(), page: 1 },
-            Command::Image {
+            }),
+            Command::from(crate::commands::export::Images { tab: tab(), page: 1 }),
+            Command::from(crate::commands::export::Image {
                 tab: tab(),
                 page: 1,
                 number: 1,
                 out: "/d/x.png".into(),
                 anyway: false,
-            },
-            Command::Snapshot {
+            }),
+            Command::from(crate::commands::export::Snapshot {
                 tab: tab(),
                 page: 1,
                 rect: [0.0, 0.0, 10.0, 10.0],
@@ -2666,16 +2323,16 @@ mod tests {
                 out: Some("/d/x.png".into()),
                 scale: 2.0,
                 anyway: false,
-            },
-            Command::Print {
+            }),
+            Command::from(crate::commands::export::Print {
                 tab: tab(),
                 pages: None,
                 dpi: 300,
                 to_pdf: "/d/x.pdf".into(),
                 anyway: false,
-            },
-            Command::Text { tab: tab(), page: 1 },
-            Command::Select {
+            }),
+            Command::from(crate::commands::text::Text { tab: tab(), page: 1 }),
+            Command::from(crate::commands::text::Select {
                 tab: tab(),
                 page: Some(1),
                 to_page: None,
@@ -2685,8 +2342,8 @@ mod tests {
                 unit: None,
                 all: false,
                 anyway: false,
-            },
-            Command::Copy {
+            }),
+            Command::from(crate::commands::text::Copy {
                 tab: tab(),
                 page: Some(1),
                 to_page: None,
@@ -2696,7 +2353,7 @@ mod tests {
                 unit: None,
                 all: false,
                 anyway: false,
-            },
+            }),
             budget_command(None, None),
             Command::BudgetViewport {
                 tab: tab(),
@@ -2705,16 +2362,16 @@ mod tests {
                 scale: 2.0,
                 strategy: None,
             },
-            Command::Where { tab: tab() },
-            Command::Facts { tab: tab() },
-            Command::Contents {
+            Command::from(crate::commands::reading::Where { tab: tab() }),
+            Command::from(crate::commands::reading::Facts { tab: tab() }),
+            Command::from(crate::commands::reading::Contents {
                 tab: tab(),
                 from: None,
                 limit: None,
                 depth: None,
                 generated: false,
-            },
-            Command::Search {
+            }),
+            Command::from(crate::commands::text::Search {
                 tab: tab(),
                 query: "x".into(),
                 pages: None,
@@ -2723,7 +2380,7 @@ mod tests {
                 regex: false,
                 rank: false,
                 context: None,
-            },
+            }),
             Command::Find {
                 query: Some("x".into()),
                 next: false,
@@ -2731,15 +2388,15 @@ mod tests {
                 close: false,
                 limit: None,
             },
-            Command::Index { tab: tab(), agent: false },
+            Command::from(crate::commands::text::Index { tab: tab(), agent: false }),
             Command::Palette {
                 query: Some("zoom".into()),
                 run: false,
                 limit: None,
             },
-            Command::IndexStatus { tab: tab() },
-            Command::IndexClear { tab: tab(), all: false },
-            Command::Signatures { tab: tab() },
+            Command::from(crate::commands::text::IndexStatus { tab: tab() }),
+            Command::from(crate::commands::text::IndexClear { tab: tab(), all: false }),
+            Command::from(crate::commands::reading::Signatures { tab: tab() }),
             Command::Edits { tab: tab() },
             Command::PageMove {
                 tab: tab(),
@@ -2767,27 +2424,27 @@ mod tests {
                 out: None,
                 replace: false,
             },
-            Command::Sign {},
-            Command::Status {},
-            Command::PermissionShow {},
-            Command::PermissionRequest {
+            Command::from(commands::access::Sign {}),
+            Command::from(commands::session::Status {}),
+            Command::from(commands::access::PermissionShow {}),
+            Command::from(commands::access::PermissionRequest {
                 level: Level::Full,
                 timeout_ms: None,
-            },
-            Command::LevelChanged {},
-            Command::Wait {
+            }),
+            Command::from(commands::access::LevelChanged {}),
+            Command::from(commands::sync::Wait {
                 condition: Condition::TabOpen,
                 tab: tab(),
                 page: None,
                 timeout_ms: 1,
-            },
-            Command::Watch {
+            }),
+            Command::from(commands::sync::Watch {
                 events: None,
                 timeout_ms: None,
                 count: None,
-            },
-            Command::WatchStop {},
-            Command::Log { last: None },
+            }),
+            Command::from(commands::sync::WatchStop {}),
+            Command::from(commands::access::Log { last: None }),
             Command::View {
                 paper: None,
                 sidebar: None,
@@ -2805,7 +2462,7 @@ mod tests {
                 value: "1".into(),
                 timeout_ms: None,
             },
-            Command::Stop {},
+            Command::from(commands::session::Stop {}),
             Command::SessionShow {},
             Command::SessionSave {},
             Command::SessionRestore {},
@@ -3046,7 +2703,7 @@ mod tests {
             ["level_changed", "permission_request", "permission_show", "status"],
             "what's open at Off must stay this short"
         );
-        assert_eq!(Command::Sign {}.access(), Access::Nobody);
+        assert_eq!(Command::from(commands::access::Sign {}).access(), Access::Nobody);
         for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
             assert!(!allowed(level, Access::Nobody) && !allowed(level, Access::UserOnly));
         }
@@ -3166,7 +2823,12 @@ mod tests {
         assert!(moved["note"].as_str().unwrap().contains("aren't saved"), "it must say so plainly: {moved}");
         let id = TabId(1);
         assert_eq!(s.page_edits(id).unwrap().slots()[0].page, 2);
-        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
+        let tabs = run(
+            &mut s,
+            Level::ReadOnly,
+            &Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
+        )
+        .unwrap();
         assert_eq!(tabs["tabs"][0]["edited"], true);
         run(
             &mut s,
@@ -3584,10 +3246,13 @@ mod tests {
             "{undone}"
         );
         assert!(human::render("undo", &undone).contains("recto redo"), "{undone}");
-        let where_now = run(&mut s, Level::ReadOnly, &Command::Where { tab: tab() }).unwrap();
+        let where_now = run(&mut s, Level::ReadOnly, &Command::from(crate::commands::reading::Where { tab: tab() })).unwrap();
         assert_eq!(where_now["user_edits_undone"], true, "{where_now}");
         assert!(human::render("where", &where_now).contains("recto redo"), "{where_now}");
-        assert_eq!(run(&mut s, Level::ReadOnly, &Command::Sidebar {}).unwrap()["undone_owner_steps"], true);
+        assert_eq!(
+            run(&mut s, Level::ReadOnly, &Command::from(crate::commands::reading::Sidebar {})).unwrap()["undone_owner_steps"],
+            true
+        );
         assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the app's route refuses too");
         assert_eq!(
             run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code,
@@ -3725,7 +3390,12 @@ mod tests {
             .unwrap(),
         );
         assert!(shown.starts_with("Deleted pages 2-3. 17 pages now, 10 in the file."), "{shown}");
-        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
+        let tabs = run(
+            &mut s,
+            Level::ReadOnly,
+            &Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
+        )
+        .unwrap();
         assert_eq!((&tabs["tabs"][0]["pages"], &tabs["tabs"][0]["file_pages"]), (&json!(17), &json!(10)), "{tabs}");
         assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "Threw away this tab's edits.");
         assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "There were no edits to throw away.");
@@ -3934,31 +3604,44 @@ mod tests {
         }
         let mut s = Session::new(Encrypted);
         s.open(&PathBuf::from("/d/locked.pdf")).unwrap();
-        let facts = run(&mut s, Level::ReadOnly, &Command::Facts { tab: "active".into() }).unwrap();
+        let facts = run(
+            &mut s,
+            Level::ReadOnly,
+            &Command::from(crate::commands::reading::Facts { tab: "active".into() }),
+        )
+        .unwrap();
         assert!(facts["encryption_note"].as_str().unwrap().contains("no password"), "{facts}");
         assert!(human::render("facts", &facts).contains("no password"), "{facts}");
         let mut plain = with_tabs(&["a"]);
-        assert!(run(&mut plain, Level::ReadOnly, &Command::Facts { tab: "active".into() }).unwrap()["encryption_note"].is_null());
+        assert!(
+            run(
+                &mut plain,
+                Level::ReadOnly,
+                &Command::from(crate::commands::reading::Facts { tab: "active".into() })
+            )
+            .unwrap()["encryption_note"]
+                .is_null()
+        );
     }
 
     /// Failure: the log says "by name", so nobody can tell afterwards which tab an agent acted on. It keeps the `#id`, never the name, and `open` gives its own.
     #[test]
     fn the_log_says_which_tab_by_id_and_never_by_name() {
         let mut s = with_tabs(&["secret report", "other"]);
-        let by_name = Command::Facts { tab: "secret".into() };
+        let by_name = Command::from(crate::commands::reading::Facts { tab: "secret".into() });
         let acted = acted_tab(&s, &by_name);
         assert_eq!(acted, Some(TabId(1)));
         let details = with_acted_tab(by_name.log_details(), acted, &Ok(json!({})), &by_name);
         assert_eq!(details["tab"], "#1");
         assert!(!details.to_string().contains("secret"), "{details}");
-        let active = Command::Text { tab: "active".into(), page: 1 };
+        let active = Command::from(crate::commands::text::Text { tab: "active".into(), page: 1 });
         assert_eq!(acted_tab(&s, &active), s.active());
-        let nothing = Command::Facts { tab: "nothing like it".into() };
+        let nothing = Command::from(crate::commands::reading::Facts { tab: "nothing like it".into() });
         let details = with_acted_tab(nothing.log_details(), acted_tab(&s, &nothing), &Ok(json!({})), &nothing);
         assert_eq!(details["tab"], "by name", "{details}");
         assert!(!details.to_string().contains("nothing like it"), "{details}");
         let mut alike = with_tabs(&["report one", "report two"]);
-        let ambiguous = Command::Facts { tab: "report".into() };
+        let ambiguous = Command::from(crate::commands::reading::Facts { tab: "report".into() });
         let acted = acted_tab(&alike, &ambiguous);
         assert_eq!(acted, None);
         let refused = run(&mut alike, Level::ReadOnly, &ambiguous);
@@ -4077,7 +3760,12 @@ mod tests {
     #[test]
     fn no_active_tab_says_to_open_one() {
         let mut s = Session::new(Fake);
-        let error = run(&mut s, Level::ReadOnly, &Command::Where { tab: "active".into() }).unwrap_err();
+        let error = run(
+            &mut s,
+            Level::ReadOnly,
+            &Command::from(crate::commands::reading::Where { tab: "active".into() }),
+        )
+        .unwrap_err();
         assert_eq!((error.code, error.exit), ("no_such_tab", exit::NOT_FOUND));
         assert!(error.next.contains("recto open"), "{}", error.next);
     }
@@ -4098,13 +3786,13 @@ mod tests {
     fn log_details_hold_no_text_and_clean_file_names() {
         // Failure: the log can't tell asking for generated contents, which starts a helper, from reading the file's own.
         assert_eq!(
-            Command::Contents {
+            Command::from(crate::commands::reading::Contents {
                 tab: "#1".into(),
                 from: None,
                 limit: None,
                 depth: None,
                 generated: true
-            }
+            })
             .log_details()["generated"],
             true
         );
@@ -4116,7 +3804,7 @@ mod tests {
         .log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");
         assert_eq!(open["page"], 3);
-        let search = Command::Search {
+        let search = Command::from(crate::commands::text::Search {
             tab: "secret report".into(),
             query: "the secret words".into(),
             pages: None,
@@ -4125,11 +3813,14 @@ mod tests {
             regex: false,
             rank: false,
             context: None,
-        }
+        })
         .log_details()
         .to_string();
         assert!(!search.contains("secret"), "{search}");
-        assert_eq!(Command::Text { tab: "#4".into(), page: 2 }.log_details()["tab"], "#4");
+        assert_eq!(
+            Command::from(crate::commands::text::Text { tab: "#4".into(), page: 2 }).log_details()["tab"],
+            "#4"
+        );
         assert_eq!(
             Command::PageDelete {
                 tab: "active".into(),
@@ -4243,18 +3934,18 @@ mod protected_tests {
         let tab = "#1".to_string();
         for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
             let commands = [
-                Command::Sidebar {},
-                Command::Tabs { from: None, limit: None },
-                Command::Where { tab: tab.clone() },
-                Command::Facts { tab: tab.clone() },
-                Command::Contents {
+                Command::from(crate::commands::reading::Sidebar {}),
+                Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
+                Command::from(crate::commands::reading::Where { tab: tab.clone() }),
+                Command::from(crate::commands::reading::Facts { tab: tab.clone() }),
+                Command::from(crate::commands::reading::Contents {
                     tab: tab.clone(),
                     from: None,
                     limit: None,
                     depth: None,
                     generated: false,
-                },
-                Command::Search {
+                }),
+                Command::from(crate::commands::text::Search {
                     tab: tab.clone(),
                     query: "Secret".into(),
                     pages: None,
@@ -4263,8 +3954,8 @@ mod protected_tests {
                     regex: false,
                     rank: false,
                     context: None,
-                },
-                Command::Text { tab: tab.clone(), page: 1 },
+                }),
+                Command::from(crate::commands::text::Text { tab: tab.clone(), page: 1 }),
                 Command::Goto {
                     tab: tab.clone(),
                     page: Some(2),
@@ -4275,7 +3966,7 @@ mod protected_tests {
                     page: None,
                     label: Some("ii".into()),
                 },
-                Command::Links { tab: tab.clone(), page: 1 },
+                Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::Follow {
                     tab: tab.clone(),
                     page: 1,
@@ -4305,7 +3996,7 @@ mod protected_tests {
                     limit: None,
                 },
                 Command::Edits { tab: tab.clone() },
-                Command::Signatures { tab: tab.clone() },
+                Command::from(crate::commands::reading::Signatures { tab: tab.clone() }),
                 Command::Open {
                     path: "/d/locked.pdf".into(),
                     page: Some(7),
@@ -4335,16 +4026,16 @@ mod protected_tests {
             }
             if level >= Level::ReadOnly {
                 for command in [
-                    Command::Facts { tab: tab.clone() },
-                    Command::Contents {
+                    Command::from(crate::commands::reading::Facts { tab: tab.clone() }),
+                    Command::from(crate::commands::reading::Contents {
                         tab: tab.clone(),
                         from: None,
                         limit: None,
                         depth: None,
                         generated: false,
-                    },
-                    Command::Text { tab: tab.clone(), page: 1 },
-                    Command::Where { tab: tab.clone() },
+                    }),
+                    Command::from(crate::commands::text::Text { tab: tab.clone(), page: 1 }),
+                    Command::from(crate::commands::reading::Where { tab: tab.clone() }),
                 ] {
                     let result = run(&mut session, level, &command);
                     if command.tag() == "where" {

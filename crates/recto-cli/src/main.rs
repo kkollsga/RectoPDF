@@ -4,6 +4,9 @@
 mod handover;
 mod qa;
 
+use recto_agent::commands::access::{Log, PermissionRequest};
+use recto_agent::commands::sync::{Wait, Watch};
+use recto_agent::commands::{Rights, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -134,15 +137,17 @@ fn through_session(invocation: &Invocation) -> i32 {
         let paths = paths()?;
         let wait = client_wait(invocation.spec.client_wait_s, &command);
         match (&command, Client::connect(&paths)) {
-            (Command::PermissionShow {}, Err(error)) if error.exit == exit::NOT_RUNNING => Ok(Answer::Here(levels::show(&paths, None))),
-            (Command::PermissionRequest { level, .. }, Err(error)) if error.exit == exit::NOT_RUNNING => {
+            (Command::Rights(Rights::PermissionShow(_)), Err(error)) if error.exit == exit::NOT_RUNNING => Ok(Answer::Here(levels::show(&paths, None))),
+            (Command::Rights(Rights::PermissionRequest(PermissionRequest { level, .. })), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 ActivityLog::new(&paths).record(tag, levels::current(&paths), "asked", &command.log_details());
                 Ok(Answer::Here(levels::request_answer(*level, levels::current(&paths))))
             }
             // The user at their own terminal can always read what agents did.
-            (Command::Log { last }, _) if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() => Ok(Answer::Here(log::recent(&paths, *last))),
+            (Command::Rights(Rights::Log(Log { last })), _) if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() => {
+                Ok(Answer::Here(log::recent(&paths, *last)))
+            }
             // With no session, the same level still decides who may read it.
-            (Command::Log { last }, Err(error)) if error.exit == exit::NOT_RUNNING => {
+            (Command::Rights(Rights::Log(Log { last })), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 let level = levels::current(&paths);
                 if recto_agent::allowed(level, command.access()) {
                     Ok(Answer::Here(log::recent(&paths, *last)))
@@ -150,13 +155,13 @@ fn through_session(invocation: &Invocation) -> i32 {
                     Err(recto_agent::refusal("log", level, command.access()))
                 }
             }
-            (Command::Save { .. } | Command::Sign {}, Err(error)) if error.exit == exit::NOT_RUNNING => {
+            (Command::Save { .. } | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 // These always refuse. Saying why is more use than saying nothing's running.
                 let mut session = Session::new(DrawableLoader);
                 local::run_here(&mut session, &paths, &mut ActivityLog::new(&paths), &command).map(Answer::Here)
             }
             (_, Err(error)) => Err(error),
-            (Command::Watch { .. }, Ok(client)) => Ok(Answer::Stream(client, wait)),
+            (Command::Waits(Waits::Watch(_)), Ok(client)) => Ok(Answer::Stream(client, wait)),
             (Command::UpdateInstall { zip: Some(zip), .. }, Ok(client)) => {
                 drop(client);
                 handover::install(&paths, invocation, zip, wait).map(Answer::Envelope)
@@ -181,9 +186,9 @@ enum Answer {
 /// How long the client gives the session, on top of how long the command says it may wait.
 fn client_wait(base_s: u64, command: &Command) -> Duration {
     let waited = match command {
-        Command::Wait { timeout_ms, .. } => *timeout_ms,
-        Command::Watch { timeout_ms, .. } => timeout_ms.unwrap_or(recto_agent::DEFAULT_WATCH_MS),
-        Command::PermissionRequest { timeout_ms, .. } => timeout_ms.unwrap_or(0),
+        Command::Waits(Waits::Wait(Wait { timeout_ms, .. })) => *timeout_ms,
+        Command::Waits(Waits::Watch(Watch { timeout_ms, .. })) => timeout_ms.unwrap_or(recto_agent::DEFAULT_WATCH_MS),
+        Command::Rights(Rights::PermissionRequest(PermissionRequest { timeout_ms, .. })) => timeout_ms.unwrap_or(0),
         // `qa wait-settled --timeout 2m` waits that long in the app, so the client waits that long too, past its own time to answer.
         Command::QaRead { timeout_ms, .. } | Command::QaDrive { timeout_ms, .. } => timeout_ms.unwrap_or(0),
         _ => 0,
@@ -564,7 +569,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
                 ("rank_index", false, false, true),
                 ("rank_scan", true, false, true),
             ] {
-                let command = Command::Search {
+                let command = Command::from(recto_agent::commands::text::Search {
                     tab: "active".to_string(),
                     query: query.to_string(),
                     pages: None,
@@ -573,7 +578,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
                     regex,
                     rank,
                     context: None,
-                };
+                });
                 let mut times = Vec::with_capacity(runs);
                 let mut last = Ok(Value::Null);
                 for _ in 0..runs {

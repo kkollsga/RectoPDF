@@ -39,22 +39,22 @@ impl Stand {
 impl Host for Stand {
     fn run(&self, _level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         match command {
-            Command::Facts { .. } => panic!("a bug in a command"),
-            Command::Tabs { .. } => {
+            Command::Read(recto_agent::commands::Read::Facts(recto_agent::commands::reading::Facts { .. })) => panic!("a bug in a command"),
+            Command::Read(recto_agent::commands::Read::Tabs(recto_agent::commands::reading::Tabs { .. })) => {
                 let mut released = self.release.lock().unwrap();
                 while !*released {
                     released = self.released.wait(released).unwrap();
                 }
                 Ok(json!({ "released": true }))
             }
-            Command::Text { .. } => {
+            Command::Read(recto_agent::commands::Read::Text(recto_agent::commands::text::Text { .. })) => {
                 let now = self.running_draws.fetch_add(1, Ordering::SeqCst) + 1;
                 self.most_draws.fetch_max(now, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));
                 self.running_draws.fetch_sub(1, Ordering::SeqCst);
                 Ok(json!({ "read": true }))
             }
-            Command::Where { .. } => {
+            Command::Read(recto_agent::commands::Read::Where(recto_agent::commands::reading::Where { .. })) => {
                 self.wheres.fetch_add(1, Ordering::SeqCst);
                 Ok(json!({ "huge": "x".repeat(5_000_000) }))
             }
