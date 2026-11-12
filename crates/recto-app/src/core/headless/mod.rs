@@ -7,3 +7,4 @@ mod levels;
 mod palette;
 mod passwords;
 mod recent;
+mod update;

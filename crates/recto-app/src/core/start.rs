@@ -31,6 +31,15 @@ impl Inner {
     ///
     /// Why it couldn't start, in words: a quiet run's socket is taken, or the session thread couldn't be started.
     pub fn start(start: Start) -> Result<Arc<Self>, String> {
+        Self::start_with(start, updates::UpdateSeams::default())
+    }
+
+    /// [`Self::start`], with the updater's wall clock and releases and what starts the installer of the caller's: a test's ([`crate::testkit::update_bed`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start`].
+    pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Result<Arc<Self>, String> {
         let Start {
             listener,
             clock,
@@ -104,8 +113,13 @@ impl Inner {
         }));
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
-        let update_hooks = updates::Hooks::new();
-        let updates = recto_update::updater::Updater::new(&paths.root, update_source, Arc::clone(&update_hooks) as Arc<dyn recto_update::updater::Host>);
+        let update_hooks = updates::Hooks::new(update_seams.installer);
+        let updates = recto_update::updater::Updater::with_seams(
+            &paths.root,
+            update_source,
+            Arc::clone(&update_hooks) as Arc<dyn recto_update::updater::Host>,
+            update_seams.updater,
+        );
         let inner = Arc::new(Self {
             updates,
             host: Arc::clone(&host),
@@ -115,10 +129,10 @@ impl Inner {
             listener: Arc::clone(&listener),
             published: Mutex::new(Published::empty()),
             saver: Arc::clone(&saver),
-            sleeper: sleeper::Sleeper::new(clock),
+            sleeper: sleeper::Sleeper::new(Arc::clone(&clock)),
             qa,
             keys,
-            life: Lifecycle::new(),
+            life: Lifecycle::new(clock),
             serving: Serving {
                 paths: Some(paths),
                 socket,

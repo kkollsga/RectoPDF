@@ -83,17 +83,6 @@ pub const RESTORE_PATIENCE: Duration = Duration::from_secs(1);
 /// How long the window waits for the page to be drawn before it shows anyway. About what a heavy page takes.
 pub const SHOW_PATIENCE: Duration = Duration::from_millis(1200);
 
-/// Where a hand-off has got to. Rust's to know, so the app can't quit on one that didn't happen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum HandOffState {
-    Idle = 0,
-    /// Taking no commands, and no user's changes, and writing.
-    Writing = 1,
-    /// Written, forced to the drive and read back. Quitting now is what's left.
-    Done = 2,
-}
-
 /// The thread a first frame's news goes on: room to start a worker and draw, and only address space until it's used.
 pub const UPDATE_FRAME_STACK: usize = 1024 * 1024;
 
@@ -193,17 +182,17 @@ pub struct Inner {
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state.
     pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>,
+    /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
     pub started: Instant,
-    /// The record's been read and applied, whatever it said.
-    pub restored: AtomicBool,
-    /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
-    pub(crate) shown_with_state: AtomicBool,
-    /// The window went up without the state, past its patience.
-    pub(crate) shown_without_state: AtomicBool,
+    /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
+    pub(crate) clock: Arc<dyn crate::clock::Clock>,
+    /// **The state's coming in, the window's patience for it, what's shown and a hand-off's freeze, as one state machine** ([`crate::lifecycle::Life`]). The lock is
+    /// held only inside [`Self::step`] and the queries beside it, for a copy or a transition of a few bytes: never across carrying out an `Out`, a listener call, a
+    /// queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input isn't in it: what the UI thread sets on every event
+    /// is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
+    life: Mutex<crate::lifecycle::Life>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     pub holding_tab: Mutex<Option<TabId>>,
-    /// Where a hand-off has got to.
-    pub(crate) hand_off_state: AtomicU8,
     /// In a QA run, files being read wait here, as they would for a slow disk.
     pub(crate) qa_hold_reads: AtomicBool,
     /// Files being read now, which a hand-off waits for.
@@ -212,7 +201,7 @@ pub struct Lifecycle {
     pub(crate) others_looking: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
     pub sheets: AtomicU32,
-    /// When the user last touched the app, in milliseconds of `started`. One number, set by what the event monitor calls, with no timer.
+    /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
     pub(crate) last_input_ms: AtomicU64,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
@@ -267,22 +256,64 @@ pub struct Tools {
 #[allow(clippy::new_without_default)]
 impl Lifecycle {
     /// At launch: nothing read, nothing shown, no hand-off.
-    pub fn new() -> Self {
+    pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self {
         Self {
             started: Instant::now(),
-            restored: AtomicBool::new(false),
-            shown_with_state: AtomicBool::new(false),
-            shown_without_state: AtomicBool::new(false),
+            clock,
+            life: Mutex::new(crate::lifecycle::Life::default()),
             holding_tab: Mutex::new(None),
             first_shown: Mutex::new(None),
             last_input_ms: AtomicU64::new(0),
             update_facts: Mutex::new(None),
-            hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
             reads_running: AtomicU32::new(0),
             others_looking: AtomicU32::new(0),
             sheets: AtomicU32::new(0),
             qa_hold_reads: AtomicBool::new(false),
         }
+    }
+
+    /// Now, by the clock, in its milliseconds.
+    pub(crate) fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// **What happens to the app's life,** now by the clock. The lock's let go of before this returns: the caller carries out what it comes to.
+    #[must_use]
+    pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out> {
+        let now = self.now_ms();
+        lock(&self.life).step(event, now)
+    }
+
+    /// The app's life as it stands, a copy.
+    fn life(&self) -> crate::lifecycle::Life {
+        *lock(&self.life)
+    }
+
+    /// Whether the state's been read and taken in.
+    pub fn state_read(&self) -> bool {
+        self.life().restored()
+    }
+
+    /// Whether what the host shows has been made from the state.
+    pub(crate) fn shown_with_state(&self) -> bool {
+        self.life().shown() == crate::lifecycle::Shown::WithState
+    }
+
+    /// Whether the window takes what a person does, now.
+    pub(crate) fn takes_input(&self) -> bool {
+        let now = self.now_ms();
+        self.life().takes_input(now)
+    }
+
+    /// How long until the patience for the state is over by the session thread's own deadline, if it waits on one.
+    pub(crate) fn due(&self) -> Option<Duration> {
+        let now = self.now_ms();
+        self.life().due(now)
+    }
+
+    /// Whether a hand-off has written and read back the state, so quitting is what's left.
+    pub(crate) fn hand_off_done(&self) -> bool {
+        self.life().hand_off() == crate::lifecycle::HandOff::Done
     }
 }
 
@@ -411,7 +442,7 @@ impl Inner {
             self.tools.printing.busy(),
         );
         let last = self.life.last_input_ms.load(Ordering::Relaxed);
-        let now = u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let now = self.life.now_ms();
         HandOffCheck {
             safe: busy.is_empty(),
             busy,
@@ -425,12 +456,8 @@ impl Inner {
         if !check.safe {
             return Err(HandOffError::Busy { items: check.busy });
         }
-        self.set_frozen(true);
-        self.life.hand_off_state.store(HandOffState::Writing as u8, Ordering::SeqCst);
-        let undo = || {
-            self.life.hand_off_state.store(HandOffState::Idle as u8, Ordering::SeqCst);
-            self.set_frozen(false);
-        };
+        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffWriting));
+        let undo = || self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
         // What slipped in as that was set is counted by now, and what's coming will see the flag.
         let check = self.hand_off_check();
         if !check.safe {
@@ -445,7 +472,7 @@ impl Inner {
                     undo();
                     return Err(HandOffError::Busy { items: check.busy });
                 }
-                self.life.hand_off_state.store(HandOffState::Done as u8, Ordering::SeqCst);
+                self.carry_out(self.life.step(crate::lifecycle::Event::HandOffWritten));
                 Ok(report.into())
             }
             Err(error) => {
@@ -466,7 +493,7 @@ impl Inner {
 
     /// Quits now, if a hand-off has really got this far. Says whether it did.
     pub fn hand_off_quit_now(&self) -> bool {
-        if self.life.hand_off_state.load(Ordering::SeqCst) != HandOffState::Done as u8 {
+        if !self.life.hand_off_done() {
             return false;
         }
         self.listener.hand_off_quit();
@@ -717,16 +744,40 @@ impl Inner {
         })
     }
 
+    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
+    pub fn frontmost_changed(&self, app: bool, window_key: bool) {
+        let mut state = lock(&self.window.app);
+        let went_back = state.focus.app_frontmost && !app;
+        let came_back = !state.focus.app_frontmost && app;
+        state.focus.app_frontmost = app;
+        state.focus.window_key = window_key;
+        drop(state);
+        if went_back {
+            self.saver.write_soon()
+        } else {
+            self.saver.view_changed()
+        }
+        // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
+        if came_back {
+            self.core.push(CoreCall::LookAtShown);
+        }
+    }
+
+    /// A sheet or panel opened over the window, or closed. An update waits for it.
+    pub fn sheet_changed(&self, open: bool) {
+        if open {
+            self.life.sheets.fetch_add(1, Ordering::SeqCst);
+        } else {
+            let _ = self.life.sheets.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+        }
+    }
+
     pub fn note_nearby(&self) {
-        self.life
-            .last_input_ms
-            .store(u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
     }
 
     pub fn note_input(&self) {
-        self.life
-            .last_input_ms
-            .store(u64::try_from(self.life.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }

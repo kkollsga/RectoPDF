@@ -11,7 +11,10 @@
 //! password, a look at files and a write of the record to have finished, and takes what they queued. Time the app's rules go by moves only by
 //! [`HeadlessApp::advance`]. What's left to real time is what's real in the product too: a flush's limit on a slow disk, the sleep files' lock.
 
+use super::update_bed::UpdateBed;
 use super::{FakeClock, FakeListener, Heard};
+use crate::clock::Clock as _;
+use crate::core::updates::UpdateSeams;
 use crate::core::{Inner, Start};
 use crate::launch::LaunchArgs;
 use crate::listener::QuitAnswer;
@@ -21,6 +24,7 @@ use recto_agent::{AgentError, Level};
 use recto_control::StatePaths;
 use recto_control::host::Host;
 use recto_testpdf::TempDir;
+use recto_update::plan::Plan;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,6 +43,9 @@ const LOOK_EVERY: Duration = Duration::from_millis(2);
 pub struct Disk {
     root: TempDir,
     paths: StatePaths,
+    /// The time of day the next launch on this disk starts at, in milliseconds since 1970: what the updater's remembered times go by. It moves on with each run's
+    /// clock, as a Mac's does between launches.
+    wall_ms: u64,
 }
 
 impl Disk {
@@ -55,7 +62,11 @@ impl Disk {
         made.expect("a state folder");
         std::fs::create_dir(root.join("files")).expect("a folder for the test's files");
         let paths = StatePaths::overridden(&state).expect("a temp state folder is allowed");
-        Self { root, paths }
+        Self {
+            root,
+            paths,
+            wall_ms: recto_update::wall_ms(),
+        }
     }
 
     /// The state folder's paths: the record, the backups, the socket.
@@ -113,6 +124,8 @@ pub struct Builder {
     indexing: bool,
     clock_ms: u64,
     open: Vec<PathBuf>,
+    update: Option<UpdateBed>,
+    state_late: bool,
 }
 
 impl Builder {
@@ -137,6 +150,22 @@ impl Builder {
         self
     }
 
+    /// **As an installed copy that updates itself** (step R1.4): told, as the host tells it, which version it is and where its bundle is (the disk's
+    /// [`Disk::install_app`]), on a test build's source, with this bed's releases and installer and the disk's time of day for the updater's clock.
+    #[must_use]
+    pub fn update(mut self, bed: &UpdateBed) -> Self {
+        self.update = Some(bed.clone());
+        self
+    }
+
+    /// **The state read late,** as off a slow disk: the host's second of patience is over before it's read, so the window goes up without it (or, for a launch an
+    /// update may have opened, waits on), and it comes in after.
+    #[must_use]
+    pub fn state_late(mut self) -> Self {
+        self.state_late = true;
+        self
+    }
+
     /// On a fresh disk.
     #[must_use]
     pub fn start(self) -> HeadlessApp {
@@ -148,16 +177,23 @@ impl Builder {
     fn start_on(self, disk: Disk) -> HeadlessApp {
         let clock = Arc::new(FakeClock::at(self.clock_ms));
         let listener = Arc::new(FakeListener::default());
-        let inner = Inner::start(Start {
-            listener: Arc::clone(&listener) as Arc<dyn crate::Listener>,
-            clock: Arc::clone(&clock) as Arc<dyn crate::clock::Clock>,
-            paths: disk.paths.clone(),
-            args: LaunchArgs::default(),
+        let (update_source, update_seams) = match &self.update {
+            Some(bed) => (UpdateBed::source(), bed.seams(disk.wall_ms, &clock)),
             // A test's source: no network, whatever the environment says.
-            update_source: recto_update::source::resolve(false, true, None, None),
-            socket: false,
-            indexing: self.indexing,
-        })
+            None => (recto_update::source::resolve(false, true, None, None), UpdateSeams::default()),
+        };
+        let inner = Inner::start_with(
+            Start {
+                listener: Arc::clone(&listener) as Arc<dyn crate::Listener>,
+                clock: Arc::clone(&clock) as Arc<dyn crate::clock::Clock>,
+                paths: disk.paths.clone(),
+                args: LaunchArgs::default(),
+                update_source,
+                socket: false,
+                indexing: self.indexing,
+            },
+            update_seams,
+        )
         .expect("the core starts");
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
@@ -165,30 +201,87 @@ impl Builder {
             "the headless app didn't get the record's lock in {}",
             disk.paths.root.display()
         );
+        if self.update.is_some() {
+            // What the host says at launch, before the state's read: this copy's version and bundle, from its own Info.plist.
+            let app = disk.app();
+            let version = disk
+                .app_version()
+                .unwrap_or_else(|| panic!("no app installed at {}: Disk::install_app first", app.display()));
+            let release = recto_update::version::parse(&version).map(|parsed| {
+                let (a, b, c) = parsed.release;
+                format!("{a}.{b}.{c}")
+            });
+            let development = recto_update::version::is_development(&version).then(|| version.clone());
+            inner.note_update_facts(release.unwrap_or(version), development, app.display().to_string(), "15.0".to_owned());
+        }
         let app = HeadlessApp {
             inner: Some(inner),
+            clock_at_start: clock.now_ms(),
             clock,
             listener,
             disk: Some(disk),
         };
-        // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's patience isn't armed: a test that wants the window up without the
-        // state calls `restore_patience_over` itself.
+        let mut host = HostPlay::default();
+        // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
+        // what the host hears first.
+        if self.state_late {
+            app.clock.advance(u64::try_from(crate::core::RESTORE_PATIENCE.as_millis()).unwrap_or(u64::MAX));
+            app.core().restore_patience_over();
+            assert!(app.core().core.flush(WAIT_LIMIT), "the patience's call taken");
+            host.hears(&app, &self.open);
+        }
+        // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's own timer isn't armed: a test that wants the window up without the
+        // state says so ([`Builder::state_late`]).
         app.core().begin_restore();
-        app.wait_until("the state to be read and restore_ready heard", || app.listener.count(&Heard::RestoreReady) > 0);
-        // `restoreReady`, as the host does it on time.
-        let inner = app.core();
-        let with_state = inner.state_read();
-        if inner.window_should_open() {
-            inner.window_opened();
-        } else {
-            inner.window_closed();
-        }
-        if with_state {
-            inner.shown_with_state();
-        }
-        inner.ready(&self.open);
+        app.wait_until("the state to be read and taken in", || app.core().state_read());
+        assert!(app.core().core.flush(WAIT_LIMIT), "what came of the state taken");
+        host.hears(&app, &self.open);
         app.settle();
         app
+    }
+}
+
+/// **What the host does on `restore_ready`,** as `App.swift`'s `restoreReady` and `restoredLate` do it, by the same calls: the first time, the window's opened or
+/// not and the launch goes on; a later time, the state's come in after the window went up without it, and the window's made again from it, unless it's been
+/// taking input meanwhile.
+#[derive(Default)]
+struct HostPlay {
+    heard: usize,
+    launch_done: bool,
+    late_taken_in: bool,
+}
+
+impl HostPlay {
+    /// Takes in every `restore_ready` heard since the last look.
+    fn hears(&mut self, app: &HeadlessApp, open: &[PathBuf]) {
+        let heard = app.listener.count(&Heard::RestoreReady);
+        while self.heard < heard {
+            self.heard += 1;
+            let inner = app.core();
+            if !self.launch_done {
+                self.launch_done = true;
+                let with_state = inner.state_read();
+                self.late_taken_in = with_state;
+                if inner.window_should_open() {
+                    inner.window_opened();
+                } else {
+                    inner.window_closed();
+                }
+                if with_state {
+                    inner.shown_with_state();
+                }
+                inner.ready(open);
+            } else if inner.state_read() && !self.late_taken_in && !inner.window_interactive() {
+                self.late_taken_in = true;
+                // The window made again from the state: the old one goes without counting as the person closing it, and the new one opens.
+                if !crate::lock(&inner.window.app).window_closed {
+                    inner.window_opened();
+                }
+                inner.shown_with_state();
+            } else if inner.state_read() {
+                inner.shown_with_state();
+            }
+        }
     }
 }
 
@@ -212,6 +305,18 @@ impl DiskBuilder {
     }
 
     #[must_use]
+    pub fn update(mut self, bed: &UpdateBed) -> Self {
+        self.builder = self.builder.update(bed);
+        self
+    }
+
+    #[must_use]
+    pub fn state_late(mut self) -> Self {
+        self.builder = self.builder.state_late();
+        self
+    }
+
+    #[must_use]
     pub fn start(self) -> HeadlessApp {
         self.builder.start_on(self.disk)
     }
@@ -221,6 +326,8 @@ impl DiskBuilder {
 pub struct HeadlessApp {
     inner: Option<Arc<Inner>>,
     clock: Arc<FakeClock>,
+    /// Where the clock was at the launch, so the disk's time of day moves on by what this run's clock did.
+    clock_at_start: u64,
     listener: Arc<FakeListener>,
     disk: Option<Disk>,
 }
@@ -347,10 +454,50 @@ impl HeadlessApp {
         }
     }
 
-    /// Moves the app's clock on, and has the session thread look at its deadlines again. Doesn't settle.
+    /// Moves the app's clock on, and has the session thread look at its deadlines again. Doesn't settle. The time since the person last touched the app and the
+    /// updater's clock move with it.
     pub fn advance(&self, ms: u64) {
         self.clock.advance(ms);
         self.core().core.nudge();
+    }
+
+    /// The person touched the app now, by the clock, as the host's event monitor says.
+    pub fn touch(&self) {
+        self.core().note_input();
+    }
+
+    /// The updater's one timer went off, as the host's does when [`Inner::update_timer_fired`] is due.
+    pub fn update_tick(&self) {
+        self.core().update_timer_fired();
+    }
+
+    /// `recto update status`'s answer, as `update status` gives it.
+    #[must_use]
+    pub fn update_status(&self) -> Value {
+        self.core().update_report()
+    }
+
+    /// Waits for `update status` to say `status`.
+    ///
+    /// # Panics
+    ///
+    /// Past [`WAIT_LIMIT`], with the status it last said.
+    pub fn wait_for_status(&self, status: &str) -> Value {
+        self.wait_until(&format!("update status {status}"), || self.update_status()["status"] == status);
+        self.update_status()
+    }
+
+    /// **The hand-off's end, as the process sees it:** the app was told to quit for an update ([`crate::Listener::hand_off_quit`]), and it's gone, as a process
+    /// ending is, with nothing more written. Says the plan the installer was started on, beside the disk, for [`Disk::install`] and then [`Disk::start`].
+    ///
+    /// # Panics
+    ///
+    /// If the app isn't told to quit for an update in [`WAIT_LIMIT`], or no installer was started on a plan.
+    #[must_use]
+    pub fn handed_off(mut self, bed: &UpdateBed) -> (Plan, Disk) {
+        self.wait_until("the app told to quit for an update", || self.listener.count(&Heard::HandOffQuit) > 0);
+        let plan = bed.installer.plans().pop().expect("an installer started on a plan");
+        (plan, self.end())
     }
 
     /// The reader's model, as the window pulls it.
@@ -471,7 +618,10 @@ impl HeadlessApp {
                 std::thread::sleep(LOOK_EVERY); // ratchet: poll
             }
         }
-        self.disk.take().expect("the disk")
+        let mut disk = self.disk.take().expect("the disk");
+        // The time of day moved on with this run's clock, from where it was at its launch.
+        disk.wall_ms = disk.wall_ms.saturating_add(self.clock.now_ms().saturating_sub(self.clock_at_start));
+        disk
     }
 }
 

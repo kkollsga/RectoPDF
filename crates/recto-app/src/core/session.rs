@@ -3,7 +3,14 @@
 use super::*;
 
 /// Puts the session as what was read says, and lets everything that was waiting for that go on: the window, the socket, files named at launch.
-pub fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads: &mut FileReads, deferred: &mut Vec<PathBuf>) {
+/// Says what the app's life comes to, for the caller to carry out once the host can be told.
+pub fn apply_restored(
+    inner: &Arc<Inner>,
+    loaded: Loaded,
+    synced: &mut Synced,
+    reads: &mut FileReads,
+    deferred: &mut Vec<PathBuf>,
+) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
         session.set_history_source(source);
@@ -26,7 +33,7 @@ pub fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, r
     let mut holding = None;
     let holds_the_record = inner.saver.store.holds_the_record();
     host.session.with_session(|session| session.set_journaling(holds_the_record));
-    let first_time = !inner.life.restored.load(Ordering::SeqCst);
+    let first_time = !inner.life.state_read();
     match loaded {
         Loaded::Restored(restored) => {
             let restored = *restored;
@@ -101,14 +108,15 @@ pub fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, r
         look_at_other_files(inner, id);
     }
     inner.saver.start();
-    inner.life.restored.store(true, Ordering::SeqCst);
+    let ready = inner.life.step(crate::lifecycle::Event::StateRead);
     if !first_time {
-        return;
+        return ready;
     }
     start_serving(inner);
     for path in deferred.drain(..) {
         inner.core.push(CoreCall::Open(path));
     }
+    ready
 }
 
 /// The two small files that held the paper and the agent icon before there was a record. Read once, and they go when the record's written.
@@ -200,12 +208,18 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut deferred: Vec<PathBuf> = Vec::new();
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
-        let Some(call) = inner.core.next_or_due(|| match (inner.saver.wait_for_due(), inner.sleeper.wait_for_due()) {
-            (Some(one), Some(other)) => Some(one.min(other)),
-            (one, other) => one.or(other),
+        let Some(call) = inner.core.next_or_due(|| {
+            [inner.saver.wait_for_due(), inner.sleeper.wait_for_due(), inner.life.due()]
+                .into_iter()
+                .flatten()
+                .min()
         }) else {
             if inner.core.has_ended() {
                 return;
+            }
+            // A launch an update may have opened has waited for the state as long as it does.
+            if inner.life.due().is_some_and(|wait| wait.is_zero()) {
+                restore_patience_over(inner);
             }
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
@@ -230,24 +244,16 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 inner.saver.write_soon();
             }
             CoreCall::Restored(loaded) => {
-                let first_time = !inner.life.restored.load(Ordering::SeqCst);
-                apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
+                let ready = apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
                 // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
                 after_call(inner, &mut synced, &mut reads, events);
-                if first_time {
-                    // A test's slow window: the window that went up without the state is made again from it this much later, so what's done in between can be seen to wait for it.
-                    let listener = Arc::clone(&inner.listener);
-                    if inner.life.shown_without_state.load(Ordering::SeqCst) {
-                        recto_platform::slow::later(recto_platform::slow::Seam::Remake, move || listener.restore_ready());
-                    } else {
-                        listener.restore_ready();
-                    }
-                }
+                // The first time only: the host's told, late or not.
+                inner.carry_out(ready);
                 recto_platform::slow::pause(recto_platform::slow::Seam::Session);
                 continue;
             }
             CoreCall::RestorePatienceOver => restore_patience_over(inner),
-            CoreCall::Open(path) if !inner.life.restored.load(Ordering::SeqCst) => {
+            CoreCall::Open(path) if !inner.life.state_read() => {
                 deferred.push(path);
                 continue;
             }
@@ -513,12 +519,11 @@ impl FileReads {
 /// `CoreCall::RestorePatienceOver`, on the session thread.
 pub fn restore_patience_over(inner: &Arc<Inner>) {
     let host = &inner.host;
-    if !inner.life.restored.load(Ordering::SeqCst) {
-        match updates::restore_patience(inner.updates.may_be_reopened_by_update(), inner.life.started.elapsed()) {
-            // The state hasn't come. The window goes up without it, and when it does come it's taken in.
-            updates::Patience::ShowNow => updates::show_without_state(&inner.life.shown_without_state, &*inner.listener),
-            updates::Patience::WaitFor(left) => updates::look_again_after(inner, left),
-        }
+    // The state hasn't come. The window goes up without it, and when it does come it's taken in; or a launch an update may have opened waits on, to the session
+    // thread's own deadline ([`crate::lifecycle::Life::due`]).
+    if !inner.life.state_read() {
+        let may_be_reopened_by_update = inner.updates.may_be_reopened_by_update();
+        inner.carry_out(inner.life.step(crate::lifecycle::Event::PatienceOver { may_be_reopened_by_update }));
     }
     // A tab's file not answering: on to what's on the record. The page says it isn't answering.
     if lock(&inner.life.holding_tab).take().is_some() {

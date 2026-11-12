@@ -12,8 +12,8 @@ use recto_update::source::Mode;
 use recto_update::updater::{Asked, Facts, HandOffRefused, HandedOff, Host, InstallRefused, Look};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -24,14 +24,54 @@ pub const DEV_BUILDS_ROW: &str = "update.dev_builds";
 /// The button that installs a waiting update now.
 pub const UPDATE_NOW_ROW: &str = "update.now";
 
+/// **What starts the installer:** a process of its own, detached, that outlives this one. A test's records the plan instead (step R1.4).
+pub trait Installer: Send + Sync {
+    /// Starts it on the plan, logging to `log`. Says its process number.
+    ///
+    /// # Errors
+    ///
+    /// It couldn't be started.
+    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32>;
+}
+
+/// The real installer, `recto-updater install <plan>`, as the updater has always started it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RealInstaller;
+
+impl Installer for RealInstaller {
+    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        recto_platform::local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
+    }
+}
+
+/// What an update is made with that a test gives otherwise: the updater's wall clock and releases, and what starts the installer. The real ones by default.
+#[derive(Clone)]
+pub struct UpdateSeams {
+    pub updater: recto_update::updater::Seams,
+    pub installer: Arc<dyn Installer>,
+}
+
+impl Default for UpdateSeams {
+    fn default() -> Self {
+        Self {
+            updater: recto_update::updater::Seams::default(),
+            installer: Arc::new(RealInstaller),
+        }
+    }
+}
+
 /// How the updater reaches the app. Holds only a way back to it: it's made first, as the updater's a part of what it reaches.
 pub struct Hooks {
     inner: OnceLock<Weak<Inner>>,
+    installer: Arc<dyn Installer>,
 }
 
 impl Hooks {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { inner: OnceLock::new() })
+    pub fn new(installer: Arc<dyn Installer>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: OnceLock::new(),
+            installer,
+        })
     }
 
     pub fn attach(&self, inner: Weak<Inner>) {
@@ -139,11 +179,15 @@ impl Host for Hooks {
     fn documents_asked_for(&self) -> Vec<PathBuf> {
         lock(&ASKED_TO_OPEN).clone()
     }
+
+    fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        self.installer.start(helper, plan, log)
+    }
 }
 
 /// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on. Then a test's broken release ends here, as a new version that crashes once it's up would.
 pub fn first_frame_shown(updates: &recto_update::updater::Updater) {
-    updates.first_frame(recto_update::wall_ms());
+    updates.first_frame(updates.wall_ms());
     let Some(app) = updates.app() else { return };
     if recto_update::test_breakage(&app, recto_update::TestBreakage::EndsAfterFirstFrame) {
         std::thread::sleep(Duration::from_millis(300));
@@ -215,29 +259,6 @@ pub fn restore_patience(may_be_reopened_by_update: bool, since_launch: Duration)
         return Patience::ShowNow;
     }
     Patience::WaitFor(UPDATE_RESTORE_PATIENCE - since_launch)
-}
-
-/// Asks again once that's up, on a thread that lives only that long: the state will usually have come by then, and if not, the window goes up without it. A thread that
-/// can't be started is patience over now: the window goes up without the state, said as such.
-pub fn look_again_after(inner: &Inner, left: Duration) {
-    let core = Arc::clone(&inner.core);
-    let spawned = std::thread::Builder::new()
-        .name("recto-restore-patience".into())
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            std::thread::sleep(left);
-            core.push(CoreCall::RestorePatienceOver);
-        });
-    if spawned.is_err() {
-        show_without_state(&inner.life.shown_without_state, &*inner.listener);
-    }
-}
-
-/// **The window goes up without the state:** marked first, then the host's told, so the state's coming later is known to be late (it's held back in a slow run, and
-/// `qa` doesn't take the window for one made from it). The one way there, whether the patience ran out or its thread couldn't be started.
-pub fn show_without_state(shown_without_state: &AtomicBool, listener: &dyn crate::Listener) {
-    shown_without_state.store(true, Ordering::SeqCst);
-    listener.restore_ready();
 }
 
 /// How long a window up without the state waits for it before it takes input anyway. Past this, a state that comes in isn't made into the window, as the person may be using it.
@@ -473,8 +494,7 @@ impl Inner {
 
     /// The hand-off isn't going ahead.
     pub fn hand_off_cancelled(&self) {
-        self.life.hand_off_state.store(super::HandOffState::Idle as u8, Ordering::SeqCst);
-        self.set_frozen(false);
+        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
     }
 
     pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
@@ -603,23 +623,6 @@ pub fn timer_for(next_wake: Option<u64>, now_ms: u64) -> Option<UpdateTimer> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Failure: the window goes up without the state but isn't marked as having done so before the host hears, as the fallback for a patience thread that couldn't be started did: the state's coming later was then a second `restore_ready` that a slow run didn't hold back, and `qa` took the window for one made from the state.
-    #[test]
-    fn a_window_up_without_the_state_is_marked_before_the_host_hears() {
-        let shown = Arc::new(AtomicBool::new(false));
-        let seen = Arc::clone(&shown);
-        let marked_when_told = Arc::new(AtomicBool::new(false));
-        let told = Arc::clone(&marked_when_told);
-        let listener = crate::testkit::FakeListener::checking(move |heard| {
-            if heard == crate::testkit::Heard::RestoreReady {
-                told.store(seen.load(Ordering::SeqCst), Ordering::SeqCst);
-            }
-        });
-        show_without_state(&shown, &listener);
-        assert_eq!(listener.heard(), vec![crate::testkit::Heard::RestoreReady]);
-        assert!(marked_when_told.load(Ordering::SeqCst), "marked before the host was told");
-    }
 
     /// Failure: a silent update puts a window over what the user's doing, or moves them to another Space by going into full screen. **Only as far as it can be tested with no screen:** that Rust says behind and not yet, for an update arriving in the background and nothing else. What AppKit then does stays unproven until a signed release on a real desktop.
     #[test]

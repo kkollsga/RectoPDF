@@ -92,7 +92,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
 }
 
 fn updates_takes_input(inner: &Inner) -> bool {
-    super::updates::takes_input(inner.life.shown_with_state.load(Ordering::SeqCst), inner.life.started.elapsed())
+    inner.life.takes_input()
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -556,10 +556,7 @@ impl QaBridge {
         let left = || limit.saturating_sub(started.elapsed());
         let mut animations_waited = Duration::ZERO;
         // Before anything, what's shown has to have been made from the state, which may be read late and taken in by making the window again (CI, 2026-11-11): a report before then is of a window that's about to go.
-        while !self
-            .inner()
-            .is_none_or(|inner| inner.life.restored.load(Ordering::SeqCst) && inner.life.shown_with_state.load(Ordering::SeqCst))
-        {
+        while !self.inner().is_none_or(|inner| inner.life.state_read() && inner.life.shown_with_state()) {
             if left().is_zero() {
                 return Err(AgentError::new("timed_out", "The state hasn't been read and shown yet.", exit::TIMED_OUT)
                     .then("A slow disk holds it up: `recto qa state` says what the window shows meanwhile."));
