@@ -404,9 +404,14 @@ trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
 echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
-# The tools' own tests, when a change touched tools/ (a full run only): the tool is held by the tool and not by someone running its test by hand. Each
-# builds nothing and runs on a throwaway repository and lock, so nothing is queued for them.
-if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && { [ "$scope_tools" = 1 ] || [ -n "${CI:-}" ]; }; then
+# The tools' own tests, when a change touched what they test since the base (TOOLS_PATHS, tools/check-scope.sh; a full run only, and on CI the same rule
+# against CI's base, `ci_base`): the tool is held by the tool and not by someone running its test by hand. Each builds nothing and runs on a throwaway
+# repository and lock, so nothing is queued for them. On CI they took 173 s of every run's core part whatever changed (run 43195226598).
+if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 0 ]; then
+  echo "check: the tools' tests are skipped: $scope_tools_why."
+fi
+if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 1 ]; then
+  echo "check: the tools' tests run: $scope_tools_why."
   tools_started=$(date +%s)
   for tool_test in tools/ratchet-test.sh tools/check-test.sh; do
     [ -f "$tool_test" ] || continue

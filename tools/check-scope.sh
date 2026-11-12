@@ -95,15 +95,40 @@ affected_crates() {
     /dev/stdin <(printf '%s\n' "$edges") | sort -u
 }
 
-# Chooses what a run covers, from what changed since the branch left main (or $CHECK_BASE) and what isn't committed. Arguments: the mode (--quick or --full).
-# Sets: scope_all (1 when everything runs), scope_changed (crates changed), scope_affected (those and their dependents), scope_window, scope_lifecycle
-# (1 when the tier runs), scope_app (1 when app/ changed), scope_key ("all" or a short hash of the selection, for the memory of a pass) and scope_report
-# (the lines the run prints at its start, saying what it selected and why, and what it skipped).
+# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh) are about: the tools, the hooks in tools/hooks, nextest's profiles and CI's workflow.
+# A change to any of these since the base runs them in a full run, here and on CI; nothing else does.
+TOOLS_PATHS='^(tools|\.config|\.github)/'
+
+# The commit CI compares with, for what the tools' tests are about: on main, the commit the push came after, which CI checked last; on any other branch,
+# where it left origin/main, so every push of a branch that changed the tools runs them. Prints it, or fails when it can't be worked out (a manual run, a
+# first push, a `before` that isn't in HEAD's history, history not fetched, no jq), and the caller then runs what it would have skipped.
+ci_base() {
+  local base=""
+  if [ "${GITHUB_REF_NAME:-}" = main ]; then
+    [ "${GITHUB_EVENT_NAME:-}" = push ] && [ -f "${GITHUB_EVENT_PATH:-}" ] || return 1
+    base=$(jq -r '.before // empty' "$GITHUB_EVENT_PATH" 2>/dev/null) || return 1
+  else
+    base=$(git merge-base origin/main HEAD 2>/dev/null) || return 1
+  fi
+  case "$base" in '' | *[!0-9a-f]* | 0000000000000000000000000000000000000000) return 1 ;; esac
+  git cat-file -e "$base^{commit}" 2>/dev/null && git merge-base --is-ancestor "$base" HEAD 2>/dev/null || return 1
+  printf '%s\n' "$base"
+}
+
+# Chooses what a run covers, from what changed since the branch left main (or $CHECK_BASE, or on CI `ci_base`) and what isn't committed. Arguments: the mode
+# (--quick or --full). Sets: scope_tools (1 when the tools' tests run) and scope_tools_why (why, or why not), scope_all (1 when everything runs),
+# scope_changed (crates changed), scope_affected (those and their dependents), scope_window, scope_lifecycle (1 when the tier runs), scope_app (1 when app/
+# changed), scope_key ("all" or a short hash of the selection, for the memory of a pass) and scope_report (the lines the run prints at its start, saying what
+# it selected and why, and what it skipped).
 select_scope() {
   local mode=$1 base files file c all_crates affected="" reasons="" skipped=""
-  scope_tools=0 scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
+  scope_tools=0 scope_tools_why="" scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
   all_crates=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
-  base=${CHECK_BASE:-$(git merge-base main HEAD 2>/dev/null || true)}
+  base=${CHECK_BASE:-}
+  if [ -z "$base" ] && [ -n "${CI:-}" ]; then
+    base=$(ci_base) || { base="" scope_tools=1 scope_tools_why="CI's base couldn't be worked out, so they run"; }
+  fi
+  [ -n "$base" ] || base=$(git merge-base main HEAD 2>/dev/null || true)
   if [ "$mode" = --full ]; then
     if [ -n "${CI:-}" ]; then scope_all=1 reasons="CI runs everything"
     elif [ "${CHECK_ALL:-}" = 1 ]; then scope_all=1 reasons="CHECK_ALL=1"
@@ -116,7 +141,9 @@ select_scope() {
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    case "$file" in tools/*) scope_tools=1 ;; esac
+    if [ "$scope_tools" = 0 ] && [[ $file =~ $TOOLS_PATHS ]]; then
+      scope_tools=1 scope_tools_why="$file changed since $(printf '%s' "$base" | cut -c1-12)"
+    fi
     case "$file" in
       crates/recto-headings/*) headings=1 ;;
       crates/*/*)
@@ -133,6 +160,7 @@ select_scope() {
     esac
     if printf '%s\n' "$file" | grep -qE "$LIFECYCLE_PATHS"; then scope_lifecycle=1; fi
   done <<< "$files"
+  [ "$scope_tools" = 1 ] || scope_tools_why="nothing under tools/, .config/ or .github/ changed since $(printf '%s' "$base" | cut -c1-12)"
   if [ -n "$other" ] && [ "$scope_all" = 0 ]; then
     scope_all=1
     reasons="changed outside crates/ and app/, so it can affect anything:$(printf '%s' "$other" | tr ' ' '\n' | head -3 | tr '\n' ' ')"

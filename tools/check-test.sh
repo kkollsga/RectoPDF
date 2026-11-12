@@ -803,11 +803,11 @@ check "and a part with --quick" "2" "$(CHECK_PART=core tools/check.sh --quick > 
 CHECK_PART=core full > "$X/part.out"
 check "core has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
 : > "$CALLS"
-CI=true CHECK_PART=core CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1
-check "but on CI the tools' own tests run every time, in core only" "1 1" "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"
+CI=true CHECK_PART=core CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
+check "on CI with no base to compare with, the tools' own tests run, in core" "1 1" "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"
 check "the gate runs once in core" "1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS")"
 : > "$CALLS"
-CI=true CHECK_PART=window CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1
+CI=true CHECK_PART=window CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
 check "and not in an app part" "0" "$(grep -c '^check-test$' "$CALLS")"
 : > "$CALLS"
 CHECK_PART=core full > /dev/null
@@ -837,5 +837,49 @@ for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --fu
 parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
 check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session -j 4$' "$CALLS")"
+
+# Failure: CI ran the tools' own tests on every run, 173 s of core whatever changed (run 43195226598), or skips them when what they test changed since CI's
+# base, or when that base can't be worked out. The base: on main the commit the push came after, on a branch where it left origin/main. What they test is
+# tools/ (the hooks too), .config/ and .github/, here and on CI alike.
+git checkout -q main
+git push -q origin main
+ci_core() { : > "$CALLS"; env CI=true CHECK_PART=core "$@" tools/check.sh --full > "$X/ci.out" 2>&1; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"; }
+branch_ci() { ci_core GITHUB_REF_NAME="$(git rev-parse --abbrev-ref HEAD)" GITHUB_EVENT_NAME=push; }
+git checkout -qb ci-crate
+echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-crate
+check "on CI, a branch that changed no tool since origin/main skips the tools' tests" "0 0" "$(branch_ci)"
+has "and says why" "the tools' tests are skipped: nothing under tools/, .config/ or .github/ changed since $(git merge-base origin/main HEAD | cut -c1-12)" "$(cat "$X/ci.out")"
+check "but still runs the rest of core" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
+for changed in tools/hooks/pre-push .config/nextest.toml .github/workflows/ci.yml; do
+  git checkout -q main; git checkout -qb "ci-$(basename "$changed")"
+  mkdir -p "$(dirname "$changed")" && echo "# $changed" >> "$changed" && git add . && git commit -qm "ci $changed"
+  echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate after $changed"
+  check "on CI, a branch that changed $changed runs them, whatever came after" "1 1" "$(branch_ci)"
+  has "naming it" "the tools' tests run: $changed changed since" "$(cat "$X/ci.out")"
+done
+check "and here, off CI, a branch that changed .github/ runs them too, by the same rule" "1 1" "$(: > "$CALLS"; sel_full > /dev/null; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")")"
+git checkout -q ci-crate
+git update-ref -d refs/remotes/origin/main
+check "a branch with no origin/main to compare with runs them" "1 1" "$(branch_ci)"
+has "saying why" "CI's base couldn't be worked out" "$(cat "$X/ci.out")"
+git fetch -q origin
+# main: what came since the push before, which the event names.
+git checkout -q main
+before=$(git rev-parse HEAD)
+echo cm >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-main-crate
+event() { printf '{"before":"%s"}\n' "$1" > "$X/event.json"; echo "$X/event.json"; }
+on_main() { ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$(event "$1")"; }
+check "on main, a push with no tool changed since the one before skips them" "0 0" "$(on_main "$before")"
+echo "# t" >> tools/note.txt && git add . && git commit -qm ci-main-tools
+echo cm >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-main-crate-2
+check "a push with a tool changed in any of its commits runs them" "1 1" "$(on_main "$before")"
+check "a push with only the last commit after the tools' change skips them" "0 0" "$(on_main "$(git rev-parse HEAD~1)")"
+check "a first push (before is all zeros) runs them" "1 1" "$(on_main 0000000000000000000000000000000000000000)"
+check "a before that isn't a commit here runs them" "1 1" "$(on_main 1234567890123456789012345678901234567890)"
+check "a before that isn't in HEAD's history runs them" "1 1" "$(on_main "$(git rev-parse ci-crate)")"
+check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF_NAME=main GITHUB_EVENT_PATH="$(event "$before")")"
+check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
+check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

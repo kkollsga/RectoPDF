@@ -17,8 +17,9 @@ jobs:
   # is still tools/check.sh: CHECK_PART names the part (tools/check-scope.sh has the tiers), and together the parts are everything `tools/check.sh --full` runs
   # with CI set. core: the compile gate, the workspace tests and the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh). window: the app, built, and
   # the tests of drawing, AppKit, the bridge and restoring state. lifecycle: the app again, and the tests of updates, Launch Services, long sessions, a thousand
-  # tabs and what is left registered. Each builds the app itself: one build job to hand it over would make the other two wait for it (87 s) and then download it.
-  # The ratchet (tools/ratchet.sh) runs first in every part.
+  # tabs and what is left registered. Each builds the app itself: one build job to hand it over would make the other two wait for it (87 to 140 s) and then
+  # download it, to save the 20 s of Rust each app part builds. The ratchet (tools/ratchet.sh) runs first in every part. The tools' own tests run in core only
+  # when what they test changed since CI's base (`ci_base` in tools/check-scope.sh), which needs the history: core checks out all of it, the app parts one commit.
   parts:
     name: check (${{ matrix.part }})
     strategy:
@@ -38,6 +39,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # 0 is all of it. Written so, as `0` alone reads as false in an expression and would give 1.
+          fetch-depth: ${{ matrix.part != 'core' && 1 || 0 }}
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
