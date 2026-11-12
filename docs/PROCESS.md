@@ -201,3 +201,19 @@ The fifth was a whole-state restore test that hadn't been told about new fields,
 - Process reviews count CI red hours and causes from `gh run list` each time, beside the queue and check numbers.
 
 **Check next time.** Red rate and hours since today; whether every CI-only fix was shown failing locally first.
+
+## 2026-11-12, after the release: why development felt slow, and the plan for phase R
+
+Owner: "I have noticed extremely slow development speeds on this project". The whole review, with its sources, is `docs/reviews/2026-11-12-development-speed.md`.
+
+**Numbers.** 729 commits: 225 feature, 177 product fix, 103 test fix, 67 tooling. A feature's code took 25 to 80 minutes and its branch then lived 1.5 to 5 hours. 209 commits came after the last feature merge (11-08 13:13), about 195 of them stabilising. A full check's pass went from 129 s to 514 s in five days; 29 of 52 failed runs failed after the app was built. CI: 32 of 80 runs red, and every failing test in the 14 red runs since 11-11 launched the app. Builds: 4 to 19 s after a hub edit, so not the cause.
+
+**Structure since the last review.** `Session` 193 methods (unchanged), 36 fields; `Command` 68 variants (67); `reconcile` 500 lines (191 on 11-08); `recto-ffi` 14,468 lines (6,474) with 100 unit tests. Hub lines per merge stayed low, but no feature has landed since the quick fixes, and fixes kept growing the hubs.
+
+**Why.** The app's logic sits in the binding crate, where only tests that launch the app reach it, so the fast check is blind to the code that changes most. Lifecycle code depends on speed. The window and the CLI run separate implementations of each action. Review finds the most bugs and comes after the code. The coordinator owns this: eight process reviews measured queues, runs and CI, and none measured a branch's tail or what the fast check couldn't see.
+
+**One pattern in this file.** Fixes held by a tool stuck (the run budget, pass memory, rustfmt, the queue's refusal). Fixes that were only written rules recurred: tests assuming speed four times, merging over a red `main` four times, late process reviews twice. Phase R's process changes are all tools, tests or ratchets.
+
+**Changing.** Phase R is replanned in `docs/PLAN.md`: tools first (R0), the app core out of the bridge (R1), one action with one implementation (R2), components (R3), then test homes, a feature kit and a measured pilot (R4). Guide §2.9, §2.10, §5.5 and §6.6 carry the general lessons.
+
+**Check next time.** After R0: `--quick`'s time and whether a stale registration fails in under 30 s. After each track: the exit numbers in the review's §7. At every review from now: a branch's tail (minutes from last feature commit to merge, follow-up merges), beside the queue, runs and CI.

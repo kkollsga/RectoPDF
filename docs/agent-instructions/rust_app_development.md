@@ -54,6 +54,17 @@ Read it whole once. Then keep the short version (§0) in mind while working. A n
     in its own module and register themselves; shared files get one line. No god objects, registries instead of
     switches, `rustfmt` from day one, and structure measured at every process review. Under parallel agents,
     correct small additions to shared files pile up into hubs nobody notices until every merge conflicts.
+16. **One action, one implementation (§2.9).** What a person clicks and what an agent types are the same command,
+    run by the same executor. Two wrappers over shared methods are two products, and only one of them has tests.
+17. **The app core is a crate with no toolkit and no bindings, from the first window (§2.10).** The binding crate only
+    converts and forwards. If the only test that reaches a rule launches the app, the fast check is blind to the
+    code that changes most, and every bug shows minutes late or on CI.
+18. **The check has tiers and a time budget (§6.6).** A test's tier is what it needs (nothing, a process, a window,
+    the OS); the fast check finishes in a minute and reaches the app's logic; the check's own length is measured
+    and budgeted like memory. One project's full check went from 129 s to 514 s in five days with nobody deciding it.
+19. **Measure where a feature's time goes (§5.5).** There the code took 25 to 80 minutes and the branch then lived
+    1.5 to 5 hours; a third of the project was stabilising after "feature complete". And hold every process fix with
+    a tool: the fixes that were only written rules all recurred.
 
 ---
 
@@ -493,6 +504,69 @@ Set budgets the same way as memory budgets: a file past about 1,500 lines, a fun
 that a third of all features touch is a finding, and it gets a split before more features land. Merge conflicts in
 the same file twice in a week are the earliest alarm: treat them as a structure bug, not bad luck.
 
+### 2.9 One action, one implementation: the window and the CLI run the same command
+
+**What happened.** The rule was "the CLI comes first: a feature starts as a command, then the UI calls the same
+method." It was followed, and it wasn't enough. "The same method" was a method on the session object. Above it, the
+agent's path (socket, command enum, executor) and the person's path (bridge method, call enum, session thread) each
+grew their own wrapper: which tab, waking it, which events to send, what to reply. After 30 features:
+- of 39 kinds of call from the window, about 14 repeated an agent command in parallel code and about 8 were things
+  only a person could do, which an agent could reach only through test verbs;
+- about 25 of 73 test verbs existed to stand in for an action that a command already did or should have done;
+- zoom was implemented at three sites, and an agent's Find Next had to be patched to wait the way the window's did;
+- the CLI's tests, the fast and reliable ones, said nothing about what the window did. Only tests that launched the
+  app covered that, and all 14 red CI runs in the last days before release were those tests.
+
+Two features had done it right by accident: Save and the command palette built a command and ran it. Neither needed
+a follow-up for behaving differently for an agent.
+
+**Rules:**
+- **Every action is a command value, run by one executor, with the actor (person or agent, and the agent's level)
+  passed in.** The window's button builds the same command the CLI parses. "Call the same method" is too weak a
+  rule: say "send the same command".
+- **The bridge exposes `run(action)`, the view models and drawing data,** not a method per button. A bridge with 129
+  exported methods is 129 places for the two paths to differ.
+- **A test proves coverage:** every menu item, palette entry, key binding and control maps to a command or is on a
+  short, reviewed list of host-only gestures (pointer moves, scrolling, window management).
+- **Test verbs are for what only a host has:** pointer, screenshots, window state. If a verb stands in for an action,
+  the action is missing a command.
+- **Events and replies come from the executor,** so both paths emit the same ones. Have state-changing methods
+  return what changed; don't let each caller compare before and after.
+- **Commands register themselves** (§2.8): a module per feature holding the payload, the handler, the help rows,
+  the human wording and the events, and one line in a list. Properties that guard memory or safety (does it draw,
+  which item does it hold, what level it needs) have no default, so a new command can't forget one.
+
+### 2.10 The app core is a crate with no toolkit, from the first window
+
+**What happened.** The crate that held the generated bindings was documented as "must not hold rules". Nothing
+enforced it. It was where the window's needs met the session, so every feature put its glue there, and glue with a
+decision in it is a rule: which notice wins, when the Save icon shows, what a close does while a save runs, how a
+late state is merged at launch. In five days it went from 6,500 to 14,500 lines, with 100 unit tests. Its two
+central functions (500 and 353 lines) had none, because they needed the bindings' listener and real threads.
+
+What that cost, measured:
+- the fast check never ran the code every feature changed;
+- 217 tests launched the real app, 10% of the tests and 75% of all test time. About 90 of them checked a rule, not
+  the window;
+- 29 of 52 failed full checks failed 4 to 8 minutes in, after the app was built, and so did every late CI failure;
+- two fixes for one launch bug put 66 to 80% of their lines into that one file.
+
+**Rules:**
+- **Three crates from the start, not two:** the core crates, an **app core** (queues, threads, view models, menus,
+  lifecycle; no toolkit, no binding macros), and a binding crate that converts types and forwards in one line per
+  call. Budget the binding crate's size and fail a check when logic appears in it (a function over a few lines, a
+  lock taken, a `match` on state).
+- **The app core talks to the host through traits it owns:** a listener for view models, a clock, the host's
+  services (§2.2). Its tests use a fake of each and run a whole "headless app" in process: open, act, read the view
+  model, quit, restore.
+- **View models are a pure function of state.** Build them in one function with plain inputs and test it directly.
+  A function that both projects state and drives engines or schedules work can't be tested, and it will grow.
+- **Lifecycle is a state machine with the clock passed in** ("Code that's right only when it's fast", below).
+  Launch, restore, quit, update and sleep were 72 of 196 product fixes on that project and took 3 to 4 follow-up
+  merges per feature over 3 to 4 days.
+- **Launch the app in a test only for what the app alone has:** drawing, the toolkit's behaviour, the OS's
+  lifecycle. Before writing such a test, name what it checks that the headless app can't.
+
 ---
 
 ## 3. Performance and memory: as small and fast as possible
@@ -835,6 +909,42 @@ scratchpad, and one run's `check.log` overwrote another's.
 - When the user asks for something mid-flight, queue it to the worker already on that area (a message to it) rather
   than starting a second worker on the same files.
 
+### 5.5 Measure where a feature's time goes, and hold every fix with a tool
+
+The owner said development was extremely slow and blamed slow builds, slow tests and bugs found late. The numbers
+agreed with two of the three, and showed where to look.
+
+**What the numbers were** (one project, five working days, 729 commits):
+- **Builds were fine:** 4 s to check a crate after an edit, 16 s for lints over everything, 17 s for the app. Of a
+  514 s full check, about 55 s was compiling. Measure before buying a faster build.
+- **Writing a feature took 25 to 80 minutes. Its branch then lived 1.5 to 5 hours** in review rounds, fixes, full
+  checks and the merge: 60 to 85% of its life.
+- **A third of the project came after "feature complete":** 209 of 729 commits, about 195 of them fixes, test fixes
+  and tooling. Fix, test-fix and tooling commits outnumbered feature commits 347 to 225 overall.
+- **Review found the most bugs** (about 72 of 196 fixes), after the code was written. Tests found fewer than review,
+  and the owner found about 10 defects that a screenshot already showed.
+- **Two kinds of bug were 133 of 196:** lifecycle and timing (72), and policy checks copied per feature and
+  forgotten on the next one (61). Both have a structural fix (§2.10; one shared function per policy).
+
+**What to do:**
+- **Count the tail.** At each process review, for the last few branches: minutes from first to last feature commit,
+  then to merge; full checks and review rounds in between; follow-up merges in the days after. A feature isn't done
+  at its merge if it needs three more.
+- **Classify fixes by where they were found and the cheapest place they could have been.** If review and CI find
+  what a unit test could, the code is in a place unit tests can't reach.
+- **Put the test list in the brief:** each test by the failure it catches and its tier (§6.6), before code. A
+  reviewer then checks a list, and "which tier" forces the question of where the rule lives.
+- **One shared function per policy** (where an agent may write, what a level allows, what a protected document
+  permits), and a guard that every command taking a path or touching a protected document goes through it. A
+  reviewer shouldn't be the one to notice that a new write path skipped a check.
+- **Look at every screenshot before handing over,** on one contact sheet, light and dark. It costs a minute.
+- **Hold each fix with a tool.** Over eight process reviews on that project, every fix that became a tool, a test or
+  a ratchet held (a budget for full runs, a memory of passes, a formatter, a queue that refuses a known failure).
+  Every fix that was only a sentence in the rules came back: "tests wait for a condition" four times, "fix a red
+  main first" four times, "process reviews every fourth merge" twice. If a lesson matters, write the check.
+- **Keep plan and overview documents out of feature branches.** Two files were in 28 and 17 of 29 merges. The
+  coordinator updates the plan at the merge; reference docs are split per crate or feature.
+
 ---
 
 ## 6. Testing: fast, targeted, no manual steps
@@ -950,6 +1060,46 @@ Fix every bug as it appears, related or not: a flaky test, an error in a log, wr
 Find the root cause, fix it with a test, commit it on its own. "Flaky" and "unrelated" are not answers. Several real
 races were found by chasing tests that "only sometimes" failed (a lost wake-up on encrypted connections, a retry
 recreating a folder mid-rename, a counter reset during a wait).
+
+### 6.6 Tiers, and a time budget for the check itself
+
+**What happened.** The fast check ran the tests of crates with uncommitted changes. It didn't run their dependents'
+tests, and it never built the app. Meanwhile the full check ran everything on every change and grew with every
+feature: 129 s on day 2, 294 s on day 3, 356 s on day 4, 514 s on day 5. Nobody chose that. Each test was reasonable.
+In the queue's last 30 hours, 46 of 156 failed jobs were compile or format errors, queued to learn what a check says
+in seconds. Hand-kept registration lists (every command has a help row, every state field is restored) failed 2 to 8
+minutes after the edit that broke them, because their guards ran only in a dependent crate or only in the app.
+
+**Rules:**
+- **A test's tier is what it needs,** and it says so in its doc comment:
+
+  | Tier | Needs | Runs | Budget (example) |
+  |---|---|---|---|
+  | 0 | nothing built: format, lints on what changed and its dependents, structure ratchets | before a job is queued | 20 s |
+  | 1 | one process: unit tests, in-process tests, the headless app (§2.10), every registration guard | the fast check | 60 s |
+  | 2 | child processes: the CLI, sockets, workers, installers | the full check, when something under them changed | 60 s |
+  | 3 | the real window | the full check, when the app or its core changed | 90 s |
+  | 4 | the OS's lifecycle, long runs: updates end to end, launch services, soaks | when that code changed; always on CI | minutes |
+
+- **The fast check must reach the code that changes most.** If it can't, fix the structure (§2.10), not the check.
+- **Registration guards are tier 1 and run for dependents,** whatever crate changed. A forgotten line should fail in
+  seconds.
+- **Locally, run what a change can affect; on CI, run everything, on the branch, before the merge.** Compute the
+  affected set from the build graph, and treat anything outside it (scripts, generated files) as affecting all.
+- **Budget the check like memory.** Keep each test's duration from every run. At a process review read the 20
+  slowest and each tier's total. A test that takes its tier over budget replaces something or moves down a tier.
+- **Ratchets hold what nobody watches:** file, function, struct and enum sizes; fixed sleeps in tests; the size of
+  the binding crate. Record today's values and let them only shrink. They run in seconds, with nothing built.
+- **Decisions are tested on a fake clock; only the wiring is tested end to end.** Twenty-seven update tests each
+  cloned, signed and launched an app two or three times, 410 s in all, mostly to check rules (wait 30 quiet
+  minutes; go back if the new version keeps ending) that a state machine tests in a millisecond. Keep four or five
+  end-to-end.
+- **Give every kind of test a home in the crate it tests.** There, one crate's `tests/` held 21,000 lines for 1,700
+  lines of source: the app's tests, because the app had none of its own, and ten files that tested another crate in
+  process. Any edit to six crates relinked all 23 of its test binaries, and the fast check ran those tests only
+  when that one crate changed.
+- **Share build artifacts between steps.** A separate `cargo check`, lint run and test build compile the workspace
+  three times after one edit. Lints with `--all-targets` cover what a plain check does.
 
 ---
 
@@ -1527,7 +1677,7 @@ A worker that built a large feature, took it through two review rounds and merge
 | `app/qa/`, `app-windows/qa/` | QA scripts, loopback fakes, render capture |
 | `tools/dev-build.sh` | Dev builds for the user's app (signed with the build key, Mac only) |
 
-Crate design rules that held up: a sans-I/O core for protocol state machines (`handle(input, now) -> Vec<Intent>`,
+Crate design rules that held up: an app core crate with no toolkit and no bindings between the core and the binding crate (§2.10); every action a command run by one executor (§2.9); a sans-I/O core for protocol state machines (`handle(input, now) -> Vec<Intent>`,
 no clock or sockets inside) with property tests and a virtual-clock simulator; one integration-test binary per crate
 (`tests/it/`); every struct held per item documents its size; every collection grown from outside input has a cap.
 
@@ -1536,11 +1686,14 @@ no clock or sockets inside) with property tests and a virtual-clock simulator; o
 ## 14. Starting a new app this way: checklist
 
 0. Run the research phase (§1) with the user and get the sign-off (§1.4) before writing feature code.
-1. Create the workspace: a core crate, an `ffi` crate (UniFFI, pinned to what the C# generator supports), a
-   `platform` seam crate, a CLI that exposes the same calls (agents and tests drive it).
+1. Create the workspace: a core crate, an **app core** crate with no toolkit (§2.10), an `ffi` crate that only
+   converts and forwards (UniFFI, pinned to what the C# generator supports), a `platform` seam crate, and a CLI. The
+   CLI and the app send the same commands to the same executor (§2.9); agents and tests drive either.
 2. Write AGENTS.md from §0 and this guide; point CLAUDE.md at it.
 3. Build `check.sh` (`--quick` with the Windows cross-compile, `--base`), the heavy-job lock, the timing list and
-   the portability scan from day one.
+   the portability scan from day one. Give it tiers and a time budget (§6.6), a compile gate before the queue,
+   per-test durations, and the ratchets (structure sizes, fixed sleeps, the binding crate's size) while every list
+   is still empty. Add `rustfmt` and the headless-app test kit with the first screen.
 4. Build the agent interface's base with the first screen and the first core command (§4.3): the quiet-run QA
    channel, isolated state, in-app screenshots, report commands, the CLI on a local socket with permission levels.
    Every feature after that ships with its commands, its screenshots and its tests.
@@ -1556,3 +1709,5 @@ no clock or sockets inside) with property tests and a virtual-clock simulator; o
    platform syncs with the first.
 9. Join the Apple Developer Program early if the app needs Keychain, File Provider or clean downloads.
 10. Keep memory notes for every user rule and design decision; review this guide when something new is learned.
+11. Write the one-page "how to add a feature" with the first feature, and a scaffold that creates its modules and
+    registration lines (§2.8). At each process review, measure a feature's tail as well as its tests (§5.5).

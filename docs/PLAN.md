@@ -1,6 +1,6 @@
 # RectoPDF: plan to first release
 
-Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it are in `docs/research/`.
+Last updated 2026-11-12. Behaviour is in `SPEC.md`, and the reasons behind it are in `docs/research/`.
 
 ## Where we are
 
@@ -13,7 +13,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
-| **R. Restructuring** | Every feature in its own compartment: the architecture review's steps 4 to 13 | After the first release, before any other phase 4–6 work | 24–37 |
+| **R. Restructuring** | Fast checks that reach the app's logic, one implementation for the window and the CLI, every feature in its own compartment (`docs/reviews/2026-11-12-development-speed.md`) | **Planned 2026-11-12, waiting on the owner's go-ahead.** Before any other phase 4–6 work | 45–62 |
 | **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
@@ -394,18 +394,42 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase R: Restructuring, after the first release and before any other new feature
 
-Owner, 2026-11-08: "add the large restructuring into the plan before we start on the other features". Steps 4 to 13 of `docs/reviews/2026-11-08-architecture.md` §4.6, each its own branch with its own tests, mergeable alone, smallest first. Guide §2.8 and AGENTS rule 7 hold from now on, so new work doesn't add to the hubs meanwhile.
-- [ ] 4. The pure part of `reconcile` into `model.rs`, returning the view models from plain inputs, with 10–20 unit tests (notice precedence, Save icon, pane labels, contents deltas). 2 d
-- [ ] 5. A typed `Event` enum, with session methods returning change sets. 1–2 d
-- [ ] 6. `Session`'s `impl` split into per-concern files, and its inline tests into `src/tests/<concern>.rs` (moves only). 1–2 d
-- [ ] 7. `Session`'s fields into component structs, one concern per merge. 4–6 d
-- [ ] 8. A `commands!` macro and `CommandImpl` trait, one table group per branch, with every command declaring `draws` and `tab`. 4–6 d
-- [ ] 9. The two record-command implementations merged behind a `RecordHost` trait, with one level check. 1–2 d
-- [ ] 10. `CoreCall` split into per-feature sub-enums with `handle`. 2–3 d
-- [ ] 11. A toolkit-free `recto-app` crate, so the app core is unit-tested in `--quick`; `recto-ffi` becomes adapters only. 4–6 d
-- [ ] 12. A QA verb table in `recto-app`, with Swift's verbs checked against it. 1–2 d
-- [ ] 13. Swift child controllers and `InlineEditField`. 2–4 d
-- [ ] 14. Launch, restore, update and sleep as typed state machines in the core (loading, shown without state, ready…), with the input each state takes and what a late arrival does, unit-tested on a fake clock; the window drawn from Rust's state alone, so the host keeps no copy (focus, selection, a field's text) that can diverge (guide, "Code that's right only when it's fast"). 3–5 d
+Owner, 2026-11-08: "add the large restructuring into the plan before we start on the other features". Owner, 2026-11-12: "The idea is that after this project is done the codebase is easily maintainable and coding projects are efficient and fast. Leading to rapid and robust development and making it easy and cheap to expand features."
+
+The review, the target structure and each step's proof are in `docs/reviews/2026-11-12-development-speed.md`. It replaces the step list of `docs/reviews/2026-11-08-architecture.md` §4.6, whose steps 1 to 3 are done; the old numbers are in brackets. Every step is its own branch, behaviour-preserving, mergeable alone, and reports its numbers before and after. Guide §2.8 to §2.10, §5.5, §6.6 and AGENTS rule 7 hold meanwhile. The coordinator ticks these at each merge; workers don't edit this file.
+
+**R0. Fast feedback and guards (tools only), first and all of it**
+- [ ] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
+- [ ] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
+- [ ] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
+- [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
+- [ ] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
+- [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
+
+**R1. The app core out of the bridge (track A)**
+- [ ] R1.1 [4] The pure part of `reconcile` (500 lines) into a `model` function, with 20 unit tests (notice precedence, Save icon, pane labels, contents changes). 2–3 d
+- [ ] R1.2 [11] A toolkit-free `recto-app` crate with `Listener`, `Clock` and host-service traits; `recto-ffi`'s feature modules move, `Inner`'s 45 fields become narrow handles, `recto-ffi` adapts only. 5–7 d, in 3–4 merges
+- [ ] R1.3 A headless app for tests (fake listener, clock and disk); the about 90 app tests that check a Rust rule ported to it, each shown failing on its seeded bug; the whole-state restore guard in process. 3–4 d
+- [ ] R1.4 [14] Launch and late state, quit and hand-off, update, and the sleep writer as state machines with the clock passed in, arrivals tested in every order; about 20 update tests ported; the window drawn from Rust's state alone. 4–6 d
+
+**R2. One action, one implementation (track B)**
+- [ ] R2.1 [5] A typed `Event` enum, with session methods returning what changed. Merges before R1.2 starts moving files. 1–2 d
+- [ ] R2.2 [8, 9] The command registry: a module per feature holding its payload, handler, table rows, wording and events; a `Route` column in place of the four routing sites; one record-command implementation; no default arms for `draws`, `tab` or `reads_pages`. 5–7 d, a table group per merge
+- [ ] R2.3 [10] A person's actions run commands through the same executor as an agent's: the about 14 parallel `CoreCall` arms go, the about 8 window-only actions get commands, and a test proves every menu item, palette entry, key and control maps to a command or is listed as host-only. Needs R1.2 and R2.2. 4–6 d
+- [ ] R2.4 [12] A QA verb table; the about 25 verbs standing in for an action replaced by commands; Swift's verbs checked against the table. 2 d
+
+**R3. Components (track C)**
+- [ ] R3.1 [6] `Session`'s `impl` and its inline tests split by concern (moves only). 1–2 d
+- [ ] R3.2 [7] `Session`'s fields into component structs, one concern per merge; a cold tab's cost unchanged. 4–6 d
+- [ ] R3.3 `Reader`'s 43 fields and 155 methods into components the same way. 3–4 d
+- [ ] R3.4 [13, reduced] Swift: `QAChannel` by area, and a pane file per feature where one is next touched. 1 d
+
+**R4. Test homes, the feature kit, and proof**
+- [ ] R4.1 In-process agent tests move from `recto-cli/tests` to `recto-agent`; the app tests get a crate of their own; the about 15 fixed waits go; helper waits say what they saw. 2–3 d
+- [ ] R4.2 `docs/FEATURES.md` (how to add a feature, one page), a scaffold, the brief template with a test list by tier, one shared function per policy (write paths, levels, protected PDFs) with a guard, and a contact sheet of every feature's shots, light and dark. 2 d
+- [ ] R4.3 Pilot: one real feature from phase 4 built this way and measured against the review's exit numbers, then a process review and what it teaches into the guide. 1–2 d
+
+**Done when** (measured on the pilot): `--quick` ≤ 60 s and reaching the app's logic; a typical local full check ≤ 240 s (514 s today); CI ≤ 10 min and under 10% red; about 110 app-launching tests (217), none checking a Rust decision; a new command is one file and one line; nothing a person can do that an agent can't; the pilot touches shared files for registration only and needs at most one follow-up merge.
 
 ## Later, after the first release
 
@@ -447,4 +471,7 @@ Real digital signatures to the official standards, signature trust checks, Windo
 
 ## Decisions waiting on you
 
-None right now.
+From the restructuring plan (2026-11-12, `docs/reviews/2026-11-12-development-speed.md`):
+1. **Go-ahead for phase R as planned,** R0 first, then three tracks.
+2. **May a local full check run only the tests a change can affect** (R0.2)? CI would still run everything on every branch before it merges and on `main`. The push guard would accept such a pass. Recommended: yes.
+3. **The pilot feature** for R4.3. Recommended: highlight annotations from phase 4, as it crosses every layer (a command, session state, Save, drawing, a sidebar entry).
