@@ -28,6 +28,8 @@ use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
+pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
+pub use recto_app::listener::QuitAnswer;
 use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 pub use recto_app::reader_view::ReaderView;
 use recto_app::watchdog::Watchdog;
@@ -35,7 +37,7 @@ use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
-use recto_control::record_store::{Flavor, FlushReport, Loaded, RecordStore, notice_for};
+use recto_control::record_store::{Flavor, Loaded, RecordStore, notice_for};
 use recto_control::server::{Announcer, Limits, Server, Stopper};
 use recto_core::{DocFacts, OpenError};
 use recto_platform::FileStamp;
@@ -119,7 +121,7 @@ pub trait AppListener: Send + Sync {
 }
 
 /// What comes of asking to quit.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct QuitAnswer {
     /// Go ahead. Otherwise the words below are for a question: quit anyway, or stay.
     pub go: bool,
@@ -167,14 +169,14 @@ pub struct WindowPlacement {
 }
 
 /// How it stands for a hand-off.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct BusyItem {
     pub code: String,
     pub message: String,
 }
 
 /// The cheap look at whether an update could go now, from a thread or the UI thread.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct HandOffCheck {
     pub safe: bool,
     pub busy: Vec<BusyItem>,
@@ -183,7 +185,7 @@ pub struct HandOffCheck {
 }
 
 /// Why a hand-off isn't going ahead.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Error)]
+#[uniffi::remote(Error)]
 pub enum HandOffError {
     /// Something's in flight, and an update should wait.
     Busy { items: Vec<BusyItem> },
@@ -191,19 +193,8 @@ pub enum HandOffError {
     NotSaved { code: String, message: String },
 }
 
-impl std::fmt::Display for HandOffError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Busy { items } => write!(f, "{}", items.iter().map(|item| item.message.as_str()).collect::<Vec<_>>().join(" ")),
-            Self::NotSaved { message, .. } => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for HandOffError {}
-
 /// How the state's write and read-back went.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct HandOffReport {
     pub tabs: u64,
     pub edited_tabs: u64,
@@ -213,20 +204,6 @@ pub struct HandOffReport {
     /// How much of the total was making the drive flush.
     pub force_us: u64,
     pub total_us: u64,
-}
-
-impl From<FlushReport> for HandOffReport {
-    fn from(report: FlushReport) -> Self {
-        Self {
-            tabs: report.tabs as u64,
-            edited_tabs: report.edited_tabs as u64,
-            record_bytes: report.record_bytes,
-            journal_bytes: report.journal_bytes,
-            wrote_bytes: report.wrote_bytes,
-            force_us: report.force_us,
-            total_us: report.total_us,
-        }
-    }
 }
 
 #[derive(Debug, uniffi::Error)]

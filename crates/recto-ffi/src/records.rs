@@ -2,7 +2,7 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, QuitAnswer, RowKind, SidebarRow, SidebarView};
+use crate::{AppListener, RowKind, SidebarRow, SidebarView};
 use recto_app as app;
 use std::sync::Arc;
 
@@ -35,23 +35,11 @@ impl app::Listener for HostListener {
     }
 
     fn quit_answer(&self, answer: app::listener::QuitAnswer) {
-        self.0.quit_answer(answer.into());
+        self.0.quit_answer(answer);
     }
 
     fn hand_off_quit(&self) {
         self.0.hand_off_quit();
-    }
-}
-
-impl From<app::listener::QuitAnswer> for QuitAnswer {
-    fn from(answer: app::listener::QuitAnswer) -> Self {
-        Self {
-            go: answer.go,
-            title: answer.title,
-            message: answer.message,
-            quit_button: answer.quit_button,
-            stay_button: answer.stay_button,
-        }
     }
 }
 

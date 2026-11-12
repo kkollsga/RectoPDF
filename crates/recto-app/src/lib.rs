@@ -5,6 +5,7 @@ pub mod chrome;
 pub mod clock;
 pub mod find;
 pub mod generated_contents;
+pub mod hand_off;
 pub mod launch;
 pub mod linking;
 pub mod listener;
