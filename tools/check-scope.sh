@@ -30,6 +30,9 @@ WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # sleeping, and the tests themselves. Not recto-core, recto-session in general or recto-agent: those reach the window tier.
 LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-ffi/src/(updates|sleeper|sleep_queue|saver)(\.rs|/)|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
 
+# Whether a line is in a list. Not `printf | grep -q`: grep quits at the first hit, printf dies of SIGPIPE, and under pipefail that reads as a miss.
+has_line() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; *) return 1 ;; esac; }
+
 # The names above that no test or module has. Prints one per line, with where it is named. Reads the sources under $1 (the repository).
 scope_names_missing() {
   local root=${1:-.} wanted name kind
@@ -42,10 +45,10 @@ scope_names_missing() {
     case "$name" in
       *::)
         for kind in $(printf '%s' "$name" | tr -s ':' ' '); do
-          printf '%s\n' "$mods" | grep -Fxq "$kind" || echo "module $name"
+          has_line "$mods" "$kind" || echo "module $name"
         done
         ;;
-      *) printf '%s\n' "$fns" | grep -Fxq "$name" || echo "test $name" ;;
+      *) has_line "$fns" "$name" || echo "test $name" ;;
     esac
   done
   # binary(=x): a test file or folder of recto-cli.

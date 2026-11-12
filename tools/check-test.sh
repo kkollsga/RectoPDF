@@ -535,11 +535,11 @@ git checkout -q crates/alpha/src/lib.rs
 # A test file that drives the app and is named in no tier would run in none.
 mkdir -p crates/recto-cli/tests
 echo 'fn x() { app_path(); }' > crates/recto-cli/tests/newbie.rs
-has "a test file that starts the app and is in no tier is found" "tests/newbie.rs" "$(bash -c '. tools/check-scope.sh; scope_names_missing .')"
+has "a test file that starts the app and is in no tier is found" "tests/newbie.rs" "$(bash -c 'set -o pipefail; . tools/check-scope.sh; scope_names_missing .')"
 rm -rf crates/recto-cli
 git checkout -q main
 # And this repository's real names exist, now, so the rule above isn't only proved on a stub.
-check "every name in the real tools/check-scope.sh exists" "" "$(cd "$SOURCE" && bash -c '. tools/check-scope.sh; scope_names_missing .')"
+check "every name in the real tools/check-scope.sh exists" "" "$(cd "$SOURCE" && bash -c 'set -o pipefail; . tools/check-scope.sh; scope_names_missing .')"
 
 # Failure: a compile error found by a test job, minutes into a queue wait (46 of 156 failed jobs in 30 hours). Clippy and the Windows check are a job of their
 # own, in front; when they fail no test is queued.
