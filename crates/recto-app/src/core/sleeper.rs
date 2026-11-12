@@ -5,7 +5,7 @@
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
 use super::{CoreCall, Inner, lock};
-use crate::clock::{Clock, SystemClock};
+use crate::clock::Clock;
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
@@ -14,8 +14,8 @@ use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub use crate::sleeper::Why;
@@ -45,8 +45,10 @@ struct Counts {
 }
 
 pub struct Sleeper {
-    /// What `crate::sleeper`'s decisions go by.
-    clock: SystemClock,
+    /// What `crate::sleeper`'s decisions go by: when dormancy is due, the write gap and the hourly cap. The host's clock, a test's fake one. The waits for the sleep files'
+    /// lock (a flush's `until` and the writer's hold-back) are real time and go by `Instant`, as they wait on another thread's disk. Which tabs are due is the session's own
+    /// clock (`Session::seconds_now`), as it always was.
+    clock: Arc<dyn Clock>,
     after_seconds: AtomicU32,
     budget_bytes: AtomicU64,
     /// When the soonest is due, in milliseconds of `clock` plus one, and zero for nothing.
@@ -106,12 +108,10 @@ impl LookSlots {
     }
 }
 
-// `new` is public for the bridge, which builds the app.
-#[allow(clippy::new_without_default)]
 impl Sleeper {
-    pub fn new() -> Self {
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
-            clock: SystemClock::new(),
+            clock,
             after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS),
             budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES),
             due: AtomicU64::new(0),
@@ -159,6 +159,7 @@ impl Sleeper {
     }
 
     /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further, and counted meanwhile so the queue's writer lets it go first. A flush's thread or being asked's, never the UI's.
+    /// `until` is real time, not the clock: a wait on another thread's disk.
     fn take_writing(&self, until: Option<Instant>) -> Option<std::sync::MutexGuard<'_, ()>> {
         self.others_waiting.fetch_add(1, Ordering::SeqCst);
         let Some(until) = until else {
@@ -180,6 +181,7 @@ impl Sleeper {
 
     /// Before the queue's writer takes the lock for its next, a write someone's waiting on goes first: a flush looks only every [`WRITING_LOOK_EVERY`], and a lock isn't fair, so the writer, going from one to the next, would otherwise have it again first, every time. Bounded, as a flush has a limit of its own.
     fn let_others_go_first(&self) {
+        // Real time, not the clock: how long the writer has held back, a wait on other threads.
         let began = Instant::now();
         while app::hold_back_for_others(
             self.others_waiting.load(Ordering::SeqCst),

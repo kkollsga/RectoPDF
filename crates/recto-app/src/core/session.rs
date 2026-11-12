@@ -159,6 +159,9 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
 
 /// Runs the socket from here on, now the session's as it was: nothing asked of it could be about an empty one, or open over what's coming back.
 pub fn start_serving(inner: &Arc<Inner>) {
+    if !inner.serving.socket {
+        return;
+    }
     let waiting = lock(&inner.serving.waiting_server).take();
     let ending = Arc::clone(&inner.listener);
     let served = Arc::clone(&inner.host);
@@ -194,6 +197,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
             (Some(one), Some(other)) => Some(one.min(other)),
             (one, other) => one.or(other),
         }) else {
+            if inner.core.has_ended() {
+                return;
+            }
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }

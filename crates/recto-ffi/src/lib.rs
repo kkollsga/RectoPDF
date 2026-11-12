@@ -20,35 +20,25 @@ mod snapshot_tool;
 pub mod updates;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
-use recto_agent::{AgentError, DrawableLoader};
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
-use recto_app::core::qa::{QUIET_RUN_LIMIT, QaBridge, end_with_starter};
 use recto_app::core::*;
 pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
 pub use recto_app::listener::QuitAnswer;
-use recto_app::queue::{CoreCall, CoreQueue};
+use recto_app::privacy;
+use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
-use recto_app::watchdog::Watchdog;
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
-use recto_app::{panes, privacy};
 use recto_control::StatePaths;
-use recto_control::host::{Host, SessionHost};
-use recto_control::record_store::{Flavor, Loaded, RecordStore};
-use recto_control::server::Server;
-use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
-use recto_reader::{Engine, EngineConfig};
-use recto_render_service::Policy;
 use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
-use saver::Saver;
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -572,108 +562,22 @@ impl AppCore {
         let args = recto_app::launch::parse(&args).map_err(refused)?;
         recto_platform::slow::arm(args.qa).map_err(refused)?;
         let paths = state_for(args.qa).map_err(refused)?;
-        let server = match Server::bind(&paths) {
-            Ok(server) => Some(server),
-            Err(error) if args.qa => return Err(refused(AgentError::from(error).message)),
-            Err(_) => None,
-        };
-        let core = Arc::new(CoreQueue::default());
-        let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks {
-            core: Arc::clone(&core),
-            listener: Arc::clone(&listener),
-        });
-        let mut policy = Policy::default();
-        if let Some(limit) = args.memory_limit_mib {
-            policy.memory_limit_bytes = limit * 1024 * 1024;
-            // At or below the normal limit, this step is off, so a page reaches its lower-resolution version straight away.
-            policy.heavy_limit_bytes = policy.memory_limit_bytes;
-        }
-        let keys = Arc::new(recto_reader::engine::Keyring::default());
-        let config = EngineConfig {
-            service: None,
-            policy: Some(policy),
-            keys: Some(Arc::clone(&keys)),
-        };
-        let engine = Engine::new(config.clone(), Arc::clone(&hooks));
-        let watchdog = Watchdog::new();
-        let qa = args
-            .qa
-            .then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
-        // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
-        let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core)));
-        let host = Arc::new(AppHost {
-            engine: engine.clone(),
-            session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths),
-            core: Arc::clone(&core),
-            qa: qa.clone(),
-            saver: Arc::clone(&saver),
-            running: AtomicU32::new(0),
-            handing_off: AtomicBool::new(false),
-            notice: Mutex::new(None),
-            watchers: Mutex::new(None),
-        });
-        host.listen();
-        // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
-        let find_keys = Arc::clone(&keys);
-        host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
-        let backups = recto_control::host::backups_folder(&paths);
-        recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
-        let save_step = Arc::new(AtomicU8::new(0));
-        host.session.set_saving(Arc::new(saving::AppSaving {
-            saver: Arc::clone(&saver),
-            backups,
-            step: Arc::clone(&save_step),
-            core: Arc::clone(&core),
-        }));
-        let stopper = server.as_ref().and_then(|server| server.stopper().ok());
-        let announcer = server.as_ref().and_then(|server| server.announcer().ok());
-        let update_hooks = updates::Hooks::new();
-        let update_source = recto_update::source::from_env(paths.overridden);
-        let updates = recto_update::updater::Updater::new(&paths.root, update_source, Arc::clone(&update_hooks) as Arc<dyn recto_update::updater::Host>);
-        let inner = Arc::new(Inner {
-            updates,
-            host: Arc::clone(&host),
-            engine,
-            panes: panes::Panes::new(hooks, config),
-            core: Arc::clone(&core),
-            listener: Arc::clone(&listener),
-            published: Mutex::new(Published::empty()),
-            saver: Arc::clone(&saver),
-            sleeper: sleeper::Sleeper::new(),
-            qa,
-            keys,
-            life: Lifecycle::new(),
-            serving: Serving {
-                paths: Some(paths),
-                waiting_server: Mutex::new(server),
-                stopper: Mutex::new(stopper),
-                announcer: Mutex::new(announcer),
-            },
-            window: WindowParts::new(watchdog),
-            tools: Tools::new(&save_step),
-        });
-        saver.attach(Arc::downgrade(&inner));
-        update_hooks.attach(Arc::downgrade(&inner));
-        if let Some(qa) = &inner.qa {
-            qa.attach(Arc::downgrade(&inner));
-        }
-        let session_side = Arc::clone(&inner);
-        std::thread::Builder::new()
-            .name("recto-session".into())
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || session_thread(&session_side))
-            .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
-        if args.qa {
-            let state = inner.serving.paths.as_ref().map(|paths| paths.root.clone());
-            end_with_starter(args.time_limit.unwrap_or(QUIET_RUN_LIMIT), args.owner_pid, state, Arc::downgrade(&inner));
-        }
+        let (qa_mode, open) = (args.qa, args.open.clone());
+        let inner = Inner::start(Start {
+            listener,
+            clock: Arc::new(recto_app::clock::SystemClock::new()),
+            update_source: recto_update::source::from_env(paths.overridden),
+            paths,
+            args,
+            socket: true,
+            indexing: true,
+        })
+        .map_err(refused)?;
+        updates::note_asked_to_open(&open);
         Ok(Arc::new(Self {
             inner,
-            qa_mode: args.qa,
-            start_with: {
-                updates::note_asked_to_open(&args.open);
-                args.open
-            },
+            qa_mode,
+            start_with: open,
         }))
     }
 
@@ -685,10 +589,7 @@ impl AppCore {
     /// The window is up. In a QA run this tells whoever's waiting, on one line, and any files named at launch start opening.
     pub fn ready(&self) {
         recto_app::core::printing::sweep_at_launch();
-        for path in &self.start_with {
-            self.inner.core.push(CoreCall::Open(path.clone()));
-        }
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.ready(&self.start_with);
         if self.qa_mode {
             let socket = self.inner.serving.paths.as_ref().map(|paths| paths.socket.clone());
             let line = json!({ "ok": true, "data": { "running": true, "pid": std::process::id(), "socket": socket } }).to_string();
@@ -915,35 +816,17 @@ impl AppCore {
 
     /// A contents row's chevron was tapped: its sections fold or open. On the session thread, as every change to what the sidebar shows is.
     pub fn toggle_contents_section(&self, first: u32) {
-        let entry = lock(&self.inner.published)
-            .contents
-            .get(first as usize)
-            .map(|entry| (entry.tab, entry.entry, entry.expandable));
-        if let Some((tab, entry, true)) = entry {
-            self.inner.core.push(CoreCall::ToggleSection(TabId(tab), entry));
-        }
+        self.inner.toggle_contents_section(first);
     }
 
     /// A row was tapped. Goes on the session thread, as waking a cold tab reads its file.
     pub fn tap_row(&self, row: SidebarRow) {
-        let call = match (row.kind, row.page) {
-            (RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
-            (RowKind::Contents, Some(page)) => CoreCall::Jump(TabId(row.tab), page.saturating_sub(1), 0.0),
-            (RowKind::Contents, None) => return,
-            (RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
-                Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
-                None => return,
-            },
-        };
-        self.inner.core.push(call);
+        self.inner.tap_row(row);
     }
 
     /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A contents row does what a click does.
     pub fn tap_row_adding(&self, row: SidebarRow) {
-        match row.kind {
-            RowKind::Tab => self.inner.core.push(CoreCall::CompareClick(TabId(row.tab))),
-            RowKind::Contents | RowKind::Note => self.tap_row(row),
-        }
+        self.inner.tap_row_adding(row);
     }
 
     /// The pointer went down in a pane: it's the one being read. Cheap, and the session hears on its own thread.
@@ -954,12 +837,7 @@ impl AppCore {
     }
 
     pub fn open_file(&self, path: String) {
-        let path = PathBuf::from(path);
-        // Asked for before the state's read: what a launch that goes back passes on.
-        if !self.inner.life.restored.load(Ordering::SeqCst) {
-            updates::note_asked_to_open(std::slice::from_ref(&path));
-        }
-        self.inner.core.push(CoreCall::Open(path));
+        self.inner.open_file(PathBuf::from(path));
     }
 
     /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
@@ -1029,36 +907,7 @@ impl AppCore {
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        let mut asks = lock(&self.inner.tools.prompts.passwords);
-        let Some(typed) = password else {
-            asks.cancel(id);
-            drop(asks);
-            self.inner.core.push(CoreCall::Reconcile);
-            return;
-        };
-        let password = recto_core::Password::take(typed);
-        let Some(password) = password else {
-            // Not something a password could be, which counts as a wrong one.
-            if asks.wrong(id) == passwords::Wrong::Stopped {
-                *lock(&self.inner.window.action_notice) = Some(passwords::stopped_asking());
-            }
-            drop(asks);
-            self.inner.core.push(CoreCall::Reconcile);
-            return;
-        };
-        let Some(asked) = asks.start_trying(id) else { return };
-        drop(asks);
-        let core = Arc::clone(&self.inner.core);
-        let password = Arc::new(password);
-        let spawned = std::thread::Builder::new().name("recto-unlock".into()).stack_size(512 * 1024).spawn(move || {
-            let stamp = recto_platform::file_stamp(&asked.path).ok();
-            let loaded = recto_core::inspect_with_password(&asked.path, &password);
-            core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
-        });
-        if spawned.is_err() {
-            lock(&self.inner.tools.prompts.passwords).failed(id);
-        }
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.password_answered(id, password);
     }
 
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
@@ -1091,7 +940,7 @@ impl AppCore {
 
     /// What's in the palette's field now, as it's typed.
     pub fn palette_typed(&self, text: String) {
-        self.inner.tools.palette.typed(&text);
+        recto_app::core::palette::typed(&self.inner, &text);
     }
 
     /// ↑ (-1) and ↓ (1) in the palette.
@@ -1106,8 +955,7 @@ impl AppCore {
 
     /// Escape, or the keyboard going elsewhere.
     pub fn palette_close(&self) {
-        self.inner.tools.palette.close();
-        self.inner.listener.model_changed();
+        recto_app::core::palette::close(&self.inner);
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
@@ -1122,50 +970,27 @@ impl AppCore {
 
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
     pub fn save_panel(&self) -> saving::SavePanelModel {
-        let reader = lock(&self.inner.published).reader.clone();
-        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
+        self.inner.save_panel()
     }
 
     /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
     pub fn save_as(&self, tab: u32, path: String) {
-        if self.inner.core.frozen.load(Ordering::SeqCst) || tab == 0 {
-            return;
-        }
-        saving::start_save(&self.inner, TabId(tab), Some(PathBuf::from(path)), false);
+        self.inner.save_as(tab, path);
     }
 
     /// What closing the document showing asks.
     pub fn close_prompt(&self) -> saving::ClosePrompt {
-        let published = lock(&self.inner.published);
-        // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
-        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
-        saving::close_prompt(
-            published.reader.shown_tab,
-            &published.reader.document_name,
-            published.reader.edited,
-            published.sidebar.undone_owner_steps,
-            save_off,
-            self.inner.tools.save_ui.disagreement_now().as_deref(),
-        )
+        self.inner.close_prompt()
     }
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
     pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) -> HostAction {
-        if tab == 0 {
-            return HostAction::None;
-        }
-        if choice == saving::CloseChoice::SaveAs {
-            return HostAction::ShowSavePanel;
-        }
-        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
-        HostAction::None
+        self.inner.close_answered(tab, choice)
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.
     pub fn save_problem_answered(&self, save_as: bool) -> HostAction {
-        self.inner.tools.save_ui.set_problem(None);
-        self.inner.core.push(CoreCall::Reconcile);
-        if save_as { HostAction::ShowSavePanel } else { HostAction::None }
+        self.inner.save_problem_answered(save_as)
     }
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
@@ -1266,15 +1091,7 @@ impl AppCore {
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        let mut asked = lock(&self.inner.tools.prompts.link);
-        // An answer is to the sheet that was shown: a later link's asking is left for its own answer.
-        if asked.as_ref().is_none_or(|prompt| prompt.id != id) {
-            return None;
-        }
-        let prompt = asked.take();
-        drop(asked);
-        self.inner.core.push(CoreCall::Reconcile);
-        prompt.filter(|_| open).map(|prompt| prompt.address)
+        self.inner.link_prompt_answered(id, open)
     }
 
     /// What the go-to field starts with, and its tooltip.
@@ -1288,21 +1105,12 @@ impl AppCore {
 
     /// Return in the go-to field: a label the file uses, or a page number. Says whether it was something to look up; one that names no page says so by the page.
     pub fn page_typed(&self, text: String) -> bool {
-        let typed = text.trim();
-        if typed.is_empty() || typed.len() > linking::MAX_TYPED_PAGE || self.inner.core.frozen.load(Ordering::SeqCst) {
-            return false;
-        }
-        let reading = self.inner.panes.reading();
-        let Some(tab) = self.inner.panes.tab_of(reading) else { return false };
-        self.inner.core.push(CoreCall::JumpTyped(tab, typed.to_string()));
-        true
+        self.inner.page_typed(&text)
     }
 
     /// A swipe on the page, as the system reports it: Back or Forward, as in Safari.
     pub fn swiped(&self, delta_x: f64) {
-        if let Some(back) = linking::swipe_goes_back(delta_x) {
-            self.inner.core.push(CoreCall::Step(back));
-        }
+        self.inner.swiped(delta_x);
     }
 
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
@@ -1334,14 +1142,7 @@ impl AppCore {
 
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
-            engine.dismiss_selection_notice();
-        }
-        lock(&self.inner.window.action_notice).take();
-        self.inner.tools.tool.dismiss_notice();
-        self.inner.tools.printing.dismiss_notice();
-        self.inner.updates.dismiss_notice();
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.dismiss_selection_notice();
     }
 
     /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
@@ -1490,7 +1291,7 @@ impl AppCore {
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
     pub fn state_read(&self) -> bool {
-        self.inner.life.restored.load(Ordering::SeqCst)
+        self.inner.state_read()
     }
 
     /// What the host shows has been made from the state that was read.
@@ -1543,30 +1344,12 @@ impl AppCore {
 
     /// Reads the state, on a thread of its own, and hears `restore_ready` when it's applied. It's what the window waits for, up to `restore_patience_seconds`: its frame and the place on it come from what's read.
     pub fn begin_restore(&self) {
-        let inner = Arc::clone(&self.inner);
-        let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
-            // Before the record: a version that keeps failing goes back here, and not by reading on.
-            let facts = lock(&inner.life.update_facts).take();
-            let misreads = updates::misreads_the_record(facts.as_ref());
-            if let Some(facts) = facts
-                && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
-            {
-                std::process::exit(0);
-            }
-            recto_platform::slow::pause(recto_platform::slow::Seam::State);
-            let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
-            let loaded = updates::fall_back_if_unreadable(&inner, loaded);
-            updates::note_tabs_read(&loaded);
-            inner.core.push(CoreCall::Restored(Box::new(loaded)));
-        });
-        if spawned.is_err() {
-            self.inner.core.push(CoreCall::Restored(Box::new(Loaded::Nothing)));
-        }
+        self.inner.begin_restore();
     }
 
     /// The state hasn't been read in time, or a restored tab's file isn't answering. What's on the screen goes on without it.
     pub fn restore_patience_over(&self) {
-        self.inner.core.push(CoreCall::RestorePatienceOver);
+        self.inner.restore_patience_over();
     }
 
     /// Whether what the window would show now is right: the place on the layers, or nothing to wait for. Then, or once the patience is over, it shows. A short lock, asked only until it's showing.
@@ -1888,42 +1671,17 @@ impl AppCore {
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.
     pub fn quit_requested(&self) {
-        let inner = Arc::clone(&self.inner);
-        // What's done from here wouldn't come back. If it turns out it isn't quitting, it's taken again.
-        inner.set_frozen(true);
-        inner.updates.stop();
-        inner.tools.tool.quitting();
-        inner.tools.printing.quitting();
-        let _ = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024).spawn(move || {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let flushing = Arc::clone(&inner);
-            let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {
-                let _ = sender.send(flushing.saver.flush(false, Duration::from_secs(2)));
-            });
-            let outcome = receiver.recv_timeout(QUIT_PATIENCE);
-            let fine = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
-            let unsaved = inner.host.session.unsaved_tabs();
-            // Asked for, Quit Anyway included, so this run of a version being watched didn't end early. Stay says otherwise.
-            inner.updates.quitting_as_asked();
-            if !(fine || unsaved.is_empty()) {
-                inner.set_frozen(false);
-                inner.updates.stop_over();
-            }
-            inner.listener.quit_answer(recto_app::listener::QuitAnswer::for_quit(fine, unsaved.len()));
-        });
+        self.inner.quit_requested();
     }
 
     /// The quit's question was answered with Stay: the app goes on, and isn't quitting after all.
     pub fn quit_stayed(&self) {
-        self.inner.updates.quit_not_taken();
+        self.inner.quit_stayed();
     }
 
     /// Ends the socket, on the way out. Returns at once.
     pub fn shutdown(&self) {
-        if let Some(stopper) = lock(&self.inner.serving.stopper).take() {
-            stopper.stop();
-        }
-        self.inner.forget_a_quiet_copy();
+        self.inner.shutdown();
     }
 }
 

@@ -126,3 +126,55 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     }
     inner.core.push(super::CoreCall::Events(events));
 }
+
+/// **Saving and closing, as the window asks:** Save As's sheet and its answer, what closing a document asks and its answer, and a save's problem answered. What they
+/// say is `crate::saving`'s; the save itself, [`start_save`]'s.
+impl super::Inner {
+    /// What Save As's sheet says, for the tab showing. Never waits: from what's published.
+    pub fn save_panel(&self) -> SavePanelModel {
+        let reader = super::lock(&self.published).reader.clone();
+        panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
+    }
+
+    /// Save As's sheet was answered with this path.
+    pub fn save_as(self: &Arc<Self>, tab: u32, path: String) {
+        if self.core.frozen.load(Ordering::SeqCst) || tab == 0 {
+            return;
+        }
+        start_save(self, TabId(tab), Some(PathBuf::from(path)), false);
+    }
+
+    /// What closing the document showing asks.
+    pub fn close_prompt(&self) -> ClosePrompt {
+        let published = super::lock(&self.published);
+        // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
+        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
+        close_prompt(
+            published.reader.shown_tab,
+            &published.reader.document_name,
+            published.reader.edited,
+            published.sidebar.undone_owner_steps,
+            save_off,
+            self.tools.save_ui.disagreement_now().as_deref(),
+        )
+    }
+
+    /// The close prompt's answer. Save closes once it's saved, and not if the save fails. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
+    pub fn close_answered(&self, tab: u32, choice: CloseChoice) -> super::HostAction {
+        if tab == 0 {
+            return super::HostAction::None;
+        }
+        if choice == CloseChoice::SaveAs {
+            return super::HostAction::ShowSavePanel;
+        }
+        self.core.push(super::CoreCall::CloseAnswered(TabId(tab), choice));
+        super::HostAction::None
+    }
+
+    /// A save's problem was answered: with Save As, its sheet opens.
+    pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction {
+        self.tools.save_ui.set_problem(None);
+        self.core.push(super::CoreCall::Reconcile);
+        if save_as { super::HostAction::ShowSavePanel } else { super::HostAction::None }
+    }
+}

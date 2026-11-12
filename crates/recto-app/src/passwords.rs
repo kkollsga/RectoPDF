@@ -89,6 +89,11 @@ impl Asks {
         self.waiting.front().filter(|ask| !ask.trying)
     }
 
+    /// Whether a password is being tried now, on its own thread: what a test waits for before it looks.
+    pub fn trying(&self) -> bool {
+        self.waiting.iter().any(|ask| ask.trying)
+    }
+
     /// The sheet's words for the ask showing.
     pub fn prompt(&self) -> Option<PasswordPrompt> {
         self.showing().map(prompt_for)
