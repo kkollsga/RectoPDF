@@ -823,11 +823,17 @@ fn selecting_news(reader: &mut Reader) -> SelectingNews {
     }
 }
 
+/// Tells the host what changed of the selection: the notice, if it's another, and a copy that's ready. The host is never called with the notice's lock held, so one that pulls from inside a call can't deadlock on it.
 fn tell_selecting(shared: &Shared, news: SelectingNews) {
-    let mut last = lock(&shared.last_notice);
-    if *last != news.notice {
-        *last = news.notice;
-        drop(last);
+    let changed = {
+        let mut last = lock(&shared.last_notice);
+        let changed = *last != news.notice;
+        if changed {
+            *last = news.notice;
+        }
+        changed
+    };
+    if changed {
         shared.events.note_changed();
     }
     if news.copy_ready {

@@ -6,9 +6,9 @@
 //!
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
-use crate::menus::{MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use crate::{AppCore, HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
 use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
+pub(crate) use recto_app::snapshot_menu::{TOGGLE_ID, is_menu_id};
 use recto_reader::Engine;
 use recto_reader::snapshot::{SnapshotTool, Taken};
 use recto_session::TabId;
@@ -19,12 +19,8 @@ use std::sync::{Arc, Mutex};
 /// A snapshot thread's stack: a worker's replies and a PNG's compressor, with the rows on the heap.
 const STACK: usize = 1024 * 1024;
 
-/// The menu's and the panel's id for the tool.
-const TOGGLE_ID: &str = "tools.snapshot";
 /// A notice's "Copy anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "tools.copy_anyway.";
-/// The tool's name in the menu and the panel.
-const SNAPSHOT_TITLE: &str = "Snapshot";
 
 /// What a release asked for, kept so "Copy anyway" can ask again.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,66 +304,23 @@ impl Tool {
     }
 }
 
-/// The tool's place in the menu bar: Tools, with Snapshot ticked while it's on. ⇧⌘A, as a key nothing else here takes, and the screenshot keys are the system's.
-pub(crate) fn tools_menu(snapshot_on: bool) -> MenuModel {
-    MenuModel {
-        title: "Tools".into(),
-        entries: vec![MenuEntry {
-            id: TOGGLE_ID.into(),
-            title: SNAPSHOT_TITLE.into(),
-            key: "A".into(),
-            with_control: false,
-            checked: snapshot_on,
-            hidden: false,
-            system_action: String::new(),
-            parent: String::new(),
-        }],
-    }
-}
-
-/// The panel's tools, above its view options. The panel holds tools while reading (owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc."), and commands are in the menu bar too (decision 17).
-pub(crate) fn tools_section(snapshot_on: bool) -> PanelSection {
-    PanelSection {
-        title: "Tools".into(),
-        items: vec![PanelItem {
-            id: TOGGLE_ID.into(),
-            title: SNAPSHOT_TITLE.into(),
-            selected: snapshot_on,
-            enabled: true,
-        }],
-    }
-}
-
-/// The tools go first in an open panel, except in edit mode, whose Done leads the panel and the tools come after it.
-pub(crate) fn add_to_panel(panel: &mut PanelModel, snapshot_on: bool, edit_mode: bool) {
-    if panel.open {
-        let at = usize::from(edit_mode).min(panel.sections.len());
-        panel.sections.insert(at, tools_section(snapshot_on));
-    }
-}
-
 /// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
 pub(crate) fn tab_came_forward(inner: &crate::Inner) {
-    if inner.tool.is_on() {
-        inner.tool.toggle();
+    if inner.tools.tool.is_on() {
+        inner.tools.tool.toggle();
     }
-}
-
-/// Whether a menu item is the tool's, for QA's `menu`, which takes only what a menu has.
-pub(crate) fn is_menu_id(id: &str) -> bool {
-    id == TOGGLE_ID
 }
 
 /// What a menu item, panel button or notice button does, if it's the tool's: toggling it, or a notice's "Copy anyway", which takes again only what that notice refused. Says whether it was the tool's.
 pub(crate) fn perform(inner: &Arc<Inner>, id: &str) -> bool {
     if id == TOGGLE_ID {
-        inner.tool.toggle();
+        inner.tools.tool.toggle();
         inner.core.push(crate::CoreCall::Reconcile);
         inner.listener.model_changed();
         return true;
     }
     let Some(serial) = id.strip_prefix(ANYWAY_PREFIX) else { return false };
-    if let Some(job) = serial.parse().ok().and_then(|serial| inner.tool.take_refused(serial)) {
+    if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
         start(inner, Job { anyway: true, ..job });
     }
     inner.core.push(crate::CoreCall::Reconcile);
@@ -387,7 +340,7 @@ fn words_for(outcome: &ClipOutcome) -> (String, bool) {
 
 /// Takes a job off the UI thread: now, on a thread of its own, or after the one running, which it stops.
 fn start(inner: &Arc<Inner>, job: Job) {
-    let tool = &inner.tool;
+    let tool = &inner.tools.tool;
     // A box on a heavy page can take seconds, so the reader is told it's on its way, until the answer replaces this.
     tool.say("Copying…", false);
     lock(&tool.refused).take();
@@ -402,13 +355,13 @@ fn start(inner: &Arc<Inner>, job: Job) {
         while let Some((job, stop)) = next {
             let (outcome, source) = take(&runner, job, &stop);
             // Under the slot's lock, so a release now either waits for this thread or finds the slot free after the answer is in. Nothing here takes the session's lock.
-            let mut jobs = lock(&runner.tool.jobs);
+            let mut jobs = lock(&runner.tools.tool.jobs);
             next = jobs.next();
             if next.is_none() {
                 publish(&runner, job, outcome, source);
             }
         }
-        runner.tool.running.fetch_sub(1, Ordering::SeqCst);
+        runner.tools.tool.running.fetch_sub(1, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
         runner.core.push(crate::CoreCall::Reconcile);
     });
@@ -423,7 +376,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
 
 /// The newest job's answer: the notice, and what's for the clipboard.
 fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBuf, u32)>) {
-    let tool = &inner.tool;
+    let tool = &inner.tools.tool;
     if matches!(outcome, ClipOutcome::Stopped) {
         lock(&tool.notice).take();
         return;
@@ -487,7 +440,7 @@ enum Data {
 impl AppCore {
     /// What a copy has for the clipboard, a snapshot's or the selection's text, as one offer: the types in order, and which are made only when a paste asks. `copy_ready` says when. The bytes come one type at a time from `clipboard_data`, so no more than one is copied across at once.
     pub fn take_clipboard(&self) -> Option<ClipboardOffer> {
-        let tool = &self.inner.tool;
+        let tool = &self.inner.tools.tool;
         let mut offered = lock(&tool.ready).take().or_else(|| {
             self.inner
                 .panes
@@ -516,7 +469,7 @@ impl AppCore {
 
     /// One type's bytes for the offer with this number, once. A type made with the copy is handed over and dropped from here. A promised one is made now, as a paste asks for it, which takes a worker and can take seconds: the system asks on the UI thread and waits for the answer, which is the one time the UI thread waits here, and only for a paste of that type from another app. Nothing for an offer replaced since, or on the way out.
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
-        match self.inner.tool.data(serial, &uti)? {
+        match self.inner.tools.tool.data(serial, &uti)? {
             Data::Ready(bytes) => Some(bytes),
             Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, cap).ok(),
         }
@@ -524,7 +477,7 @@ impl AppCore {
 
     /// The clipboard has something else on it now: what this offer promised is let go.
     pub fn clipboard_released(&self, serial: u64) {
-        let mut offered = lock(&self.inner.tool.offered);
+        let mut offered = lock(&self.inner.tools.tool.offered);
         if offered.as_ref().is_some_and(|offered| offered.serial == serial) {
             offered.take();
         }
@@ -637,41 +590,6 @@ mod tests {
         assert!(!tool.is_on());
         assert!(tool.toggle() && tool.is_on());
         assert!(!tool.toggle() && !tool.is_on());
-    }
-
-    /// Failure: the tool can't be found or doesn't say whether it's on, in the menu bar or the panel, or its key is one something else takes.
-    #[test]
-    fn the_snapshot_tool_is_in_the_tools_menu_and_the_panel() {
-        let menu = tools_menu(true);
-        assert_eq!(
-            (menu.entries[0].id.as_str(), menu.entries[0].checked, menu.entries[0].key.as_str()),
-            (TOGGLE_ID, true, "A")
-        );
-        assert!(!tools_menu(false).entries[0].checked);
-        assert!(tools_section(true).items[0].selected && !tools_section(false).items[0].selected);
-        let taken: Vec<(String, bool)> = crate::menus::menu_bar(recto_session::ViewSettings::default(), None, "")
-            .iter()
-            .flat_map(|menu| &menu.entries)
-            .map(|item| (item.key.clone(), item.with_control))
-            .collect();
-        assert!(!taken.contains(&("A".to_string(), false)), "⇧⌘A is free");
-    }
-
-    /// Failure: the snapshot tool pushes edit mode's Done off the top of the panel, where the reader leaves edit mode from, or shows in a closed panel.
-    #[test]
-    fn the_tools_go_first_except_after_edit_modes_done() {
-        let mut reading = crate::menus::panel(true, false, true);
-        add_to_panel(&mut reading, false, false);
-        assert_eq!(reading.sections[0].items[0].id, TOGGLE_ID);
-        let mut editing = crate::menus::panel(true, true, true);
-        add_to_panel(&mut editing, false, true);
-        assert_eq!(
-            (editing.sections[0].items[0].id.as_str(), editing.sections[1].items[0].id.as_str()),
-            ("edit_mode.done", TOGGLE_ID)
-        );
-        let mut closed = crate::menus::panel(false, false, true);
-        add_to_panel(&mut closed, true, false);
-        assert!(closed.sections.iter().all(|section| section.items.iter().all(|item| item.id != TOGGLE_ID)));
     }
 
     /// Failure: the clipboard hands a type's bytes to an offer that's been replaced, or twice, so they're held after the host has them; or a promised SVG is made on the way out, holding up a quit for a worker; or a text copy isn't one offer like a snapshot's.

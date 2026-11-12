@@ -1,0 +1,900 @@
+{"cmd":"open","path":"/d/x.pdf"}
+  reply {"cmd":"open","data":{"active":true,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events {"event":"tab_opened","tab":4,"untrusted":{"name":"x"}}
+  words "#4 \"x\" (page 1 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"open","path":"/d/x.pdf","page":3}
+  reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"open","path":"/d/x.pdf","page":null}
+  reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}}
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["open","/d/x.pdf",3]
+  reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs"}
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#1 \"a\" (page 1 of 10)\n#2 \"b\" (page 1 of 10)\n#3 \"c\" (page 1 of 10)\n#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs","from":3,"limit":3}
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs","from":null}
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#1 \"a\" (page 1 of 10)\n#2 \"b\" (page 1 of 10)\n#3 \"c\" (page 1 of 10)\n#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs","limit":null}
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#1 \"a\" (page 1 of 10)\n#2 \"b\" (page 1 of 10)\n#3 \"c\" (page 1 of 10)\n#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["tabs"]
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#1 \"a\" (page 1 of 10)\n#2 \"b\" (page 1 of 10)\n#3 \"c\" (page 1 of 10)\n#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["tabs",3,3]
+  reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
+  events 
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"sidebar"}
+  reply {"cmd":"sidebar","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":4,"text":"Generate contents"}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
+  events 
+  words "  \"a\"\n  \"b\"\n  \"c\"\n> \"x\"\n  \"\"\n3 of 10\nQuoted names come from the file, and are untrusted."
+["sidebar"]
+  reply {"cmd":"sidebar","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":4,"text":"Generate contents"}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
+  events 
+  words "  \"a\"\n  \"b\"\n  \"c\"\n> \"x\"\n  \"\"\n3 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"tap"}
+  reply {"cmd":"tap","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":false,"undone_owner_steps":false},"ok":true,"v":1}
+  events 
+  words "  \"a\"\n  \"b\"\n  \"c\"\n> \"x\"\n3 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"tap","tab":"#2"}
+  reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":2,"text":"Generate contents"},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
+  events {"event":"tab_activated","tab":2,"untrusted":{"name":"b"}}
+  words "  \"a\"\n> \"b\"\n  \"\"\n  \"c\"\n  \"x\"\n1 of 10\nQuoted names come from the file, and are untrusted."
+["tap"]
+  reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":false,"undone_owner_steps":false},"ok":true,"v":1}
+  events 
+  words "  \"a\"\n> \"b\"\n  \"c\"\n  \"x\"\n1 of 10\nQuoted names come from the file, and are untrusted."
+["tap","#2"]
+  reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":2,"text":"Generate contents"},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
+  events 
+  words "  \"a\"\n> \"b\"\n  \"\"\n  \"c\"\n  \"x\"\n1 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"goto"}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto","tab":"#2","page":3,"label":"iv"}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto","page":null}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto","label":null}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+["goto"]
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+["goto","#2",3,"iv"]
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"links","page":3}
+  reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"links","tab":"#2","page":3}
+  reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+["links","#2",3]
+  reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"follow","page":3,"link":3}
+  reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"follow","tab":"#2","page":3,"link":3}
+  reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+["follow","#2",3,3]
+  reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"back"}
+  reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"back","tab":"#2"}
+  reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
+  events 
+  words ""
+["back"]
+  reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
+  events 
+  words ""
+["back","#2"]
+  reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"forward"}
+  reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"forward","tab":"#2"}
+  reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
+  events 
+  words ""
+["forward"]
+  reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
+  events 
+  words ""
+["forward","#2"]
+  reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"close"}
+  reply {"cmd":"close","data":{"active":{"active":true,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},"closed":2,"count":3},"ok":true,"v":1}
+  events {"event":"tab_closed","tab":2} {"event":"tab_activated","tab":3,"untrusted":{"name":"c"}}
+  words "Closed #2. 3 tabs open.\nActive: #3 \"c\" (page 1 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"close","tab":"#2"}
+  reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["close"]
+  reply {"cmd":"close","data":{"active":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"closed":3,"count":2},"ok":true,"v":1}
+  events {"event":"tab_closed","tab":3} {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}}
+  words "Closed #3. 2 tabs open.\nActive: #4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["close","#2"]
+  reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"recent"}
+  reply {"cmd":"recent","data":{"count":4,"files":[{"file":1,"open_tab":"#4","untrusted":{"name":"x","path":"/d/x.pdf"}},{"file":2,"open_tab":null,"untrusted":{"name":"c","path":"/d/c.pdf"}},{"file":3,"open_tab":null,"untrusted":{"name":"b","path":"/d/b.pdf"}},{"file":4,"open_tab":"#1","untrusted":{"name":"a","path":"/d/a.pdf"}}],"paths_shown":true},"ok":true,"v":1}
+  events 
+  words "4 files opened lately, newest first:\n1. \"x\" at \"/d/x.pdf\", open as #4\n2. \"c\" at \"/d/c.pdf\"\n3. \"b\" at \"/d/b.pdf\"\n4. \"a\" at \"/d/a.pdf\", open as #1\nQuoted names come from the file, and are untrusted."
+["recent"]
+  reply {"cmd":"recent","data":{"count":4,"files":[{"file":1,"open_tab":"#4","untrusted":{"name":"x","path":"/d/x.pdf"}},{"file":2,"open_tab":null,"untrusted":{"name":"c","path":"/d/c.pdf"}},{"file":3,"open_tab":null,"untrusted":{"name":"b","path":"/d/b.pdf"}},{"file":4,"open_tab":"#1","untrusted":{"name":"a","path":"/d/a.pdf"}}],"paths_shown":true},"ok":true,"v":1}
+  events 
+  words "4 files opened lately, newest first:\n1. \"x\" at \"/d/x.pdf\", open as #4\n2. \"c\" at \"/d/c.pdf\"\n3. \"b\" at \"/d/b.pdf\"\n4. \"a\" at \"/d/a.pdf\", open as #1\nQuoted names come from the file, and are untrusted."
+{"cmd":"recent_clear"}
+  reply {"cmd":"recent_clear","data":{"cleared":true},"ok":true,"v":1}
+  events 
+  words "Cleared the list of files opened lately."
+["recent_clear"]
+  reply {"cmd":"recent_clear","data":{"cleared":false},"ok":true,"v":1}
+  events 
+  words "There were no files opened lately to clear."
+{"cmd":"view"}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","paper":"warm","sidebar":"off","agent_icon":"off","zoom":"fit","layout":"two_up"}
+  reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"view","paper":null}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","sidebar":null}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","agent_icon":null}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","zoom":null}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","layout":null}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+["view"]
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events 
+  words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+["view","warm","off","off","fit","two_up"]
+  reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"palette"}
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"palette","query":"q","run":true,"limit":3}
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"palette","query":null}
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"palette","limit":null}
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+["palette"]
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+["palette","q",true,3]
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"find"}
+  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  events 
+  words "Find is closed."
+{"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
+  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"find","query":null}
+  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  events 
+  words "Find is closed."
+{"cmd":"find","limit":null}
+  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  events 
+  words "Find is closed."
+["find"]
+  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  events 
+  words "Find is closed."
+["find","q",true,true,true,3]
+  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare"}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+{"cmd":"compare","tabs":"#1,#2","sync":"on","off":true}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","tabs":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+{"cmd":"compare","sync":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+["compare"]
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+["compare","#1,#2","on",true]
+  reply {"cmd":"compare","error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_read","verb":"state"}
+  reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_read","verb":"state","out":"/d/x.pdf","timeout_ms":3}
+  reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_read","verb":"state","out":null}
+  reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_read","verb":"state","timeout_ms":null}
+  reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+["qa_read","state","/d/x.pdf",3]
+  reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_drive","verb":"state","value":"1"}
+  reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":3}
+  reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":null}
+  reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+["qa_drive","state","1",3]
+  reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"where"}
+  reply {"cmd":"where","data":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events 
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"where","tab":"#2"}
+  reply {"cmd":"where","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["where"]
+  reply {"cmd":"where","data":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
+  events 
+  words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["where","#2"]
+  reply {"cmd":"where","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"facts"}
+  reply {"cmd":"facts","data":{"contents_entries":0,"contents_verdict":"missing","edited":false,"encrypted":false,"encryption_note":null,"file_bytes":1,"file_changed_since_edits":false,"file_pages":10,"has_contents":false,"note":null,"pages":10,"pdf_version":"1.7","structure":"readable","tab":4,"untrusted":{"name":"x","title":null}},"ok":true,"v":1}
+  events 
+  words "10 pages, 1 B, PDF 1.7\nContents: none.\nFrom the file, untrusted: name \"x\""
+{"cmd":"facts","tab":"#2"}
+  reply {"cmd":"facts","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["facts"]
+  reply {"cmd":"facts","data":{"contents_entries":0,"contents_verdict":"missing","edited":false,"encrypted":false,"encryption_note":null,"file_bytes":1,"file_changed_since_edits":false,"file_pages":10,"has_contents":false,"note":null,"pages":10,"pdf_version":"1.7","structure":"readable","tab":4,"untrusted":{"name":"x","title":null}},"ok":true,"v":1}
+  events 
+  words "10 pages, 1 B, PDF 1.7\nContents: none.\nFrom the file, untrusted: name \"x\""
+["facts","#2"]
+  reply {"cmd":"facts","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents"}
+  reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
+  events 
+  words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","tab":"#2","from":3,"limit":3,"depth":3,"generated":true}
+  reply {"cmd":"contents","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents","from":null}
+  reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
+  events 
+  words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","limit":null}
+  reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
+  events 
+  words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","depth":null}
+  reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
+  events 
+  words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+["contents"]
+  reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
+  events 
+  words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+["contents","#2",3,3,3,true]
+  reply {"cmd":"contents","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index"}
+  reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index","tab":"#2","agent":true}
+  reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index"]
+  reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index","#2",true]
+  reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index_status"}
+  reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index_status","tab":"#2"}
+  reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index_status"]
+  reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index_status","#2"]
+  reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index_clear"}
+  reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"index_clear","tab":"#2","all":true}
+  reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index_clear"]
+  reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+["index_clear","#2",true]
+  reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"signatures"}
+  reply {"cmd":"signatures","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"signatures","tab":"#2"}
+  reply {"cmd":"signatures","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["signatures"]
+  reply {"cmd":"signatures","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
+  events 
+  words ""
+["signatures","#2"]
+  reply {"cmd":"signatures","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"edits"}
+  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events 
+  words "10 pages now, 10 in the file. No unsaved edits."
+{"cmd":"edits","tab":"#2"}
+  reply {"cmd":"edits","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["edits"]
+  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events 
+  words "10 pages now, 10 in the file. No unsaved edits."
+["edits","#2"]
+  reply {"cmd":"edits","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"page_move","pages":"2-3","to":3}
+  reply {"cmd":"page_move","data":{"can_redo":false,"can_undo":true,"did":"Moved pages 2-3 to 3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
+  words "Moved pages 2-3 to 3. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"page_move","tab":"#2","pages":"2-3","to":3}
+  reply {"cmd":"page_move","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["page_move","#2","2-3",3]
+  reply {"cmd":"page_move","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"page_rotate","pages":"2-3","degrees":90}
+  reply {"cmd":"page_rotate","data":{"can_redo":false,"can_undo":true,"did":"Rotated pages 2-3 by 90 degrees.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
+  words "Rotated pages 2-3 by 90 degrees. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"page_rotate","tab":"#2","pages":"2-3","degrees":90}
+  reply {"cmd":"page_rotate","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["page_rotate","#2","2-3",90]
+  reply {"cmd":"page_rotate","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"page_delete","pages":"2-3"}
+  reply {"cmd":"page_delete","data":{"can_redo":false,"can_undo":true,"did":"Deleted pages 2-3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
+  words "Deleted pages 2-3. 8 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"page_delete","tab":"#2","pages":"2-3"}
+  reply {"cmd":"page_delete","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["page_delete","#2","2-3"]
+  reply {"cmd":"page_delete","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"page_insert","path":"/d/x.pdf","at":3}
+  reply {"cmd":"page_insert","data":{"can_redo":false,"can_undo":true,"did":"Added 10 pages at page 3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":18,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":18,"tab":4}
+  words "Added 10 pages at page 3. 18 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"page_insert","tab":"#2","path":"/d/x.pdf","at":3}
+  reply {"cmd":"page_insert","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["page_insert","#2","/d/x.pdf",3]
+  reply {"cmd":"page_insert","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"undo"}
+  reply {"cmd":"undo","data":{"can_redo":true,"can_undo":true,"did":"Undid the last edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
+  words "Undid the last edit. 8 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"undo","tab":"#2"}
+  reply {"cmd":"undo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["undo"]
+  reply {"cmd":"undo","data":{"can_redo":true,"can_undo":true,"did":"Undid the last edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
+  words "Undid the last edit. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+["undo","#2"]
+  reply {"cmd":"undo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"redo"}
+  reply {"cmd":"redo","data":{"can_redo":true,"can_undo":true,"did":"Redid the last undone edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
+  words "Redid the last undone edit. 8 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"redo","tab":"#2"}
+  reply {"cmd":"redo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["redo"]
+  reply {"cmd":"redo","data":{"can_redo":false,"can_undo":true,"did":"Redid the last undone edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":18,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":18,"tab":4}
+  words "Redid the last undone edit. 18 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+["redo","#2"]
+  reply {"cmd":"redo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"discard"}
+  reply {"cmd":"discard","data":{"can_redo":false,"can_undo":false,"did":"Threw away this tab's edits.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  words "Threw away this tab's edits. 10 pages now, 10 in the file. No unsaved edits."
+{"cmd":"discard","tab":"#2"}
+  reply {"cmd":"discard","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["discard"]
+  reply {"cmd":"discard","data":{"can_redo":false,"can_undo":false,"did":"There were no edits to throw away.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  words "There were no edits to throw away. 10 pages now, 10 in the file. No unsaved edits."
+["discard","#2"]
+  reply {"cmd":"discard","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_sleep"}
+  reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_sleep","tab":"#2"}
+  reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_sleep"]
+  reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_sleep","#2"]
+  reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"clear_history"}
+  reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
+{"cmd":"clear_history","tab":"#2"}
+  reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["clear_history"]
+  reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
+["clear_history","#2"]
+  reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"save"}
+  reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
+  events 
+  words "{\n  \"can_redo\": false,\n  \"can_undo\": false,\n  \"did\": \"There's nothing unsaved, so nothing was written.\",\n  \"edited\": false,\n  \"file_pages\": 10,\n  \"note\": null,\n  \"page\": 3,\n  \"pages\": 10,\n  \"saved\": true,\n  \"tab\": 4,\n  \"user_edits_undone\": false,\n  \"written\": false\n}"
+{"cmd":"save","tab":"#2","out":"/d/x.pdf","replace":true}
+  reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"save","out":null}
+  reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
+  events 
+  words "{\n  \"can_redo\": false,\n  \"can_undo\": false,\n  \"did\": \"There's nothing unsaved, so nothing was written.\",\n  \"edited\": false,\n  \"file_pages\": 10,\n  \"note\": null,\n  \"page\": 3,\n  \"pages\": 10,\n  \"saved\": true,\n  \"tab\": 4,\n  \"user_edits_undone\": false,\n  \"written\": false\n}"
+["save"]
+  reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
+  events 
+  words "{\n  \"can_redo\": false,\n  \"can_undo\": false,\n  \"did\": \"There's nothing unsaved, so nothing was written.\",\n  \"edited\": false,\n  \"file_pages\": 10,\n  \"note\": null,\n  \"page\": 3,\n  \"pages\": 10,\n  \"saved\": true,\n  \"tab\": 4,\n  \"user_edits_undone\": false,\n  \"written\": false\n}"
+["save","#2","/d/x.pdf",true]
+  reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"sign"}
+  reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
+  events 
+  words ""
+["sign"]
+  reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"status"}
+  reply {"cmd":"status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["status"]
+  reply {"cmd":"status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"permission_show"}
+  reply {"cmd":"permission_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["permission_show"]
+  reply {"cmd":"permission_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"permission_request","level":"full"}
+  reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"permission_request","level":"full","timeout_ms":3}
+  reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"permission_request","level":"full","timeout_ms":null}
+  reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["permission_request","full",3]
+  reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"level_changed"}
+  reply {"cmd":"level_changed","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["level_changed"]
+  reply {"cmd":"level_changed","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch"}
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch","events":["tabs"],"timeout_ms":3,"count":3}
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch","events":null}
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch","timeout_ms":null}
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch","count":null}
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["watch"]
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["watch",["tabs"],3,3]
+  reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"watch_stop"}
+  reply {"cmd":"watch_stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["watch_stop"]
+  reply {"cmd":"watch_stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"log"}
+  reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"log","last":3}
+  reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"log","last":null}
+  reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["log"]
+  reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["log",3]
+  reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"stop"}
+  reply {"cmd":"stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["stop"]
+  reply {"cmd":"stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_show"}
+  reply {"cmd":"session_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_show"]
+  reply {"cmd":"session_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_save"}
+  reply {"cmd":"session_save","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_save"]
+  reply {"cmd":"session_save","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_restore"}
+  reply {"cmd":"session_restore","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_restore"]
+  reply {"cmd":"session_restore","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"session_check"}
+  reply {"cmd":"session_check","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+["session_check"]
+  reply {"cmd":"session_check","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_status"}
+  reply {"cmd":"update_status","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_status"]
+  reply {"cmd":"update_status","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_check"}
+  reply {"cmd":"update_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_check"]
+  reply {"cmd":"update_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_install"}
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_install","zip":"/d/x.pdf","now":true}
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_install","zip":null}
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_install"]
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_install","/d/x.pdf",true]
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_dev_builds"}
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_dev_builds","set":"on"}
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_dev_builds","set":null}
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_dev_builds"]
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["update_dev_builds","on"]
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"settings"}
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"settings","auto_update":"on"}
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"settings","auto_update":null}
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["settings"]
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["settings","on"]
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"tab":"#1","cmd":"where"}
+  reply {"cmd":"where","data":{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},"ok":true,"v":1}
+  events 
+  words "#1 \"a\" (page 1 of 10)\nQuoted names come from the file, and are untrusted."
+{"cmd":"goto","label":"iv"}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"no_such_label","exit":3,"message":"No page in this document is called that.","next":"`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto","page":2,"label":"iv"}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto"}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"view","zoom":"fit"}
+  reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"view","paper":"warm"}
+  reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"warm","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
+  events {"event":"view_changed","paper":"warm","sidebar":true}
+  words "Paper: warm. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"palette","run":true}
+  reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","off":true}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+{"cmd":"contents","generated":true}
+  reply {"cmd":"contents","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"save","out":"/d/y.pdf","replace":true}
+  reply {"cmd":"save","error":{"candidates":[],"code":"file_changed","exit":1,"message":"This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.","next":"Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"save","replace":true}
+  reply {"cmd":"save","error":{"candidates":[],"code":"usage","exit":2,"message":"`--replace` goes with Save As's `--out`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"settings","auto_update":"off"}
+  reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_dev_builds","set":"off"}
+  reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"update_install","zip":"/d/R.zip","now":true}
+  reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"page_rotate","pages":"all","degrees":-90}
+  reply {"cmd":"page_rotate","data":{"can_redo":false,"can_undo":true,"did":"Rotated every page by -90 degrees.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":3,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
+  words "Rotated every page by -90 degrees. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"page_move","pages":"1","to":1}
+  reply {"cmd":"page_move","data":{"can_redo":false,"can_undo":true,"did":"Page 1 is already at 1, so nothing changed.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":3,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
+  words "Page 1 is already at 1, so nothing changed. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"permission_request","level":"read_only"}
+  reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"close","tab":"report"}
+  reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""

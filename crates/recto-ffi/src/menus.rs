@@ -1,8 +1,12 @@
-//! The menu bar and the sidebar's panel, as Rust's lists. The host only draws them and says which was chosen. Later phases add to these lists, and what's on them is what exists: no placeholders for what doesn't.
+//! The menu bar's and the panel's records, as the host draws them. The lists, what each item does and when it's enabled are `recto_app::menus`'s.
 
-use recto_reader::tiles::Zoom;
-use recto_session::record::Spread;
-use recto_session::{Paper, ViewSettings};
+use crate::lock;
+use recto_app::menus as app;
+pub(crate) use recto_app::menus::{
+    Action, Enable, RecentItem, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
+};
+use recto_session::{Paper, ViewSettings, record};
+use std::sync::Arc;
 
 /// One item of a menu. An empty `id` is a line between items.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -50,362 +54,6 @@ pub enum HostAction {
     ShowGoTo,
 }
 
-/// What an item does.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Action {
-    /// Clears the showing tab's edit history, SPEC decision 25. Its unsaved edits stay.
-    ClearEditHistory,
-    Host(HostAction),
-    Copy {
-        anyway: bool,
-    },
-    SelectAll,
-    Zoom(Zoom),
-    /// Lays the tab showing out another way.
-    SetSpread(Spread),
-    /// The panel's Rotate, by quarter turns: every page outside edit mode, the page being read in it.
-    Rotate(i32),
-    Undo,
-    Redo,
-    /// Shows the sidebar, or hides it: its button beside the window's controls, and the View menu.
-    ToggleSidebar,
-    ToggleAgentIcon,
-    SetPaper(Paper),
-    TogglePanel,
-    /// *Check for Updates…*, or *Update to X.Y.Z…* once there's one.
-    Update,
-    /// ⌘S, the Save icon beside the window's controls, and File > Save.
-    Save,
-    /// File > Close, ⌘W: the document showing, asking first if it has unsaved edits.
-    CloseDocument,
-    /// A comparison's panes scroll together, page for page, or each on its own.
-    SetSynced(bool),
-    /// ⌘K opens the command palette.
-    PaletteOpen,
-    /// File > Open Recent's file with this key: the one the menu showed, whatever the list has become since.
-    OpenRecent(String),
-    /// File > Open Recent > Clear Menu.
-    ClearRecent,
-    /// ⌘F opens Find, ⌘G and ⇧⌘G go to the next hit or the one before.
-    FindOpen,
-    FindStep(bool),
-    /// Edit mode's Done: back to reading.
-    LeaveEditMode,
-    /// Back in the tab being read's trail, or forward: ⌘[ and ⌘].
-    Step(bool),
-}
-
-fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
-    MenuEntry {
-        id: id.into(),
-        title: title.into(),
-        key: key.into(),
-        with_control: false,
-        checked: false,
-        hidden: false,
-        system_action: String::new(),
-        parent: String::new(),
-    }
-}
-
-/// The items that go by a standard selector. In the menu bar and the context menu alike.
-fn edit_entries() -> Vec<MenuEntry> {
-    vec![
-        MenuEntry {
-            system_action: "copy:".into(),
-            ..entry("edit.copy", "Copy", "c")
-        },
-        MenuEntry {
-            system_action: "selectAll:".into(),
-            ..entry("edit.select_all", "Select All", "a")
-        },
-    ]
-}
-
-/// Undo and Redo, by the standard selectors, so a text field with the focus keeps its own. `Z` is ⇧⌘Z.
-fn undo_entries() -> Vec<MenuEntry> {
-    vec![
-        MenuEntry {
-            system_action: "undo:".into(),
-            ..entry("edit.undo", "Undo", "z")
-        },
-        MenuEntry {
-            system_action: "redo:".into(),
-            ..entry("edit.redo", "Redo", "Z")
-        },
-    ]
-}
-
-/// Find, as on any Mac: ⌘F, ⌘G and ⇧⌘G. `G` is ⇧⌘G.
-fn find_entries() -> Vec<MenuEntry> {
-    vec![
-        entry("find.open", "Find…", "f"),
-        entry("find.next", "Find Next", "g"),
-        entry("find.previous", "Find Previous", "G"),
-    ]
-}
-
-/// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
-fn layout_entries(shown: Option<Spread>) -> Vec<MenuEntry> {
-    Spread::ALL
-        .iter()
-        .map(|spread| MenuEntry {
-            checked: shown == Some(*spread),
-            ..entry(&layout_id(*spread), spread.label(), "")
-        })
-        .collect()
-}
-
-/// View > Paper: its own item, which opens the submenu, then each paper, the one showing ticked. The owner's default of 2026-11-08 (PLAN, decisions waiting): paper goes with the view, so it's in View, and the sidebar's panel keeps to tools.
-fn paper_entries(shown: Option<Paper>) -> Vec<MenuEntry> {
-    let in_paper = |item: MenuEntry| MenuEntry {
-        parent: "view.paper".into(),
-        ..item
-    };
-    std::iter::once(entry("view.paper", "Paper", ""))
-        .chain(Paper::ALL.iter().map(|paper| {
-            in_paper(MenuEntry {
-                checked: shown == Some(*paper),
-                ..entry(&format!("paper.{}", paper.name()), paper.label(), "")
-            })
-        }))
-        .collect()
-}
-
-fn layout_id(spread: Spread) -> String {
-    format!("layout.{}", spread.name().replace('-', "_"))
-}
-
-/// What a right-click on a page offers: Copy and Select All, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
-pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Vec<MenuEntry> {
-    let mut entries = edit_entries();
-    for item in &mut entries {
-        item.key = String::new();
-    }
-    entries.push(line());
-    entries.extend(layout_entries(shown));
-    if let Some(synced) = comparing {
-        entries.push(line());
-        entries.push(MenuEntry {
-            checked: !synced,
-            ..entry("compare.separate", "Separate Scroll", "")
-        });
-        entries.push(MenuEntry {
-            checked: synced,
-            ..entry("compare.synced", "Synced Scroll", "")
-        });
-    }
-    entries
-}
-
-/// What decides whether a menu item can be chosen. Asked when a menu opens and on its key, so it's cheap, and nothing's rebuilt as a selection comes and goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Enable {
-    Always,
-    /// With a document open in the pane being read.
-    Document,
-    /// With something selected there.
-    Selection,
-    // The app's state decides these, in `AppCore::menu_item_enabled`.
-    Update,
-    Save,
-    Print,
-    /// Save As: not for a file its two readers disagree about (the agreement gate), as the copy would be written from a reading that isn't what's shown.
-    SaveAs,
-    Close,
-    /// Clear Menu, with files in Open Recent.
-    ClearRecent,
-    Undo,
-    Redo,
-    Back,
-    Forward,
-}
-
-/// Each menu item's rule, by its id. **No default** (review C8): an id that isn't listed can't be chosen, and a test holds every id the menus list to having one, so a new item that needs a document can't be enabled without one by being forgotten. The panel's items say their own `enabled`.
-pub(crate) fn enable_rule(id: &str) -> Option<Enable> {
-    Some(match id {
-        "app.about" | "app.settings" | "file.settings" | "app.services" | "app.quit" | "file.open" | "file.close_window" => Enable::Always,
-        // A submenu's own item opens it, and does nothing itself.
-        "file.open_recent" => Enable::Always,
-        // View > Paper's own item opens its submenu, and a paper is always there to choose.
-        "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => Enable::Always,
-        "view.zoom_in" | "view.zoom_out" | "view.actual_size" | "view.fit" | "view.sidebar" | "view.agent_icon" | "palette.open" => Enable::Always,
-        "compare.separate" | "compare.synced" => Enable::Always,
-        "edit.copy" | "edit.copy_anyway" => Enable::Selection,
-        "edit.select_all"
-        | "edit.clear_history"
-        | "go.page"
-        | "find.open"
-        | "find.next"
-        | "find.previous"
-        | "layout.single"
-        | "layout.two_up"
-        | "layout.two_up_cover" => Enable::Document,
-        "app.update" => Enable::Update,
-        "file.save" => Enable::Save,
-        "file.print" => Enable::Print,
-        "file.save_as" => Enable::SaveAs,
-        "file.close" => Enable::Close,
-        "recent.clear" => Enable::ClearRecent,
-        "edit.undo" => Enable::Undo,
-        "edit.redo" => Enable::Redo,
-        "go.back" => Enable::Back,
-        "go.forward" => Enable::Forward,
-        // A file in Open Recent, by a key `action` takes.
-        recent if recent.starts_with("recent.") && action(recent).is_some() => Enable::Always,
-        tool if crate::snapshot_tool::is_menu_id(tool) => Enable::Always,
-        _ => return None,
-    })
-}
-
-/// The rules that need nothing but the pane being read. `None` for the ones the app's state decides.
-pub(crate) fn enabled_by_reading(rule: Enable, has_document: bool, has_selection: bool) -> Option<bool> {
-    match rule {
-        Enable::Always => Some(true),
-        Enable::Document => Some(has_document),
-        Enable::Selection => Some(has_selection),
-        Enable::Update
-        | Enable::Save
-        | Enable::Print
-        | Enable::SaveAs
-        | Enable::Close
-        | Enable::ClearRecent
-        | Enable::Undo
-        | Enable::Redo
-        | Enable::Back
-        | Enable::Forward => None,
-    }
-}
-
-fn line() -> MenuEntry {
-    entry("", "", "")
-}
-
-/// The whole menu bar, as it stands.
-/// A file in Open Recent, as the menu has it: its key, which its item's id carries (`recent.<key>`), and its name.
-pub(crate) struct RecentItem<'a> {
-    pub key: &'a str,
-    pub name: &'a str,
-}
-
-/// Open Recent's submenu: each file by its name, newest first, then Clear Menu, as on any Mac. Names come from file names, cleaned. Empty, it's Clear Menu alone, greyed out.
-fn recent_entries(recent: &[RecentItem]) -> Vec<MenuEntry> {
-    let in_recent = |item: MenuEntry| MenuEntry {
-        parent: "file.open_recent".into(),
-        ..item
-    };
-    let mut entries: Vec<MenuEntry> = recent
-        .iter()
-        .map(|item| in_recent(entry(&format!("recent.{}", item.key), &recto_core::clean_line(item.name), "")))
-        .collect();
-    if !entries.is_empty() {
-        entries.push(in_recent(line()));
-    }
-    entries.push(in_recent(entry("recent.clear", "Clear Menu", "")));
-    entries
-}
-
-#[cfg(test)]
-pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: &str) -> Vec<MenuModel> {
-    menu_bar_with(view, shown, update_title, &[])
-}
-
-/// The menu bar, with the names of files opened lately for Open Recent. `view.paper` is the paper showing, which View > Paper ticks.
-pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[RecentItem]) -> Vec<MenuModel> {
-    vec![
-        MenuModel {
-            title: "RectoPDF".into(),
-            entries: vec![
-                entry("app.about", "About RectoPDF", ""),
-                entry("app.update", update_title, ""),
-                line(),
-                entry("app.settings", "Settings…", ","),
-                line(),
-                entry("app.services", "Services", ""),
-                line(),
-                entry("app.quit", "Quit RectoPDF", "q"),
-            ],
-        },
-        // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
-        // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
-        MenuModel {
-            title: "File".into(),
-            entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")]
-                .into_iter()
-                .chain(recent_entries(recent))
-                .chain([
-                    line(),
-                    entry("file.close", "Close", "w"),
-                    entry("file.save", "Save", "s"),
-                    entry("file.save_as", "Save As…", "S"),
-                    line(),
-                    entry("file.print", "Print…", "p"),
-                    line(),
-                    entry("file.settings", "Settings…", ","),
-                    line(),
-                    entry("file.close_window", "Close Window", "W"),
-                ])
-                .collect(),
-        },
-        MenuModel {
-            title: "Edit".into(),
-            entries: undo_entries()
-                .into_iter()
-                .chain([line()])
-                .chain(edit_entries())
-                .chain([line()])
-                .chain(find_entries())
-                .chain([line(), entry("edit.clear_history", "Clear Edit History", "")])
-                .collect(),
-        },
-        MenuModel {
-            title: "View".into(),
-            entries: vec![
-                entry("view.zoom_in", "Zoom In", "+"),
-                MenuEntry {
-                    hidden: true,
-                    ..entry("view.zoom_in", "Zoom In", "=")
-                },
-                entry("view.zoom_out", "Zoom Out", "-"),
-                entry("view.actual_size", "Actual Size", "0"),
-                entry("view.fit", "Fit", "9"),
-                line(),
-                // ⌃⌘S, as on any Mac app with a sidebar. The title says what choosing it does.
-                MenuEntry {
-                    with_control: true,
-                    ..entry("view.sidebar", if view.sidebar_hidden { "Show Sidebar" } else { "Hide Sidebar" }, "s")
-                },
-                line(),
-            ]
-            .into_iter()
-            .chain(paper_entries(view.paper))
-            .chain([line()])
-            .chain(layout_entries(shown))
-            .chain([
-                line(),
-                MenuEntry {
-                    checked: !view.agent_icon_hidden,
-                    ..entry("view.agent_icon", "Show Agent Icon", "")
-                },
-                line(),
-                // SPEC §4: "⌘K finds any command."
-                entry("palette.open", "Command Palette…", "k"),
-            ])
-            .collect(),
-        },
-        // As in Safari and Preview: ⌘[ and ⌘] go back and forward through jumps, a link, a contents entry or a page typed in.
-        MenuModel {
-            title: "Go".into(),
-            entries: vec![
-                entry("go.back", "Back", "["),
-                entry("go.forward", "Forward", "]"),
-                line(),
-                entry("go.page", "Go to Page…", ""),
-            ],
-        },
-    ]
-}
-
 /// The zoom level in the top left, and what clicking it offers. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset".
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct ZoomLabel {
@@ -416,17 +64,6 @@ pub struct ZoomLabel {
     pub tooltip: String,
     /// The button beside the field, which goes back to the fitted width.
     pub reset_title: String,
-}
-
-/// The zoom level's words, from the magnification and the page's fit.
-pub(crate) fn zoom_label(magnification: f64, fit: f64) -> ZoomLabel {
-    let percent = recto_reader::tiles::zoom_percent(magnification, fit).round().clamp(1.0, 100_000.0);
-    ZoomLabel {
-        text: format!("{percent:.0}%"),
-        editing_text: format!("{percent:.0}"),
-        tooltip: "Zoom. Click to type a level, or to fit the page again".into(),
-        reset_title: "Fit".into(),
-    }
 }
 
 /// What's in the sidebar's panel, for now: one tab's worth.
@@ -452,570 +89,130 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel: tools. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." Paper is in View > Paper, by the owner's default of 2026-11-08. So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
-pub(crate) fn panel(open: bool, edit_mode: bool, can_rotate: bool) -> PanelModel {
-    let item = |id: &str, title: &str, selected: bool| PanelItem {
-        id: id.into(),
-        title: title.into(),
-        selected,
-        enabled: true,
-    };
-    let rotate = |id: &str, title: &str| PanelItem {
-        enabled: can_rotate,
-        ..item(id, title, false)
-    };
-    let open = open || edit_mode;
-    let mut sections = Vec::new();
-    if edit_mode {
-        sections.push(PanelSection {
-            title: "Editing".into(),
-            items: vec![item("edit_mode.done", "Done", false)],
-        });
-    }
-    if open {
-        sections.push(PanelSection {
-            title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(),
-            items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")],
-        });
-    }
-    PanelModel {
-        open,
-        button_tooltip: "Tools".into(),
-        sections,
+impl From<app::MenuEntry> for MenuEntry {
+    fn from(entry: app::MenuEntry) -> Self {
+        Self {
+            id: entry.id,
+            title: entry.title,
+            key: entry.key,
+            with_control: entry.with_control,
+            checked: entry.checked,
+            hidden: entry.hidden,
+            system_action: entry.system_action,
+            parent: entry.parent,
+        }
     }
 }
 
-/// What an id does. Ids from the host, and only these do anything.
-pub(crate) fn action(id: &str) -> Option<Action> {
-    Some(match id {
-        "app.about" => Action::Host(HostAction::ShowAbout),
-        "app.settings" | "file.settings" => Action::Host(HostAction::ShowSettings),
-        "app.update" => Action::Update,
-        // The system fills this one.
-        "app.services" => Action::Host(HostAction::None),
-        "edit.copy" => Action::Copy { anyway: false },
-        "edit.copy_anyway" => Action::Copy { anyway: true },
-        "edit.select_all" => Action::SelectAll,
-        "edit.clear_history" => Action::ClearEditHistory,
-        "app.quit" => Action::Host(HostAction::Quit),
-        "file.open" => Action::Host(HostAction::ShowOpenPanel),
-        "file.close_window" => Action::Host(HostAction::CloseWindow),
-        "file.print" => Action::Host(HostAction::ShowPrintPanel),
-        "file.save" | "save.button" => Action::Save,
-        "file.save_as" => Action::Host(HostAction::ShowSavePanel),
-        "file.close" => Action::CloseDocument,
-        "view.zoom_in" => Action::Zoom(Zoom::In),
-        "view.zoom_out" => Action::Zoom(Zoom::Out),
-        "view.actual_size" => Action::Zoom(Zoom::Actual),
-        "view.fit" => Action::Zoom(Zoom::Fit),
-        "view.sidebar" => Action::ToggleSidebar,
-        "layout.single" => Action::SetSpread(Spread::Single),
-        "rotate.left" => Action::Rotate(-1),
-        "rotate.right" => Action::Rotate(1),
-        "edit.undo" => Action::Undo,
-        "edit.redo" => Action::Redo,
-        "layout.two_up" => Action::SetSpread(Spread::TwoUp),
-        "layout.two_up_cover" => Action::SetSpread(Spread::TwoUpCover),
-        "view.agent_icon" => Action::ToggleAgentIcon,
-        "panel.toggle" => Action::TogglePanel,
-        "paper.white" => Action::SetPaper(Paper::White),
-        "paper.warm" => Action::SetPaper(Paper::Warm),
-        "paper.dark" => Action::SetPaper(Paper::Dark),
-        "file.open_recent" | "view.paper" => Action::Host(HostAction::None),
-        "recent.clear" => Action::ClearRecent,
-        recent if recent.starts_with("recent.") => {
-            let key = &recent["recent.".len()..];
-            if key.len() != 16 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return None;
-            }
-            Action::OpenRecent(key.to_string())
+impl From<app::MenuModel> for MenuModel {
+    fn from(menu: app::MenuModel) -> Self {
+        Self {
+            title: menu.title,
+            entries: menu.entries.into_iter().map(Into::into).collect(),
         }
-        "go.back" => Action::Step(true),
-        "go.forward" => Action::Step(false),
-        "go.page" => Action::Host(HostAction::ShowGoTo),
-        "compare.separate" => Action::SetSynced(false),
-        "compare.synced" => Action::SetSynced(true),
-        "palette.open" => Action::PaletteOpen,
-        "edit_mode.done" => Action::LeaveEditMode,
-        "find.open" => Action::FindOpen,
-        "find.next" => Action::FindStep(true),
-        "find.previous" => Action::FindStep(false),
-        _ => return None,
-    })
-}
-
-/// The id a key does with no ⌘ held, when no text field has it. Owner, 2026-11-07: "enable + - and command - scroll for zooming".
-pub(crate) fn plain_key(characters: &str) -> Option<&'static str> {
-    match characters {
-        "+" | "=" => Some("view.zoom_in"),
-        "-" => Some("view.zoom_out"),
-        _ => None,
     }
 }
 
-/// What `view --zoom` takes.
-pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
-    match word {
-        "in" => Some(Zoom::In),
-        "out" => Some(Zoom::Out),
-        "fit" => Some(Zoom::Fit),
-        "actual" => Some(Zoom::Actual),
-        level if level.trim_end().ends_with('%') => recto_reader::tiles::typed_zoom(level, '.'),
-        number => number.parse::<f64>().ok().filter(|value| value.is_finite()).map(Zoom::To),
+impl From<app::HostAction> for HostAction {
+    fn from(action: app::HostAction) -> Self {
+        match action {
+            app::HostAction::None => Self::None,
+            app::HostAction::ShowOpenPanel => Self::ShowOpenPanel,
+            app::HostAction::ShowAbout => Self::ShowAbout,
+            app::HostAction::ShowSettings => Self::ShowSettings,
+            app::HostAction::Quit => Self::Quit,
+            app::HostAction::CloseWindow => Self::CloseWindow,
+            app::HostAction::ShowSavePanel => Self::ShowSavePanel,
+            app::HostAction::ConfirmClose => Self::ConfirmClose,
+            app::HostAction::ShowPrintPanel => Self::ShowPrintPanel,
+            app::HostAction::FocusPalette => Self::FocusPalette,
+            app::HostAction::FocusFind => Self::FocusFind,
+            app::HostAction::ShowGoTo => Self::ShowGoTo,
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The rules the pane being read decides, as `AppCore::menu_item_enabled` asks them. False for an id with no rule.
-    fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
-        enable_rule(id)
-            .and_then(|rule| enabled_by_reading(rule, has_document, has_selection))
-            .unwrap_or(false)
-    }
-
-    /// Failure (review C8): a menu item has no rule of its own, so it falls to a default and is enabled with nothing open. Every id in the menu bar, Open Recent, the Tools menu and the right-click menu has a rule, and an id nobody listed can't be chosen.
-    #[test]
-    fn every_menu_id_has_an_enable_rule() {
-        let recent = [RecentItem {
-            key: "0123456789abcdef",
-            name: "a.pdf",
-        }];
-        let mut ids: Vec<String> = Vec::new();
-        for view in [
-            ViewSettings::default(),
-            ViewSettings {
-                sidebar_hidden: true,
-                agent_icon_hidden: true,
-                ..ViewSettings::default()
-            },
-        ] {
-            for spread in [None, Some(Spread::TwoUp)] {
-                let mut bar = menu_bar_with(view, spread, "Check for Updates…", &recent);
-                bar.push(crate::snapshot_tool::tools_menu(false));
-                ids.extend(bar.into_iter().flat_map(|menu| menu.entries).map(|item| item.id));
-                for comparing in [None, Some(false), Some(true)] {
-                    ids.extend(context_menu(spread, comparing).into_iter().map(|item| item.id));
-                }
-            }
-        }
-        ids.retain(|id| !id.is_empty());
-        assert!(ids.len() > 40, "the menus were all looked at: {ids:?}");
-        for id in &ids {
-            assert!(enable_rule(id).is_some(), "{id} has no enable rule");
-        }
-        for unknown in ["anything else", "recent.nothex", "layout.", ""] {
-            assert_eq!(enable_rule(unknown), None, "{unknown}");
-        }
-        assert!(!enabled("anything else", true, true), "an unlisted id can't be chosen");
-    }
-
-    /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
-    #[test]
-    fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
-        let editing = panel(false, true, true);
-        assert!(editing.open, "open in edit mode, whatever the button last did");
-        assert_eq!(editing.sections[0].items[0].id, "edit_mode.done");
-        assert_eq!(action("edit_mode.done"), Some(Action::LeaveEditMode));
-        assert!(!panel(false, false, true).open);
-        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…")
-            .into_iter()
-            .find(|menu| menu.title == "Edit")
-            .unwrap();
-        let key = |id: &str| edit.entries.iter().find(|item| item.id == id).map(|item| item.key.clone()).unwrap();
-        assert_eq!(
-            (key("find.open"), key("find.next"), key("find.previous")),
-            ("f".to_string(), "g".to_string(), "G".to_string())
-        );
-        assert!(!enabled("find.open", false, false), "nothing to find in with nothing open");
-    }
-
-    /// Failure: something in the menu bar or the panel does nothing when chosen, as an item with an id nobody handles would, or a list shows what doesn't exist.
-    #[test]
-    fn everything_listed_does_something() {
-        for view in [
-            ViewSettings::default(),
-            ViewSettings {
-                sidebar_hidden: true,
-                agent_icon_hidden: true,
-                ..ViewSettings::default()
-            },
-        ] {
-            for menu in menu_bar(view, None, "Check for Updates…") {
-                assert!(!menu.title.is_empty());
-                for item in menu.entries {
-                    assert!(item.id.is_empty() || action(&item.id).is_some(), "{}", item.id);
-                }
-            }
-        }
-        for section in panel(true, false, true).sections {
-            for item in section.items {
-                assert!(action(&item.id).is_some(), "{}", item.id);
-            }
-        }
-        assert_eq!(action("anything else"), None);
-    }
-
-    /// Failure: there's no Print… with ⌘P in File, as on any Mac app, or it can be chosen with nothing open.
-    #[test]
-    fn file_has_print() {
-        let file = menu_bar(ViewSettings::default(), None, "")
-            .into_iter()
-            .find(|menu| menu.title == "File")
-            .unwrap()
-            .entries;
-        let print = file.iter().find(|item| item.id == "file.print").expect("Print… in File");
-        assert_eq!((print.title.as_str(), print.key.as_str()), ("Print…", "p"));
-        assert_eq!(action("file.print"), Some(Action::Host(HostAction::ShowPrintPanel)));
-        assert_eq!(
-            enable_rule("file.print"),
-            Some(Enable::Print),
-            "the app decides, from what's showing and whether a print's under way"
-        );
-    }
-
-    /// Failure: Copy can be chosen with nothing selected, or Select All with nothing open, or a menu item that has nothing to do with selection goes grey with it. And Copy goes by the app's own action, so it takes ⌘C from a text field that has the focus.
-    #[test]
-    fn copy_and_select_all_are_enabled_as_on_any_mac_app() {
-        assert!(!enabled("edit.copy", true, false));
-        assert!(enabled("edit.copy", true, true));
-        assert!(!enabled("edit.select_all", false, false));
-        assert!(enabled("edit.select_all", true, false));
-        assert!(enabled("view.zoom_in", false, false));
-        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…")
-            .into_iter()
-            .find(|menu| menu.title == "Edit")
-            .unwrap();
-        let copy = edit.entries.iter().find(|item| item.id == "edit.copy").unwrap();
-        assert_eq!((copy.key.as_str(), copy.system_action.as_str()), ("c", "copy:"));
-        let all = edit.entries.iter().find(|item| item.id == "edit.select_all").unwrap();
-        assert_eq!((all.key.as_str(), all.system_action.as_str()), ("a", "selectAll:"));
-        assert!(
-            context_menu(None, Some(false))
-                .iter()
-                .all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())),
-            "no keys shown in a context menu"
-        );
-    }
-
-    /// Failure: the toggle doesn't say which way it is, or the paper showing isn't ticked in View > Paper, or the panel has anything in it at rest, or still offers paper, which is View's now (the owner's default of 2026-11-08).
-    #[test]
-    fn the_lists_say_how_things_stand() {
-        let checked = |view, id: &str| {
-            menu_bar(view, None, "Check for Updates…")
-                .into_iter()
-                .flat_map(|menu| menu.entries)
-                .find(|item| item.id == id)
-                .unwrap()
-                .checked
-        };
-        assert!(checked(ViewSettings::default(), "view.agent_icon"));
-        assert!(!checked(
-            ViewSettings {
-                agent_icon_hidden: true,
-                ..ViewSettings::default()
-            },
-            "view.agent_icon"
-        ));
-        assert!(panel(false, false, true).sections.is_empty(), "only the button at rest");
-        let open = panel(true, false, true);
-        assert!(
-            open.sections
-                .iter()
-                .flat_map(|section| &section.items)
-                .all(|item| !item.id.starts_with("paper.")),
-            "the panel keeps to tools"
-        );
-        let view = menu_bar(
-            ViewSettings {
-                paper: Some(Paper::Warm),
-                ..ViewSettings::default()
-            },
-            None,
-            "",
-        )
-        .into_iter()
-        .find(|menu| menu.title == "View")
-        .unwrap();
-        let paper: Vec<(&str, bool, &str)> = view
-            .entries
-            .iter()
-            .filter(|item| item.id.starts_with("paper."))
-            .map(|item| (item.id.as_str(), item.checked, item.parent.as_str()))
-            .collect();
-        assert_eq!(
-            paper,
-            [
-                ("paper.white", false, "view.paper"),
-                ("paper.warm", true, "view.paper"),
-                ("paper.dark", false, "view.paper")
-            ],
-            "in View > Paper, the one showing ticked"
-        );
-        assert!(
-            view.entries
-                .iter()
-                .any(|item| item.id == "view.paper" && item.parent.is_empty() && item.title == "Paper")
-        );
-        assert_eq!(action("paper.dark"), Some(Action::SetPaper(Paper::Dark)));
-    }
-
-    /// Failure: the sidebar's menu item doesn't say what choosing it does, or hasn't the Mac's usual ⌃⌘S, or focus view is still there. Owner, 2026-11-08: "No need mor a separate mode".
-    #[test]
-    fn the_view_menu_shows_and_hides_the_sidebar() {
-        let item = |view| {
-            menu_bar(view, None, "Check for Updates…")
-                .into_iter()
-                .flat_map(|menu| menu.entries)
-                .find(|item| item.id == "view.sidebar")
-                .unwrap()
-        };
-        let shown = item(ViewSettings::default());
-        assert_eq!((shown.title.as_str(), shown.key.as_str(), shown.with_control), ("Hide Sidebar", "s", true));
-        assert_eq!(
-            item(ViewSettings {
-                sidebar_hidden: true,
-                ..ViewSettings::default()
-            })
-            .title,
-            "Show Sidebar"
-        );
-        assert_eq!(action("view.sidebar"), Some(Action::ToggleSidebar));
-        assert_eq!(action("view.focus"), None);
-        assert!(
-            menu_bar(ViewSettings::default(), None, "")
-                .iter()
-                .flat_map(|menu| &menu.entries)
-                .all(|item| !item.title.contains("Focus"))
-        );
-    }
-
-    /// Failure: the panel's Rotate isn't there, or says it turns every page in edit mode where it turns one, or can be pressed where it can't turn anything, or Undo and Redo aren't on the Edit menu with their keys and standard selectors.
-    #[test]
-    fn the_panel_rotates_and_the_edit_menu_undoes() {
-        let rotate = |edit_mode| {
-            panel(true, edit_mode, true)
-                .sections
-                .into_iter()
-                .find(|section| section.items.iter().any(|item| item.id == "rotate.right"))
-                .unwrap()
-        };
-        assert_eq!(rotate(false).title, "Rotate all pages");
-        assert_eq!(rotate(true).title, "Rotate this page");
-        assert_eq!(
-            (action("rotate.left"), action("rotate.right")),
-            (Some(Action::Rotate(-1)), Some(Action::Rotate(1)))
-        );
-        let greyed = panel(true, false, false)
-            .sections
-            .into_iter()
-            .flat_map(|section| section.items)
-            .filter(|item| item.id.starts_with("rotate."))
-            .all(|item| !item.enabled);
-        assert!(greyed, "Rotate is greyed out where it can't turn anything");
-        let edit = menu_bar(ViewSettings::default(), None, "")
-            .into_iter()
-            .find(|menu| menu.title == "Edit")
-            .unwrap()
-            .entries;
-        let keyed = |id: &str| {
-            edit.iter()
-                .find(|item| item.id == id)
-                .map(|item| (item.key.clone(), item.system_action.clone()))
-                .unwrap()
-        };
-        assert_eq!(keyed("edit.undo"), ("z".to_string(), "undo:".to_string()));
-        assert_eq!(keyed("edit.redo"), ("Z".to_string(), "redo:".to_string()));
-    }
-
-    /// Failure: the right-click menu doesn't offer the three layouts, or doesn't tick the one showing, or offers focus view, which is gone; or a layout can be chosen with nothing open. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
-    #[test]
-    fn the_right_click_menu_offers_the_layouts() {
-        let menu = context_menu(Some(Spread::TwoUpCover), None);
-        let layouts: Vec<(&str, bool)> = menu
-            .iter()
-            .filter(|item| item.id.starts_with("layout."))
-            .map(|item| (item.id.as_str(), item.checked))
-            .collect();
-        assert_eq!(layouts, [("layout.single", false), ("layout.two_up", false), ("layout.two_up_cover", true)]);
-        assert!(menu.iter().all(|item| !item.title.contains("Focus")));
-        for spread in Spread::ALL {
-            assert_eq!(action(&layout_id(spread)), Some(Action::SetSpread(spread)));
-        }
-        assert!(!enabled("layout.two_up", false, false) && enabled("layout.two_up", true, false));
-        let view = menu_bar(ViewSettings::default(), Some(Spread::TwoUp), "")
-            .into_iter()
-            .find(|menu| menu.title == "View")
-            .unwrap();
-        assert!(
-            view.entries.iter().any(|item| item.id == "layout.two_up" && item.checked),
-            "and in the View menu, as on a Mac"
-        );
-    }
-
-    /// Failure: the right-click menu has no scroll choice in a comparison, doesn't tick the one in use, or offers it with one tab showing, where it does nothing. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
-    #[test]
-    fn a_comparison_right_click_offers_separate_and_synced_scroll() {
-        let ticked = |synced| {
-            context_menu(None, Some(synced))
-                .into_iter()
-                .filter(|item| item.id.starts_with("compare."))
-                .map(|item| (item.id, item.checked))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(ticked(false), [("compare.separate".to_string(), true), ("compare.synced".to_string(), false)]);
-        assert_eq!(ticked(true), [("compare.separate".to_string(), false), ("compare.synced".to_string(), true)]);
-        assert!(
-            context_menu(None, None).iter().all(|item| !item.id.starts_with("compare.")),
-            "nothing to choose with one tab"
-        );
-        assert_eq!(
-            (action("compare.separate"), action("compare.synced")),
-            (Some(Action::SetSynced(false)), Some(Action::SetSynced(true)))
-        );
-    }
-
-    /// Failure: Check for Updates… isn't in the RectoPDF menu, sits elsewhere, is hidden, or has no words, in some build or state of the updater, as a development build or a quiet run's. Owner, 2026-11-08: "Im not seeing check for updates button in the macos top bar menu". Whatever the updater says, it's the app menu's second item, shown, by its own rule.
-    #[test]
-    fn check_for_updates_is_always_in_the_app_menu() {
-        for title in ["Check for Updates…", "Update to 0.2.0…", "Updating to 0.2.0…"] {
-            for view in [
-                ViewSettings::default(),
-                ViewSettings {
-                    sidebar_hidden: true,
-                    agent_icon_hidden: true,
-                    ..ViewSettings::default()
-                },
-            ] {
-                let bar = menu_bar(view, None, title);
-                assert_eq!(bar[0].title, "RectoPDF", "the app menu comes first");
-                let item = &bar[0].entries[1];
-                assert_eq!((item.id.as_str(), item.title.as_str(), item.hidden), ("app.update", title, false), "{bar:?}");
-                assert_eq!(enable_rule("app.update"), Some(Enable::Update));
-            }
+impl From<app::ZoomLabel> for ZoomLabel {
+    fn from(label: app::ZoomLabel) -> Self {
+        Self {
+            text: label.text,
+            editing_text: label.editing_text,
+            tooltip: label.tooltip,
+            reset_title: label.reset_title,
         }
     }
+}
 
-    /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app, or isn't under File as the owner asked.
-    #[test]
-    fn the_app_menu_has_the_update_item_and_settings() {
-        let items = menu_bar(ViewSettings::default(), None, "Update to 0.2.0…")
-            .into_iter()
-            .find(|menu| menu.title == "RectoPDF")
-            .unwrap()
-            .entries;
-        let item = |id: &str| items.iter().find(|item| item.id == id).unwrap().clone();
-        assert_eq!(item("app.update").title, "Update to 0.2.0…");
-        assert_eq!((item("app.settings").title.as_str(), item("app.settings").key.as_str()), ("Settings…", ","));
-        assert_eq!(action("app.update"), Some(Action::Update));
-        assert_eq!(action("app.settings"), Some(Action::Host(HostAction::ShowSettings)));
-        let file = menu_bar(ViewSettings::default(), None, "")
-            .into_iter()
-            .find(|menu| menu.title == "File")
-            .unwrap()
-            .entries;
-        let settings = file
-            .iter()
-            .find(|item| item.id == "file.settings")
-            .expect("Settings… in File too: owner, 2026-11-07");
-        assert_eq!((settings.title.as_str(), settings.key.as_str()), ("Settings…", ","));
-        assert_eq!(action("file.settings"), Some(Action::Host(HostAction::ShowSettings)));
-    }
-
-    /// Failure: the zoom level reads oddly, as `124.99999%` or `0%`, or the field to type in starts with a sign in it to delete.
-    #[test]
-    fn the_zoom_level_reads_as_a_whole_percentage() {
-        assert_eq!(zoom_label(1.0, 1.2418).text, "124%");
-        assert_eq!(zoom_label(1.0, 1.2418).editing_text, "124");
-        assert_eq!(zoom_label(0.25, 0.01).text, "1%", "never 0%");
-        assert_eq!(zoom_label(f64::NAN, 1.0).text, "100%");
-        assert!(!zoom_label(1.0, 1.0).reset_title.is_empty());
-    }
-
-    /// Failure: a key meant for typing or for something else zooms, or `+` on a keyboard that has it as shifted `=` doesn't.
-    #[test]
-    fn only_plus_and_minus_are_zoom_keys() {
-        assert_eq!(plain_key("+"), Some("view.zoom_in"));
-        assert_eq!(plain_key("="), Some("view.zoom_in"));
-        assert_eq!(plain_key("-"), Some("view.zoom_out"));
-        for other in ["a", "0", "", " ", "\u{1b}"] {
-            assert_eq!(plain_key(other), None);
+impl From<app::PanelItem> for PanelItem {
+    fn from(item: app::PanelItem) -> Self {
+        Self {
+            id: item.id,
+            title: item.title,
+            selected: item.selected,
+            enabled: item.enabled,
         }
-        assert_eq!(zoom_from_word("in"), Some(Zoom::In));
-        assert_eq!(zoom_from_word("2.5"), Some(Zoom::To(2.5)));
-        assert_eq!(zoom_from_word("150%"), Some(Zoom::Percent(150.0)), "a level, as the top left shows it");
-        assert_eq!(zoom_from_word("x%"), None);
-        assert_eq!(zoom_from_word("NaN"), None);
-        assert_eq!(zoom_from_word("zzz"), None);
     }
+}
 
-    /// Failure: File has no Open Recent, it doesn't list the files newest first under it, Clear Menu isn't there, a name with control characters reaches the menu, or an id past the list does something.
-    #[test]
-    fn open_recent_lists_files_and_clears() {
-        let (a, b) = (
-            recto_app::recent_key(std::path::Path::new("/d/report.pdf")),
-            recto_app::recent_key(std::path::Path::new("/e/a.pdf")),
-        );
-        assert_ne!(a, b);
-        assert_eq!(
-            a,
-            recto_app::recent_key(std::path::Path::new("/d/report.pdf")),
-            "the same file's key every time"
-        );
-        let file = menu_bar_with(
-            ViewSettings::default(),
-            None,
-            "",
-            &[RecentItem { key: &a, name: "report" }, RecentItem { key: &b, name: "a\u{202E}b" }],
-        )
-        .into_iter()
-        .find(|menu| menu.title == "File")
-        .unwrap()
-        .entries;
-        let under: Vec<(String, String)> = file
-            .iter()
-            .filter(|item| item.parent == "file.open_recent" && !item.id.is_empty())
-            .map(|item| (item.id.clone(), item.title.clone()))
-            .collect();
-        assert_eq!(
-            under,
-            [
-                (format!("recent.{a}"), "report".to_string()),
-                (format!("recent.{b}"), "ab".to_string()),
-                ("recent.clear".to_string(), "Clear Menu".to_string())
-            ]
-        );
-        assert!(file.iter().any(|item| item.id == "file.open_recent" && item.parent.is_empty()));
-        assert_eq!(
-            (action(&format!("recent.{b}")), action("recent.clear")),
-            (Some(Action::OpenRecent(b.clone())), Some(Action::ClearRecent))
-        );
-        assert_eq!(action("recent.999"), None, "not an index any more");
-        assert_eq!(action("recent.x"), None);
+impl From<app::PanelSection> for PanelSection {
+    fn from(section: app::PanelSection) -> Self {
+        Self {
+            title: section.title,
+            items: section.items.into_iter().map(Into::into).collect(),
+        }
     }
+}
 
-    /// Failure: Back and Forward aren't in the Go menu with Safari's ⌘[ and ⌘], or Go to Page… does nothing or can be chosen with nothing open.
-    #[test]
-    fn the_go_menu_has_back_forward_and_go_to_page() {
-        let go = menu_bar(ViewSettings::default(), None, "")
-            .into_iter()
-            .find(|menu| menu.title == "Go")
-            .expect("a Go menu, as SPEC lists the menus");
-        let keyed = |id: &str| {
-            go.entries
-                .iter()
-                .find(|item| item.id == id)
-                .map(|item| (item.title.clone(), item.key.clone()))
-                .unwrap()
-        };
-        assert_eq!(keyed("go.back"), ("Back".to_string(), "[".to_string()));
-        assert_eq!(keyed("go.forward"), ("Forward".to_string(), "]".to_string()));
-        assert_eq!(
-            (action("go.back"), action("go.forward"), action("go.page")),
-            (Some(Action::Step(true)), Some(Action::Step(false)), Some(Action::Host(HostAction::ShowGoTo)))
-        );
-        assert!(!enabled("go.page", false, false) && enabled("go.page", true, false));
+impl From<app::PanelModel> for PanelModel {
+    fn from(panel: app::PanelModel) -> Self {
+        Self {
+            open: panel.open,
+            button_tooltip: panel.button_tooltip,
+            sections: panel.sections.into_iter().map(Into::into).collect(),
+        }
     }
+}
+
+impl From<HostAction> for app::HostAction {
+    fn from(action: HostAction) -> Self {
+        match action {
+            HostAction::None => Self::None,
+            HostAction::ShowOpenPanel => Self::ShowOpenPanel,
+            HostAction::ShowAbout => Self::ShowAbout,
+            HostAction::ShowSettings => Self::ShowSettings,
+            HostAction::Quit => Self::Quit,
+            HostAction::CloseWindow => Self::CloseWindow,
+            HostAction::ShowSavePanel => Self::ShowSavePanel,
+            HostAction::ConfirmClose => Self::ConfirmClose,
+            HostAction::ShowPrintPanel => Self::ShowPrintPanel,
+            HostAction::FocusPalette => Self::FocusPalette,
+            HostAction::FocusFind => Self::FocusFind,
+            HostAction::ShowGoTo => Self::ShowGoTo,
+        }
+    }
+}
+
+/// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
+pub(crate) fn bar_now(core: &crate::AppCore) -> Vec<app::MenuModel> {
+    let reader = lock(&core.inner.published).reader.clone();
+    let recent = Arc::clone(&lock(&core.inner.published).recent);
+    let items: Vec<RecentItem> = recent
+        .iter()
+        .map(|file| RecentItem {
+            key: &file.key,
+            name: &file.name,
+        })
+        .collect();
+    let mut bar = menu_bar_with(
+        ViewSettings {
+            paper: Paper::from_name(&reader.paper),
+            sidebar_hidden: reader.sidebar_hidden,
+            agent_icon_hidden: reader.agent_icon_hidden,
+        },
+        record::Spread::from_name(&reader.layout),
+        &core.inner.updates.menu_item().title,
+        &items,
+    );
+    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tools.tool.is_on()));
+    bar
 }

@@ -165,7 +165,7 @@ fn a_long_session_stays_flat() {
     let _ = pid;
 }
 
-/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. And (review 1) memory pressure wrote the tabs going dormant on the session thread, behind every file queued, while nothing else was served. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, one writer at most, the pictures queued and being written stay under their cap, and its footprint doesn't climb with the tabs. Memory pressure then, with the queue full, doesn't hold up showing a tab for a slow write. And once the queue's written, there's no writer and no thread left for it. Numbers that matter come from a release build: `--no-capture` prints them.
+/// Failure (slow mode, 2026-11-11: 39 at once in `a_thousand_tabs_come_back_cold`): each tab pushed out of the warm ones got a sleep-writer thread of its own, which held the tab's pictures while it waited on the one-at-a-time lock, so with sleep files slow to write, as on a busy or slow disk, the app's threads and memory grew with the tabs leaving. And (review 1) memory pressure wrote the tabs going dormant on the session thread, behind every file queued, while nothing else was served. With each sleep file's write 5 s late, tabs opened one after another, each drawn, push most of them out of the warm ones far faster than their files go: the app's threads stay within a few of what it had with the warm ones full, one writer at most, the pictures queued and being written stay under their cap, and its footprint doesn't climb with the tabs. Its threads are its own, by name (`common::threads`), at every sample: none more than with the warm ones full but the passing kinds, and never two sleep writers; the count of all threads took in the system's libdispatch pool, whose size goes with the machine's load (CI, 2026-11-12: "13 then 17"). Memory pressure then, with the queue full, doesn't hold up showing a tab for a slow write. And once the queue's written, there's no writer and no thread left for it. Numbers that matter come from a release build: `--no-capture` prints them.
 #[test]
 fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     use common::app::{Run, long_document};
@@ -191,12 +191,23 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         run.settled();
     }
     let (threads_full, footprint_full, _) = sample(&run);
+    let (full_own, full_named) = (common::threads::own(run.pid), common::threads::named(run.pid));
+    assert!(!full_own.is_empty(), "the app's threads couldn't be read: {full_named}");
     let (mut peak_threads, mut peak_footprint) = (threads_full, footprint_full);
     let began = std::time::Instant::now();
     for at in recto_session::MAX_WARM..TABS {
         run.ok(&["open", link(at).to_str().unwrap()]);
         run.settled();
-        let (threads, footprint, _) = sample(&run);
+        let (threads, footprint, report) = sample(&run);
+        // Read as soon as the count was, and judged by name at every sample.
+        let now = common::threads::own(run.pid);
+        if let Some(wrong) = common::threads::grew(&full_own, &now) {
+            panic!(
+                "tab {at} of {TABS} leaving: {wrong}\nwith the warm ones full: {full_named}\nnow: {}\nsleep: {}",
+                common::threads::named(run.pid),
+                report["record"]["sleep"]
+            );
+        }
         peak_threads = peak_threads.max(threads);
         peak_footprint = peak_footprint.max(footprint);
     }
@@ -213,11 +224,6 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
         report["slow"]["seams"]["sleep_write"]["times"].as_u64().unwrap() > 0,
         "sleep files were being written: {}",
         report["slow"]
-    );
-    // One writer, and a command's thread or a look at a file at the moment of asking.
-    assert!(
-        peak_threads <= threads_full + 3,
-        "threads grew with the tabs leaving: {threads_full} then {peak_threads}"
     );
     let leaving = &sleep["leaving"];
     assert!(
@@ -254,14 +260,16 @@ fn tabs_leaving_in_bulk_with_slow_sleep_files_have_one_writer() {
     // At rest, once what's queued is written: no writer, and no thread for one.
     let began = std::time::Instant::now();
     let rest = loop {
-        let (threads, _, report) = sample(&run);
+        let (_, _, report) = sample(&run);
         let leaving = report["record"]["sleep"]["leaving"].clone();
-        if leaving["writer"] == false && threads <= threads_full + 1 {
+        let now = common::threads::own(run.pid);
+        if leaving["writer"] == false && common::threads::count(&now, "recto-sleep") == 0 && common::threads::grew(&full_own, &now).is_none() {
             break leaving;
         }
         assert!(
             began.elapsed() < std::time::Duration::from_secs(120),
-            "still writing, {threads} threads: {leaving}"
+            "still writing: {leaving}\nthreads: {}",
+            common::threads::named(run.pid)
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     };

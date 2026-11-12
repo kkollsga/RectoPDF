@@ -58,6 +58,18 @@ fresh; printf 'pub struct W {\n    a: u8,\n    #[x] pub b: Vec<(u8, u8)>,\n    c
 check "a struct over the field budget fails" "1" "$rc"; has "with its count" "struct crates/a/src/lib.rs::W is a new offender: 4 fields, budget 3" "$out"
 fresh; printf 'enum E {\n    A,\n    B(u8, u8),\n    C { x: u8 },\n    D = 4,\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
 check "an enum over the variant budget fails" "1" "$rc"; has "with its count" "enum crates/a/src/lib.rs::E is a new offender: 4 variants, budget 3" "$out"
+# a restatement for UniFFI of a type that lives in another crate
+fresh; mkdir -p "$X/t/crates/b/src"; printf 'pub use b::W;\n/// Says so.\n#[uniffi::remote(Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n#[uniffi::remote(Enum)]\npub enum E {\n    A,\n    B,\n    C,\n    D,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"
+printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/b/src/lib.rs"; R --update >/dev/null 2>&1; out=$(R)
+check "a remote struct or enum over budget isn't an offender" "" "$(echo "$out" | grep 'recto-ffi/src/lib.rs::')"
+has "the plain type in the other crate is" "struct crates/b/src/lib.rs::W is a new offender: 4 fields, budget 3" "$out"
+has "and the restatement's lines still count toward the bridge" "the binding crate crates/recto-ffi/src grew" "$out"
+fresh; printf '#[derive(uniffi::Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R)
+has "the same struct derived, not remote, is an offender" "struct crates/a/src/lib.rs::W is a new offender: 4 fields" "$out"
+fresh; mkdir -p "$X/t/crates/b/src"; printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"; printf "ffi crates/recto-ffi/src 6\nstruct crates/recto-ffi/src/lib.rs::W 4\n" > "$X/t/base.txt"
+printf '#[uniffi::remote(Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"; printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/b/src/lib.rs"
+out=$(R --moved crates/recto-ffi/src/lib.rs::W crates/b/src/lib.rs::W); rc=$?
+check "--moved carries a struct from its restatement to the plain type" "0" "$rc"; has "renamed" "struct crates/b/src/lib.rs::W 4" "$(cat "$X/t/base.txt")"
 fresh; printf 'struct T;\nimpl T {\n fn a(&self) {}\n fn b(&self) {}\n fn c(&self) {}\n fn d(&self) {}\n}\nimpl Tr for T {\n fn e(&self) {}\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
 check "an impl over the method budget fails" "1" "$rc"; has "with its count, trait impls left out" "impl crates/a/src/lib.rs::T is a new offender: 4 methods, budget 3" "$out"
 
@@ -79,6 +91,28 @@ check "a poll marker and a comment don't count" "0" "$rc"; has "and the entry sh
 echo 'sleep 1' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?
 check "a sleep in a qa script fails" "1" "$rc"
 echo 'sleep 1 # ratchet: poll' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?; check "and the marker exempts it there too" "0" "$rc"
+
+# a move
+fresh; { lines 30; echo 'fn s() { std::thread::sleep(D); }'; fn_of 10 long; } > "$X/t/crates/a/src/old.rs"
+printf "ffi crates/recto-ffi/src 0\nfile crates/a/src/old.rs 41\nfn crates/a/src/old.rs::long 10\nsleep crates/a/src/old.rs 1\n" > "$X/t/base.txt"
+cp "$X/t/crates/a/src/old.rs" "$X/t/crates/a/src/new.rs"; out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a move is refused while the old file is still there" "1" "$rc"; has "saying so" "still exists" "$out"
+rm "$X/t/crates/a/src/old.rs"; out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a moved file's entries are renamed" "0" "$rc"
+check "all of them, numbers kept, sorted" "ffi crates/recto-ffi/src 0|file crates/a/src/new.rs 41|fn crates/a/src/new.rs::long 10|sleep crates/a/src/new.rs 1|" "$(tr '\n' '|' < "$X/t/base.txt")"
+out=$(R); rc=$?; check "and the tree then passes" "0" "$rc"
+out=$(R --moved crates/a/src/gone.rs crates/a/src/new.rs); rc=$?
+check "a move of a path with no entry is refused" "1" "$rc"; has "saying so" "no entry" "$out"
+fresh; fn_of 10 long > "$X/t/crates/a/src/old.rs"; printf "ffi crates/recto-ffi/src 0\nfn crates/a/src/old.rs::long 10\n" > "$X/t/base.txt"
+mv "$X/t/crates/a/src/old.rs" "$X/t/crates/a/src/new.rs"; fn_of 12 long > "$X/t/crates/a/src/new.rs"; before=$(cat "$X/t/base.txt")
+out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "a move to something bigger is refused" "1" "$rc"; has "saying so" "measures 12, more than the entry 10" "$out"
+check "and leaves the baseline alone" "$before" "$(cat "$X/t/base.txt")"
+fresh; { fn_of 10 long; echo 'fn tiny() {}'; } > "$X/t/crates/a/src/old.rs"; fn_of 3 other > "$X/t/crates/a/src/new.rs"; printf "ffi crates/recto-ffi/src 0\nfn crates/a/src/old.rs::long 10\n" > "$X/t/base.txt"
+out=$(R --moved crates/a/src/old.rs::long crates/a/src/new.rs::long); rc=$?
+check "one item's move is refused while it's still in the old file" "1" "$rc"
+echo 'fn tiny() {}' > "$X/t/crates/a/src/old.rs"; fn_of 10 long >> "$X/t/crates/a/src/new.rs"; out=$(R --moved crates/a/src/old.rs::long crates/a/src/new.rs::long); rc=$?
+check "and renamed once it moved, the old file staying" "fn crates/a/src/new.rs::long 10" "$(grep '^fn' "$X/t/base.txt")"
 
 # the baseline itself
 fresh; printf 'file b 1\nfile a 1\n' > "$X/t/base.txt"; out=$(R); rc=$?

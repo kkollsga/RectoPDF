@@ -12,18 +12,18 @@
 # selective `--full`, because a change in one crate breaks the list in another (recto-session's edit showed up in recto-agent's table, 2 minutes into a
 # full check). `test(~x)` is a substring of the test's name (its module path included), and `test(~module::)` is a whole module's tests.
 # A new guard goes here, with the failure it catches in its own doc comment.
-GUARD_TESTS='test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does)'
+GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does)'
 
 # --- Tiers of the tests that launch the app --------------------------------------------------------------------------------------------------------------
 # Every test in these binaries (recto-cli's) starts the real app in a quiet run. APP_BINARIES is all of them: `scope_names_missing` fails when a test file
 # that drives the app is not named here, so a new one can't run in no tier.
-APP_BINARIES='app restore compare long_session registrations'
+APP_BINARIES='app restore compare long_session registrations evidence'
 # Lifecycle: the app starting, updating, being killed and found by Launch Services: every update test end to end, the quiet-run and Launch Services
 # tests, long sessions, a thousand tabs, tabs leaving in bulk, comparisons that leave no views behind, and what is registered afterwards.
 LIFECYCLE_TESTS='(binary(=restore) & test(~update::)) | (binary(=app) & test(~quiet::)) | binary(=long_session) | binary(=registrations) | (binary(=compare) & test(~comparisons_leave_no_views_behind)) | (binary(=restore) & test(~a_thousand_tabs_come_back_cold))'
-# Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state. The rest by construction, so a test is in exactly
+# Window: everything else in the app binaries: drawing, AppKit, the bridge, reading and restoring state, and the proof that a failure leaves its evidence. The rest by construction, so a test is in exactly
 # one tier: the one its name puts it in, or this.
-WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare)) & !($LIFECYCLE_TESTS)"
+WINDOW_TESTS="(binary(=app) | binary(=restore) | binary(=compare) | binary(=evidence)) & !($LIFECYCLE_TESTS)"
 # --- Tiers by time ---------------------------------------------------------------------------------------------------------------------------------------
 # The test system's four tiers (docs/reviews/2026-11-12-development-speed.md §5), as `check.sh --slow` reports them against a budget. Tier 1 (core) is every
 # test that is in none of the lists below, in a single process; tier 3 is the window tier and tier 4 the lifecycle tier above; tier 2 (process) is these
@@ -37,7 +37,7 @@ TIER_BUDGETS='1:60 2:60 3:90 4:240'
 WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
 # sleeping, and the tests themselves. Not recto-core, recto-session in general or recto-agent: those reach the window tier.
-LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-ffi/src/(updates|sleeper|sleep_queue|saver)(\.rs|/)|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
+LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-ffi/src/(updates|sleeper|saver)(\.rs|/)|^crates/recto-app/src/(sleep_queue|saver|sleeper)\.rs$|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
 
 # Whether a line is in a list. Not `printf | grep -q`: grep quits at the first hit, printf dies of SIGPIPE, and under pipefail that reads as a miss.
 has_line() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; *) return 1 ;; esac; }

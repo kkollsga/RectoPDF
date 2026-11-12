@@ -621,6 +621,69 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
     assert!(pump(&engine, Duration::from_secs(5)).iter().all(|op| !matches!(op, Op::Attach { .. })) || settles(&engine));
 }
 
+/// A host that pulls from inside `copy_ready`: it selects again, on the thread it was called on, which goes through the page view's selection news once more.
+#[derive(Default)]
+struct PullsInCopyReady {
+    engine: std::sync::OnceLock<Engine>,
+    returned: std::sync::atomic::AtomicBool,
+    pulled: std::sync::atomic::AtomicBool,
+}
+
+impl EngineEvents for PullsInCopyReady {
+    fn ops_ready(&self) {}
+    fn note_changed(&self) {}
+    fn page_moved(&self) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    fn copy_ready(&self) {
+        if !self.pulled.swap(true, Ordering::SeqCst)
+            && let Some(engine) = self.engine.get()
+        {
+            engine.select_all();
+            self.returned.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Failure: the page view tells the host a copy is ready with its own notice lock still held, so a host that pulls from inside `copy_ready`, or anything that reaches the page view's selection news from it, deadlocks on that lock (`recto_app::Listener`'s promise: the host is never called with the core's locks held). Bounded: a deadlock fails the wait, not the run.
+#[test]
+fn copy_ready_comes_with_no_lock_of_the_page_views_held() {
+    let file = document(2);
+    let events = Arc::new(PullsInCopyReady::default());
+    let engine = Engine::new(EngineConfig::default(), events.clone());
+    let _ = events.engine.set(engine.clone());
+    engine.set_viewport(view(0.0));
+    engine.activate(
+        1,
+        2,
+        0,
+        PageMap {
+            files: vec![file.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    settled_on_page(&engine, 0);
+    engine.select_all();
+    pump(&engine, Duration::from_secs(20));
+    engine.copy_selection(false);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !events.returned.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "copy_ready was called (pulled: {}) and the host's pull never returned",
+            events.pulled.load(Ordering::SeqCst)
+        );
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    assert!(engine.take_copied().is_some(), "the copy is there to take");
+}
+
 /// Failure: a page with no text keeps being read, holding the settled state open for ever, or says it has a selection. A page that fails has to come to rest too.
 #[test]
 fn a_page_with_no_text_comes_to_rest_with_nothing_selected() {

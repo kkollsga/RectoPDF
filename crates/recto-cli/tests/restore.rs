@@ -185,25 +185,21 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     flatten(&without_timed_fade(before), "", &mut one);
     flatten(&without_timed_fade(after), "", &mut two);
     let exceptions = exceptions();
-    // Known failing on CI only (2026-11-11, due 2026-11-18): on GitHub's runners the contents' per-row accessibility now and then comes
-    // back empty across a restart (runs 43079093694, 43109960924), never reproduced here and not explained by the diagnostic. PLAN phase 7
-    // has the item. Everywhere else it's compared like everything else.
-    let ci_known = std::env::var_os("CI").is_some();
-    let excepted = |path: &str| {
-        exceptions.iter().any(|(name, _)| path.starts_with(name))
-            || also.iter().any(|name| path.starts_with(name))
-            || (ci_known && path.starts_with("app.contents.accessibility"))
-    };
-    let mut wrong = Vec::new();
+    let excepted =
+        |path: &str| exceptions.iter().any(|(name, _)| path.starts_with(name)) || also.iter().any(|name| path.starts_with(name)) || ci_known::covers(path);
+    let (mut wrong, mut let_through) = (Vec::new(), Vec::new());
     for (path, value) in &one {
-        if excepted(path) {
-            continue;
-        }
-        match two.get(path) {
-            Some(other) if !differs(value, other) => {}
-            other => wrong.push(format!("{path}: {value} then {}", other.map_or("nothing".to_string(), ToString::to_string))),
+        let said = match two.get(path) {
+            Some(other) if !differs(value, other) => continue,
+            other => format!("{path}: {value} then {}", other.map_or("nothing".to_string(), ToString::to_string)),
+        };
+        if !excepted(path) {
+            wrong.push(said);
+        } else if ci_known::covers(path) {
+            let_through.push(said);
         }
     }
+    ci_known::say(&let_through);
     for path in two.keys() {
         if !excepted(path) && !one.contains_key(path) {
             wrong.push(format!("{path}: nothing then {}", two[path]));
@@ -1257,6 +1253,25 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     );
 }
 
+/// Failure: a quiet run acts on the machine's own memory pressure, so a test's tabs go to sleep under it when other work loads the Mac (full check, 2026-11-12: the test below saw 2 documents held of 3, during the kernel's only warning that hour); or it isn't counted, so a run can't say the machine was under pressure. Through the method the host's dispatch source calls.
+#[test]
+fn a_quiet_run_counts_the_systems_memory_pressure_and_puts_nothing_to_sleep() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::on(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    for at in 0..2 {
+        run.ok(&["open", text_document(&folder, &format!("d{at}.pdf"), 2).to_str().unwrap()]);
+        run.settled();
+    }
+    run.ok(&["qa", "memory-pressure", "system-warning"]);
+    run.settled();
+    let sleep = &run.report()["record"]["sleep"];
+    assert!(sleep["system_pressure"]["warning"].as_u64().unwrap() >= 1, "counted: {sleep}");
+    assert_eq!(sleep["pressure_events"], 0, "and not acted on: {sleep}");
+    assert_eq!(sleep["gone_dormant"]["pressure"], 0, "{sleep}");
+}
+
 /// Failure: the system says memory's short and tabs off screen stay, or the budget across documents isn't kept, or what's being read goes blank. Everything off screen goes dormant at once, oldest first, and what's on screen stays. And a window of many tabs can't go over its budget.
 #[test]
 fn pressure_and_the_budget_do_what_being_left_alone_does() {
@@ -2134,53 +2149,6 @@ fn tabs_just_opened_come_back_when_sleep_files_are_slow() {
     run.quit();
 }
 
-/// Failure: a record of 1,000 tabs comes back slowly, or with a handle or a thread for each, or wakes them all. Only the active tab holds a document, and it has no more handles or threads than 2 tabs do, but for the one read of the active tab's file and the one look at the others, which may not have ended yet.
-#[test]
-fn a_thousand_tabs_come_back_cold() {
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
-    let file = long_document("many", 3);
-    let folder = state.root.join("tabs");
-    std::fs::create_dir_all(&folder).unwrap();
-    let link = |at: usize| folder.join(format!("t{at}.pdf"));
-    // Files of their own, as a link is the same PDF.
-    for at in 0..1000 {
-        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
-    }
-    run.ok(&["open", link(0).to_str().unwrap()]);
-    run.ok(&["open", link(1).to_str().unwrap()]);
-    run.settled();
-    let few = run.report();
-    run.quit();
-    // Those two came back. The rest go in as a record, as though they'd been open.
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    let two = run.report();
-    assert_eq!(two["session"]["tabs"].as_array().unwrap().len(), 2);
-    for at in 2..1000 {
-        run.ok(&["open", link(at).to_str().unwrap()]);
-    }
-    run.settled();
-    let opened = run.report();
-    run.quit();
-    let started = Instant::now();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    let took = started.elapsed();
-    let back = run.report();
-    assert_eq!(back["session"]["tabs"].as_array().unwrap().len(), 1000);
-    assert_eq!(back["reader"]["documents_held"], 1, "only the active tab");
-    assert_eq!(back["session"]["active"], opened["session"]["active"]);
-    let (threads_few, threads_back) = (few["memory"]["threads"].as_u64().unwrap(), back["memory"]["threads"].as_u64().unwrap());
-    assert!(threads_back <= threads_few + 2, "{threads_few} then {threads_back} threads");
-    let (handles_few, handles_back) = (
-        few["memory"]["open_handles"].as_u64().unwrap(),
-        back["memory"]["open_handles"].as_u64().unwrap(),
-    );
-    assert!(handles_back <= handles_few + 2, "{handles_few} then {handles_back} handles");
-    eprintln!("1,000 tabs came back and settled in {took:?}");
-}
-
 /// Failure: a damaged record stops the app, panics, is overwritten, or is passed over in silence. It starts empty, says so, and what was there is kept to one side.
 #[test]
 fn a_damaged_record_starts_empty_and_says_so() {
@@ -2453,8 +2421,15 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 #[path = "restore/update.rs"]
 mod update;
 
+#[path = "restore/ci_known.rs"]
+mod ci_known;
 #[path = "restore/exits.rs"]
 mod exits;
+#[path = "restore/many.rs"]
+mod many;
+
+#[path = "restore/slow_stage.rs"]
+mod slow_stage;
 
 /// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. A file notice wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
 #[test]

@@ -135,6 +135,103 @@ fn push_capped(list: &mut Vec<Stop>, stop: Stop) {
     list.remove(oldest.unwrap_or(list.len() - 1));
 }
 
+use super::*;
+
+impl<L: DocLoader> Session<L> {
+    /// Moves a tab to a zero-based page, clamped to the document.
+    pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
+        let pages = self.pages_in(id);
+        let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
+        let page = page.min(pages.saturating_sub(1));
+        if tab.page != page {
+            tab.page = page;
+            tab.place_dirty = true;
+        }
+        Ok(())
+    }
+
+    /// **Where the reader is in a tab,** for a jump to mark: the page, and how far down it if the page view has said lately.
+    pub fn here(&self, id: TabId) -> Option<trail::Stop> {
+        let tab = self.tab(id)?;
+        let within = tab
+            .place
+            .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
+            .map_or(0.0, |place| place.within);
+        Some(trail::Stop::new(tab.page, within))
+    }
+
+    /// **A jump:** following a link, a contents entry, or going to a page by its number or label. Where the reader was is marked for Back, and the way forward goes. The page is held to the document, and the page view lands `within` the way down it.
+    pub fn jump(&mut self, id: TabId, page: u32, within: f64) -> Result<(), SessionError> {
+        self.jump_as(id, page, within, Author::Owner)
+    }
+
+    /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
+    pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
+        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let to = trail::Stop::new(page.min(self.pages_in(id).saturating_sub(1)), within);
+        let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
+        tab.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
+        self.land(id, to)
+    }
+
+    /// Back in a tab's trail, by the person. Says whether there was anywhere to go.
+    pub fn go_back(&mut self, id: TabId) -> Result<bool, SessionError> {
+        self.step_trail(id, true, Author::Owner)
+    }
+
+    /// Forward in a tab's trail, the same way.
+    pub fn go_forward(&mut self, id: TabId) -> Result<bool, SessionError> {
+        self.step_trail(id, false, Author::Owner)
+    }
+
+    /// Back or forward, by the person or an agent.
+    pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
+        self.step_trail(id, back, by)
+    }
+
+    fn step_trail(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
+        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let agent = by == Author::Agent;
+        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.trail.as_deref_mut()) else {
+            return Ok(false);
+        };
+        let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
+            return Ok(false);
+        };
+        // Pages may have gone since it was marked.
+        let to = trail::Stop {
+            page: to.page.min(self.pages_in(id).saturating_sub(1)),
+            ..to
+        };
+        self.land(id, to)?;
+        Ok(true)
+    }
+
+    fn land(&mut self, id: TabId, to: trail::Stop) -> Result<(), SessionError> {
+        self.go_to(id, to.page)?;
+        self.jumps.retain(|(tab, _)| *tab != id);
+        self.jumps.push((id, to));
+        Ok(())
+    }
+
+    /// Whether a tab can go back, and forward.
+    pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
+        self.trail_of(id)
+            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+    }
+
+    /// A tab's trail, for QA and `recto where`.
+    pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
+        self.tab(id)?.trail.as_deref()
+    }
+
+    /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
+    pub fn take_jump(&mut self, id: TabId) -> Option<trail::Stop> {
+        let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
+        Some(self.jumps.swap_remove(at).1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -52,7 +52,8 @@ fn comparison_view_from_command_click_to_one_again() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let one = run.report();
-    let threads_alone = one["memory"]["threads"].as_u64().unwrap();
+    // The app's own, by name: the count of all took in the system's libdispatch pool, whose size goes with the machine's load (CI, 2026-11-12).
+    let threads_alone = common::threads::own(run.pid);
     assert_eq!(panes(&one).len(), 1);
     assert!(
         one["context_menu"].is_null()
@@ -189,15 +190,9 @@ fn comparison_view_from_command_click_to_one_again() {
     assert!(closed["session"]["comparison"].is_null());
     assert_eq!(closed["session"]["active"], 3);
     // One-shot threads, a look at a file or a sleep file being written, end by themselves: a pane's page view that stayed would be there for good.
-    let began = Instant::now();
-    let threads = loop {
-        let threads = run.report()["memory"]["threads"].as_u64().unwrap();
-        if threads <= threads_alone + 1 || began.elapsed() > Duration::from_secs(5) {
-            break threads;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    assert!(threads <= threads_alone + 1, "{threads} threads, {threads_alone} alone");
+    if let Some(wrong) = common::threads::back_to(run.pid, &threads_alone, Duration::from_secs(30)) {
+        panic!("a pane's thread stayed: {wrong}");
+    }
 
     // And a plain click returns to one.
     run.ok(&["compare", "--tabs", "#2,#3"]);
@@ -387,6 +382,9 @@ fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
 }
 
 /// The app's own objects and AppKit's views, scrollers, controls and gesture recognizers alive in the app's process, by class, as `heap` counts them. Nothing else: caches of strings, fonts and glyphs come and go with what's been drawn.
+/// The animation AppKit runs on a scroller's knob to fade it (`overlayScrollerKnobAlpha`), which holds the scroller it's for until it finishes.
+const FADE: &str = "NSAnimationManagerAnimation";
+
 fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
     let out = std::process::Command::new("/usr/bin/heap").arg(pid.to_string()).output().expect("heap runs");
     assert!(out.status.success(), "heap couldn't read the app: {}", String::from_utf8_lossy(&out.stderr));
@@ -415,7 +413,9 @@ fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
         let (kind, binary) = (fields[fields.len() - 2], fields[fields.len() - 1]);
         let class = fields[3..fields.len() - 2].join(" ");
         let ours = binary == "RectoPDF" && matches!(kind, "Swift" | "ObjC");
-        let views = binary == "AppKit" && kind == "ObjC" && ["View", "Scroller", "GestureRecognizer", "Control"].iter().any(|word| class.contains(word));
+        let views = binary == "AppKit"
+            && kind == "ObjC"
+            && (class == FADE || ["View", "Scroller", "GestureRecognizer", "Control"].iter().any(|word| class.contains(word)));
         if ours || views {
             *alive.entry(class).or_default() += count;
         }
@@ -424,12 +424,14 @@ fn views_alive(pid: u32) -> std::collections::HashMap<String, u64> {
     alive
 }
 
-/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
+/// Failure: a comparison leaves views behind when it ends, so a day of it grows for good. The 24-hour soak of 2026-11-08 grew 0.56 MiB an hour. Two ways were found, both views kept after they'd gone by an observer block AppKit gives each view (`-[NSView _commonAwake]`, in `leaks --traceTree`): the soak's build left an overlay scroller with its recognizers for each comparison, from the vertical scroller each pane had then; and the contents' rows, opening and closing as the pane read changes, left the row views the table animated, 0.6 a comparison with their cells (seven views each), until they faded over as a layer instead. Run with overlay scrollers and documents with contents. **The scroller's fade:** a pane's overlay scroller left behind was held by its knob's fade (`FADE`), which scrolling starts, and which never finishes once the pane is out of the window. A fast Mac ends the comparison before the fade has begun, so it passed there and failed on a slow one (2026-11-12, run at background priority, 3 of 4). The fix is that no page area has a system scroller at all (the thumb across is `HorizontalThumbView`), so no fade exists to strand a view; the loop scrolls in each comparison and `FADE` objects are counted with the views, so a scroller that fades again grows both. No class of the app's own or of AppKit's views may grow with every comparison, in two stretches running: something that moves once, as sidebar rows do, can't do that.
 #[test]
 fn comparisons_leave_no_views_behind() {
     const STRETCH: u64 = 12;
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
+    // Long enough for a build whose scrollers fade, which waits on each comparison.
+    let Some(run) = Run::start_lasting(Duration::from_secs(600), &[]) else {
+        return;
+    };
     let (left, right) = (common::app::chaptered("left", 12, 6), common::app::chaptered("right", 10, 5));
     run.ok(&["open", left.0.to_str().unwrap()]);
     run.ok(&["open", right.0.to_str().unwrap()]);
@@ -440,7 +442,7 @@ fn comparisons_leave_no_views_behind() {
         for _ in 0..times {
             run.ok(&["compare", "--tabs", "#1,#2"]);
             run.settled();
-            // A scroll shows the scrollers, which then fade.
+            // A scroll once started a fade in a pane's scroller, which held it for good once the pane had gone.
             run.ok(&["qa", "scroll", "400"]);
             run.settled();
             run.ok(&["compare", "--off"]);
@@ -464,4 +466,42 @@ fn comparisons_leave_no_views_behind() {
         .map(|class| format!("{class}: {} -> {} -> {}", count(&first, class), count(&second, class), count(&third, class)))
         .collect();
     assert!(growing.is_empty(), "grew with every comparison, {STRETCH} at a time: {growing:?}");
+}
+
+/// Failure: the page area has a system scroller across again (a rail, or a fading knob that kept its view for good), the thumb across shows with a page no wider than its pane or is missing with one wider, sits over the page number's corner or is as thick as a rail, or the way VoiceOver and a click beside it move a page across doesn't move it. Owner, 2026-11-07/08: "the scroll thumb always visible, the rail always hidden: for the page area too".
+#[test]
+fn the_thumb_across_shows_with_a_page_wider_than_its_pane() {
+    let state = State::new();
+    let Some(run) = Run::on(&state) else { return };
+    let file = document("wide", 6, (612.0, 792.0));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let across = |run: &Run| run.report()["app"]["pages"]["thumb_across"].clone();
+    let fitted = across(&run);
+    assert_eq!(fitted["shown"], false, "a page that fits has nothing across: {fitted}");
+    assert_eq!(run.report()["app"]["pages"]["horizontal_scroller"], false);
+    run.ok(&["qa", "zoom", "3"]);
+    run.settled();
+    let wide = across(&run);
+    assert_eq!(wide["shown"], true, "{wide}");
+    assert!(wide["thumb_height"].as_f64().unwrap() < 7.0, "thinner than the system's: {wide}");
+    assert!(wide["bottom_gap"].as_f64().unwrap() >= 2.0, "{wide}");
+    assert!(
+        wide["strip"]["height"].as_f64().unwrap() <= 16.0,
+        "clear of the page number 16 points up: {wide}"
+    );
+    assert_eq!(wide["accessibility"]["role"], "AXScrollBar", "{wide}");
+    let before = run.report()["app"]["pages"]["scroll_x"].as_f64().unwrap();
+    run.ok(&["qa", "accessibility", "thumb:pages_across:increment"]);
+    run.settled();
+    let after = run.report()["app"]["pages"]["scroll_x"].as_f64().unwrap();
+    assert!(after > before + 10.0, "a page across moves the view: {before} -> {after}");
+    assert!(
+        across(&run)["thumb_left"].as_f64().unwrap() > wide["thumb_left"].as_f64().unwrap(),
+        "and the thumb with it"
+    );
+    run.ok(&["qa", "zoom", "1"]);
+    run.settled();
+    assert_eq!(across(&run)["shown"], false, "back to the fit it goes");
 }

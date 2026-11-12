@@ -90,13 +90,17 @@ pub struct SelectionNotice {
     pub fades: bool,
 }
 
-/// A file opened lately.
+/// A file opened lately, for File > Open Recent and for ⌘K to offer. The host's record is this one, declared to UniFFI by `recto-ffi` as it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentFile {
+    /// Which file this is, however the list moves: what its Open Recent item's id carries, as `recent.<key>`.
     pub key: String,
+    /// As a tab shows it: the file's name without `.pdf`, cleaned.
     pub name: String,
+    /// The folder it's in, as a path, for telling two of the same name apart.
     pub folder: String,
     pub path: String,
+    /// It's open in a tab now, so choosing it goes there.
     pub open: bool,
 }
 

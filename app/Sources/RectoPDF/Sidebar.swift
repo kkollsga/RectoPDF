@@ -1247,9 +1247,12 @@ final class ThumbView: NSView {
     }
 
     /// How strong it's drawn now: by light or dark, the pointer, and Increase Contrast.
-    private func alpha(_ look: ScrollThumbLook) -> Double {
-        let (dark, strong) = (Theme.dark, hovering || dragging != nil)
-        if Self.contrastOn, let contrast = Self.contrast {
+    private func alpha(_ look: ScrollThumbLook) -> Double { Self.alpha(look, strong: hovering || dragging != nil) }
+
+    /// The same for any thumb, strong with the pointer on it or dragging it.
+    static func alpha(_ look: ScrollThumbLook, strong: Bool) -> Double {
+        let dark = Theme.dark
+        if contrastOn, let contrast = contrast {
             return dark ? (strong ? contrast.darkHoverAlpha : contrast.darkAlpha) : (strong ? contrast.lightHoverAlpha : contrast.lightAlpha)
         }
         return dark ? (strong ? look.darkHoverAlpha : look.darkAlpha) : (strong ? look.lightHoverAlpha : look.lightAlpha)

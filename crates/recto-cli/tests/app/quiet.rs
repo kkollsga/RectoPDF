@@ -286,6 +286,20 @@ fn a_quiet_run_ends_with_what_started_it() {
 /// and once its starter has ended, and the run with it, it isn't.
 #[test]
 fn a_quiet_run_that_ends_with_its_starter_forgets_its_copy() {
+    ends_with_its_starter_and_is_forgotten(false);
+}
+
+/// Failure (CI, main at 05c44f2, run 43211139256: `app/build.noindex/RectoPDF.app` left registered after the lifecycle tier, now and then): a
+/// quiet run that ended with its starter before its launch had been looked at forgot nothing, as what it forgot was the bundle the updater
+/// is told on the restore thread, and the system registers a copy as it starts. The two short runs of `a_quiet_run_ends_with_what_started_it`
+/// end that soon on a machine as busy as CI's. With the launch held until the test lets go, which it never does (`RECTO_QA_SLOW_HOLD`), the run ends before its launch is looked at on any machine, however slow, and its copy is forgotten all the same. A 10 s hold by the clock ran out on CI before the test had ended the starter (run 43225124901).
+#[test]
+fn a_quiet_run_that_ends_before_its_launch_is_looked_at_forgets_its_copy() {
+    ends_with_its_starter_and_is_forgotten(true);
+}
+
+/// A copy of its own, started for a process of the test's (with its launch held, if asked, until a file that's never made), seen registered, its starter ended, and the copy forgotten. The waits are bounds only a hang reaches: a registry's dump takes seconds on a busy machine, and the forgetting runs in the background.
+fn ends_with_its_starter_and_is_forgotten(launch_held: bool) {
     let Some(copy) = OwnCopy::new() else { return };
     let registered = || recto_platform::registry::registered().iter().any(|found| found.path.starts_with(&copy.bundle));
     let within = |limit: Duration, holds: &dyn Fn() -> bool| {
@@ -302,7 +316,8 @@ fn a_quiet_run_that_ends_with_its_starter_forgets_its_copy() {
     let state = super::common::State::new();
     let owner_pid = owner.id().to_string();
     let executable = copy.executable();
-    let (reply, code) = state.json(&[
+    let mut command = state.command();
+    command.args([
         "qa",
         "start",
         "--app",
@@ -311,19 +326,25 @@ fn a_quiet_run_that_ends_with_its_starter_forgets_its_copy() {
         "2m",
         "--owner",
         &owner_pid,
+        "--json",
     ]);
-    assert_eq!(code, 0, "{reply}");
+    if launch_held {
+        command.env(recto_platform::slow::HOLD_SWITCH, format!("launch:{}", state.root.join("never-made").display()));
+    }
+    let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{reply}");
     let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
     assert!(
-        within(Duration::from_secs(20), &registered),
+        within(Duration::from_secs(60), &registered),
         "the system never registered the running copy, so this shows nothing"
     );
     owner.kill().unwrap();
     owner.wait().unwrap();
     ends(pid, "the process it was started for was killed");
     assert!(
-        within(Duration::from_secs(10), &|| !registered()),
-        "{} is still registered 10 s after its quiet run ended with its starter",
+        within(Duration::from_secs(60), &|| !registered()),
+        "{} is still registered 60 s after its quiet run ended with its starter",
         copy.bundle.display()
     );
 }
@@ -372,4 +393,26 @@ fn a_change_landing_in_the_put_back_is_put_back_too() {
     // The change did land in a put-back, and it took a second try: not a run the nudge never reached.
     let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(messages.contains("back took 2 tries: after the first it read accessory"), "{messages}");
+}
+
+/// Failure: what a run said is gone once the next run on its state folder starts, so a test that compares runs and fails after the next one's up shows nothing of what the run before said (CI run 43203636562: `quitting_twice_in_a_row_changes_nothing`'s report of a restart, and the contents' own message about it, silent in the logs kept). The run before's messages are kept for one launch more.
+#[test]
+fn the_run_befores_messages_are_kept_for_one_launch() {
+    let Some(app) = app_path() else { return };
+    let app = app.to_str().unwrap().to_owned();
+    let state = super::common::State::new();
+    let mut owner = std::process::Command::new("/bin/sleep").arg("120").spawn().unwrap();
+    let owner_pid = owner.id().to_string();
+    let (reply, code) = state.json(&["qa", "start", "--app", &app, "--time-limit", "2m", "--owner", &owner_pid]);
+    assert_eq!(code, 0, "{reply}");
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    ends(pid, "the process it was started for was killed");
+    let said = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
+    assert!(said.contains("this quiet run ended"), "the first run said why it ended: {said:?}");
+    let run = Run::on(&state).unwrap();
+    let previous = std::fs::read_to_string(state.paths.server_messages.with_file_name("server-messages.previous.txt")).unwrap_or_default();
+    assert_eq!(previous, said, "the run before's words, as they were");
+    run.quit();
 }

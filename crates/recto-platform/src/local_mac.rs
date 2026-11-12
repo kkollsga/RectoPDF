@@ -797,6 +797,41 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
     })
 }
 
+/// The most threads [`thread_names`] lists: far past any app's, so a count is never cut short in practice, and bounded all the same.
+const MAX_LISTED_THREADS: usize = 512;
+
+/// The names of a process's threads, as each set it (`unnamed` for one that didn't, as libdispatch's workers don't), sorted, for a test that counts threads to say which ones they were. `None` if it's gone or belongs to someone else. Each is read one after another, so a thread that ends meanwhile is left out.
+pub fn thread_names(pid: u32) -> Option<Vec<String>> {
+    // <sys/proc_info.h>: not in the libc crate.
+    const PROC_PIDLISTTHREADS: libc::c_int = 6;
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut handles = vec![0u64; MAX_LISTED_THREADS];
+    let room = libc::c_int::try_from(handles.len() * size_of::<u64>()).ok()?;
+    // SAFETY: the buffer and its size in bytes describe `handles`; what's written is a count of bytes within it.
+    let written = unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
+    let written = usize::try_from(written).ok().filter(|&bytes| bytes > 0)?;
+    handles.truncate(written / size_of::<u64>());
+    let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
+    let mut names: Vec<String> = handles
+        .iter()
+        .filter_map(|&handle| {
+            let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
+            // SAFETY: the buffer and its size describe `info`, and a return of `size` means it was filled.
+            let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTHREADINFO, handle, info.as_mut_ptr().cast(), size) };
+            if got != size {
+                return None;
+            }
+            // SAFETY: filled, as checked.
+            let info = unsafe { info.assume_init() };
+            let bytes: Vec<u8> = info.pth_name.iter().take_while(|&&byte| byte != 0).map(|&byte| byte as u8).collect();
+            let name = String::from_utf8_lossy(&bytes).into_owned();
+            Some(if name.is_empty() { "unnamed".to_string() } else { name })
+        })
+        .collect();
+    names.sort();
+    Some(names)
+}
+
 /// What a copy of a file carries over from the original. Only those a new file of the same document should have: where it came from, which keeps Gatekeeper's word on a download, and nothing that's about this copy alone.
 const CARRIED_TO_A_COPY: [&str; 2] = ["com.apple.quarantine", "com.apple.metadata:kMDItemWhereFroms"];
 
@@ -932,6 +967,27 @@ mod tests {
 
     fn temp(name: &str) -> recto_testpdf::TempDir {
         recto_testpdf::TempDir::new(&format!("recto-local-{name}-"))
+    }
+
+    /// Failure: the names of a process's threads, which a failing thread count prints, are missing, cut short or garbled, so a CI log can't say which threads were over. A thread named here is listed by its name, as many names as the count, and a process that isn't there gives none.
+    #[test]
+    fn a_threads_name_is_listed() {
+        let (ready, wait) = std::sync::mpsc::channel();
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let named = std::thread::Builder::new()
+            .name("recto-named-for-a-test".into())
+            .spawn(move || {
+                ready.send(()).unwrap();
+                let _ = stopped.recv();
+            })
+            .unwrap();
+        wait.recv().unwrap();
+        let names = thread_names(std::process::id()).unwrap();
+        assert!(names.iter().any(|name| name == "recto-named-for-a-test"), "{names:?}");
+        assert!(names.len() >= 2, "{names:?}");
+        stop.send(()).unwrap();
+        named.join().unwrap();
+        assert_eq!(thread_names(999_999), None);
     }
 
     /// Failure (PLAN, "A quiet QA app outlives a test or script"): a quiet run whose test was killed, or whose worktree was removed, runs on to its time limit, as nothing was watching for either. A watch ends when the process does, when a folder or file goes, or at the limit, and what's already gone counts at once.

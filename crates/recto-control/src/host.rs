@@ -237,10 +237,8 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 impl<L: DocLoader + Clone> SessionHost<L> {
     /// The record's commands, for a session with no window: nothing writes until it's told to, and each save is the whole of it. The app has its own, as it keeps its record as it goes.
     fn run_record_command(&self, level: Level, command: &Command) -> Option<Result<Value, AgentError>> {
-        if !matches!(
-            command,
-            Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}
-        ) {
+        // Routed by the command's own declaration, the one list of where each is answered.
+        if command.route() != recto_agent::Runs::Record {
             return None;
         }
         // The level was checked by the server against the row. Checked here too, as `execute` would.
@@ -339,7 +337,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
             return answer;
         }
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
-        let closing = matches!(command, Command::Close { .. })
+        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
             .flatten();
         let result = recto_agent::execute(&self.access(), level, command, events);

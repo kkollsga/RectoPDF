@@ -168,6 +168,160 @@ impl Comparison {
     }
 }
 
+use super::*;
+
+impl<L: DocLoader> Session<L> {
+    /// Tabs side by side, if there are.
+    pub fn comparison(&self) -> Option<&compare::Comparison> {
+        self.comparison.as_ref()
+    }
+
+    /// What's on screen, a pane each, left to right: a comparison's tabs, or the active tab alone, or nothing.
+    pub fn panes(&self) -> Vec<TabId> {
+        match &self.comparison {
+            Some(comparison) => comparison.tabs.clone(),
+            None => self.active.into_iter().collect(),
+        }
+    }
+
+    /// Whether a tab is on screen: active, or a pane of a comparison. Such a tab doesn't go dormant, whatever's asking.
+    pub fn on_screen(&self, id: TabId) -> bool {
+        self.active == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
+    }
+
+    /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.
+    pub fn compare(&mut self, tabs: &[TabId], reading: Option<TabId>) -> Result<bool, compare::CompareError> {
+        if tabs.iter().any(|id| self.tab(*id).is_none()) {
+            return Err(compare::CompareError::NoSuchTab);
+        }
+        let comparison = compare::Comparison::new(tabs.to_vec())?;
+        let was = self.comparison.clone();
+        for id in tabs {
+            self.wake_list(*id);
+        }
+        let reading = reading
+            .filter(|id| tabs.contains(id))
+            .or(self.active.filter(|id| tabs.contains(id)))
+            .unwrap_or(tabs[0]);
+        // Synced scroll stays on through a change of tabs, starting again from where each is now.
+        let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
+        self.comparison = Some(comparison);
+        if synced {
+            self.set_compare_synced(true);
+        }
+        // Every pane is a live document, so each is one of the warm tabs, the one read last and so first: a tab warm before that isn't a pane goes cold, and the live documents stay at [`MAX_WARM`] (SPEC §2), as `compare::MAX_PANES` is.
+        // Those warm already first, so a pane coming in from cold pushes out a tab that isn't a pane, and never another pane, which would then be read with the session held.
+        let mut others: Vec<TabId> = tabs.iter().copied().filter(|id| *id != reading).collect();
+        others.sort_by_key(|id| !self.warm.iter().any(|(tab, _)| tab == id));
+        for id in others {
+            self.activate(id);
+        }
+        self.activate(reading);
+        Ok(self.comparison != was)
+    }
+
+    /// What a ⌘-click on this tab would wake from cold, and its file, to read with the session free: the tab joining, or the pane read next if the one being read leaves. `None` if nothing needs reading.
+    pub fn wake_for_compare_click(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
+        let joining = !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
+        let next = if joining {
+            id
+        } else if self.active == Some(id) {
+            self.pane_after(id)?
+        } else {
+            return None;
+        };
+        if self.active == Some(next) {
+            return None;
+        }
+        self.file_to_wake_now(next)
+    }
+
+    /// The panes a comparison of these tabs would wake from cold, with their files, to read with the session free before [`Self::compare`].
+    pub fn wake_for_compare(&mut self, tabs: &[TabId]) -> Vec<(TabId, PathBuf)> {
+        let active = self.active;
+        tabs.iter()
+            .filter(|id| active != Some(**id))
+            .filter_map(|id| self.file_to_wake_now(*id))
+            .collect()
+    }
+
+    /// **⌘-click and ⌃-click on a tab** (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A tab not in it joins at the right and is the one read; one in it leaves; down to one, that one's alone. On the only tab showing, nothing.
+    pub fn toggle_compare(&mut self, id: TabId) -> Result<compare::CompareChange, compare::CompareError> {
+        if self.tab(id).is_none() {
+            return Err(compare::CompareError::NoSuchTab);
+        }
+        let Some(mut comparison) = self.comparison.clone() else {
+            let Some(active) = self.active.filter(|active| *active != id) else {
+                return Ok(compare::CompareChange::Nothing);
+            };
+            self.compare(&[active, id], Some(id))?;
+            return Ok(compare::CompareChange::Added);
+        };
+        if comparison.contains(id) {
+            comparison.remove(id);
+            if comparison.tabs.len() < compare::MIN_PANES {
+                let last = comparison.tabs.first().copied();
+                self.comparison = None;
+                if let Some(last) = last {
+                    self.activate(last);
+                }
+                return Ok(compare::CompareChange::Ended);
+            }
+            let reading = comparison.tabs.first().copied();
+            self.comparison = Some(comparison);
+            if self.active == Some(id)
+                && let Some(reading) = reading
+            {
+                self.activate(reading);
+            }
+            return Ok(compare::CompareChange::Removed);
+        }
+        let page = self.tab(id).map_or(0, |tab| tab.page);
+        comparison.add(id, page)?;
+        self.wake_list(id);
+        self.comparison = Some(comparison);
+        self.activate(id);
+        Ok(compare::CompareChange::Added)
+    }
+
+    /// Back to one tab: the one being read.
+    pub fn end_compare(&mut self) -> bool {
+        self.comparison.take().is_some()
+    }
+
+    /// Synced scroll on, from where each pane is now, or separate. Says nothing if there was no comparison to set, and otherwise whether it changed.
+    pub fn set_compare_synced(&mut self, on: bool) -> Option<bool> {
+        let pages: HashMap<TabId, u32> = self.tabs.iter().map(|tab| (tab.id, tab.page)).collect();
+        self.comparison.as_mut().map(|comparison| {
+            let was = comparison.clone();
+            comparison.set_synced(on, |id| pages.get(&id).copied().unwrap_or(0));
+            *comparison != was
+        })
+    }
+
+    /// The reader's moved into another pane: it's the one read now, for the contents and the page number. Nothing changes on screen.
+    pub fn focus_pane(&mut self, id: TabId) -> bool {
+        if self.active == Some(id) || !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id)) {
+            return false;
+        }
+        self.activate(id);
+        true
+    }
+
+    /// Where synced scroll sends the other panes when `leader` is on `page`: see [`compare::Comparison::sync_targets`].
+    pub fn sync_targets(&self, leader: TabId, page: u32) -> Vec<(TabId, u32)> {
+        self.comparison
+            .as_ref()
+            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id)))
+            .unwrap_or_default()
+    }
+
+    /// What's said about the panes' lengths, if anything.
+    pub fn compare_note(&self) -> Option<String> {
+        self.comparison.as_ref()?.length_note(|id| self.pages_in(id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

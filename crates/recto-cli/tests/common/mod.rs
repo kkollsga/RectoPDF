@@ -3,6 +3,10 @@
 
 /// The real app in a quiet run.
 pub mod app;
+/// What a failing test that started the app leaves behind, and how to run it again.
+pub mod evidence;
+/// A process's threads by name, for a count's failure to say which they were.
+pub mod threads;
 
 use recto_agent::Level;
 use recto_control::state::STATE_ENV;
@@ -153,7 +157,10 @@ impl State {
         [&paths.server_messages, &paths.log, &paths.old_log, &paths.other_log, &paths.old_other_log]
             .into_iter()
             .cloned()
-            .chain([self.root.join("update.log")])
+            .chain([
+                self.root.join("update.log"),
+                paths.server_messages.with_file_name("server-messages.previous.txt"),
+            ])
             .collect()
     }
 
@@ -200,6 +207,7 @@ impl Drop for State {
     fn drop(&mut self) {
         if std::thread::panicking() {
             self.keep_logs();
+            evidence::at_failure(self);
         }
         let _ = std::fs::remove_file(&self.paths.socket);
         let _ = std::fs::remove_dir_all(&self.root);
@@ -406,4 +414,30 @@ pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
     let mut bytes = Vec::new();
     document.save_to(&mut bytes).unwrap();
     bytes
+}
+
+/// What every app this test process started said, the run before's kept too, from each state folder of this process's still there: for a line a passing test prints when it let something through it would otherwise have failed on.
+pub fn messages_so_far() -> String {
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    let mine = format!("rc{}-", std::process::id());
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&temp)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    folders.retain(|folder| folder.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&mine)));
+    folders.sort();
+    let mut said = Vec::new();
+    for folder in folders {
+        for name in ["server-messages.previous.txt", "server-messages.txt"] {
+            if let Ok(text) = std::fs::read_to_string(folder.join(name))
+                && !text.trim().is_empty()
+            {
+                said.push(format!("{}/{name}:\n{}", folder.display(), text.trim_end()));
+            }
+        }
+    }
+    if said.is_empty() {
+        "(the apps said nothing)".to_string()
+    } else {
+        said.join("\n")
+    }
 }

@@ -8,6 +8,10 @@
 |---|---|---|---|
 | `recto-ffi` | **Started** | UniFFI, pinned to what the C# generator supports (0.31); every call cheap or handed to a parked thread. Joins the app to the session and socket. Hang watchdog, the way QA commands reach the UI thread | Hold rules |
 
+## Records
+
+The host's records are plain types in `recto-app`, restated in the bridge under `#[uniffi::remote(Record)]` (or `Enum`, `Error`) with the same fields and doc comments, so the compiler holds the two together and the bindings don't change. The bridge holds no conversions, except where a model is projected into a record (the reader model's parts, by concern, into `ReaderView`, which `recto-app` does too).
+
 ## Dependencies
 
 | Crate | Why |

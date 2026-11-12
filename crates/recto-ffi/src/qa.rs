@@ -1,8 +1,8 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
-use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
-use crate::{AppCore, AppListener, CoreQueue, Inner, lock};
+use crate::{AppCore, CoreQueue, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
+use recto_app::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
 use serde_json::{Value, json};
@@ -105,7 +105,7 @@ pub(crate) fn end_with_starter(limit: Duration, owner: Option<u32>, state: Optio
 }
 
 fn updates_takes_input(inner: &Inner) -> bool {
-    crate::updates::takes_input(inner.shown_with_state.load(Ordering::SeqCst), inner.started.elapsed())
+    crate::updates::takes_input(inner.life.shown_with_state.load(Ordering::SeqCst), inner.life.started.elapsed())
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -226,7 +226,7 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
 }
 
 pub(crate) struct QaBridge {
-    listener: Arc<dyn AppListener>,
+    listener: Arc<dyn recto_app::Listener>,
     engine: Engine,
     watchdog: Watchdog,
     core: Arc<CoreQueue>,
@@ -239,7 +239,7 @@ pub(crate) struct QaBridge {
 }
 
 impl QaBridge {
-    pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
+    pub(crate) fn new(listener: Arc<dyn recto_app::Listener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
         Self {
             listener,
             engine,
@@ -449,7 +449,7 @@ impl QaBridge {
             | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
-                if !self.inner().is_some_and(|inner| inner.palette_open()) {
+                if !self.inner().is_some_and(|inner| inner.tools.palette.is_open()) {
                     return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
                 }
             }
@@ -457,11 +457,11 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.password_asks)
+                let path = lock(&inner.tools.prompts.passwords)
                     .showing()
                     .map(|ask| ask.path.clone())
                     .ok_or_else(|| bad("No password sheet is open."))?;
-                if !is_a_tests_file(&path, inner.paths.as_ref().map(|paths| paths.root.as_path())) {
+                if !is_a_tests_file(&path, inner.serving.paths.as_ref().map(|paths| paths.root.as_path())) {
                     return Err(bad(
                         "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
                     ));
@@ -557,8 +557,8 @@ impl QaBridge {
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
-            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.printing.busy(), "notice": inner.printing.notice(), "pid": std::process::id() })),
-            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tool.is_on(), "drawing": inner.tool.is_drawing(), "busy": inner.tool.busy(), "notice": inner.tool.notice().map(|notice| notice.text) })),
+            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing.busy(), "notice": inner.tools.printing.notice(), "pid": std::process::id() })),
+            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool.is_on(), "drawing": inner.tools.tool.is_drawing(), "busy": inner.tools.tool.busy(), "notice": inner.tools.tool.notice().map(|notice| notice.text) })),
             "slow": slow_report(),
         }))
     }
@@ -571,7 +571,7 @@ impl QaBridge {
         // Before anything, what's shown has to have been made from the state, which may be read late and taken in by making the window again (CI, 2026-11-11): a report before then is of a window that's about to go.
         while !self
             .inner()
-            .is_none_or(|inner| inner.restored.load(Ordering::SeqCst) && inner.shown_with_state.load(Ordering::SeqCst))
+            .is_none_or(|inner| inner.life.restored.load(Ordering::SeqCst) && inner.life.shown_with_state.load(Ordering::SeqCst))
         {
             if left().is_zero() {
                 return Err(AgentError::new("timed_out", "The state hasn't been read and shown yet.", exit::TIMED_OUT)
@@ -588,7 +588,7 @@ impl QaBridge {
             let running = self.ask("animations", "")?;
             // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
             // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
-            let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy() || inner.printing.busy());
+            let snapshot_busy = self.inner().is_some_and(|inner| inner.tools.tool.busy() || inner.tools.printing.busy());
             if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
                 return Ok(
                     json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),
@@ -760,7 +760,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
             "lower-right:out",
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => crate::sidebar_access::is_qa_value(value),
+        "accessibility" => recto_app::sidebar_access::is_qa_value(value),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),
