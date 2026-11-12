@@ -29,6 +29,17 @@ pub fn forgets_itself(quiet: bool, app: &std::path::Path) -> bool {
     quiet && app != std::path::Path::new(THE_ONE_INSTALL)
 }
 
+/// The bundle a running executable is in, `X.app` for `X.app/Contents/MacOS/<name>`: what a quiet copy forgets as it ends. Known from the process itself as it starts, never from what the host says later on, as a run can end first (CI, 2026-11-12). `None` for one that isn't in a bundle.
+#[must_use]
+pub fn bundle_of(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let named = |path: &std::path::Path, name: &str| path.file_name().is_some_and(|found| found == name);
+    let is_app = bundle.extension().is_some_and(|extension| extension == "app");
+    (named(macos, "MacOS") && named(contents, "Contents") && is_app).then(|| bundle.to_path_buf())
+}
+
 /// A plain `MAJOR.MINOR.PATCH`. No `v`, no suffix, no fourth part, no leading zeros.
 #[must_use]
 pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
@@ -212,6 +223,29 @@ mod tests {
         assert!(forgets_itself(true, built));
         assert!(!forgets_itself(false, built), "a normal run");
         assert!(!forgets_itself(true, std::path::Path::new(THE_ONE_INSTALL)), "never the one install");
+    }
+
+    /// Failure: a quiet copy that ends forgets the wrong bundle or none, as the bundle is read wrongly from its own executable: a helper's inside the app, a program that isn't in a bundle, or a folder that only looks like one.
+    #[test]
+    fn a_copys_bundle_is_read_from_its_executable() {
+        let bundle = |path: &str| bundle_of(std::path::Path::new(path));
+        let built = Some(std::path::PathBuf::from("/w/tree/app/build.noindex/RectoPDF.app"));
+        assert_eq!(bundle("/w/tree/app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF"), built);
+        assert_eq!(
+            bundle("/w/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service"),
+            Some(std::path::PathBuf::from("/w/RectoPDF.app/Contents/Helpers/RectoRender.app")),
+            "a helper is its own bundle"
+        );
+        for not_one in [
+            "/usr/bin/true",
+            "/w/tree/target/debug/recto",
+            "/w/RectoPDF/Contents/MacOS/RectoPDF",
+            "/w/RectoPDF.app/Contents/Resources/RectoPDF",
+            "RectoPDF",
+            "/",
+        ] {
+            assert_eq!(bundle(not_one), None, "{not_one}");
+        }
     }
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
