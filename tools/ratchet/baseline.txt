@@ -1,8 +1,7 @@
-apptest crates/recto-cli/tests 212
+apptest crates/recto-cli/tests 204
 ffi crates/recto-ffi/src 2354
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524
-file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
 file crates/recto-ffi/src/lib.rs 1640
@@ -72,7 +71,7 @@ sleep crates/recto-cli/tests/save.rs 2
 sleep crates/recto-cli/tests/socket.rs 5
 sleep crates/recto-control/src/client.rs 1
 sleep crates/recto-control/src/generating.rs 1
-sleep crates/recto-control/src/record_store.rs 2
+sleep crates/recto-control/src/record_store.rs 1
 sleep crates/recto-control/tests/server.rs 15
 sleep crates/recto-core/src/save.rs 1
 sleep crates/recto-core/tests/save.rs 2

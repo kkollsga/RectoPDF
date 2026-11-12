@@ -1,5 +1,6 @@
 //! **Every shipped edit against every way of leaving,** on the real app (PLAN phase 4, from the research's rule 3: "no exit path loses work
-//! silently"). The edits are the ones the first release ships: a turn, a move, pages added from another PDF, a delete, and the rotation of every page
+//! silently"). A quit, a kill, a hand-off, sleep and a kill while asleep, the window closing, and printing and exporting are held in process by `recto-app`'s
+//! `core::headless::exits` (2026-11-12); what's here is what goes through the window's own sheet and Save. The edits are the ones the first release ships: a turn, a move, pages added from another PDF, a delete, and the rotation of every page
 //! at once. Each test puts one of each on a tab of its own, leaves by one way, comes back, and checks two things: every edit is there as it was, with
 //! whose it was and its undo and redo, and no PDF changed by a byte. Leaving with a save is checked for what reaches the file.
 //!
@@ -9,7 +10,6 @@
 use super::{Run, State, tabs_of, text_document, wait_until};
 use crate::common::app::wait_for;
 use recto_agent::Level;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// The kinds of edit the first release ships.
@@ -53,41 +53,6 @@ fn one_of_each(run: &Run<'_>, folder: &Path) -> (Vec<Edited>, Edited) {
     (docs, extra)
 }
 
-/// Every tab's edits, with whose each was, its undo and redo, by the file it's on. By file and not by tab number: after a crash in the first minute,
-/// before the record has gone out, tabs come back from their journals under new numbers and in another order, which loses nothing.
-fn edits(run: &Run<'_>) -> std::collections::BTreeMap<String, Value> {
-    let report = run.report();
-    let by_tab = report["session"]["edits_full"].as_object().cloned().unwrap_or_default();
-    let edits: std::collections::BTreeMap<String, Value> = tabs_of(&report)
-        .into_iter()
-        .filter_map(|tab| Some((tab["path"].as_str()?.to_string(), by_tab.get(&tab["id"].to_string())?.clone())))
-        .collect();
-    assert_eq!(edits.len(), KINDS.len(), "a list per tab: {}", report["session"]["edits_full"]);
-    edits
-}
-
-/// No PDF changed by a byte: nothing of an unsaved edit or its history reached one.
-fn untouched(docs: &[Edited], extra: &Edited) {
-    for doc in docs.iter().chain([extra]) {
-        assert!(std::fs::read(&doc.path).unwrap() == doc.original, "{}: the PDF changed", doc.kind);
-    }
-}
-
-/// Waits until every tab's edits are in its journal, as a crash needs them to be.
-fn journaled(state: &State) {
-    let journals = state.root.join("session").join("journals");
-    wait_until("every tab's edits reach its journal", || {
-        std::fs::read_dir(&journals).is_ok_and(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with("journal-"))
-                .filter(|entry| entry.metadata().is_ok_and(|meta| meta.len() > 0))
-                .count()
-                >= KINDS.len()
-        })
-    });
-}
-
 fn tab_of(run: &Run<'_>, path: &Path) -> String {
     let name = path.file_name().unwrap().to_str().unwrap();
     let tab = tabs_of(&run.report())
@@ -95,133 +60,6 @@ fn tab_of(run: &Run<'_>, path: &Path) -> String {
         .find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(name)))
         .unwrap_or_else(|| panic!("no tab for {name}"));
     format!("#{}", tab["id"])
-}
-
-/// Failure (rule 3 of the research, and the owner: "It's crucial that app state is perfectly recovered"): an edit of a kind that ships is lost, or
-/// changes hands or loses its undo, across a quit; or a quit writes something into a PDF. Each kind comes back as it was, and no PDF changed.
-#[test]
-fn every_edit_survives_a_quit() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let (docs, extra) = one_of_each(&run, &state.root.join("docs"));
-    let before = edits(&run);
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(edits(&run), before, "after a quit and a launch");
-    untouched(&docs, &extra);
-}
-
-/// Failure: a crash loses an edit the journal already had, or brings one back wrongly; or a crash leaves anything in a PDF. Killed outright once
-/// every tab's edits are journaled, each comes back, and no PDF changed.
-#[test]
-fn every_edit_survives_a_kill() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let (docs, extra) = one_of_each(&run, &state.root.join("docs"));
-    journaled(&state);
-    let before = edits(&run);
-    run.kill();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(edits(&run), before, "after a kill and a launch");
-    untouched(&docs, &extra);
-}
-
-/// Failure (SPEC decision 24: an update "while the user is using it"): an edit is lost across an update's hand-off to the new app. Each kind comes
-/// back in the app that takes over, and no PDF changed.
-#[test]
-fn every_edit_survives_a_hand_off() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let (docs, extra) = one_of_each(&run, &state.root.join("docs"));
-    let before = edits(&run);
-    let handed = run.hand_off();
-    assert!(handed.get("error").is_none(), "{handed}");
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(edits(&run), before, "after a hand-off");
-    untouched(&docs, &extra);
-}
-
-/// Failure (owner: "When it's on deep sleep, we want its state to be stored on disk, not on memory"): a tab put to sleep loses its edits, or they
-/// don't survive a crash while it sleeps, or it wakes without them. Every tab but the one showing is put to sleep, the app is killed, and each comes
-/// back asleep with its edits, and wakes with them, undo included; no PDF changed.
-#[test]
-fn every_edit_survives_sleep_and_a_kill_while_asleep() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let (docs, extra) = one_of_each(&run, &state.root.join("docs"));
-    let before = edits(&run);
-    let showing = tab_of(&run, &docs.last().unwrap().path);
-    for doc in &docs[..docs.len() - 1] {
-        let slept = run.ok(&["session", "sleep", "--tab", &tab_of(&run, &doc.path)]);
-        assert_eq!(slept["dormant"], true, "{}: {slept}", doc.kind);
-    }
-    assert_eq!(edits(&run), before, "read from their journals, what was in memory");
-    run.kill();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(edits(&run), before, "after a kill while asleep");
-    for doc in &docs {
-        let tab = tab_of(&run, &doc.path);
-        run.ok(&["tap", &tab]);
-        run.settled();
-        let now = run.ok(&["edits", "--tab", &tab]);
-        assert_eq!(
-            (now["edited"].as_bool(), now["can_undo"].as_bool()),
-            (Some(true), Some(true)),
-            "{}: {now}",
-            doc.kind
-        );
-    }
-    run.ok(&["tap", &showing]);
-    assert_eq!(edits(&run), before, "woken, as they were");
-    untouched(&docs, &extra);
-}
-
-/// Failure: closing the window, which leaves the app running, drops a tab's edits, or opening it again shows them gone; or they don't outlast the
-/// app after that. Each kind is there with the window closed, opened again, and after a quit.
-#[test]
-fn every_edit_survives_the_window_closing() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let (docs, extra) = one_of_each(&run, &state.root.join("docs"));
-    let before = edits(&run);
-    run.ok(&["qa", "window", "close"]);
-    assert_eq!(run.report()["app"]["window_open"], false);
-    assert_eq!(edits(&run), before, "with the window closed");
-    run.ok(&["qa", "window", "open"]);
-    run.settled();
-    assert_eq!(edits(&run), before, "with it open again");
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(edits(&run), before, "and after a quit");
-    untouched(&docs, &extra);
-}
-
-/// Failure (the research's rule 3: Folio 1.10.5's printing cleared the edited flag): printing or exporting a tab with unsaved edits saves them,
-/// drops them, or marks them saved. A print to PDF and a picture of a page from a tab with unsaved edits leave every tab's edits as they were, that
-/// tab still edited and the window saying so, and no PDF changed. One tab is printed: the print and the picture read a tab's pages as its edits
-/// have them, whatever their kind, and change nothing of them (`print::print_pages`), so each kind's own print cost 5 of this test's 22 s on CI.
-#[test]
-fn every_edit_survives_printing_and_exporting() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let folder = state.root.join("docs");
-    let (docs, extra) = one_of_each(&run, &folder);
-    let before = edits(&run);
-    let doc = docs.last().unwrap();
-    let tab = tab_of(&run, &doc.path);
-    run.ok(&["tap", &tab]);
-    run.settled();
-    run.ok(&["print", "--to-pdf", folder.join("printed.pdf").to_str().unwrap()]);
-    run.ok(&["render", "1", "--out", folder.join("page.png").to_str().unwrap()]);
-    assert_eq!(run.ok(&["edits", "--tab", &tab])["edited"], true, "{}: still edited", doc.kind);
-    assert_eq!(run.report()["app"]["document_edited"], true, "{}: and the window says so", doc.kind);
-    assert_eq!(edits(&run), before, "after printing and exporting");
-    untouched(&docs, &extra);
 }
 
 /// Failure: closing a tab with unsaved edits loses them without asking, Cancel closes it anyway, Don't Save writes something, or Save brings what

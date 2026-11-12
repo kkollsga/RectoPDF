@@ -308,10 +308,10 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
 }
 
-/// Failure: anything the user can see or has changed doesn't survive a quit and a launch. **The test that matters most:** the whole of `qa state` is compared, across a normal quit, with a short named list of exceptions. A field added to `qa state` fails this until it's carried over or named, so state is complete by construction. In dark too, with light and dark screenshots to look at when `RECTO_RESTORE_SHOTS` names a folder.
+/// Failure: anything the user can see or has changed doesn't survive a quit and a launch. **The test that matters most:** the whole of `qa state` is compared, across a normal quit, with a short named list of exceptions. A field added to `qa state` fails this until it's carried over or named, so state is complete by construction. In dark too, with light and dark screenshots to look at when `RECTO_RESTORE_SHOTS` names a folder. And going round twice loses nothing the first time didn't (what `quitting_twice_in_a_row_changes_nothing` held with a rich state of its own): in light, a record written from a restored session is the one before it, a second quit and launch later.
 #[test]
 fn everything_comes_back_after_a_quit() {
-    comes_back_after_a_quit([&[], &[]]);
+    comes_back_after_a_quit([&[], &[]], true);
 }
 
 /// Failure (CI, main at faa9180: "⌘F gives the field the keyboard"): ⌘F and typing in the moment a window was up without the state, read late, were lost when the state came in and the window was made again from it, the new one with the page focused. **Acting within that gap,** the state read 1.5 s late and the window made again from it a second later: what's done waits for the window made from the state, and all of it is there after: Find open with what was typed, and its field with the keyboard.
@@ -355,14 +355,17 @@ fn what_is_done_before_a_late_state_comes_in_isnt_lost() {
 #[test]
 fn everything_comes_back_when_the_state_is_read_late() {
     // Just past the patience, where the window that went up without it can still be saying its own size and focus as the state comes in; and well past it.
-    comes_back_after_a_quit([
-        &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1050"))],
-        &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))],
-    ]);
+    comes_back_after_a_quit(
+        [
+            &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1050"))],
+            &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))],
+        ],
+        false,
+    );
 }
 
-/// A rich state, a quit, and a launch with this in its environment, and the whole of `qa state` compared, in light and in dark.
-fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2]) {
+/// A rich state, a quit, and a launch with this in its environment, and the whole of `qa state` compared, in light and in dark; with `twice`, a second quit and launch in light, compared with the first.
+fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twice: bool) {
     for ((look, paper), second_launch) in [("light", "warm"), ("dark", "dark")].into_iter().zip(second_launch) {
         let state = State::new();
         let Some(run) = Run::on(&state) else { return };
@@ -398,6 +401,17 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2]) {
         }
         assert_eq!(after["session"]["find"]["draft"], "typed but not run");
         assert_eq!(after["session"]["app"]["focus"]["view"], "find");
+        // Round again: what a restored session writes is what it was restored from.
+        let run = if twice && look == "light" {
+            run.quit();
+            let run = Run::on(&state).unwrap();
+            run.ok(&["qa", "scroller-style", "overlay"]);
+            run.settled();
+            assert_same(&after, &run.report(), &[]);
+            run
+        } else {
+            run
+        };
         // It's all still there to use: undo and redo with whose each is.
         run.ok(&["qa", "owner-edit", "redo"]);
         run.quit();
@@ -2039,29 +2053,6 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     run.quit();
 }
 
-/// Failure: going round twice loses something the first time didn't: a record written from a restored session differs from the one before it. Quit, start, quit, start, and all three are the same.
-#[test]
-fn quitting_twice_in_a_row_changes_nothing() {
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
-    let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
-    run.ok(&["qa", "scroller-style", "overlay"]);
-    make_rich(&run, &[&a, &b, &c]);
-    let first = run.report();
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.ok(&["qa", "scroller-style", "overlay"]);
-    run.settled();
-    let second = run.report();
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.ok(&["qa", "scroller-style", "overlay"]);
-    run.settled();
-    let third = run.report();
-    assert_same(&first, &second, &[]);
-    assert_same(&second, &third, &[]);
-}
-
 /// The sleep file of the tab on screen, by the name the state's journals folder gives it, if it's there.
 fn active_sleep_file(state: &State, report: &Value) -> Option<PathBuf> {
     let session = &report["session"];
@@ -2107,45 +2098,6 @@ fn a_flush_writes_the_tab_on_screens_sleep_file_or_says_it_skipped_it() {
         assert!(began.elapsed() < Duration::from_secs(60), "never written: {}", run.report()["record"]["sleep"]);
         run.ok(&["session", "save"]);
     }
-    run.quit();
-}
-
-/// Failure (slow mode, 2026-11-11: `a_thousand_tabs_come_back_cold` came back with 2 of its 1000): a quit waits 5 s for the state, and goes without it when nothing's unsaved, and the state waited behind the tab on screen's sleep file, which waited behind every sleep file the tabs just opened had queued, one at a time. With sleep files slow to write, as on a busy or slow disk, a quit after opening tabs lost them all. Forty tabs, two of them across a quit first, opened one after another with each sleep file's read 150 ms and its write 2 s late, a quit, and every one comes back.
-#[test]
-fn tabs_just_opened_come_back_when_sleep_files_are_slow() {
-    const TABS: usize = 40;
-    let slow = [("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_read=150,sleep_write=2000"))];
-    let state = State::new();
-    let Some(run) = Run::on_with_env(&state, &slow) else { return };
-    let file = long_document("many", 3);
-    let folder = state.root.join("tabs");
-    std::fs::create_dir_all(&folder).unwrap();
-    let link = |at: usize| folder.join(format!("t{at}.pdf"));
-    for at in 0..TABS {
-        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
-    }
-    // Two, and back from a quit with them, as each has its sleep file to wake from; then the rest, one after another.
-    run.ok(&["open", link(0).to_str().unwrap()]);
-    run.ok(&["open", link(1).to_str().unwrap()]);
-    run.settled();
-    run.quit();
-    let run = Run::on_with_env(&state, &slow).unwrap();
-    run.settled();
-    for at in 2..TABS {
-        run.ok(&["open", link(at).to_str().unwrap()]);
-    }
-    run.settled();
-    let opened = run.report();
-    assert_eq!(opened["session"]["tabs"].as_array().unwrap().len(), TABS);
-    assert!(
-        opened["slow"]["seams"]["sleep_write"]["times"].as_u64().unwrap() > 0,
-        "sleep files were being written: {}",
-        opened["slow"]
-    );
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    assert_eq!(run.report()["session"]["tabs"].as_array().unwrap().len(), TABS, "every tab came back");
     run.quit();
 }
 

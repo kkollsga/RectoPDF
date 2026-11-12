@@ -227,6 +227,14 @@ impl CoreQueue {
         self.nudge();
     }
 
+    /// **The session thread ends now, with nothing more taken,** as a process that's killed takes nothing it was asked. Only a headless app's kill asks this.
+    pub fn abandon(&self) {
+        // A flush another thread waits on among them is never marked done: it waits out its own limit, as nothing more is done.
+        drop(std::mem::take(&mut *lock(&self.calls)));
+        self.reconcile_queued.store(false, Ordering::SeqCst);
+        self.end();
+    }
+
     /// Whether the session thread is to end.
     pub fn has_ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
@@ -322,6 +330,20 @@ mod tests {
         assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
         queue.push(CoreCall::Reconcile);
         assert_eq!(lock(&queue.calls).len(), 1);
+    }
+
+    /// Failure: a test's kill takes what the app was asked as a killed process never would (a tap, an open, a look), so a kill test passes on work that a real
+    /// kill loses. Abandoned, the queue gives the session thread nothing more and ends it, and what was waiting is gone.
+    #[test]
+    fn an_abandoned_queue_takes_nothing_more() {
+        let queue = CoreQueue::default();
+        queue.push(CoreCall::Tap(TabId(1)));
+        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(CoreCall::Reconcile);
+        queue.abandon();
+        assert!(queue.has_ended());
+        assert!(queue.next_or_due(|| None).is_none(), "nothing taken");
+        assert!(lock(&queue.calls).is_empty());
     }
 
     /// Failure (review T4): past a hand-off's last look, a tap or an open is taken, and it's lost as what's on disk is what comes back. They aren't taken while it's frozen, and what isn't a person's doing still gets through, or the session would stop answering.

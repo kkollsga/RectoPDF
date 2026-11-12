@@ -303,3 +303,136 @@ fn a_hand_off_freezes_and_frees_in_every_order() {
     assert_eq!(life.step(Event::HandOffUndone, 5), Some(Out::Freeze(false)), "and again, which still frees it");
     assert_eq!(life.hand_off(), HandOff::Idle);
 }
+
+/// Failure: a quit answers go and loses edits it couldn't write, asks when nothing would be lost, or a Stay with no question asked (or a second one) takes back a
+/// quit that's going. Every way the write can end, then each answer: what the host is told, where the quit stands, and that a quit after a Stay starts again.
+#[test]
+fn a_quit_answers_by_what_it_kept_and_stay_takes_back_only_a_question() {
+    for (written, unsaved_tabs) in [(true, 0), (true, 2), (false, 0), (false, 2)] {
+        let mut life = Life::default();
+        assert_eq!(life.step(Event::QuitStayed, 0), None, "a Stay before any quit changes nothing");
+        assert_eq!(life.step(Event::QuitAsked, 1), Some(Out::QuitBegins));
+        assert_eq!(life.quit(), Quit::Writing);
+        let go = written || unsaved_tabs == 0;
+        assert_eq!(
+            life.step(Event::QuitWritten { written, unsaved_tabs }, 2),
+            Some(Out::QuitAnswer {
+                go,
+                unsaved_tabs,
+                unfreeze: !go
+            }),
+            "written {written}, {unsaved_tabs} unsaved"
+        );
+        if go {
+            assert_eq!(life.quit(), Quit::Going);
+            assert_eq!(life.step(Event::QuitStayed, 3), None, "nothing was asked, so nothing stays");
+            assert_eq!(life.quit(), Quit::Going);
+            continue;
+        }
+        assert_eq!(life.quit(), Quit::Asking, "it would lose edits: asked");
+        assert_eq!(life.step(Event::QuitStayed, 3), Some(Out::QuitStayed));
+        assert_eq!(life.quit(), Quit::No);
+        assert_eq!(life.step(Event::QuitStayed, 4), None, "a second Stay changes nothing");
+        assert_eq!(life.step(Event::QuitAsked, 5), Some(Out::QuitBegins), "and a quit after it starts again");
+    }
+}
+
+/// Failure: a quit at some moment of a launch changes what the launch tells the host (a window that never goes up, or a state taken as late that wasn't), or the
+/// launch changes what the quit answers. A quit asked and answered before, between and after the patience and the state, in every order of the two: the launch's
+/// own outcomes are what they are with no quit, and the answer is the write's.
+#[test]
+fn a_quit_at_any_moment_of_a_launch_leaves_the_launch_as_it_was() {
+    let patience = Event::PatienceOver {
+        may_be_reopened_by_update: false,
+    };
+    let launches = [[patience, Event::StateRead], [Event::StateRead, patience]];
+    for launch in launches {
+        let alone: Vec<Option<Out>> = {
+            let mut life = Life::default();
+            launch.iter().map(|event| life.step(*event, 1_000)).collect()
+        };
+        // The quit's two steps at each of the three places around the launch's two, in order.
+        for asked_at in 0..=2 {
+            for written_at in asked_at..=2 {
+                let mut life = Life::default();
+                let mut launch_outs = Vec::new();
+                let mut answer = None;
+                for at in 0..=2 {
+                    if at == asked_at {
+                        assert_eq!(life.step(Event::QuitAsked, 1_000), Some(Out::QuitBegins));
+                    }
+                    if at == written_at {
+                        answer = life.step(
+                            Event::QuitWritten {
+                                written: true,
+                                unsaved_tabs: 1,
+                            },
+                            1_000,
+                        );
+                    }
+                    if let Some(event) = launch.get(at) {
+                        launch_outs.push(life.step(*event, 1_000));
+                    }
+                }
+                assert_eq!(launch_outs, alone, "{launch:?}, asked at {asked_at}, written at {written_at}");
+                assert_eq!(
+                    answer,
+                    Some(Out::QuitAnswer {
+                        go: true,
+                        unsaved_tabs: 1,
+                        unfreeze: false
+                    })
+                );
+            }
+        }
+    }
+}
+
+/// Failure: a quit and a hand-off let go of each other's freeze. A quit that asks while an update's hand-off is writing takes what a person does again, and what's
+/// done then is lost, as what's on disk is what the new version comes back to; or a hand-off that gives up while a quit is writing does the same to the quit. Every
+/// order a hand-off's steps (writing, then written or given up, and given up after it was written) and a quit's (asked, written, and a Stay when it asks) can
+/// interleave in, the quit's write ending each way: after every step, what's held back is what the rule says (held while either holds it), and what the host
+/// is told comes to that.
+#[test]
+fn a_quit_and_a_hand_off_keep_each_others_freeze_in_every_order() {
+    let hand_offs: [&[Event]; 3] = [
+        &[Event::HandOffWriting, Event::HandOffUndone],
+        &[Event::HandOffWriting, Event::HandOffWritten],
+        &[Event::HandOffWriting, Event::HandOffWritten, Event::HandOffUndone],
+    ];
+    let mut orders = 0;
+    for hand_off in hand_offs {
+        for (written, unsaved_tabs) in [(true, 1), (false, 1)] {
+            let quit = [Event::QuitAsked, Event::QuitWritten { written, unsaved_tabs }, Event::QuitStayed];
+            // Every interleaving of the two, each in its own order: which of the steps are the hand-off's.
+            let steps = hand_off.len() + quit.len();
+            for mask in 0u32..(1 << steps) {
+                if mask.count_ones() as usize != hand_off.len() {
+                    continue;
+                }
+                orders += 1;
+                let (mut life, mut held) = (Life::default(), false);
+                let (mut next_hand_off, mut next_quit) = (0, 0);
+                for step in 0..steps {
+                    let event = if mask & (1 << step) != 0 {
+                        next_hand_off += 1;
+                        hand_off[next_hand_off - 1]
+                    } else {
+                        next_quit += 1;
+                        quit[next_quit - 1]
+                    };
+                    match life.step(event, 0) {
+                        Some(Out::Freeze(frozen)) => held = frozen,
+                        Some(Out::QuitBegins) => held = true,
+                        Some(Out::QuitAnswer { unfreeze: true, .. }) => held = false,
+                        _ => {}
+                    }
+                    let rule = life.hand_off() != HandOff::Idle || matches!(life.quit(), Quit::Writing | Quit::Going);
+                    assert_eq!(life.frozen(), rule, "{hand_off:?} and {quit:?} by {mask:b}, after {event:?}");
+                    assert_eq!(held, rule, "what the host was told: {hand_off:?} and {quit:?} by {mask:b}, after {event:?}");
+                }
+            }
+        }
+    }
+    assert!(orders > 30, "{orders} orders");
+}
