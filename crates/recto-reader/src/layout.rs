@@ -98,8 +98,8 @@ pub struct PageLayout {
     turned_other_way: usize,
     /// [`MAX_OVERRIDES`], smaller in a test so reaching it doesn't take a long time.
     cap: usize,
-    /// The least room to the left and the right of the pages: [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or less in a comparison's pane.
-    margins: (f64, f64),
+    /// **The room kept either side of the pages: the larger of the two margins, on both sides.** The top right corner holds the agent icon and the zoom level, so the right margin is the larger, and keeping it on the left too puts the pages in the middle of the window with equal gutters at any width (owner, 2026-11-12: "pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this"). Before, a window narrower than the reading width plus both margins moved the page left of centre. The larger of [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or of what a comparison's pane was given.
+    side: f64,
 }
 
 impl PageLayout {
@@ -121,7 +121,7 @@ impl PageLayout {
             base_odd: false,
             turned_other_way: 0,
             cap: MAX_OVERRIDES,
-            margins: (MIN_SIDE_MARGIN, CORNER_MARGIN),
+            side: MIN_SIDE_MARGIN.max(CORNER_MARGIN),
         }
     }
 
@@ -235,7 +235,7 @@ impl PageLayout {
             base_odd: false,
             turned_other_way: 0,
             cap: self.cap,
-            margins: self.margins,
+            side: self.side,
         }
     }
 
@@ -283,11 +283,11 @@ impl PageLayout {
                 MIN_SIDE_MARGIN
             }
         };
-        let margins = (fit(left), fit(right));
-        if margins == self.margins {
+        let side = fit(left).max(fit(right));
+        if side == self.side {
             return false;
         }
-        self.margins = margins;
+        self.side = side;
         self.refit();
         true
     }
@@ -400,11 +400,6 @@ impl PageLayout {
         }
     }
 
-    /// **The room kept either side of the pages: the larger of the two margins, on both sides.** The top right corner holds the agent icon and the zoom level, so the right margin is the larger, and keeping it on the left too puts the pages in the middle of the window with equal gutters at any width (owner, 2026-11-12: "pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this"). Before, a window narrower than the reading width plus both margins moved the page left of centre.
-    fn side(&self) -> f64 {
-        self.margins.0.max(self.margins.1)
-    }
-
     /// Each override's row and what the rows before it add, in one pass.
     fn reckon(&mut self) {
         let usual = self.usual.height;
@@ -434,7 +429,7 @@ impl PageLayout {
 
     /// The fit follows the first page known, so pages keep their relative sizes, as they do on paper. Two side by side share the room.
     fn refit(&mut self) -> bool {
-        let room = (self.frame_width - 2.0 * self.side()).max(1.0);
+        let room = (self.frame_width - 2.0 * self.side).max(1.0);
         let fit = match self.spread {
             Spread::Single => READING_WIDTH.min(room) / f64::from(self.usual.width),
             Spread::TwoUp | Spread::TwoUpCover => ((2.0 * READING_WIDTH + PAGE_GAP).min(room) - PAGE_GAP).max(1.0) / (2.0 * f64::from(self.usual.width)),
@@ -507,7 +502,7 @@ impl PageLayout {
         let mut shift = 0.0;
         let width = |page: u32| f64::from(self.size(page).width) * self.fit;
         let (lowest, highest) = match self.spread {
-            Spread::Single => (self.side() + width(page) / 2.0, self.frame_width - self.side() - width(page) / 2.0),
+            Spread::Single => (self.side + width(page) / 2.0, self.frame_width - self.side - width(page) / 2.0),
             _ => {
                 let (first, second) = self.row_pages(self.row_of(page));
                 let pages = [Some(first), second];
@@ -519,7 +514,7 @@ impl PageLayout {
                 if second.is_some() {
                     shift = (left - right) / 2.0;
                 }
-                (self.side() + left + PAGE_GAP / 2.0, self.frame_width - self.side() - right - PAGE_GAP / 2.0)
+                (self.side + left + PAGE_GAP / 2.0, self.frame_width - self.side - right - PAGE_GAP / 2.0)
             }
         };
         (half + shift).min(highest).max(lowest)
@@ -532,7 +527,7 @@ impl PageLayout {
             Spread::Single => widest,
             Spread::TwoUp | Spread::TwoUpCover => 2.0 * widest + PAGE_GAP,
         };
-        self.frame_width.max(pages + 2.0 * self.side())
+        self.frame_width.max(pages + 2.0 * self.side)
     }
 
     /// **The document's width for a view from `top` to `bottom`,** in document points: the window's room, and wider only where a row the view reaches runs past it, as a fold-out does. So there's room to scroll across beside the wide page while it shows, and none beside every other row, which [`Self::document_width`] would leave (PLAN, side-by-side follow-ups). A view over more than [`MAX_WIDTH_PAGES`] pages of their own size takes the whole document's.
@@ -558,7 +553,7 @@ impl PageLayout {
                 rect.x + rect.width
             })
             .fold(0.0, f64::max);
-        self.frame_width.max(right + self.side())
+        self.frame_width.max(right + self.side)
     }
 
     pub fn document_height(&self) -> f64 {
@@ -1038,9 +1033,9 @@ mod tests {
                             }
                             let (a, b) = (layout.rect(one), two.map_or(layout.rect(one), |p| layout.rect(p)));
                             let (left, right) = (a.x.min(b.x), frame - (a.x + a.width).max(b.x + b.width));
-                            if (a.x + a.width).max(b.x + b.width) - a.x.min(b.x) > frame - 2.0 * layout.side() + 1e-6 {
+                            if (a.x + a.width).max(b.x + b.width) - a.x.min(b.x) > frame - 2.0 * layout.side + 1e-6 {
                                 // Wider than the room: starts at the margin and runs on.
-                                assert!((left - layout.side()).abs() < 1e-6, "{spread:?} {margins:?} {frame}: wide row {page} {rect:?}");
+                                assert!((left - layout.side).abs() < 1e-6, "{spread:?} {margins:?} {frame}: wide row {page} {rect:?}");
                                 continue;
                             }
                             assert!(

@@ -432,6 +432,7 @@ Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cl
 - [ ] R3.4 [13, reduced] Swift: `QAChannel` by area, and a pane file per feature where one is next touched. 1 d
 
 **R4. Test homes, the feature kit, and proof**
+- [ ] Found 2026-11-12: `recto-reader`'s engine tests (`a_file_that_doesnt_answer_holds_up_no_other_tab`, `a_page_from_an_added_pdf_that_changed_isnt_drawn`, `a_slow_page_scrolled_away_from_is_cancelled`, `a_real_page_reaches_the_host_as_surfaces`, `a_closed_window_lets_the_worker_go`) fail on their 15 to 25 s bounds while another full check runs its app tests (load 10 to 12), and pass alone in about 5 s. Find what they wait on and why it takes 5 s alone; fix the wait or the product, in its own commit with a test.
 - [ ] R4.1 In-process agent tests move from `recto-cli/tests` to `recto-agent`; the app tests get a crate of their own; the about 15 fixed waits go; helper waits say what they saw. 2–3 d
 - [ ] R4.2 `docs/FEATURES.md` (how to add a feature, one page), a scaffold, the brief template with a test list by tier, one shared function per policy (write paths, levels, protected PDFs) with a guard, and a contact sheet of every feature's shots, light and dark. 2 d
 - [ ] R4.3 Pilot: one real feature from phase 4 built this way and measured against the review's exit numbers, then a process review and what it teaches into the guide. 1–2 d
