@@ -406,7 +406,7 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 **R0. Fast feedback and guards (tools only), first and all of it**
 - [ ] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
 - [ ] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
-- [ ] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
+- [x] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
 - [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
 - [ ] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
 - [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d

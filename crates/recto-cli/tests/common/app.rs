@@ -405,7 +405,7 @@ pub fn wait_for_within(run: &Run<'_>, limit: Duration, holds: impl Fn(&Value) ->
             return last;
         }
         assert!(began.elapsed() < limit, "it never came to pass in {limit:?}: {last}");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
 }
 
@@ -417,7 +417,7 @@ pub fn wait_for(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
         if holds(&last) {
             return last;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     panic!("it never came to pass: {last}");
 }

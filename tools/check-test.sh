@@ -53,8 +53,9 @@ cp "$SOURCE/tools/check.sh" tools/check.sh
 cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh
 cp "$SOURCE/tools/hooks/pre-push" tools/hooks/pre-push
 printf '#!/usr/bin/env bash\n' > tools/pdfium.sh
+printf '#!/usr/bin/env bash\n' > tools/ratchet.sh # the ratchet has its own test (tools/ratchet-test.sh)
 printf '#!/usr/bin/env bash\necho app-build >> "$CALLS"\n[ "${STUB_FAIL:-}" != app-build ]\n' > app/build.sh
-chmod +x tools/pdfium.sh app/build.sh
+chmod +x tools/pdfium.sh tools/ratchet.sh app/build.sh
 echo one > crates/alpha/src/lib.rs
 echo one > crates/beta/src/lib.rs
 echo notes > docs/notes.md
