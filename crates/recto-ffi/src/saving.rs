@@ -5,6 +5,7 @@ use crate::saver::Saver;
 use recto_agent::saving::SaveSupport;
 pub use recto_app::saving::SaveProblem;
 use recto_app::saving::{self as app, replace_answered};
+pub use recto_app::saving::{CloseButton, CloseChoice, ClosePrompt, SavePanelModel};
 pub(crate) use recto_app::saving::{SAVED_NOT_CLOSED, SaveUi, close_prompt, panel_for, save_from_gate};
 use recto_core::save::SaveStep;
 use recto_platform::FileStamp;
@@ -78,7 +79,7 @@ pub struct SaveProblem {
 }
 
 /// What Save As's sheet says.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SavePanelModel {
     /// The tab it's for, as it was when the sheet opened: the answer saves that tab, whichever is showing by then.
     pub tab: u32,
@@ -91,7 +92,7 @@ pub struct SavePanelModel {
 }
 
 /// What closing a document with unsaved edits asks, as any Mac app asks it.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ClosePrompt {
     /// The tab it's about, as it was when it was asked.
     pub tab: u32,
@@ -102,7 +103,7 @@ pub struct ClosePrompt {
 }
 
 /// One of the close prompt's buttons.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct CloseButton {
     pub title: String,
     pub choice: CloseChoice,
@@ -111,68 +112,13 @@ pub struct CloseButton {
 }
 
 /// The answer to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum CloseChoice {
     Save,
     /// Save is off for this document, as for a signed one: Save As's sheet, for an unsigned copy.
     SaveAs,
     DontSave,
     Cancel,
-}
-
-impl From<app::SavePanelModel> for SavePanelModel {
-    fn from(panel: app::SavePanelModel) -> Self {
-        Self {
-            tab: panel.tab,
-            prompt: panel.prompt,
-            suggested_name: panel.suggested_name,
-            directory: panel.directory,
-            message: panel.message,
-        }
-    }
-}
-
-impl From<app::ClosePrompt> for ClosePrompt {
-    fn from(prompt: app::ClosePrompt) -> Self {
-        Self {
-            tab: prompt.tab,
-            message: prompt.message,
-            informative: prompt.informative,
-            buttons: prompt.buttons.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<app::CloseButton> for CloseButton {
-    fn from(button: app::CloseButton) -> Self {
-        Self {
-            title: button.title,
-            choice: button.choice.into(),
-            destructive: button.destructive,
-        }
-    }
-}
-
-impl From<app::CloseChoice> for CloseChoice {
-    fn from(choice: app::CloseChoice) -> Self {
-        match choice {
-            app::CloseChoice::Save => Self::Save,
-            app::CloseChoice::SaveAs => Self::SaveAs,
-            app::CloseChoice::DontSave => Self::DontSave,
-            app::CloseChoice::Cancel => Self::Cancel,
-        }
-    }
-}
-
-impl From<CloseChoice> for app::CloseChoice {
-    fn from(choice: CloseChoice) -> Self {
-        match choice {
-            CloseChoice::Save => Self::Save,
-            CloseChoice::SaveAs => Self::SaveAs,
-            CloseChoice::DontSave => Self::DontSave,
-            CloseChoice::Cancel => Self::Cancel,
-        }
-    }
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.

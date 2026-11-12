@@ -1,4 +1,4 @@
-ffi crates/recto-ffi/src 8841
+ffi crates/recto-ffi/src 8550
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524
 file crates/recto-control/src/record_store.rs 1502

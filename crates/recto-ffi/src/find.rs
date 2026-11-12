@@ -5,10 +5,11 @@ use crate::Inner;
 use recto_agent::Event;
 use recto_app::find::{self as app, FindHandle};
 pub(crate) use recto_app::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
+pub use recto_app::find::{FindRow, FindRowKind, FindView};
 use serde_json::Value;
 
 /// Everything the sidebar draws of Find but its rows, which are pulled with [`rows`] as they come on screen.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct FindView {
     pub open: bool,
     /// What's in the field.
@@ -26,7 +27,7 @@ pub struct FindView {
     pub close_tooltip: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum FindRowKind {
     /// A page, heading its hits.
     Page,
@@ -34,7 +35,7 @@ pub enum FindRowKind {
 }
 
 /// A row of the hit list. A hit's words are the document's, so they're only ever drawn as text.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct FindRow {
     pub kind: FindRowKind,
     /// A page row's label, or the words before a hit.
@@ -44,44 +45,6 @@ pub struct FindRow {
     pub current: bool,
     /// Its words include text that looks hidden, so it isn't gone to. What to say of it, quietly, or empty.
     pub note: String,
-}
-
-impl From<app::FindView> for FindView {
-    fn from(view: app::FindView) -> Self {
-        Self {
-            open: view.open,
-            text: view.text,
-            placeholder: view.placeholder,
-            status: view.status,
-            version: view.version,
-            row_count: view.row_count,
-            current_row: view.current_row,
-            running: view.running,
-            close_tooltip: view.close_tooltip,
-        }
-    }
-}
-
-impl From<app::FindRowKind> for FindRowKind {
-    fn from(kind: app::FindRowKind) -> Self {
-        match kind {
-            app::FindRowKind::Page => Self::Page,
-            app::FindRowKind::Hit => Self::Hit,
-        }
-    }
-}
-
-impl From<app::FindRow> for FindRow {
-    fn from(row: app::FindRow) -> Self {
-        Self {
-            kind: row.kind.into(),
-            label: row.label,
-            matched: row.matched,
-            after: row.after,
-            current: row.current,
-            note: row.note,
-        }
-    }
 }
 
 /// What Find reaches of the app, for one call.
@@ -103,11 +66,11 @@ pub(crate) fn is_open(inner: &Inner) -> bool {
 }
 
 pub(crate) fn view(inner: &Inner) -> FindView {
-    handle(inner, |find| find.view()).into()
+    handle(inner, |find| find.view())
 }
 
 pub(crate) fn rows(inner: &Inner, first: u32, count: u32) -> Vec<FindRow> {
-    handle(inner, |find| find.rows(first, count)).into_iter().map(Into::into).collect()
+    handle(inner, |find| find.rows(first, count)).into_iter().collect()
 }
 
 pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {

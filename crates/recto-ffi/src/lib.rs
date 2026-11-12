@@ -35,6 +35,7 @@ use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 pub use recto_app::reader_view::ReaderView;
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
+pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
@@ -222,7 +223,7 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum RowKind {
     Tab,
     Contents,
@@ -231,7 +232,7 @@ pub enum RowKind {
 }
 
 /// A row of the sidebar. At rest it's a name. Its page number shows on hover.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SidebarRow {
     pub kind: RowKind,
     pub tab: u32,
@@ -257,7 +258,7 @@ pub struct SidebarRow {
 }
 
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SidebarView {
     /// Goes up when the tabs change, which is when to pull them with `sidebar_tabs`. A page crossed doesn't copy them all, with thousands of them, on the UI thread.
     pub tabs_version: u64,
@@ -1828,13 +1829,13 @@ impl AppCore {
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
     pub fn sidebar(&self) -> SidebarView {
-        SidebarView::from((*lock(&self.inner.published).sidebar).clone())
+        (*lock(&self.inner.published).sidebar).clone()
     }
 
     /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
     pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
         let tabs = Arc::clone(&lock(&self.inner.published).tabs);
-        tabs.iter().cloned().map(SidebarRow::from).collect()
+        tabs.iter().cloned().collect()
     }
 
     /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
@@ -2124,7 +2125,7 @@ impl AppCore {
 
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
-        menus::bar_now(self).into_iter().map(Into::into).collect()
+        menus::bar_now(self).into_iter().collect()
     }
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
@@ -2183,7 +2184,7 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let mut panel = menus::panel(self.inner.window.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
         recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool.is_on(), reader.edit_mode);
-        panel.into()
+        panel
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -2202,7 +2203,7 @@ impl AppCore {
         }
         let Some(action) = menus::action(&id) else { return HostAction::None };
         match action {
-            menus::Action::Host(host) => return host.into(),
+            menus::Action::Host(host) => return host,
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
@@ -2336,7 +2337,7 @@ impl AppCore {
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
     pub fn save_panel(&self) -> saving::SavePanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note).into()
+        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
     }
 
     /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
@@ -2360,7 +2361,6 @@ impl AppCore {
             save_off,
             self.inner.tools.save_ui.disagreement_now().as_deref(),
         )
-        .into()
     }
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
@@ -2371,7 +2371,7 @@ impl AppCore {
         if choice == saving::CloseChoice::SaveAs {
             return HostAction::ShowSavePanel;
         }
-        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice.into()));
+        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
         HostAction::None
     }
 
@@ -2394,7 +2394,6 @@ impl AppCore {
         let layout = reader.panes.get(pane as usize).map_or(reader.layout.as_str(), |view| view.layout.as_str());
         menus::context_menu(record::Spread::from_name(layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
             .into_iter()
-            .map(Into::into)
             .collect()
     }
 
@@ -2580,7 +2579,7 @@ impl AppCore {
 
     /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.
     pub fn zoom_label(&self, magnification: f64, fit: f64) -> menus::ZoomLabel {
-        menus::zoom_label(magnification, fit).into()
+        menus::zoom_label(magnification, fit)
     }
 
     /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.

@@ -127,11 +127,11 @@ fn a_pull_costs_a_copy_of_whats_published_and_no_more() {
     assert!(reader_allocations <= 19.0, "reader(): {reader_allocations} allocations a pull");
 
     let published_sidebar = app::empty_sidebar();
-    let (sidebar_allocations, sidebar_ns) = cost(10_000, || recto_ffi::SidebarView::from(published_sidebar.clone()));
+    let (sidebar_allocations, sidebar_ns) = cost(10_000, || published_sidebar.clone());
     assert!(sidebar_allocations <= 1.0, "sidebar(): {sidebar_allocations} allocations a pull");
 
     let tabs: std::sync::Arc<Vec<app::SidebarRow>> = std::sync::Arc::new((1..=1000).map(row).collect());
-    let (tabs_allocations, tabs_ns) = cost(100, || tabs.iter().cloned().map(recto_ffi::SidebarRow::from).collect::<Vec<_>>());
+    let (tabs_allocations, tabs_ns) = cost(100, || tabs.iter().cloned().collect::<Vec<_>>());
     assert!(
         tabs_allocations <= 1001.0,
         "sidebar_tabs() at 1,000 tabs: {tabs_allocations} allocations a pull"

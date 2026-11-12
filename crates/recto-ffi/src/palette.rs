@@ -4,10 +4,11 @@
 use crate::{AppCore, CoreCall, HostAction, ReaderView, RecentFile, lock};
 use recto_app::palette as app;
 pub(crate) use recto_app::palette::ForWhom;
+pub use recto_app::palette::{PaletteRow, PaletteView};
 use recto_session::TabId;
 
 /// One of the palette's rows.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PaletteRow {
     /// What running it does, by Rust's own name: a menu item's id, or `tab:N`.
     pub id: String,
@@ -25,7 +26,7 @@ pub struct PaletteRow {
 }
 
 /// Everything the palette draws.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PaletteView {
     pub open: bool,
     pub text: String,
@@ -36,34 +37,6 @@ pub struct PaletteView {
     pub empty: String,
     /// What VoiceOver calls the list of rows.
     pub list_label: String,
-}
-
-impl From<app::PaletteRow> for PaletteRow {
-    fn from(row: app::PaletteRow) -> Self {
-        Self {
-            id: row.id,
-            title: row.title,
-            detail: row.detail,
-            shortcut: row.shortcut,
-            aside: row.aside,
-            from_file: row.from_file,
-            spoken: row.spoken,
-        }
-    }
-}
-
-impl From<app::PaletteView> for PaletteView {
-    fn from(view: app::PaletteView) -> Self {
-        Self {
-            open: view.open,
-            text: view.text,
-            placeholder: view.placeholder,
-            rows: view.rows.into_iter().map(Into::into).collect(),
-            selected: view.selected,
-            empty: view.empty,
-            list_label: view.list_label,
-        }
-    }
 }
 
 /// The open tabs, as rows.
@@ -121,7 +94,7 @@ pub(crate) fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -
 
 /// What the host draws now.
 pub(crate) fn view(core: &AppCore) -> PaletteView {
-    core.inner.tools.palette.view(|text| found_for(core, text, &ForWhom::person())).into()
+    core.inner.tools.palette.view(|text| found_for(core, text, &ForWhom::person()))
 }
 
 /// ↑ and ↓: the selection moves, stopping at either end.
@@ -152,5 +125,5 @@ pub(crate) fn run(core: &AppCore, id: &str) -> HostAction {
 
 /// What the host was left to do, by name, for `recto palette --run`.
 pub(crate) fn host_word(action: HostAction) -> &'static str {
-    app::host_word(action.into())
+    app::host_word(action)
 }
