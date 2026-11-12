@@ -6,6 +6,7 @@
 #   tools/ratchet.sh --update        rewrite the baseline downward after something shrank (refuses to raise any number)
 #   tools/ratchet.sh --report <ref>  hub files this branch touched since <ref>, and lines added (report only)
 #   tools/ratchet.sh --moved <old> <new>  code moved unchanged: rename its baseline entries, a file's path (all under it) or one path::Item;
-#                                    refused if the old one is still there or a number at the new place is higher. Never raises one
+#                                    refused if the old one still holds the offender (a copy) or a number at the new place is higher. Never raises one
+#     --kind K                       with --moved: only that kind's entries (sleep, file, fn, ...), as when a file's sleeps go to one new file and its functions to others
 #   --root DIR / --baseline FILE     other tree or baseline (the tool's own test uses these)
 exec python3 -I "$(dirname "$0")/ratchet/ratchet.py" "$@"

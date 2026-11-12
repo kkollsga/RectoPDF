@@ -2,9 +2,10 @@
 
 use crate::{AppCore, RowKind, SidebarRow, lock};
 use recto_app::sidebar_access as app;
+pub use recto_app::sidebar_access::{AccessibilityStep, ThumbAccess};
 
 /// A scroll thumb as VoiceOver has it.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ThumbAccess {
     /// Its name, for the list it scrolls.
     pub label: String,
@@ -26,7 +27,7 @@ pub struct ThumbContrast {
 }
 
 /// One of `recto qa accessibility`'s steps, read by Rust, for the host to call what the system would.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum AccessibilityStep {
     /// As though Increase Contrast were on or off, for this app alone.
     Contrast { on: bool },
@@ -38,38 +39,16 @@ pub enum AccessibilityStep {
     Thumb { list: String, increment: bool },
 }
 
-impl From<app::ThumbAccess> for ThumbAccess {
-    fn from(access: app::ThumbAccess) -> Self {
-        Self {
-            label: access.label,
-            value: access.value,
-            value_text: access.value_text,
-            page_share: access.page_share,
-        }
-    }
-}
-
-impl From<app::AccessibilityStep> for AccessibilityStep {
-    fn from(step: app::AccessibilityStep) -> Self {
-        match step {
-            app::AccessibilityStep::Contrast { on } => Self::Contrast { on },
-            app::AccessibilityStep::FoldKey { key } => Self::FoldKey { key },
-            app::AccessibilityStep::FoldAction { row } => Self::FoldAction { row },
-            app::AccessibilityStep::Thumb { list, increment } => Self::Thumb { list, increment },
-        }
-    }
-}
-
 #[uniffi::export]
 impl AppCore {
     /// A scroll thumb as VoiceOver has it: `list` is `contents`, `tabs`, `find` or `pages`, and `fraction` how far down the list is, 0 to 1.
     pub fn thumb_access(&self, list: String, fraction: f64) -> ThumbAccess {
-        app::thumb_access_for(&list, fraction).into()
+        app::thumb_access_for(&list, fraction)
     }
 
     /// `recto qa accessibility`'s value, read: nothing if it isn't one.
     pub fn qa_accessibility_step(&self, value: String) -> Option<AccessibilityStep> {
-        app::qa_step(&value).map(Into::into)
+        app::qa_step(&value)
     }
 
     /// What's said when `recto qa accessibility`'s step did nothing.

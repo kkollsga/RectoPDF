@@ -1,7 +1,7 @@
 //! **Links, Back and Forward, and the go-to field: the words and the choices,** for the host to draw: the records here, the rules in `recto_app::linking`. Rust says what a link does and how it's put; the host shows a hint, a hand, and the system's sheet, and opens an address only when this says the person chose to.
 
 pub use recto_app::linking::LinkPrompt;
-pub(crate) use recto_app::linking::{MAX_TYPED_PAGE, hint_for, no_such_page, page_words, swipe_goes_back};
+pub(crate) use recto_app::linking::{MAX_TYPED_PAGE, hint_for, page_words, swipe_goes_back};
 
 /// What hovering over a page shows: the pointer's look, and a line saying where a link goes.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]

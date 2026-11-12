@@ -3,6 +3,7 @@
 
 pub mod chrome;
 pub mod clock;
+pub mod core;
 pub mod find;
 pub mod generated_contents;
 pub mod hand_off;
@@ -19,6 +20,7 @@ pub mod privacy;
 pub mod prompts;
 pub mod queue;
 pub mod reader_view;
+pub mod records;
 pub mod saver;
 pub mod saving;
 pub mod sidebar_access;

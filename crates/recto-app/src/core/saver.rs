@@ -2,9 +2,9 @@
 //!
 //! **No thread at rest, and none waiting.** Saying something's changed is an atomic store, and the first time a nudge to the session thread, which is parked anyway. It keeps the one deadline there is, by parking with a timeout rather than for good, so there's nothing per tab and no timer. When it comes due, a one-shot thread does the writing and ends. So a scroll on the UI thread waits for nothing, and a window left reading has no extra thread for its minute.
 
-use crate::{CoreCall, CoreQueue, Inner, lock};
-use recto_app::clock::{Clock, SystemClock};
-use recto_app::saver as app;
+use super::{CoreCall, CoreQueue, Inner, lock};
+use crate::clock::{Clock, SystemClock};
+use crate::saver as app;
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
 use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, PlaceRecord, Selection, SessionRecord};
@@ -13,13 +13,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-pub(crate) struct Saver {
-    pub(crate) store: Arc<RecordStore>,
+pub struct Saver {
+    pub store: Arc<RecordStore>,
     core: Arc<CoreQueue>,
     inner: OnceLock<Weak<Inner>>,
     /// The record's been read, so what's written is what came of it. Nothing's written before that.
     started: AtomicBool,
-    /// What `recto_app::saver`'s decisions go by.
+    /// What `crate::saver`'s decisions go by.
     clock: SystemClock,
     /// A writing thread is there, or asked for.
     writer_alive: AtomicBool,
@@ -37,7 +37,7 @@ pub(crate) struct Saver {
 }
 
 impl Saver {
-    pub(crate) fn new(store: RecordStore, core: Arc<CoreQueue>) -> Self {
+    pub fn new(store: RecordStore, core: Arc<CoreQueue>) -> Self {
         Self {
             store: Arc::new(store),
             core,
@@ -56,16 +56,16 @@ impl Saver {
         }
     }
 
-    pub(crate) fn inner(&self) -> Option<Arc<Inner>> {
+    pub fn inner(&self) -> Option<Arc<Inner>> {
         self.inner.get().and_then(Weak::upgrade)
     }
 
-    pub(crate) fn attach(&self, inner: Weak<Inner>) {
+    pub fn attach(&self, inner: Weak<Inner>) {
         let _ = self.inner.set(inner);
     }
 
     /// Writing may begin.
-    pub(crate) fn start(&self) {
+    pub fn start(&self) {
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         self.started.store(true, Ordering::SeqCst);
         self.nudge();
@@ -76,7 +76,7 @@ impl Saver {
     }
 
     /// A place, or something else in the record, has changed. Cheap enough for each scroll.
-    pub(crate) fn view_changed(&self) {
+    pub fn view_changed(&self) {
         self.view_changed.store(true, Ordering::Relaxed);
         if !self.armed.swap(true, Ordering::SeqCst) {
             self.nudge();
@@ -84,7 +84,7 @@ impl Saver {
     }
 
     /// An edit has been made. It may be due sooner than what's waited for, so the session thread looks again.
-    pub(crate) fn edit_made(&self) {
+    pub fn edit_made(&self) {
         let now = self.now();
         let _ = self.first_edit.compare_exchange(0, now, Ordering::SeqCst, Ordering::SeqCst);
         self.last_edit.store(now, Ordering::SeqCst);
@@ -93,7 +93,7 @@ impl Saver {
     }
 
     /// What's changed shouldn't wait: the app is going to the background, or a journal has been retired.
-    pub(crate) fn write_soon(&self) {
+    pub fn write_soon(&self) {
         self.urgent.store(true, Ordering::SeqCst);
         self.view_changed.store(true, Ordering::Relaxed);
         self.armed.store(true, Ordering::SeqCst);
@@ -105,7 +105,7 @@ impl Saver {
     }
 
     /// How long until something's due, or `None` with nothing to do or a writer on it. What the session thread waits for, alongside its queue.
-    pub(crate) fn wait_for_due(&self) -> Option<Duration> {
+    pub fn wait_for_due(&self) -> Option<Duration> {
         if !self.started.load(Ordering::SeqCst) || self.writer_alive.load(Ordering::SeqCst) {
             return None;
         }
@@ -119,7 +119,7 @@ impl Saver {
     }
 
     /// It's come due. A one-shot thread does the writing, so that nothing else waits on the disk. On the session thread.
-    pub(crate) fn spawn_writer(self: &Arc<Self>) {
+    pub fn spawn_writer(self: &Arc<Self>) {
         if self.writer_alive.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -145,7 +145,7 @@ impl Saver {
         }
     }
 
-    /// How long until something's due, or `None` with nothing to write: `recto_app::saver::next_due`.
+    /// How long until something's due, or `None` with nothing to write: `crate::saver::next_due`.
     fn next_due(&self) -> Option<Duration> {
         let now = self.now();
         app::next_due(self.pending(self.urgent.load(Ordering::SeqCst)), now).map(Duration::from_millis)
@@ -204,7 +204,7 @@ impl Saver {
         }
     }
 
-    pub(crate) fn has_failed(&self) -> bool {
+    pub fn has_failed(&self) -> bool {
         lock(&self.last_error).is_some()
     }
 
@@ -215,7 +215,7 @@ impl Saver {
     }
 
     /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time.
-    pub(crate) fn write_journals_now(&self, inner: &Inner) {
+    pub fn write_journals_now(&self, inner: &Inner) {
         let _gate = lock(&self.gate);
         let _ = self.write_journals(inner, false);
     }
@@ -239,7 +239,7 @@ impl Saver {
     }
 
     /// **Writes everything now, reads it back, and says whether it's all there.** What's waiting and what's in memory are taken in one look, so an edit made in between can't be in one and not the other. `force` makes the drive itself flush everything a launch would read, older writes included, which only a hand-off needs. Waits for the session thread and the disk, so it's for a thread that can.
-    pub(crate) fn flush(&self, force: bool, limit: Duration) -> Result<FlushReport, StoreError> {
+    pub fn flush(&self, force: bool, limit: Duration) -> Result<FlushReport, StoreError> {
         let Some(inner) = self.inner() else {
             return Err(StoreError {
                 code: "not_ready",
@@ -327,7 +327,7 @@ fn micros(since: Instant) -> u64 {
 
 impl Inner {
     /// Takes in where the page view says each tab it holds is.
-    pub(crate) fn take_places(&self) {
+    pub fn take_places(&self) {
         let engines = self.panes.engines(&self.engine);
         let places: Vec<_> = engines.iter().flat_map(recto_reader::Engine::places).collect();
         if places.is_empty() {
@@ -365,7 +365,7 @@ impl Inner {
     }
 
     /// The whole record as things stand, and what a line of the log would say of it. The session is held only for the copy.
-    pub(crate) fn gather_record(&self) -> (SessionRecord, PlaceDelta) {
+    pub fn gather_record(&self) -> (SessionRecord, PlaceDelta) {
         self.take_places();
         let (mut record, delta) = self.host.session.with_session(|session| {
             let delta = session.take_place_delta(0);

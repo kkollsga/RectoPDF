@@ -1,15 +1,10 @@
 //! The menu bar's and the panel's records, as the host draws them. The lists, what each item does and when it's enabled are `recto_app::menus`'s.
 
-use crate::lock;
-use recto_app::menus as app;
-pub(crate) use recto_app::menus::{
-    Action, Enable, RecentItem, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
-};
-use recto_session::{Paper, ViewSettings, record};
-use std::sync::Arc;
+pub use recto_app::menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection, ZoomLabel};
+pub(crate) use recto_app::menus::{context_menu, panel, plain_key, zoom_label};
 
 /// One item of a menu. An empty `id` is a line between items.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct MenuEntry {
     pub id: String,
     pub title: String,
@@ -25,14 +20,14 @@ pub struct MenuEntry {
     pub parent: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct MenuModel {
     pub title: String,
     pub entries: Vec<MenuEntry>,
 }
 
 /// What the host has to do itself, after an item is chosen. Everything else is done by then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum HostAction {
     None,
     ShowOpenPanel,
@@ -55,7 +50,7 @@ pub enum HostAction {
 }
 
 /// The zoom level in the top left, and what clicking it offers. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset".
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ZoomLabel {
     /// As it's shown: `125%`.
     pub text: String,
@@ -67,7 +62,7 @@ pub struct ZoomLabel {
 }
 
 /// What's in the sidebar's panel, for now: one tab's worth.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PanelItem {
     pub id: String,
     pub title: String,
@@ -76,143 +71,15 @@ pub struct PanelItem {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PanelSection {
     pub title: String,
     pub items: Vec<PanelItem>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PanelModel {
     pub open: bool,
     pub button_tooltip: String,
     pub sections: Vec<PanelSection>,
-}
-
-impl From<app::MenuEntry> for MenuEntry {
-    fn from(entry: app::MenuEntry) -> Self {
-        Self {
-            id: entry.id,
-            title: entry.title,
-            key: entry.key,
-            with_control: entry.with_control,
-            checked: entry.checked,
-            hidden: entry.hidden,
-            system_action: entry.system_action,
-            parent: entry.parent,
-        }
-    }
-}
-
-impl From<app::MenuModel> for MenuModel {
-    fn from(menu: app::MenuModel) -> Self {
-        Self {
-            title: menu.title,
-            entries: menu.entries.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<app::HostAction> for HostAction {
-    fn from(action: app::HostAction) -> Self {
-        match action {
-            app::HostAction::None => Self::None,
-            app::HostAction::ShowOpenPanel => Self::ShowOpenPanel,
-            app::HostAction::ShowAbout => Self::ShowAbout,
-            app::HostAction::ShowSettings => Self::ShowSettings,
-            app::HostAction::Quit => Self::Quit,
-            app::HostAction::CloseWindow => Self::CloseWindow,
-            app::HostAction::ShowSavePanel => Self::ShowSavePanel,
-            app::HostAction::ConfirmClose => Self::ConfirmClose,
-            app::HostAction::ShowPrintPanel => Self::ShowPrintPanel,
-            app::HostAction::FocusPalette => Self::FocusPalette,
-            app::HostAction::FocusFind => Self::FocusFind,
-            app::HostAction::ShowGoTo => Self::ShowGoTo,
-        }
-    }
-}
-
-impl From<app::ZoomLabel> for ZoomLabel {
-    fn from(label: app::ZoomLabel) -> Self {
-        Self {
-            text: label.text,
-            editing_text: label.editing_text,
-            tooltip: label.tooltip,
-            reset_title: label.reset_title,
-        }
-    }
-}
-
-impl From<app::PanelItem> for PanelItem {
-    fn from(item: app::PanelItem) -> Self {
-        Self {
-            id: item.id,
-            title: item.title,
-            selected: item.selected,
-            enabled: item.enabled,
-        }
-    }
-}
-
-impl From<app::PanelSection> for PanelSection {
-    fn from(section: app::PanelSection) -> Self {
-        Self {
-            title: section.title,
-            items: section.items.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<app::PanelModel> for PanelModel {
-    fn from(panel: app::PanelModel) -> Self {
-        Self {
-            open: panel.open,
-            button_tooltip: panel.button_tooltip,
-            sections: panel.sections.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<HostAction> for app::HostAction {
-    fn from(action: HostAction) -> Self {
-        match action {
-            HostAction::None => Self::None,
-            HostAction::ShowOpenPanel => Self::ShowOpenPanel,
-            HostAction::ShowAbout => Self::ShowAbout,
-            HostAction::ShowSettings => Self::ShowSettings,
-            HostAction::Quit => Self::Quit,
-            HostAction::CloseWindow => Self::CloseWindow,
-            HostAction::ShowSavePanel => Self::ShowSavePanel,
-            HostAction::ConfirmClose => Self::ConfirmClose,
-            HostAction::ShowPrintPanel => Self::ShowPrintPanel,
-            HostAction::FocusPalette => Self::FocusPalette,
-            HostAction::FocusFind => Self::FocusFind,
-            HostAction::ShowGoTo => Self::ShowGoTo,
-        }
-    }
-}
-
-/// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
-pub(crate) fn bar_now(core: &crate::AppCore) -> Vec<app::MenuModel> {
-    let reader = lock(&core.inner.published).reader.clone();
-    let recent = Arc::clone(&lock(&core.inner.published).recent);
-    let items: Vec<RecentItem> = recent
-        .iter()
-        .map(|file| RecentItem {
-            key: &file.key,
-            name: &file.name,
-        })
-        .collect();
-    let mut bar = menu_bar_with(
-        ViewSettings {
-            paper: Paper::from_name(&reader.paper),
-            sidebar_hidden: reader.sidebar_hidden,
-            agent_icon_hidden: reader.agent_icon_hidden,
-        },
-        record::Spread::from_name(&reader.layout),
-        &core.inner.updates.menu_item().title,
-        &items,
-    );
-    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tools.tool.is_on()));
-    bar
 }
