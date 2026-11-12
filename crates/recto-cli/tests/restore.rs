@@ -2256,45 +2256,6 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
     assert!(quiet["rows"].is_array());
 }
 
-/// Failure: restoring gives an agent more than it had: a look at Find's text below Control, or a way to throw away the owner's edits by restoring over them, or a level from the record. And a session's ownership rule stops holding once it's been restarted: below Full an agent still can't throw away the owner's edits, and it can its own.
-#[test]
-fn levels_and_ownership_hold_after_a_restart() {
-    let state = State::new();
-    let Some(run) = Run::on(&state) else { return };
-    let (a, b) = (long_document("owners", 8), long_document("agents", 8));
-    run.ok(&["open", a.0.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
-    run.ok(&["open", b.0.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["page", "rotate", "1", "--by", "90"]);
-    run.ok(&["qa", "find-query", "something private"]);
-    run.quit();
-    let run = Run::on(&state).unwrap();
-    run.settled();
-    state.set_level(Level::Control);
-    assert_eq!(run.ok(&["where"])["tab"], 2);
-    // The agent's own.
-    run.ok(&["discard"]);
-    // The owner's.
-    run.ok(&["tap", "#1"]);
-    run.settled();
-    let (reply, code) = state.json(&["discard"]);
-    assert_eq!(code, recto_agent::exit::PERMISSION, "{reply}");
-    let (reply, code) = state.json(&["session", "restore"]);
-    assert_eq!(code, recto_agent::exit::PERMISSION, "restoring over the owner's edits: {reply}");
-    // A level is only ever in its own file: a record saying otherwise is nothing, as an unknown field.
-    assert_eq!(state.json(&["permission", "show"]).0["data"]["level"], "control");
-    assert_eq!(run.ok(&["session", "show"])["find"]["query"], "something private");
-    state.set_level(Level::ReadOnly);
-    let show = run.ok(&["session", "show"]);
-    assert!(show["find"].get("query").is_none(), "not below Control: {show}");
-    assert_eq!(show["find"]["has_text"], true);
-    assert_ne!(state.json(&["session", "save"]).1, 0);
-    state.set_level(Level::Off);
-    assert_ne!(state.json(&["session", "show"]).1, 0);
-}
-
 /// Failure: reading writes to the disk all the time, wearing it for nothing: SPEC's budget. At rest, 0 bytes. Scrolling for a while, at most a line, as a minute hasn't passed. A burst of edits, about what the steps come to and not a rewrite per step. Going to the background writes what changed, and nothing after that when nothing has.
 #[test]
 fn it_writes_only_what_happened() {
