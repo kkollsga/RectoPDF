@@ -174,6 +174,17 @@ impl From<app::CloseChoice> for CloseChoice {
     }
 }
 
+impl From<CloseChoice> for app::CloseChoice {
+    fn from(choice: CloseChoice) -> Self {
+        match choice {
+            CloseChoice::Save => Self::Save,
+            CloseChoice::SaveAs => Self::SaveAs,
+            CloseChoice::DontSave => Self::DontSave,
+            CloseChoice::Cancel => Self::Cancel,
+        }
+    }
+}
+
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).

@@ -25,6 +25,7 @@ pub mod updates;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
 use recto_control::StatePaths;
@@ -49,11 +50,11 @@ use recto_session::{
 };
 use saver::Saver;
 use serde_json::{Value, json};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 uniffi::setup_scaffolding!();
@@ -1005,241 +1006,8 @@ impl AppHost {
     }
 }
 
-/// How many calls can wait for the session thread before notes of pages drawn stop being added.
-const MAX_QUEUED_CALLS: usize = 4096;
 /// Files being read at once off the session thread. Each is a thread that a dead volume can hold for as long as it likes, so there's a limit, and past it a tab or file doesn't open and says so.
 const MAX_FILE_READS: usize = 4;
-
-/// What the session thread is asked to do, in the order the user asked.
-#[derive(Debug)]
-enum CoreCall {
-    Reconcile,
-    Tap(TabId),
-    /// File > Open Recent > Clear Menu.
-    ClearRecent,
-    /// A password typed for a protected file has been tried: what it opened, or that it didn't.
-    Unlocked(passwords::Ask, Result<DocFacts, OpenError>, Option<FileStamp>, Arc<recto_core::Password>),
-    /// The app's come to the front: the files showing are looked at, as another app may have changed them.
-    LookAtShown,
-    /// A jump, which Back comes back from: a contents entry, a link, or the go-to field, to a page and how far down it.
-    Jump(TabId, u32, f64),
-    /// What the go-to field had typed in it, for the tab showing.
-    JumpTyped(TabId, String),
-    /// Back, or forward, in the tab showing's trail: ⌘[ and ⌘], a swipe, or a link that says so.
-    Step(bool),
-    Open(PathBuf),
-    /// The sidebar hidden, or not.
-    SetSidebarHidden(bool),
-    /// A tab laid out another way: the pane being read's when it was chosen, or the active tab's.
-    SetSpread(Option<TabId>, record::Spread),
-    /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
-    CompareClick(TabId),
-    /// The reader's moved into another pane.
-    FocusPane(TabId),
-    /// Synced scroll, or separate.
-    SetSynced(bool),
-    /// The panel's Rotate, by the owner.
-    Rotate(i32),
-    /// Edit > Undo or Redo, by the owner: true for Undo.
-    UndoOrRedo(bool),
-    SetPaper(Paper),
-    ToggleAgentIcon,
-    ClearEditHistory,
-    /// Those tabs go dormant.
-    SleepTabs(Vec<TabId>, sleeper::Why),
-    /// The system's short of memory, and whether it's critical.
-    MemoryPressure(bool),
-    /// A tab woken from its sleep file has another file there now.
-    WokenFileIsOther(TabId, FileStatus),
-    /// The worker says how long a tab's own file is, and which version.
-    FileLength(TabId, u32, u64),
-    /// A worker's found a tab's file replaced, so it's looked at.
-    LookAgain(TabId),
-    Page(u32, Option<&'static str>, TabId),
-    /// A file read off the session thread, for a tab being woken or a file being opened.
-    Read(Box<FileRead>),
-    /// Everything asked before this has been done.
-    Flush(Arc<Flushed>),
-    /// The state record has been read, on a thread that could wait for it.
-    Restored(Box<Loaded>),
-    /// Patience is over for reading the state, or the file a restored tab is on.
-    RestorePatienceOver,
-    /// What a save off this thread did, for watchers.
-    Events(Vec<Event>),
-    /// Closes a tab, by the owner: with its edits thrown away first if they said Don't Save.
-    CloseTab(TabId, bool),
-    /// The close prompt's answer, for the tab it asked about.
-    CloseAnswered(TabId, saving::CloseChoice),
-    /// A save from the close prompt finished: the tab closes, letting go of steps that were undone, as the prompt said.
-    CloseAfterSave(TabId),
-    /// The reader tapped the note over a tab's contents.
-    ContentsAction(TabId, recto_session::ContentsAction),
-    /// Generated contents were made, or failed: tabs waiting for them look.
-    GeneratedFinished,
-    /// What a look off this thread found of a tab's generated contents, for the version of the file it looked at.
-    GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
-    /// A contents section's chevron: fold it or open it.
-    ToggleSection(TabId, u32),
-    /// The Find field, its list, and ⌘G.
-    Find(find::FindCall),
-    /// Into edit mode or out, by the owner.
-    SetEditMode(bool),
-}
-
-impl CoreCall {
-    /// **Whether a hand-off's freeze holds it back** (review C8): what a person does, which past the hand-off's last look wouldn't come back, as what's on disk is what does. Every variant decides here, with no default, so a new one can't slip through by being forgotten.
-    ///
-    /// What isn't held back is the end of something already under way, or the system's or a worker's news. Dropping one of those would leave something waiting for good, or the session not answering, if the freeze lifts again: a quit that stays, or a hand-off that fails.
-    fn is_user_action(&self) -> bool {
-        match self {
-            Self::Tap(_)
-            | Self::ClearRecent
-            | Self::Jump(..)
-            | Self::JumpTyped(..)
-            | Self::Step(_)
-            | Self::Open(_)
-            | Self::SetSidebarHidden(_)
-            | Self::SetSpread(..)
-            | Self::CompareClick(_)
-            | Self::FocusPane(_)
-            | Self::SetSynced(_)
-            | Self::Rotate(_)
-            | Self::UndoOrRedo(_)
-            | Self::SetPaper(_)
-            | Self::ToggleAgentIcon
-            | Self::ClearEditHistory
-            // Closing a tab, by File > Close or the close prompt's answer: a save or a throwing away of edits that the state already written wouldn't know of.
-            | Self::CloseTab(..)
-            | Self::CloseAnswered(..)
-            // The note over the contents, and a section's chevron: both kept in the record.
-            | Self::ContentsAction(..)
-            | Self::ToggleSection(..)
-            | Self::SetEditMode(_) => true,
-            Self::Find(call) => call.is_user_action(),
-            // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
-            Self::Unlocked(..)
-            // The end of a save the close prompt started, which a hand-off waits for: dropped, a quit that stays would leave the saved tab open.
-            | Self::CloseAfterSave(_)
-            | Self::Reconcile
-            | Self::LookAtShown
-            | Self::SleepTabs(..)
-            | Self::MemoryPressure(_)
-            | Self::WokenFileIsOther(..)
-            | Self::FileLength(..)
-            | Self::LookAgain(_)
-            | Self::Page(..)
-            | Self::Read(_)
-            | Self::Flush(_)
-            | Self::Restored(_)
-            | Self::RestorePatienceOver
-            | Self::Events(_)
-            | Self::GeneratedFinished
-            | Self::GeneratedView(..) => false,
-        }
-    }
-}
-
-/// A marker through the session thread's queue, for QA to know what it asked for has happened.
-#[derive(Debug, Default)]
-pub(crate) struct Flushed {
-    done: Mutex<bool>,
-    ready: Condvar,
-}
-
-impl Flushed {
-    fn finished(&self) {
-        *lock(&self.done) = true;
-        self.ready.notify_all();
-    }
-
-    /// Waits for it, up to a limit, and says whether it came.
-    fn wait(&self, limit: Duration) -> bool {
-        let deadline = Instant::now() + limit;
-        let mut done = lock(&self.done);
-        while !*done {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            done = self.ready.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
-        }
-        true
-    }
-}
-
-/// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
-#[derive(Default)]
-pub(crate) struct CoreQueue {
-    calls: Mutex<VecDeque<CoreCall>>,
-    ready: Condvar,
-    reconcile_queued: AtomicBool,
-    /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
-    frozen: AtomicBool,
-}
-
-impl CoreQueue {
-    pub(crate) fn push(&self, call: CoreCall) {
-        // Many reasons to look can wait for one look.
-        if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if self.frozen.load(Ordering::SeqCst) && call.is_user_action() {
-            return;
-        }
-        let mut calls = lock(&self.calls);
-        if let CoreCall::Page(page, failure, tab) = &call {
-            // Only notes of what was drawn can go, as they're told on to watchers and no more. Many tiles of a page are one note, which is most of them, so this is hard to reach. With the session thread held up for some reason this stops them growing without end. Anything a person did always gets in.
-            if calls.len() >= MAX_QUEUED_CALLS
-                || matches!(calls.back(), Some(CoreCall::Page(last_page, last_failure, last_tab)) if last_page == page && last_failure == failure && last_tab == tab)
-            {
-                return;
-            }
-        }
-        calls.push_back(call);
-        drop(calls);
-        self.ready.notify_one();
-    }
-
-    /// Blocks until the session thread has got through everything already asked of it. For QA, on a job thread. A file on a dead volume could hold this up, so it has a limit.
-    pub(crate) fn flush(&self, limit: Duration) -> bool {
-        let marker = Arc::new(Flushed::default());
-        self.push(CoreCall::Flush(Arc::clone(&marker)));
-        marker.wait(limit)
-    }
-
-    /// Wakes whoever's waiting on this, to look at its deadline again.
-    pub(crate) fn nudge(&self) {
-        let _calls = lock(&self.calls);
-        self.ready.notify_one();
-    }
-
-    /// The next call, or `None` when `deadline` says something's due: one wait for both, so the state's one deadline costs no thread or timer of its own. `deadline` is asked again on every wake, and no more than that.
-    fn next_or_due(&self, deadline: impl Fn() -> Option<Duration>) -> Option<CoreCall> {
-        let mut calls = lock(&self.calls);
-        loop {
-            if let Some(call) = calls.pop_front() {
-                if matches!(call, CoreCall::Reconcile) {
-                    self.reconcile_queued.store(false, Ordering::SeqCst);
-                }
-                return Some(call);
-            }
-            calls = match deadline() {
-                None => self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner),
-                Some(wait) if wait.is_zero() => return None,
-                Some(wait) => self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0,
-            };
-        }
-    }
-
-    #[cfg(test)]
-    fn next(&self) -> CoreCall {
-        loop {
-            if let Some(call) = self.next_or_due(|| None) {
-                return call;
-            }
-        }
-    }
-}
 
 struct EngineHooks {
     core: Arc<CoreQueue>,
@@ -2604,7 +2372,7 @@ impl AppCore {
         if choice == saving::CloseChoice::SaveAs {
             return HostAction::ShowSavePanel;
         }
-        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice.into()));
         HostAction::None
     }
 
@@ -3777,13 +3545,13 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Events(list) => events.extend(list),
             CoreCall::CloseTab(id, discard) => close_tab(host, id, discard, &mut events),
             CoreCall::CloseAnswered(id, choice) => match choice {
-                saving::CloseChoice::Save => {
+                recto_app::saving::CloseChoice::Save => {
                     if let Some(inner) = inner.saver.inner() {
                         saving::start_save(&inner, id, None, true);
                     }
                 }
-                saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
-                saving::CloseChoice::Cancel | saving::CloseChoice::SaveAs => {}
+                recto_app::saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
+                recto_app::saving::CloseChoice::Cancel | recto_app::saving::CloseChoice::SaveAs => {}
             },
             CoreCall::CloseAfterSave(id) => {
                 // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
@@ -3921,33 +3689,6 @@ fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mu
     {
         announcer.announce(events);
     }
-}
-
-/// What a file's being read for.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Reading {
-    Tab(TabId),
-    File(PathBuf),
-    /// A restored active tab: what's become of its file, first, then its facts.
-    Restored(TabId),
-    /// A ⌘-click on the first tab, with the second, cold, being read for it: the tab joining, or the pane read next.
-    Compare(TabId, TabId),
-    /// A cold tab in a comparison's pane, which the reader's moved into.
-    Pane(TabId),
-}
-
-/// A file read off the session thread, on its way back to it.
-#[derive(Debug)]
-struct FileRead {
-    what: Reading,
-    loaded: Result<DocFacts, OpenError>,
-    stamp: Option<FileStamp>,
-    /// What a look found, for a restored tab.
-    status: Option<FileStatus>,
-    /// The history it was left with, for a file being opened.
-    history: Option<recto_session::TakenHistory>,
-    /// It was read with the password the person typed for it, from the keyring.
-    unlocked: bool,
 }
 
 /// Reads a file's facts off the session thread: with the password the person typed for it, if the keyring has one for that file, so a protected tab that went cold and wakes doesn't ask again; and otherwise as any file is. Whether a password was used.
@@ -4609,263 +4350,6 @@ mod tests {
     fn a_hand_off_waits_for_a_print() {
         let busy = hand_off_check_parts(0, 0, 0, 0, true);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["printing"]);
-    }
-
-    /// Failure: notes of tiles drawn fill the session thread's queue, and past the cap what a person did is thrown away: a tap, an open, the appearance. A look dropped when it's full leaves "a look is queued" set, so none is ever queued again. Only those notes can go, and repeats of one don't take a place.
-    #[test]
-    fn a_full_queue_loses_only_notes_of_pages_drawn() {
-        let queue = CoreQueue::default();
-        for page in 0..(MAX_QUEUED_CALLS as u32 + 100) {
-            queue.push(CoreCall::Page(page, None, TabId(1)));
-        }
-        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
-        queue.push(CoreCall::Tap(TabId(2)));
-        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetSidebarHidden(true));
-        queue.push(CoreCall::Reconcile);
-        queue.push(CoreCall::Reconcile);
-        queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
-        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS + 5, "all of those are in, one look among them");
-        // Drained, the look it had queued is seen, and another can be asked for.
-        while !lock(&queue.calls).is_empty() {
-            queue.next();
-        }
-        assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
-        queue.push(CoreCall::Reconcile);
-        assert_eq!(lock(&queue.calls).len(), 1);
-    }
-
-    /// Failure (review T4): past a hand-off's last look, a tap or an open is taken, and it's lost as what's on disk is what comes back. They aren't taken while it's frozen, and what isn't a person's doing still gets through, or the session would stop answering.
-    #[test]
-    fn a_frozen_queue_takes_nothing_a_person_does() {
-        let queue = CoreQueue::default();
-        queue.frozen.store(true, Ordering::SeqCst);
-        queue.push(CoreCall::Tap(TabId(1)));
-        queue.push(CoreCall::Jump(TabId(1), 2, 0.0));
-        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetSidebarHidden(true));
-        queue.push(CoreCall::SetPaper(Paper::Dark));
-        queue.push(CoreCall::ToggleAgentIcon);
-        assert_eq!(lock(&queue.calls).len(), 0);
-        queue.push(CoreCall::Reconcile);
-        queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
-        assert_eq!(lock(&queue.calls).len(), 2);
-        queue.frozen.store(false, Ordering::SeqCst);
-        queue.push(CoreCall::Tap(TabId(1)));
-        assert_eq!(lock(&queue.calls).len(), 3);
-    }
-
-    /// One of every call, and the find calls one of each, with its place in the list. `place` names every variant with no default, so a new one doesn't compile here until it has a place, and the test below fails until it's sampled.
-    fn every_call() -> Vec<CoreCall> {
-        let tab = TabId(1);
-        let stamp = recto_platform::FileStamp {
-            size: 1,
-            mtime_ns: 1,
-            device: 1,
-            inode: 1,
-        };
-        let ask = passwords::Ask {
-            id: 1,
-            target: passwords::Target::File,
-            path: PathBuf::from("/d/a.pdf"),
-            wrong: 0,
-            trying: true,
-        };
-        let read = FileRead {
-            what: Reading::Tab(tab),
-            loaded: Err(recto_core::OpenError::NotFound),
-            stamp: None,
-            status: None,
-            history: None,
-            unlocked: false,
-        };
-        let hit = recto_agent::find::Hit {
-            page: 0,
-            start: 0,
-            end: 1,
-            before: "".into(),
-            matched: "".into(),
-            after: "".into(),
-            hidden: false,
-        };
-        vec![
-            CoreCall::Reconcile,
-            CoreCall::Tap(tab),
-            CoreCall::ClearRecent,
-            CoreCall::Unlocked(
-                ask,
-                Err(recto_core::OpenError::NotFound),
-                Some(stamp),
-                Arc::new(recto_core::Password::new("pw").unwrap()),
-            ),
-            CoreCall::LookAtShown,
-            CoreCall::Jump(tab, 2, 0.0),
-            CoreCall::JumpTyped(tab, "3".into()),
-            CoreCall::Step(true),
-            CoreCall::Open(PathBuf::from("/d/a.pdf")),
-            CoreCall::SetSidebarHidden(true),
-            CoreCall::SetSpread(None, record::Spread::TwoUp),
-            CoreCall::CompareClick(tab),
-            CoreCall::FocusPane(tab),
-            CoreCall::SetSynced(true),
-            CoreCall::Rotate(1),
-            CoreCall::UndoOrRedo(true),
-            CoreCall::SetPaper(Paper::Dark),
-            CoreCall::ToggleAgentIcon,
-            CoreCall::ClearEditHistory,
-            CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked),
-            CoreCall::MemoryPressure(false),
-            CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp)),
-            CoreCall::FileLength(tab, 1, 1),
-            CoreCall::LookAgain(tab),
-            CoreCall::Page(1, None, tab),
-            CoreCall::Read(Box::new(read)),
-            CoreCall::Flush(Arc::new(Flushed::default())),
-            CoreCall::Restored(Box::new(Loaded::Nothing)),
-            CoreCall::RestorePatienceOver,
-            CoreCall::Events(Vec::new()),
-            CoreCall::CloseTab(tab, false),
-            CoreCall::CloseAnswered(tab, saving::CloseChoice::Save),
-            CoreCall::CloseAfterSave(tab),
-            CoreCall::ContentsAction(tab, recto_session::ContentsAction::Generate),
-            CoreCall::GeneratedFinished,
-            CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
-            CoreCall::ToggleSection(tab, 0),
-            CoreCall::Find(find::FindCall::Typed("a".into())),
-            CoreCall::Find(find::FindCall::Open),
-            CoreCall::Find(find::FindCall::Close),
-            CoreCall::Find(find::FindCall::Step(true, recto_agent::find::Going::Jump)),
-            CoreCall::Find(find::FindCall::Choose(0)),
-            CoreCall::Find(find::FindCall::News),
-            CoreCall::Find(find::FindCall::Reveal(1, hit)),
-            CoreCall::SetEditMode(true),
-        ]
-    }
-
-    /// Each variant's place, and each find call's: `(place, how many places in all)`.
-    fn place(call: &CoreCall) -> (usize, usize) {
-        let place = match call {
-            CoreCall::Reconcile => 0,
-            CoreCall::Tap(_) => 1,
-            CoreCall::ClearRecent => 2,
-            CoreCall::Unlocked(..) => 3,
-            CoreCall::LookAtShown => 4,
-            CoreCall::Jump(..) => 5,
-            CoreCall::JumpTyped(..) => 6,
-            CoreCall::Step(_) => 7,
-            CoreCall::Open(_) => 8,
-            CoreCall::SetSidebarHidden(_) => 9,
-            CoreCall::SetSpread(..) => 10,
-            CoreCall::CompareClick(_) => 11,
-            CoreCall::FocusPane(_) => 12,
-            CoreCall::SetSynced(_) => 13,
-            CoreCall::Rotate(_) => 14,
-            CoreCall::UndoOrRedo(_) => 15,
-            CoreCall::SetPaper(_) => 16,
-            CoreCall::ToggleAgentIcon => 17,
-            CoreCall::ClearEditHistory => 18,
-            CoreCall::SleepTabs(..) => 19,
-            CoreCall::MemoryPressure(_) => 20,
-            CoreCall::WokenFileIsOther(..) => 21,
-            CoreCall::FileLength(..) => 22,
-            CoreCall::LookAgain(_) => 23,
-            CoreCall::Page(..) => 24,
-            CoreCall::Read(_) => 25,
-            CoreCall::Flush(_) => 26,
-            CoreCall::Restored(_) => 27,
-            CoreCall::RestorePatienceOver => 28,
-            CoreCall::Events(_) => 29,
-            CoreCall::CloseTab(..) => 30,
-            CoreCall::CloseAnswered(..) => 31,
-            CoreCall::CloseAfterSave(_) => 32,
-            CoreCall::ContentsAction(..) => 33,
-            CoreCall::GeneratedFinished => 34,
-            CoreCall::GeneratedView(..) => 35,
-            CoreCall::ToggleSection(..) => 36,
-            CoreCall::Find(find_call) => match find_call {
-                find::FindCall::Typed(_) => 37,
-                find::FindCall::Open => 38,
-                find::FindCall::Close => 39,
-                find::FindCall::Step(..) => 40,
-                find::FindCall::Choose(_) => 41,
-                find::FindCall::News => 42,
-                find::FindCall::Reveal(..) => 43,
-            },
-            CoreCall::SetEditMode(_) => 44,
-        };
-        (place, 45)
-    }
-
-    /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
-    #[test]
-    fn every_person_originated_call_is_frozen_during_a_hand_off() {
-        let calls = every_call();
-        let mut places: Vec<usize> = calls.iter().map(|call| place(call).0).collect();
-        places.sort_unstable();
-        assert_eq!(
-            places,
-            (0..place(&CoreCall::Reconcile).1).collect::<Vec<_>>(),
-            "one sample of every call, and of every find call"
-        );
-        let a_persons = |call: &CoreCall| {
-            matches!(
-                call,
-                CoreCall::Tap(_)
-                    | CoreCall::ClearRecent
-                    | CoreCall::Jump(..)
-                    | CoreCall::JumpTyped(..)
-                    | CoreCall::Step(_)
-                    | CoreCall::Open(_)
-                    | CoreCall::SetSidebarHidden(_)
-                    | CoreCall::SetSpread(..)
-                    | CoreCall::CompareClick(_)
-                    | CoreCall::FocusPane(_)
-                    | CoreCall::SetSynced(_)
-                    | CoreCall::Rotate(_)
-                    | CoreCall::UndoOrRedo(_)
-                    | CoreCall::SetPaper(_)
-                    | CoreCall::ToggleAgentIcon
-                    | CoreCall::ClearEditHistory
-                    | CoreCall::CloseTab(..)
-                    | CoreCall::CloseAnswered(..)
-                    | CoreCall::ContentsAction(..)
-                    | CoreCall::ToggleSection(..)
-                    | CoreCall::SetEditMode(_)
-                    | CoreCall::Find(
-                        find::FindCall::Typed(_)
-                            | find::FindCall::Open
-                            | find::FindCall::Close
-                            | find::FindCall::Step(..)
-                            | find::FindCall::Choose(_)
-                            | find::FindCall::Reveal(..)
-                    )
-            )
-        };
-        for call in calls {
-            let queue = CoreQueue::default();
-            queue.frozen.store(true, Ordering::SeqCst);
-            let persons = a_persons(&call);
-            let name = format!("{call:?}");
-            queue.push(call);
-            assert_eq!(
-                lock(&queue.calls).is_empty(),
-                persons,
-                "{name}: a person's call is held back during a hand-off, and nothing else is"
-            );
-        }
-    }
-
-    /// Failure: each tile of a page is a note, so an ordinary page of tiles uses a dozen places, and the queue's cap is reached by reading alone. In a row, one note for one page is enough.
-    #[test]
-    fn repeated_notes_of_a_page_take_one_place() {
-        let queue = CoreQueue::default();
-        for _ in 0..100 {
-            queue.push(CoreCall::Page(3, None, TabId(1)));
-        }
-        assert_eq!(lock(&queue.calls).len(), 1);
-        queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1)));
-        queue.push(CoreCall::Page(4, None, TabId(1)));
-        assert_eq!(lock(&queue.calls).len(), 3);
     }
 
     struct TestEngineEvents;
