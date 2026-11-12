@@ -450,6 +450,17 @@ impl HeadlessApp {
         self.core().host.run(level, &command, &mut events)
     }
 
+    /// **`recto <words>`, at `level`,** as the CLI turns the words into its line and sends it: [`Self::agent`] on that line.
+    ///
+    /// # Errors
+    ///
+    /// The words' usage error, or the command's own refusal or failure.
+    pub fn recto(&self, level: Level, words: &[&str]) -> Result<Value, AgentError> {
+        let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+        let line = recto_agent::table::parse_cli(&words)?.wire();
+        self.agent(level, &line)
+    }
+
     /// **Waits for the app to be at rest:** everything queued for the session thread taken, every file being read in, every password being tried and every look at
     /// files done, the record's writer through, and the page views' layer changes taken as the host takes them. Bounded, and never a fixed sleep.
     ///
