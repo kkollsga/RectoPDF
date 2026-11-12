@@ -731,6 +731,34 @@ impl Inner {
         })
     }
 
+    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
+    pub fn frontmost_changed(&self, app: bool, window_key: bool) {
+        let mut state = lock(&self.window.app);
+        let went_back = state.focus.app_frontmost && !app;
+        let came_back = !state.focus.app_frontmost && app;
+        state.focus.app_frontmost = app;
+        state.focus.window_key = window_key;
+        drop(state);
+        if went_back {
+            self.saver.write_soon()
+        } else {
+            self.saver.view_changed()
+        }
+        // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
+        if came_back {
+            self.core.push(CoreCall::LookAtShown);
+        }
+    }
+
+    /// A sheet or panel opened over the window, or closed. An update waits for it.
+    pub fn sheet_changed(&self, open: bool) {
+        if open {
+            self.life.sheets.fetch_add(1, Ordering::SeqCst);
+        } else {
+            let _ = self.life.sheets.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+        }
+    }
+
     pub fn note_nearby(&self) {
         self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
     }

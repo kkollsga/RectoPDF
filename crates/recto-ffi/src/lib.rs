@@ -1498,21 +1498,7 @@ impl AppCore {
 
     /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
     pub fn frontmost_changed(&self, app: bool, window_key: bool) {
-        let mut state = lock(&self.inner.window.app);
-        let went_back = state.focus.app_frontmost && !app;
-        let came_back = !state.focus.app_frontmost && app;
-        state.focus.app_frontmost = app;
-        state.focus.window_key = window_key;
-        drop(state);
-        if went_back {
-            self.inner.saver.write_soon()
-        } else {
-            self.inner.saver.view_changed()
-        }
-        // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
-        if came_back {
-            self.inner.core.push(CoreCall::LookAtShown);
-        }
+        self.inner.frontmost_changed(app, window_key);
     }
 
     /// Light or dark as chosen, or `system`.
@@ -1536,15 +1522,7 @@ impl AppCore {
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.
     pub fn sheet_changed(&self, open: bool) {
-        if open {
-            self.inner.life.sheets.fetch_add(1, Ordering::SeqCst);
-        } else {
-            let _ = self
-                .inner
-                .life
-                .sheets
-                .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
-        }
+        self.inner.sheet_changed(open);
     }
 
     /// The user touched the app. One number stored, on each event, with no timer: an automatic update asks how long it's been.

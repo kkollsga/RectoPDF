@@ -225,7 +225,8 @@ pub enum Installed {
     Swapped,
     /// Killed straight after the swap: the new version's in place, the old one still where the swap left it, and the plan left behind.
     KilledAfterSwap,
-    /// The new version didn't come up, so the old one's back, with the record put back unless the plan said keep it, and the outcome says why.
+    /// The new version didn't come up, so the old one's back, with the record put back unless the plan said keep it, and the outcome says why: [`Self::Swapped`]
+    /// and then [`Disk::went_back`], with nothing run between.
     WentBack(&'static str),
     /// Nothing was replaced, and the outcome says why.
     NotInstalled(&'static str),
@@ -284,16 +285,52 @@ impl Disk {
             }
             Installed::KilledAfterSwap => swap(),
             Installed::WentBack(why) => {
-                recto_update::install::copy_record(&files.session(), &files.before(), &mut |_| {});
-                if !plan.keep_record {
-                    recto_update::install::restore_record(&files.before(), &files.session());
-                }
-                let _ = std::fs::remove_dir_all(beside.join("new"));
-                let _ = std::fs::remove_file(beside.join("staged.json"));
-                self.outcome(plan, OutcomeKind::WentBack, why);
+                self.install(plan, Installed::Swapped);
+                self.went_back(plan, why);
             }
             Installed::NotInstalled(why) => self.outcome(plan, OutcomeKind::NotInstalled, why),
         }
+    }
+
+    /// **The installer going back** once the new version, swapped in by [`Installed::Swapped`] and perhaps run since, didn't come up: the record from before
+    /// put back unless the plan said keep it, the kept app swapped back where the app is, the one that didn't work gone, and the outcome saying why.
+    ///
+    /// # Panics
+    ///
+    /// If there's no kept app to go back to.
+    pub fn went_back(&self, plan: &Plan, why: &str) {
+        let files = self.update_files();
+        let beside = beside_app(&self.app()).expect("the app is in a folder");
+        if !plan.keep_record {
+            recto_update::install::restore_record(&files.before(), &files.session());
+        }
+        let kept = previous_app_in(&beside);
+        recto_platform::local::swap_paths(&kept, &self.app()).expect("the kept app swapped back");
+        let _ = std::fs::remove_dir_all(kept.parent().expect("the kept app's folder"));
+        let _ = std::fs::remove_dir_all(beside.join("new"));
+        let _ = std::fs::remove_file(beside.join("staged.json"));
+        self.outcome(plan, OutcomeKind::WentBack, why);
+    }
+
+    /// What a test's broken release does, put in the installed app as the release would carry it ([`recto_update::TestBreakage`]).
+    pub fn break_app(&self, what: recto_update::TestBreakage) {
+        let resources = self.app().join("Contents/Resources");
+        std::fs::create_dir_all(&resources).expect("the app's resources");
+        std::fs::write(resources.join(what.file()), b"").expect("the breakage's file");
+    }
+
+    /// **A development build handed over** as `recto update install <zip>` hands it over: a `RectoPDF-<version>.zip` of the test's, brought into the app's
+    /// hand-over folder by the same call `recto` makes. Says the copy's path, for the command. Its contents are nothing: [`FakeReleases`] checks it.
+    ///
+    /// # Panics
+    ///
+    /// If the copy can't be brought in.
+    #[must_use]
+    pub fn hand_over_build(&self, version: &str) -> PathBuf {
+        let zip = self.file(&format!("RectoPDF-{version}.zip"), b"PK a test's build");
+        let folder = recto_update::handover::folder_of(&self.update_files());
+        recto_platform::local::ensure_private_dir(&folder).expect("the hand-over folder");
+        recto_update::handover::bring_in(&zip, &folder, recto_update::handover::WAITS, &AtomicBool::new(false), &mut |_| {}).expect("the build brought in")
     }
 
     /// The installer's last word, and the plan taken away, as it leaves them.
