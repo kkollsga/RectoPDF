@@ -1,7 +1,9 @@
 use super::*;
 use recto_core::TocLine;
+use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
 use std::cell::Cell;
 
+mod pages;
 mod tabs;
 mod tiers;
 mod trail_tests;
@@ -1152,21 +1154,6 @@ fn an_agents_undone_steps_dont_stop_a_close() {
     assert!(s.undo_edit(id));
     assert!(!s.has_undone_owner_steps(id) && !s.sidebar().undone_owner_steps);
     assert!(s.close(id).is_ok());
-}
-
-/// Failure: the footer and page clamp ignore added or deleted pages, so the reader lands past the end.
-#[test]
-fn page_count_and_position_follow_edits() {
-    let mut s = session(5);
-    let id = s.open(Path::new("/d/a.pdf")).unwrap();
-    s.go_to(id, 4).unwrap();
-    s.edit_pages(id, |e| e.delete(1, 3)).unwrap();
-    assert_eq!(s.sidebar().place, "2 of 2");
-    s.insert_pdf(id, 2, Path::new("/d/b.pdf")).unwrap();
-    assert_eq!(s.pages_in(id), 7);
-    assert_eq!(s.sidebar().place, "2 of 7");
-    s.discard_edits(id);
-    assert_eq!(s.sidebar().place, "5 of 5", "the reader stays on the page they were reading");
 }
 
 /// Failure: every open tab pays for page edits, so idle tabs cost more once one PDF is edited.
@@ -2731,4 +2718,39 @@ fn the_pane_read_next_is_read_ahead() {
     assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
     assert!(read_ahead > loads);
     assert_eq!(back.active(), Some(ids[0]));
+}
+
+/// Twelve pages: `i` to `iv`, then `1` to `8`.
+struct Labelled;
+
+impl DocLoader for Labelled {
+    fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+        let mut toc = Toc::default();
+        toc.labels = PageLabels::from_ranges(
+            vec![
+                LabelRange {
+                    start: 0,
+                    first: 1,
+                    style: LabelStyle::RomanLower,
+                    prefix: "".into(),
+                },
+                LabelRange {
+                    start: 4,
+                    first: 1,
+                    style: LabelStyle::Decimal,
+                    prefix: "".into(),
+                },
+            ],
+            false,
+        );
+        Ok(DocFacts {
+            page_count: 12,
+            byte_len: 1,
+            encrypted: false,
+            version: "1.7".into(),
+            title: None,
+            toc,
+            renderer_only: false,
+        })
+    }
 }

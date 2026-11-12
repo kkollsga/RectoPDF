@@ -1,40 +1,4 @@
 use super::*;
-use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
-
-/// Twelve pages: `i` to `iv`, then `1` to `8`.
-struct Labelled;
-
-impl DocLoader for Labelled {
-    fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
-        let mut toc = Toc::default();
-        toc.labels = PageLabels::from_ranges(
-            vec![
-                LabelRange {
-                    start: 0,
-                    first: 1,
-                    style: LabelStyle::RomanLower,
-                    prefix: "".into(),
-                },
-                LabelRange {
-                    start: 4,
-                    first: 1,
-                    style: LabelStyle::Decimal,
-                    prefix: "".into(),
-                },
-            ],
-            false,
-        );
-        Ok(DocFacts {
-            page_count: 12,
-            byte_len: 1,
-            encrypted: false,
-            version: "1.7".into(),
-            title: None,
-            toc,
-            renderer_only: false,
-        })
-    }
-}
 
 /// Failure: Back after following a link doesn't return to where the reader was, to the depth on the page; or the trail isn't in the record, so it's gone after a quit or an update; or a closed tab's trail stays in memory.
 #[test]
@@ -78,26 +42,6 @@ fn back_and_forward_come_back_after_a_restart() {
     assert!(!again.go_forward(id).unwrap(), "nowhere further");
     again.close(id).unwrap();
     assert!(again.jumps.is_empty());
-}
-
-/// Failure: the corner shows `4 of 12` for a page the book calls `iv`, or `5 (5 of 12)` where the label says nothing new; or typing `iv` or `3` in the go-to field goes to the wrong page.
-#[test]
-fn labels_show_in_the_corner_and_find_pages() {
-    let mut s = Session::new(Labelled);
-    let id = s.open(Path::new("/d/book.pdf")).unwrap();
-    assert_eq!(s.place_words(id, 3), "iv (4 of 12)");
-    assert_eq!(s.place_words(id, 4), "1 (5 of 12)");
-    assert_eq!(s.page_for_typed(id, "iv"), Some(3));
-    assert_eq!(s.page_for_typed(id, "3"), Some(6), "the page labelled 3, as Preview reads it");
-    assert_eq!(s.page_for_typed(id, "12"), Some(11), "a number no page is labelled is the page");
-    assert_eq!(s.page_for_typed(id, "13"), None);
-    assert_eq!(s.page_for_typed(id, "xyz"), None);
-    // A moved page keeps the label its file gives it.
-    s.edit_pages(id, |edits| edits.move_pages(3, 1, 0)).unwrap();
-    assert_eq!(s.page_label(id, 0).as_deref(), Some("iv"));
-    assert_eq!(s.page_for_typed(id, "iv"), Some(0));
-    s.go_to(id, 0).unwrap();
-    assert_eq!(s.sidebar().place, "iv (1 of 12)");
 }
 
 /// Failure: a tab's trail makes a cold tab cost more than its budget of 4 KiB, as nothing counts it.
