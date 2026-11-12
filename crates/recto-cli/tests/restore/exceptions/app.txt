@@ -15,6 +15,9 @@ app.pages.spare_layers A pool of its own.
 app.pages.system_scroller_style The system's own scroll bar setting, which macOS can change between launches: CI's virtual machine read legacy, then overlay. The app's own scroller_style is compared.
 app.pages.thumb.accessibility.value As for the contents' thumb.
 app.pages.thumb.thumb_top As for the contents' thumb.
+app.pages.thumb_across.fraction Where the page is across follows the pane's scroll, which isn't carried across a quit as the first page's place is; the number can also differ by a fraction as the page lays out.
+app.pages.thumb_across.thumb_left As for `fraction`.
+app.pages.thumb_across.thumb_length The thumb's length follows the page's width against the pane's, which differs by a fraction of a point as the page lays out.
 app.pages.tile_layers The same, as the app has them.
 app.pages.tint_layers One per page layer.
 app.pages.worst_pointer_step_us The same, timed.

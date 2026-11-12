@@ -90,6 +90,7 @@ fn thumb_label(list: &str) -> &'static str {
         "tabs" => "Open documents",
         "find" => "Find results",
         "pages" => "Pages",
+        "pages_across" => "Pages, across",
         _ => "List",
     }
 }
@@ -108,7 +109,7 @@ pub enum AccessibilityStep {
     FoldKey { key: String },
     /// Contents row `row`'s fold action.
     FoldAction { row: u32 },
-    /// A thumb's increment or decrement: `list` is `contents`, `tabs`, `find` or `pages`.
+    /// A thumb's increment or decrement: `list` is `contents`, `tabs`, `find`, `pages` or `pages_across` (the reading pane's thumb along the bottom).
     Thumb { list: String, increment: bool },
 }
 
@@ -120,7 +121,7 @@ pub fn qa_step(value: &str) -> Option<AccessibilityStep> {
         ("fold", row) => AccessibilityStep::FoldAction { row: row.parse().ok()? },
         ("thumb", rest) => {
             let (list, step) = rest.split_once(':')?;
-            if !matches!(list, "contents" | "tabs" | "find" | "pages") || !matches!(step, "increment" | "decrement") {
+            if !matches!(list, "contents" | "tabs" | "find" | "pages" | "pages_across") || !matches!(step, "increment" | "decrement") {
                 return None;
             }
             AccessibilityStep::Thumb {
@@ -285,6 +286,7 @@ mod tests {
             "fold:3",
             "thumb:contents:increment",
             "thumb:pages:decrement",
+            "thumb:pages_across:increment",
         ] {
             assert!(is_qa_value(good), "{good}");
         }
