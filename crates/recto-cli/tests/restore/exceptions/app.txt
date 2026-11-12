@@ -20,3 +20,6 @@ app.pages.tint_layers One per page layer.
 app.pages.worst_pointer_step_us The same, timed.
 app.palette. ⌘K's palette is a moment's choice, as an open menu is, and closes when the keyboard goes elsewhere, so it isn't kept.
 app.settings.action An update waiting or under way, with its button: the updater's, held in memory, so a restart starts with none to show. What it shows is tested in `update`, by name (`settings_offers_update_now_for_a_waiting_build`).
+app.pages.thumb_across.fraction Where the page is across follows the pane's scroll, which isn't carried across a quit as the first page's place is; the number can also differ by a fraction as the page lays out.
+app.pages.thumb_across.thumb_left As for `fraction`.
+app.pages.thumb_across.thumb_length The thumb's length follows the page's width against the pane's, which differs by a fraction of a point as the page lays out.

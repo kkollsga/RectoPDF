@@ -135,7 +135,7 @@ final class HorizontalThumbView: NSView {
     var report: [String: Any] {
         refresh()
         let place = knob()
-        return ["shown": !isHidden && place != nil, "thumb_height": place?.height ?? 0, "thumb_length": place?.width ?? 0, "thumb_left": place?.minX ?? 0, "bottom_gap": place.map { bounds.maxY - $0.maxY } ?? 0, "fraction": fraction(), "strip": ["x": frame.minX, "y": frame.minY, "pane_height": scrollView?.bounds.height ?? 0, "pane_flipped": scrollView?.isFlipped ?? false, "width": frame.width, "height": frame.height],
+        return ["shown": !isHidden && place != nil, "thumb_height": place?.height ?? 0, "thumb_length": place?.width ?? 0, "thumb_left": place?.minX ?? 0, "bottom_gap": place.map { bounds.maxY - $0.maxY } ?? 0, "fraction": fraction(), "strip": ["x": frame.minX, "y": frame.minY,  "width": frame.width, "height": frame.height],
                 "accessibility": ["role": accessibilityRole()?.rawValue ?? "", "orientation": "horizontal", "label": spoken()?.label ?? ""] as [String: Any]]
     }
 }
