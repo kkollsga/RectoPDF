@@ -10,6 +10,15 @@
 use recto_session::TabId;
 use std::collections::HashMap;
 
+/// Why tabs are going dormant, for QA.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    LeftAlone,
+    Budget,
+    Pressure,
+    Asked,
+}
+
 /// A tab goes dormant once it hasn't been active or edited for this long. SPEC decision 25's five minutes, its *default*.
 pub const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 /// What the documents off screen may hold in all, their workers' memory and their histories', before the oldest goes dormant. SPEC section 2: "a byte budget frees the oldest first". What's on screen is another row.

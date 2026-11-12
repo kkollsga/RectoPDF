@@ -126,10 +126,20 @@ def split_top(body):
 def strip_attrs(s):
     return re.sub(r'#\[[^\]]*\]', '', s)
 
+REMOTE = re.compile(r'#\[\s*uniffi\s*::\s*remote\b')
+
+def is_remote(t, at):
+    """Whether the struct or enum whose keyword is at `at` has `#[uniffi::remote(..)]` among its own attributes: the text since the item before it ended."""
+    before = max(t.rfind(c, 0, at) for c in ';{}')
+    return bool(REMOTE.search(t, before + 1, at))
+
 def scan_items(t, lineof):
-    """Yield ('fn'|'struct'|'enum'|'impl', key, number) from masked, test-stripped text."""
+    """Yield ('fn'|'struct'|'enum'|'impl', key, number) from masked, test-stripped text. A struct or enum declared under `#[uniffi::remote(..)]` restates a
+    type that lives, and is counted, in another crate, so it's left out of the field and variant budgets; its lines still count toward its file's and the
+    bridge crate's."""
     stack = []          # (kind, name, depth_of_open_brace, start_pos)
     pend = None         # (kind, name, start_pos, paren_depth)
+    remote = set()      # start positions of remote declarations
     pd = 0
     bd = 0
     fns, impls = {}, {}
@@ -140,8 +150,12 @@ def scan_items(t, lineof):
             pend = ('fn', m.group('fname'), m.start(), pd)
         elif m.group('struct'):
             pend = ('struct', m.group('sname'), m.end(), pd)
+            if is_remote(t, m.start()):
+                remote.add(m.end())
         elif m.group('enum'):
             pend = ('enum', m.group('ename'), m.end(), pd)
+            if is_remote(t, m.start()):
+                remote.add(m.end())
         elif m.group('impl'):
             pend = ('impl', None, m.end(), pd)
         elif m.group('trait'):
@@ -179,6 +193,8 @@ def scan_items(t, lineof):
                     fns[key] = max(fns.get(key, 0), n)
                     if owner and owner[0] == 'impl' and stack[-1] is owner:
                         impls[owner[1]] = impls.get(owner[1], 0) + 1
+                elif kind in ('struct', 'enum') and start in remote:
+                    pass
                 elif kind == 'struct':
                     n = sum(1 for p in split_top(strip_attrs(t[op + 1:m.start()])) if ':' in p)
                     res.append(('struct', name, n))

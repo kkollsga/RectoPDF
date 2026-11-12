@@ -58,6 +58,18 @@ fresh; printf 'pub struct W {\n    a: u8,\n    #[x] pub b: Vec<(u8, u8)>,\n    c
 check "a struct over the field budget fails" "1" "$rc"; has "with its count" "struct crates/a/src/lib.rs::W is a new offender: 4 fields, budget 3" "$out"
 fresh; printf 'enum E {\n    A,\n    B(u8, u8),\n    C { x: u8 },\n    D = 4,\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
 check "an enum over the variant budget fails" "1" "$rc"; has "with its count" "enum crates/a/src/lib.rs::E is a new offender: 4 variants, budget 3" "$out"
+# a restatement for UniFFI of a type that lives in another crate
+fresh; mkdir -p "$X/t/crates/b/src"; printf 'pub use b::W;\n/// Says so.\n#[uniffi::remote(Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n#[uniffi::remote(Enum)]\npub enum E {\n    A,\n    B,\n    C,\n    D,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"
+printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/b/src/lib.rs"; R --update >/dev/null 2>&1; out=$(R)
+check "a remote struct or enum over budget isn't an offender" "" "$(echo "$out" | grep 'recto-ffi/src/lib.rs::')"
+has "the plain type in the other crate is" "struct crates/b/src/lib.rs::W is a new offender: 4 fields, budget 3" "$out"
+has "and the restatement's lines still count toward the bridge" "the binding crate crates/recto-ffi/src grew" "$out"
+fresh; printf '#[derive(uniffi::Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R)
+has "the same struct derived, not remote, is an offender" "struct crates/a/src/lib.rs::W is a new offender: 4 fields" "$out"
+fresh; mkdir -p "$X/t/crates/b/src"; printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"; printf "ffi crates/recto-ffi/src 6\nstruct crates/recto-ffi/src/lib.rs::W 4\n" > "$X/t/base.txt"
+printf '#[uniffi::remote(Record)]\npub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/recto-ffi/src/lib.rs"; printf 'pub struct W {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n}\n' > "$X/t/crates/b/src/lib.rs"
+out=$(R --moved crates/recto-ffi/src/lib.rs::W crates/b/src/lib.rs::W); rc=$?
+check "--moved carries a struct from its restatement to the plain type" "0" "$rc"; has "renamed" "struct crates/b/src/lib.rs::W 4" "$(cat "$X/t/base.txt")"
 fresh; printf 'struct T;\nimpl T {\n fn a(&self) {}\n fn b(&self) {}\n fn c(&self) {}\n fn d(&self) {}\n}\nimpl Tr for T {\n fn e(&self) {}\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
 check "an impl over the method budget fails" "1" "$rc"; has "with its count, trait impls left out" "impl crates/a/src/lib.rs::T is a new offender: 4 methods, budget 3" "$out"
 

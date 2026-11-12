@@ -213,6 +213,6 @@ pub(crate) fn bar_now(core: &crate::AppCore) -> Vec<app::MenuModel> {
         &core.inner.updates.menu_item().title,
         &items,
     );
-    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tool.is_on()));
+    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tools.tool.is_on()));
     bar
 }

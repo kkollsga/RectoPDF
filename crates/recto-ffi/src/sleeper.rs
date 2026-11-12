@@ -18,21 +18,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+pub(crate) use recto_app::sleeper::Why;
 use recto_app::sleeper::{self as app, SLEEP_WRITE_EVERY_SECONDS};
 pub(crate) use recto_app::sleeper::{DORMANT_AFTER_SECONDS, LIVE_BUDGET_BYTES};
 /// How often a flush looks again for the sleep files' lock, while it may wait for it.
 const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
-
-/// Why tabs are going dormant, for QA.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Why {
-    LeftAlone,
-    Budget,
-    Pressure,
-    Asked,
-}
 
 #[derive(Default)]
 struct Counts {
@@ -243,7 +235,7 @@ impl Inner {
 
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
     pub(crate) fn dormancy_due(&self) -> Option<Vec<TabId>> {
-        if self.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
+        if self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
             self.sleeper
                 .due
                 .store(self.sleeper.millis() + u64::try_from(BUSY_RETRY.as_millis()).unwrap_or(5000), Ordering::SeqCst);

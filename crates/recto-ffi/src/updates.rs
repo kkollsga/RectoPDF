@@ -12,8 +12,8 @@ use recto_update::source::Mode;
 use recto_update::updater::{Asked, Facts, HandOffRefused, HandedOff, Host, InstallRefused, Look};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -139,13 +139,13 @@ impl Host for Hooks {
     }
 
     fn frontmost(&self) -> bool {
-        self.inner().is_some_and(|inner| lock(&inner.app).focus.app_frontmost)
+        self.inner().is_some_and(|inner| lock(&inner.window.app).focus.app_frontmost)
     }
 
     /// A quiet run reopens quiet, on its own state folder. Only the updater's test mode ever looks at this.
     fn relaunch(&self) -> TestLaunch {
         let Some(inner) = self.inner() else { return TestLaunch::default() };
-        let root = inner.paths.as_ref().map(|paths| paths.root.display().to_string()).unwrap_or_default();
+        let root = inner.serving.paths.as_ref().map(|paths| paths.root.display().to_string()).unwrap_or_default();
         let mut args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
         // The new run ends with the same test as this one.
         if inner.qa.is_some() {
@@ -167,6 +167,7 @@ impl Host for Hooks {
     fn may_take_a_build(&self) -> bool {
         let Some(inner) = self.inner() else { return false };
         inner
+            .serving
             .paths
             .as_ref()
             .is_some_and(|paths| recto_control::levels::current(paths) == recto_agent::Level::Full)
@@ -174,7 +175,7 @@ impl Host for Hooks {
 
     fn can_draw(&self) -> bool {
         let Some(inner) = self.inner() else { return false };
-        let Some(paths) = inner.paths.as_ref() else { return false };
+        let Some(paths) = inner.serving.paths.as_ref() else { return false };
         draws_a_page(&paths.root.join("update"))
     }
 
@@ -265,7 +266,8 @@ pub(crate) fn restore_patience(may_be_reopened_by_update: bool, since_launch: Du
     Patience::WaitFor(UPDATE_RESTORE_PATIENCE - since_launch)
 }
 
-/// Asks again once that's up, on a thread that lives only that long: the state will usually have come by then, and if not, the window goes up without it.
+/// Asks again once that's up, on a thread that lives only that long: the state will usually have come by then, and if not, the window goes up without it. A thread that
+/// can't be started is patience over now: the window goes up without the state, said as such.
 pub(crate) fn look_again_after(inner: &Inner, left: Duration) {
     let core = Arc::clone(&inner.core);
     let spawned = std::thread::Builder::new()
@@ -276,8 +278,15 @@ pub(crate) fn look_again_after(inner: &Inner, left: Duration) {
             core.push(CoreCall::RestorePatienceOver);
         });
     if spawned.is_err() {
-        inner.listener.restore_ready();
+        show_without_state(&inner.life.shown_without_state, &*inner.listener);
     }
+}
+
+/// **The window goes up without the state:** marked first, then the host's told, so the state's coming later is known to be late (it's held back in a slow run, and
+/// `qa` doesn't take the window for one made from it). The one way there, whether the patience ran out or its thread couldn't be started.
+pub(crate) fn show_without_state(shown_without_state: &AtomicBool, listener: &dyn recto_app::Listener) {
+    shown_without_state.store(true, Ordering::SeqCst);
+    listener.restore_ready();
 }
 
 /// How long a window up without the state waits for it before it takes input anyway. Past this, a state that comes in isn't made into the window, as the person may be using it.
@@ -434,7 +443,7 @@ impl Inner {
     /// With the window open, the margin says it, and nothing more is put up.
     pub(crate) fn take_update_alert(&self) -> Option<UpdateAlert> {
         let words = self.updates.take_alert()?;
-        let app = lock(&self.app);
+        let app = lock(&self.window.app);
         let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
         alert_for(words, !app.window_closed && !in_dock)
     }
@@ -503,23 +512,23 @@ impl Inner {
     }
 
     pub(crate) fn settings_window_changed(&self, place: Option<SettingsWindow>) {
-        lock(&self.app).settings_window = place;
+        lock(&self.window.app).settings_window = place;
         self.saver.view_changed();
     }
 
     pub(crate) fn settings_window(&self) -> Option<SettingsWindow> {
-        lock(&self.app).settings_window
+        lock(&self.window.app).settings_window
     }
 
     /// The hand-off isn't going ahead.
     pub(crate) fn hand_off_cancelled(&self) {
-        self.hand_off_state.store(crate::HandOffState::Idle as u8, Ordering::SeqCst);
+        self.life.hand_off_state.store(crate::HandOffState::Idle as u8, Ordering::SeqCst);
         self.set_frozen(false);
     }
 
     pub(crate) fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
         // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
-        *lock(&self.update_facts) = Some(Facts {
+        *lock(&self.life.update_facts) = Some(Facts {
             version: recto_update::version::running(&version, dev_version.as_deref()),
             app: PathBuf::from(bundle_path),
             system: system_version,
@@ -643,6 +652,23 @@ pub(crate) fn timer_for(next_wake: Option<u64>, now_ms: u64) -> Option<UpdateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: the window goes up without the state but isn't marked as having done so before the host hears, as the fallback for a patience thread that couldn't be started did: the state's coming later was then a second `restore_ready` that a slow run didn't hold back, and `qa` took the window for one made from the state.
+    #[test]
+    fn a_window_up_without_the_state_is_marked_before_the_host_hears() {
+        let shown = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&shown);
+        let marked_when_told = Arc::new(AtomicBool::new(false));
+        let told = Arc::clone(&marked_when_told);
+        let listener = recto_app::testkit::FakeListener::checking(move |heard| {
+            if heard == recto_app::testkit::Heard::RestoreReady {
+                told.store(seen.load(Ordering::SeqCst), Ordering::SeqCst);
+            }
+        });
+        show_without_state(&shown, &listener);
+        assert_eq!(listener.heard(), vec![recto_app::testkit::Heard::RestoreReady]);
+        assert!(marked_when_told.load(Ordering::SeqCst), "marked before the host was told");
+    }
 
     /// Failure: a silent update puts a window over what the user's doing, or moves them to another Space by going into full screen. **Only as far as it can be tested with no screen:** that Rust says behind and not yet, for an update arriving in the background and nothing else. What AppKit then does stays unproven until a signed release on a real desktop.
     #[test]

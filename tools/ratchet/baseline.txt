@@ -1,10 +1,10 @@
-ffi crates/recto-ffi/src 9238
+ffi crates/recto-ffi/src 8841
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524
 file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 4634
+file crates/recto-ffi/src/lib.rs 4319
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
@@ -19,10 +19,9 @@ fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187
 fn crates/recto-core/src/save.rs::save 213
-fn crates/recto-ffi/src/lib.rs::AppCore::start 193
 fn crates/recto-ffi/src/lib.rs::AppHost::run_counted 156
-fn crates/recto-ffi/src/lib.rs::reconcile 281
-fn crates/recto-ffi/src/lib.rs::session_thread 350
+fn crates/recto-ffi/src/lib.rs::reconcile 280
+fn crates/recto-ffi/src/lib.rs::session_thread 347
 fn crates/recto-fuzz/src/targets/pdf.rs::build_tree 250
 fn crates/recto-index/src/select.rs::PageText::find_edges 181
 fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162
@@ -107,10 +106,9 @@ sleep crates/recto-update/src/updater/builds.rs 1
 sleep crates/recto-update/tests/installer.rs 4
 struct crates/recto-agent/src/render/svg.rs::Tally 20
 struct crates/recto-agent/src/search.rs::Reader 16
+struct crates/recto-app/src/reader_view.rs::ReaderView 35
 struct crates/recto-control/src/server.rs::Limits 17
 struct crates/recto-control/src/server.rs::Loop 21
-struct crates/recto-ffi/src/lib.rs::Inner 43
-struct crates/recto-ffi/src/lib.rs::ReaderView 35
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
 struct crates/recto-reader/src/tiles.rs::DocView 18

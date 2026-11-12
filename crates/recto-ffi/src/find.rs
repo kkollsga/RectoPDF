@@ -1,7 +1,7 @@
 //! **The sidebar's Find: its records and the calls.** What it shows, what each call does and when the host is told are `recto_app::find`'s; this hands it the app's parts it
 //! reaches, as a [`FindHandle`], and converts what comes back.
 
-use crate::{AppListener, Inner};
+use crate::Inner;
 use recto_agent::Event;
 use recto_app::find::{self as app, FindHandle};
 pub(crate) use recto_app::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
@@ -85,11 +85,11 @@ impl From<app::FindRow> for FindRow {
 }
 
 /// What Find reaches of the app, for one call.
-fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn AppListener>) -> R) -> R {
+fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn recto_app::Listener>) -> R) -> R {
     let set_view = |events: &mut Vec<Event>, change: fn(&mut recto_session::ViewSettings)| crate::set_view(inner, events, change);
     step(&FindHandle {
         session: &inner.host.session,
-        field: &inner.find_field,
+        field: &inner.tools.find_field,
         frozen: &inner.core.frozen,
         panes: &inner.panes,
         engine: &inner.engine,
@@ -99,7 +99,7 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn AppListener>) 
 }
 
 pub(crate) fn is_open(inner: &Inner) -> bool {
-    app::is_open(&inner.find_field)
+    app::is_open(&inner.tools.find_field)
 }
 
 pub(crate) fn view(inner: &Inner) -> FindView {

@@ -2,13 +2,44 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, PaneView, ReaderView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView};
+use crate::{AppListener, RowKind, SidebarRow, SidebarView};
 use recto_app as app;
+use std::sync::Arc;
 
-/// The app core's listener is the host's: one call each, through the UniFFI listener. The core takes it as a generic, so there's no second trait object.
-impl recto_app::Listener for dyn AppListener {
+/// The app core's listener is the host's: each call forwards, one for one and on the thread it was made on, to the UniFFI listener. The promises are `recto_app::Listener`'s.
+pub(crate) struct HostListener(pub(crate) Arc<dyn AppListener>);
+
+impl app::Listener for HostListener {
     fn model_changed(&self) {
-        AppListener::model_changed(self);
+        self.0.model_changed();
+    }
+
+    fn ops_ready(&self) {
+        self.0.ops_ready();
+    }
+
+    fn qa_request(&self, id: u64, verb: String, value: String) {
+        self.0.qa_request(id, verb, value);
+    }
+
+    fn session_ended(&self) {
+        self.0.session_ended();
+    }
+
+    fn copy_ready(&self) {
+        self.0.copy_ready();
+    }
+
+    fn restore_ready(&self) {
+        self.0.restore_ready();
+    }
+
+    fn quit_answer(&self, answer: app::listener::QuitAnswer) {
+        self.0.quit_answer(answer);
+    }
+
+    fn hand_off_quit(&self) {
+        self.0.hand_off_quit();
     }
 }
 
@@ -60,95 +91,6 @@ impl From<app::SidebarView> for SidebarView {
             edited: view.edited,
             undone_owner_steps: view.undone_owner_steps,
             contents_note: view.contents_note.map(Into::into),
-        }
-    }
-}
-
-impl From<app::PaneView> for PaneView {
-    fn from(pane: app::PaneView) -> Self {
-        Self {
-            tab: pane.tab,
-            title: pane.title,
-            reading: pane.reading,
-            layout: pane.layout,
-            note: pane.note,
-        }
-    }
-}
-
-impl From<app::SelectionNotice> for SelectionNotice {
-    fn from(notice: app::SelectionNotice) -> Self {
-        Self {
-            text: notice.text,
-            action_title: notice.action_title,
-            action_id: notice.action_id,
-            fades: notice.fades,
-        }
-    }
-}
-
-impl From<SelectionNotice> for app::SelectionNotice {
-    fn from(notice: SelectionNotice) -> Self {
-        Self {
-            text: notice.text,
-            action_title: notice.action_title,
-            action_id: notice.action_id,
-            fades: notice.fades,
-        }
-    }
-}
-
-impl From<app::RecentFile> for RecentFile {
-    fn from(file: app::RecentFile) -> Self {
-        Self {
-            key: file.key,
-            name: file.name,
-            folder: file.folder,
-            path: file.path,
-            open: file.open,
-        }
-    }
-}
-
-/// The reader model with its sheets empty: the caller sets the bridge's own.
-impl From<app::ReaderModel> for ReaderView {
-    fn from(model: app::ReaderModel) -> Self {
-        Self {
-            panes: model.panes.into_iter().map(Into::into).collect(),
-            compare_synced: model.window.compare_synced,
-            home: model.window.home,
-            note: model.note,
-            sidebar_hidden: model.window.sidebar_hidden,
-            layout: model.document.layout,
-            edited: model.edit.edited,
-            can_undo: model.edit.can_undo,
-            can_redo: model.edit.can_redo,
-            edit_mode: model.edit.edit_mode,
-            can_rotate: model.edit.can_rotate,
-            place: model.document.place,
-            paper: model.paper.name,
-            paper_rgb: model.paper.rgb,
-            agent_icon_hidden: model.window.agent_icon_hidden,
-            page_tint: model.paper.tint,
-            sidebar_width: model.window.sidebar_width,
-            highlight_dark_colour: model.paper.highlight_dark_colour,
-            highlight_lighten: model.paper.highlight_lighten,
-            selection_notice: model.selection_notice.map(Into::into),
-            saving: model.save.saving,
-            save_tooltip: model.save.tooltip,
-            save_problem: None,
-            save_as_note: model.save.as_note,
-            shown_tab: model.document.shown_tab,
-            document_name: model.document.name,
-            document_folder: model.document.folder,
-            save_button: model.save.button,
-            print_ready: model.window.print_ready,
-            password_prompt: None,
-            save_enabled: model.save.enabled,
-            can_go_back: model.edit.can_go_back,
-            can_go_forward: model.edit.can_go_forward,
-            link_prompt: None,
-            page_text: model.document.page_text,
         }
     }
 }
