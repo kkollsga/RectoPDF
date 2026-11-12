@@ -5,8 +5,9 @@ mod handover;
 mod qa;
 
 use recto_agent::commands::access::{Log, PermissionRequest};
+use recto_agent::commands::qa::{QaDrive, QaRead};
 use recto_agent::commands::sync::{Wait, Watch};
-use recto_agent::commands::{Edit, Rights, Waits};
+use recto_agent::commands::{Edit, Qa, Rights, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -190,7 +191,7 @@ fn client_wait(base_s: u64, command: &Command) -> Duration {
         Command::Waits(Waits::Watch(Watch { timeout_ms, .. })) => timeout_ms.unwrap_or(recto_agent::DEFAULT_WATCH_MS),
         Command::Rights(Rights::PermissionRequest(PermissionRequest { timeout_ms, .. })) => timeout_ms.unwrap_or(0),
         // `qa wait-settled --timeout 2m` waits that long in the app, so the client waits that long too, past its own time to answer.
-        Command::QaRead { timeout_ms, .. } | Command::QaDrive { timeout_ms, .. } => timeout_ms.unwrap_or(0),
+        Command::Qa(Qa::QaRead(QaRead { timeout_ms, .. }) | Qa::QaDrive(QaDrive { timeout_ms, .. })) => timeout_ms.unwrap_or(0),
         _ => 0,
     };
     Duration::from_secs(base_s) + Duration::from_millis(waited)
@@ -741,17 +742,17 @@ mod tests {
     /// Failure: `recto qa wait-settled --timeout 2m` gives up after the client's own 35 s and says the session didn't answer, while the app is still waiting as it was asked to: found printing 300 pages, whose pages take longer than that to prepare.
     #[test]
     fn a_qa_command_with_a_timeout_is_waited_for_that_long() {
-        let settle = Command::QaRead {
+        let settle = Command::from(recto_agent::commands::qa::QaRead {
             verb: "settled".into(),
             out: None,
             timeout_ms: Some(120_000),
-        };
+        });
         assert_eq!(client_wait(35, &settle), Duration::from_secs(155));
-        let plain = Command::QaRead {
+        let plain = Command::from(recto_agent::commands::qa::QaRead {
             verb: "state".into(),
             out: None,
             timeout_ms: None,
-        };
+        });
         assert_eq!(client_wait(35, &plain), Duration::from_secs(35));
     }
 }

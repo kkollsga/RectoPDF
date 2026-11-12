@@ -27,14 +27,9 @@ impl Command {
             Self::Waits(command) => command.route(),
             Self::Rights(command) => command.route(),
             Self::Session(command) => command.route(),
+            Self::Qa(command) => command.route(),
             Self::SessionSleep { .. } | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Runs::Record,
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. } => Runs::App,
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => Runs::App,
         }
     }
 }

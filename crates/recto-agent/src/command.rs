@@ -16,8 +16,7 @@ impl Command {
             Self::Waits(command) => command.tag(),
             Self::Rights(command) => command.tag(),
             Self::Session(command) => command.tag(),
-            Self::QaRead { .. } => "qa_read",
-            Self::QaDrive { .. } => "qa_drive",
+            Self::Qa(command) => command.tag(),
             Self::SessionSleep { .. } => "session_sleep",
             Self::SessionShow {} => "session_show",
             Self::SessionSave {} => "session_save",
@@ -44,14 +43,13 @@ impl Command {
             Self::Waits(command) => command.access(),
             Self::Rights(command) => command.access(),
             Self::Session(command) => command.access(),
+            Self::Qa(command) => command.access(),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // The same for development builds: the switch is what lets a build that isn't a release replace the app.
             Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
             Self::Settings { .. }
             | Self::UpdateDevBuilds { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
             | Self::SessionSleep { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
@@ -74,9 +72,8 @@ impl Command {
             Self::Waits(command) => command.draws(),
             Self::Rights(command) => command.draws(),
             Self::Session(command) => command.draws(),
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::SessionSleep { .. }
+            Self::Qa(command) => command.draws(),
+            Self::SessionSleep { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -100,9 +97,8 @@ impl Command {
             Self::Waits(command) => command.reads_pages(),
             Self::Rights(command) => command.reads_pages(),
             Self::Session(command) => command.reads_pages(),
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::SessionSleep { .. }
+            Self::Qa(command) => command.reads_pages(),
+            Self::SessionSleep { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -126,9 +122,8 @@ impl Command {
             Self::Waits(command) => command.protected_ok(),
             Self::Rights(command) => command.protected_ok(),
             Self::Session(command) => command.protected_ok(),
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::SessionSleep { .. }
+            Self::Qa(command) => command.protected_ok(),
+            Self::SessionSleep { .. }
             | Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
@@ -152,10 +147,9 @@ impl Command {
             Self::Waits(command) => command.tab(),
             Self::Rights(command) => command.tab(),
             Self::Session(command) => command.tab(),
+            Self::Qa(command) => command.tab(),
             Self::SessionSleep { tab } => Some(tab),
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::SessionShow {}
+            Self::SessionShow {}
             | Self::SessionSave {}
             | Self::SessionRestore {}
             | Self::SessionCheck {}
@@ -179,8 +173,8 @@ impl Command {
             Self::Waits(command) => command.log_details(),
             Self::Rights(command) => command.log_details(),
             Self::Session(command) => command.log_details(),
+            Self::Qa(command) => command.log_details(),
             Self::SessionSleep { tab } => json!({ "tab": tab_of(tab) }),
-            Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
             Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),

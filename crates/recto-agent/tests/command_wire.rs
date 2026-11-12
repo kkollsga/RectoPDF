@@ -10,7 +10,7 @@ const REQUESTS: &str = include_str!("golden/requests.txt");
 const GOLDEN: &str = include_str!("golden/command_wire.txt");
 
 /// The families a command may be held in, which `Debug` puts around it. What's held to the golden file is the command itself.
-const FAMILIES: &[&str] = &["Start", "Read", "Move", "Edit", "Waits", "Rights", "Session", "Measure"];
+const FAMILIES: &[&str] = &["Start", "Read", "Move", "Edit", "Waits", "Rights", "Session", "Measure", "Qa"];
 
 fn without_family(debug: String) -> String {
     for family in FAMILIES {

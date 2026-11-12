@@ -11,6 +11,7 @@ pub mod export;
 pub mod finding;
 pub mod linking;
 pub mod measure;
+pub mod qa;
 pub mod reading;
 pub mod saving;
 pub mod session;
@@ -261,6 +262,14 @@ family! {
 }
 
 family! {
+    /// Testing the app: what an app started in QA mode shows, and making it do what the UI does. Their rows are [`qa::ROWS_QA`].
+    pub enum Qa {
+        QaRead(qa::QaRead),
+        QaDrive(qa::QaDrive),
+    }
+}
+
+family! {
     /// Waiting instead of polling.
     pub enum Waits {
         Wait(sync::Wait),
@@ -336,6 +345,7 @@ const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Waits::TAGS, Waits::parse, Waits::human),
     (Rights::TAGS, Rights::parse, Rights::human),
     (Session::TAGS, Session::parse, Session::human),
+    (Qa::TAGS, Qa::parse, Qa::human),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
@@ -376,7 +386,7 @@ const PARTS: &[&[&[Spec]]] = &[
     ],
     Measure::ROWS,
     &[table::CLI_BUDGET_TABS],
-    &[table::QA_1, table::QA_2],
+    qa::ROWS_QA,
 ];
 
 const fn rows_in(parts: &[&[&[Spec]]]) -> usize {

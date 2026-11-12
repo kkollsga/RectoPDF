@@ -177,21 +177,8 @@ pub enum Command {
     Move(commands::Move),
     #[serde(skip)]
     Read(commands::Read),
-    /// Asks the running app what it shows. Only an app started in QA mode answers.
-    QaRead {
-        verb: String,
-        #[serde(default)]
-        out: Option<PathBuf>,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-    },
-    /// Has the running app do what the UI does. Only an app started in QA mode answers.
-    QaDrive {
-        verb: String,
-        value: String,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-    },
+    #[serde(skip)]
+    Qa(commands::Qa),
     /// Puts a tab to sleep now, as being left alone for five minutes would.
     SessionSleep {
         #[serde(default = "active_tab")]
@@ -620,7 +607,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
             Err(update_needs_app())
         }
@@ -628,6 +614,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Session(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Qa(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
@@ -1686,16 +1673,16 @@ mod tests {
                 zoom: None,
                 layout: None,
             }),
-            Command::QaRead {
+            Command::from(crate::commands::qa::QaRead {
                 verb: "state".into(),
                 out: None,
                 timeout_ms: None,
-            },
-            Command::QaDrive {
+            }),
+            Command::from(crate::commands::qa::QaDrive {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
-            },
+            }),
             Command::from(commands::session::Stop {}),
             Command::SessionShow {},
             Command::SessionSave {},
@@ -1802,16 +1789,16 @@ mod tests {
     fn qa_commands_need_an_app() {
         let mut s = with_tabs(&["a"]);
         for command in [
-            Command::QaRead {
+            Command::from(crate::commands::qa::QaRead {
                 verb: "state".into(),
                 out: None,
                 timeout_ms: None,
-            },
-            Command::QaDrive {
+            }),
+            Command::from(crate::commands::qa::QaDrive {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
-            },
+            }),
         ] {
             let error = run(&mut s, Level::Full, &command).unwrap_err();
             assert_eq!(error.code, "qa_needs_app");

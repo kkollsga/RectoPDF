@@ -83,8 +83,7 @@ impl Host for AppHost {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let asks_only = matches!(
             command,
-            Command::QaRead { .. }
-                | Command::QaDrive { .. }
+            Command::Qa(_)
                 | Command::SessionCheck {}
                 | Command::SessionShow {}
                 | Command::SessionSave {}
@@ -163,9 +162,9 @@ impl Host for AppHost {
 impl AppHost {
     pub fn run_counted(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         // The level was checked by the server against the row, and again by `execute`. QA doesn't reach `execute`, which would say it needs an app.
-        if matches!(command, Command::QaRead { .. } | Command::QaDrive { .. }) {
+        if let Command::Qa(asked) = command {
             return match &self.qa {
-                Some(qa) => qa.run(command),
+                Some(qa) => qa.run(asked),
                 None => Err(recto_agent::qa_needs_app()),
             };
         }
