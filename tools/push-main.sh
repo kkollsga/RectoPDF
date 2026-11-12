@@ -5,6 +5,7 @@
 #   tools/push-main.sh                 git push origin main (the pre-push hook still decides), then watch the pushed commit's CI run
 #   tools/push-main.sh --watch [sha]   watch a commit's run on main (default: origin/main)
 #   tools/push-main.sh --status        one line on the last pushed main commit's CI, for tools/check.sh: exit 0 green, running or marked known, 1 red, 2 unknown, 3 never ran
+#   tools/push-main.sh --budget        the warning when CI's check is over its time budget, from the kept times alone; `tools/check.sh` ends every run with it
 #   tools/push-main.sh --known <sha> --until YYYY-MM-DD --why "what is known"
 #                                      marks that commit's red CI as known until the date, at most 7 days ahead, so `check.sh --full` on main stamps again
 #
@@ -203,9 +204,29 @@ ci_time() {
   n=$(tail -5 "$times" | wc -l | tr -d ' ')
   median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
   echo "push-main: CI's check took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
-  if [ "$median" -gt "$CI_BUDGET" ]; then
-    echo "push-main: CI IS OVER ITS BUDGET by $(mins $((median - CI_BUDGET))). Bringing it back is the next task, before another feature: the run's stages are its log's 'check: ... took' lines, and the slowest tests are in tools/check.sh --slow."
-  fi
+  budget_warning
+}
+
+# The warning every agent sees while CI is over its budget: from the kept times alone, so it asks GitHub nothing and costs nothing. `tools/check.sh` ends
+# every run with it. Owner, 2026-11-12: "It should be a stern warning so the agents knows it's something they need to take seriously and look at".
+# Nothing when CI is within its budget or no time is kept. Never fails: it is for reading and acting on.
+budget_warning() {
+  [ -s "$times" ] || return 0
+  local n median
+  n=$(tail -5 "$times" | wc -l | tr -d ' ')
+  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  [[ "$median" =~ ^[0-9]+$ ]] && [ "$median" -gt "$CI_BUDGET" ] || return 0
+  {
+    echo "==================== WARNING: CI IS OVER ITS TIME BUDGET ===================="
+    echo "main's CI check took a median of $(mins "$median") over its last $n green runs. The budget is $(mins "$CI_BUDGET"): over by $(mins $((median - CI_BUDGET)))."
+    echo "This is not background noise and it is not someone else's job. Read it, and act on it in this task:"
+    echo "  1. Add no test that launches the app, sleeps, or waits out a default. Test what Rust decides in process (recto-app's testkit)."
+    echo "  2. If your branch adds test seconds, take them out, or say how many and why in your hand-back. Silence about it is a defect."
+    echo "  3. If you see a test that costs more than its concern needs, say so in your hand-back with its name and seconds."
+    echo "  4. Coordinator: bringing CI back under its budget is the next task, before any other feature work."
+    echo "Where the time is: tools/check.sh --slow, and the 'check: ... took' lines in the last CI run's log. The rule: AGENTS.md, \"CI doesn't get slower\"."
+    echo "============================================================================="
+  } >&2
 }
 
 watch() {
@@ -314,6 +335,7 @@ case "${1:-}" in
     ;;
   --watch) watch "${2:-refs/remotes/origin/main}" ;;
   --status) status ;;
+  --budget) budget_warning ;;
   --known) shift; mark_known "$@" ;;
   *) sed -n '2,13p' "$0" >&2; exit 2 ;;
 esac

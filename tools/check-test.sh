@@ -1067,14 +1067,23 @@ check "a green watch ends with 0 and says so" "0 yes" "$rc $(printf '%s' "$out" 
 rm -f .git/recto-ci-times
 out=$(STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 has "a green run's check time is said against the budget" "CI's check took 10 min 0 s; the median of the last 1 green runs is 10 min 0 s, and the budget is 15 min 0 s." "$out"
-check "under it, nothing more is said, and the time is kept" "no 600" "$(printf '%s' "$out" | grep -q "OVER ITS BUDGET" && echo yes || echo no) $(tail -1 .git/recto-ci-times | cut -f4)"
+check "under it, nothing more is said, and the time is kept" "no 600" "$(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no) $(tail -1 .git/recto-ci-times | cut -f4)"
 out=$(STUB_GH_CHECK_SECS=2000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
-check "one slow run among fast ones isn't over the budget, and never fails the watch" "0 no" "$rc $(printf '%s' "$out" | grep -q "OVER ITS BUDGET" && echo yes || echo no)"
+check "one slow run among fast ones isn't over the budget, and never fails the watch" "0 no" "$rc $(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no)"
 out=$(STUB_GH_CHECK_SECS=1000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
-has "a median over the budget is said loudly, with by how much and where to look" "CI IS OVER ITS BUDGET by 1 min 40 s. Bringing it back is the next task" "$out"
+has "a median over the budget is a stern warning, with by how much" "WARNING: CI IS OVER ITS TIME BUDGET" "$out"
+has "saying it is the reader's to act on" "not someone else's job" "$out"
+has "the numbers" "a median of 16 min 40 s over its last 3 green runs. The budget is 15 min 0 s: over by 1 min 40 s." "$out"
+has "what the coordinator does next" "bringing CI back under its budget is the next task" "$out"
+asked=$(grep -c fromdate "$CALLS.gh" 2>/dev/null || true)
+out=$(PUSH_MAIN_CI_BUDGET=900 tools/check.sh --quick 2>&1)
+has "and every check ends with it while it lasts, on a branch too" "WARNING: CI IS OVER ITS TIME BUDGET" "$(printf '%s' "$out" | tail -12)"
+check "asking GitHub nothing for it" "$asked" "$(grep -c fromdate "$CALLS.gh" 2>/dev/null || true)"
+check "within the budget a check says nothing of it" "no" "$(tools/check.sh --quick 2>&1 | grep -q "TIME BUDGET" && echo yes || echo no)"
 check "and the watch is still green" "0" "$rc"
 out=$(STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
 check "a time gh can't give is neither said nor kept" "no 3" "$(printf '%s' "$out" | grep -q "CI's check took" && echo yes || echo no) $(wc -l < .git/recto-ci-times | tr -d ' ')"
+rm -f .git/recto-ci-times
 out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH_MAIN_LIMIT=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"
 out=$(PUSH_MAIN_GH=/nonexistent/gh tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
