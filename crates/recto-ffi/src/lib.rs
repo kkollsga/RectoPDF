@@ -6,6 +6,7 @@
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
 pub mod chrome;
+mod core;
 mod find;
 mod generated_contents;
 pub mod linking;
@@ -22,8 +23,8 @@ mod sleeper;
 mod snapshot_tool;
 pub mod updates;
 
+use core::qa::{QUIET_RUN_LIMIT, QaBridge, end_with_starter};
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
-use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
@@ -1154,11 +1155,11 @@ struct Tools {
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
-    tool: snapshot_tool::Tool,
+    tool: core::snapshot_tool::Tool,
     folds: recto_app::sidebar_access::Folds,
     chrome: recto_app::chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
-    printing: printing::Printing,
+    printing: core::printing::Printing,
     /// ⌘K's palette, on the UI thread.
     palette: recto_app::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
@@ -1223,10 +1224,10 @@ impl Tools {
         Self {
             prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(save_step)),
-            tool: snapshot_tool::Tool::default(),
+            tool: core::snapshot_tool::Tool::default(),
             folds: recto_app::sidebar_access::Folds::default(),
             chrome: recto_app::chrome::Chrome::default(),
-            printing: printing::Printing::default(),
+            printing: core::printing::Printing::default(),
             palette: recto_app::palette::Palette::default(),
             find_field: Mutex::new(recto_app::find::Field::default()),
         }
@@ -1763,7 +1764,7 @@ impl AppCore {
             .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
         if args.qa {
             let state = inner.serving.paths.as_ref().map(|paths| paths.root.clone());
-            qa::end_with_starter(args.time_limit.unwrap_or(qa::QUIET_RUN_LIMIT), args.owner_pid, state, Arc::downgrade(&inner));
+            end_with_starter(args.time_limit.unwrap_or(QUIET_RUN_LIMIT), args.owner_pid, state, Arc::downgrade(&inner));
         }
         Ok(Arc::new(Self {
             inner,
@@ -1782,7 +1783,7 @@ impl AppCore {
 
     /// The window is up. In a QA run this tells whoever's waiting, on one line, and any files named at launch start opening.
     pub fn ready(&self) {
-        printing::sweep_at_launch();
+        core::printing::sweep_at_launch();
         for path in &self.start_with {
             self.inner.core.push(CoreCall::Open(path.clone()));
         }
@@ -2196,7 +2197,7 @@ impl AppCore {
             return HostAction::None;
         }
         // Features that answer ids of their own: the snapshot tool, and printing.
-        if snapshot_tool::perform(&self.inner, &id) || printing::perform(&self.inner, &id) {
+        if core::snapshot_tool::perform(&self.inner, &id) || core::printing::perform(&self.inner, &id) {
             return HostAction::None;
         }
         let Some(action) = menus::action(&id) else { return HostAction::None };
@@ -4100,7 +4101,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
     if inner.window.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
         lock(&inner.window.action_notice).take();
-        snapshot_tool::tab_came_forward(inner);
+        core::snapshot_tool::tab_came_forward(inner);
     }
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
     // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.

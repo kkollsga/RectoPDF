@@ -73,8 +73,8 @@ sleep crates/recto-control/src/record_store.rs 2
 sleep crates/recto-control/tests/server.rs 15
 sleep crates/recto-core/src/save.rs 1
 sleep crates/recto-core/tests/save.rs 2
+sleep crates/recto-ffi/src/core/qa.rs 5
 sleep crates/recto-ffi/src/lib.rs 2
-sleep crates/recto-ffi/src/qa.rs 5
 sleep crates/recto-ffi/src/sleeper.rs 2
 sleep crates/recto-ffi/src/updates.rs 2
 sleep crates/recto-fuzz/src/targets/control.rs 1

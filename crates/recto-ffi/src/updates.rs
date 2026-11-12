@@ -149,7 +149,7 @@ impl Host for Hooks {
         let mut args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
         // The new run ends with the same test as this one.
         if inner.qa.is_some() {
-            args.extend(crate::qa::owner_args());
+            args.extend(crate::core::qa::owner_args());
         }
         let mut env = vec![("RECTO_STATE_DIR".to_owned(), root)];
         if inner.qa.is_some() {
