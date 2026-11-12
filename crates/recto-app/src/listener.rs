@@ -43,9 +43,7 @@ pub trait Listener: Send + Sync {
 
     /// A copy is ready: the host takes it (`take_copied`) on its UI thread and puts it on the clipboard.
     ///
-    /// From a page view's thread or the UI thread, after a selection's text is made, and from the snapshot tool's thread once its pictures are ready. **Today:** a page
-    /// view says it with that page view's notice lock still held when the notice hasn't changed (`recto_reader::engine::tell_selecting`), which is harmless only while
-    /// the host keeps its promise not to call back before returning.
+    /// From a page view's thread or the UI thread, after a selection's text is made, and from the snapshot tool's thread once its pictures are ready.
     fn copy_ready(&self);
 
     /// The saved state's been read and applied, or the wait for it is over: the host can make the window, in the right place.
