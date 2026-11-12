@@ -125,6 +125,7 @@ pub struct Builder {
     clock_ms: u64,
     open: Vec<PathBuf>,
     update: Option<UpdateBed>,
+    state_late: bool,
 }
 
 impl Builder {
@@ -154,6 +155,14 @@ impl Builder {
     #[must_use]
     pub fn update(mut self, bed: &UpdateBed) -> Self {
         self.update = Some(bed.clone());
+        self
+    }
+
+    /// **The state read late,** as off a slow disk: the host's second of patience is over before it's read, so the window goes up without it (or, for a launch an
+    /// update may have opened, waits on), and it comes in after.
+    #[must_use]
+    pub fn state_late(mut self) -> Self {
+        self.state_late = true;
         self
     }
 
@@ -212,24 +221,67 @@ impl Builder {
             listener,
             disk: Some(disk),
         };
-        // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's patience isn't armed: a test that wants the window up without the
-        // state calls `restore_patience_over` itself.
+        let mut host = HostPlay::default();
+        // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
+        // what the host hears first.
+        if self.state_late {
+            app.clock.advance(u64::try_from(crate::core::RESTORE_PATIENCE.as_millis()).unwrap_or(u64::MAX));
+            app.core().restore_patience_over();
+            assert!(app.core().core.flush(WAIT_LIMIT), "the patience's call taken");
+            host.hears(&app, &self.open);
+        }
+        // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's own timer isn't armed: a test that wants the window up without the
+        // state says so ([`Builder::state_late`]).
         app.core().begin_restore();
-        app.wait_until("the state to be read and restore_ready heard", || app.listener.count(&Heard::RestoreReady) > 0);
-        // `restoreReady`, as the host does it on time.
-        let inner = app.core();
-        let with_state = inner.state_read();
-        if inner.window_should_open() {
-            inner.window_opened();
-        } else {
-            inner.window_closed();
-        }
-        if with_state {
-            inner.shown_with_state();
-        }
-        inner.ready(&self.open);
+        app.wait_until("the state to be read and taken in", || app.core().state_read());
+        assert!(app.core().core.flush(WAIT_LIMIT), "what came of the state taken");
+        host.hears(&app, &self.open);
         app.settle();
         app
+    }
+}
+
+/// **What the host does on `restore_ready`,** as `App.swift`'s `restoreReady` and `restoredLate` do it, by the same calls: the first time, the window's opened or
+/// not and the launch goes on; a later time, the state's come in after the window went up without it, and the window's made again from it, unless it's been
+/// taking input meanwhile.
+#[derive(Default)]
+struct HostPlay {
+    heard: usize,
+    launch_done: bool,
+    late_taken_in: bool,
+}
+
+impl HostPlay {
+    /// Takes in every `restore_ready` heard since the last look.
+    fn hears(&mut self, app: &HeadlessApp, open: &[PathBuf]) {
+        let heard = app.listener.count(&Heard::RestoreReady);
+        while self.heard < heard {
+            self.heard += 1;
+            let inner = app.core();
+            if !self.launch_done {
+                self.launch_done = true;
+                let with_state = inner.state_read();
+                self.late_taken_in = with_state;
+                if inner.window_should_open() {
+                    inner.window_opened();
+                } else {
+                    inner.window_closed();
+                }
+                if with_state {
+                    inner.shown_with_state();
+                }
+                inner.ready(open);
+            } else if inner.state_read() && !self.late_taken_in && !inner.window_interactive() {
+                self.late_taken_in = true;
+                // The window made again from the state: the old one goes without counting as the person closing it, and the new one opens.
+                if !crate::lock(&inner.window.app).window_closed {
+                    inner.window_opened();
+                }
+                inner.shown_with_state();
+            } else if inner.state_read() {
+                inner.shown_with_state();
+            }
+        }
     }
 }
 
@@ -255,6 +307,12 @@ impl DiskBuilder {
     #[must_use]
     pub fn update(mut self, bed: &UpdateBed) -> Self {
         self.builder = self.builder.update(bed);
+        self
+    }
+
+    #[must_use]
+    pub fn state_late(mut self) -> Self {
+        self.builder = self.builder.state_late();
         self
     }
 

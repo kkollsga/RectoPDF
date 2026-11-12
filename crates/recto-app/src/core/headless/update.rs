@@ -335,3 +335,62 @@ fn a_new_version_that_misreads_the_record_goes_back() {
     assert!(notice.text.contains("didn't read your last session"), "{notice:?}");
     assert_eq!(app.session_json()["tabs"], before["tabs"], "the session as it was");
 }
+
+/// Failure (full check under load, 2026-11-11: "still closed", and "still in the Dock", each once): the new version read its state after the window's second of
+/// patience, so the window went up without it, and a closed one opened. A slow disk, on purpose: the new version's state comes in after the host's second, and a
+/// launch an update opened waits for it, on the session thread's own deadline, so the window stays closed, and the session comes back with it. (Replaces the app
+/// test `a_slow_disk_doesnt_bring_back_what_was_out_of_sight`; what a hidden app does is the window's, and every order of the state and the patience is
+/// `lifecycle`'s tier-1 test.)
+#[test]
+fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
+    let (app, bed) = running_with_a_document(5);
+    app.core().window_closed();
+    app.settle();
+    bed.releases.offer(NEW);
+    full(&app, r#"{"cmd":"update_check"}"#);
+    full(&app, r#"{"cmd":"update_install"}"#);
+    let (plan, disk) = app.handed_off(&bed);
+    disk.install(&plan, Installed::Swapped);
+    let app = disk.builder().update(&bed).state_late().start();
+    assert_eq!(app.disk().app_version().as_deref(), Some(NEW));
+    assert_eq!(app.session_json()["tabs"].as_array().map(Vec::len), Some(1), "the state's in");
+    assert!(crate::lock(&app.core().window.app).window_closed, "still closed: heard {:?}", app.heard());
+    assert_eq!(
+        app.listener().count(&crate::testkit::Heard::RestoreReady),
+        1,
+        "told once, with the state: {:?}",
+        app.heard()
+    );
+}
+
+/// Failure (review 1): going back from a version that kept ending deleted the record from before the update, the only good copy when what that version left
+/// can't be read by the one before. The new version ran, ended early three times and left the record damaged, and the launch went back keeping the record as it
+/// was: the version before can't read it, puts back the record from before, and says so. (Replaces the app test
+/// `coming_back_to_a_record_it_cant_read_takes_the_one_from_before`; the crash loop itself, on the real app, stays in
+/// `a_new_version_that_keeps_ending_goes_back_by_itself`.)
+#[test]
+fn coming_back_to_a_record_it_cant_read_takes_the_one_from_before() {
+    let (app, bed) = running_with_a_document(12);
+    app.agent(Level::Control, r#"{"cmd":"page_rotate","pages":"3","degrees":90}"#).expect("an edit");
+    full(&app, r#"{"cmd":"session_save"}"#);
+    app.settle();
+    let before = app.session_json();
+    bed.releases.offer(NEW);
+    full(&app, r#"{"cmd":"update_check"}"#);
+    full(&app, r#"{"cmd":"update_install"}"#);
+    let (plan, disk) = app.handed_off(&bed);
+    disk.install(&plan, Installed::Swapped);
+    for slot in ["record.a.json", "record.b.json"] {
+        std::fs::write(disk.update_files().session().join(slot), "damaged by the version that kept ending").expect("damaged");
+    }
+    // The launch guard's way back: the record as the new version left it.
+    let back = recto_update::plan::Plan { keep_record: true, ..plan };
+    disk.went_back(&back, "kept_ending");
+    let app = disk.builder().update(&bed).start();
+    assert_eq!(app.disk().app_version().as_deref(), Some(OLD));
+    assert_eq!(app.session_json()["tabs"], before["tabs"], "the session from before the update");
+    let notice = app.core().updates.notice().expect("it says so");
+    assert!(notice.text.contains("from before the update"), "{notice:?}");
+    let log = std::fs::read_to_string(&app.disk().update_files().log).unwrap_or_default();
+    assert!(log.contains("record from before the update was put back"), "{log}");
+}

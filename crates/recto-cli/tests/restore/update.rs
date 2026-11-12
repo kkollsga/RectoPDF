@@ -147,8 +147,6 @@ enum Broken {
     NoRenderer,
     /// The real app, which ends a moment after its first frame, every launch: a crash loop that a first frame can't catch.
     EndsAfterFirstFrame,
-    /// As [`Broken::EndsAfterFirstFrame`], and as it ends it leaves the record so the version before can't read it.
-    EndsAndDamagesTheRecord,
 }
 
 /// All a real update needs, in temp folders that go with it.
@@ -202,15 +200,8 @@ impl Bed {
                 );
                 sign(&app);
             }
-            Broken::EndsAfterFirstFrame | Broken::EndsAndDamagesTheRecord => {
-                use recto_update::TestBreakage as B;
-                let what: &[B] = match broken {
-                    Broken::EndsAfterFirstFrame => &[B::EndsAfterFirstFrame],
-                    _ => &[B::EndsAfterFirstFrame, B::DamagesTheRecordAsItEnds],
-                };
-                for what in what {
-                    std::fs::write(app.join("Contents/Resources").join(what.file()), "").unwrap();
-                }
+            Broken::EndsAfterFirstFrame => {
+                std::fs::write(app.join("Contents/Resources").join(recto_update::TestBreakage::EndsAfterFirstFrame.file()), "").unwrap();
                 sign(&app);
             }
         }
@@ -973,27 +964,6 @@ fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     run.quit();
 }
 
-/// Failure (review 1): going back from a version that kept ending deleted the record from before the update, the only good copy when what that version left can't be read by the one before. **The real app, with a release that kept ending and left the record damaged:** the version before can't read it, puts back the record from before, and says so.
-#[test]
-fn coming_back_to_a_record_it_cant_read_takes_the_one_from_before() {
-    let Some(bed) = Bed::new() else { return };
-    let (run, before) = keeps_ending(&bed, Broken::EndsAndDamagesTheRecord);
-    let noticed = crate::common::app::wait_for(&run, |state| {
-        state["app"]["copy_notice"]["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("from before the update"))
-    });
-    assert_eq!(noticed["session"]["tabs"].as_array().unwrap().len(), 1, "{}", noticed["session"]);
-    assert_same_but(
-        &before,
-        &run.report(),
-        &[],
-        &["app.settings.status", "app.menu_bar[0].items[1].title", "app.note", "session.app.notice"],
-    );
-    assert!(bed.log().contains("record from before the update was put back"), "{}", bed.log());
-    run.quit();
-}
-
 /// An update to a release that ends after its first frame, then launches until it's gone back. Gives back the version before, answering, and the state as it was before the update.
 fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     let run = bed.start();
@@ -1115,28 +1085,6 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
     run.kill();
     let run = bed.start();
     assert_eq!(probation().early_ends, 1, "a kill is");
-    run.quit();
-}
-
-/// Failure (full check under load, 2026-11-11: "still closed", and "still in the Dock", each once): the new version read its state after the window's second of patience, so the window went up without it, a closed one opened and one in the Dock shown, and the app hidden came back on the screen. **A slow disk, on purpose:** the new version reads its state 2.5 s after its launch, and a launch an update opened waits for it, so all of it comes back as it was.
-#[test]
-fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
-    let Some(bed) = Bed::new() else { return };
-    let run = bed.start_with(&[("RECTO_QA_RESTORE_DELAY_MS", "2500")]);
-    let file = long_document("alpha", 20);
-    run.ok(&["open", file.0.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["qa", "hide", "on"]);
-    run.ok(&["qa", "window", "close"]);
-    bed.release_of(NEW, Broken::Not);
-    assert_eq!(run.ok(&["update", "check"])["status"], "available");
-    run.ok(&["update", "install"]);
-    let run = bed.wait_for_new_app(run);
-    assert_eq!(bed.version(), NEW);
-    // Once the state's been read, as before then there's no window to see either way.
-    let state = crate::common::app::wait_for_long(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
-    assert_eq!(state["app"]["window_open"], false, "still closed: {}", bed.log());
-    assert_eq!(state["app"]["hidden"], true, "still hidden");
     run.quit();
 }
 
