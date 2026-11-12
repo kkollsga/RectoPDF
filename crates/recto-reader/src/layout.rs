@@ -98,8 +98,8 @@ pub struct PageLayout {
     turned_other_way: usize,
     /// [`MAX_OVERRIDES`], smaller in a test so reaching it doesn't take a long time.
     cap: usize,
-    /// The least room to the left and the right of the pages: [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or less in a comparison's pane.
-    margins: (f64, f64),
+    /// **The room kept either side of the pages: the larger of the two margins, on both sides.** The top right corner holds the agent icon and the zoom level, so the right margin is the larger, and keeping it on the left too puts the pages in the middle of the window with equal gutters at any width (owner, 2026-11-12: "pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this"). Before, a window narrower than the reading width plus both margins moved the page left of centre. The larger of [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or of what a comparison's pane was given.
+    side: f64,
 }
 
 impl PageLayout {
@@ -121,7 +121,7 @@ impl PageLayout {
             base_odd: false,
             turned_other_way: 0,
             cap: MAX_OVERRIDES,
-            margins: (MIN_SIDE_MARGIN, CORNER_MARGIN),
+            side: MIN_SIDE_MARGIN.max(CORNER_MARGIN),
         }
     }
 
@@ -235,7 +235,7 @@ impl PageLayout {
             base_odd: false,
             turned_other_way: 0,
             cap: self.cap,
-            margins: self.margins,
+            side: self.side,
         }
     }
 
@@ -283,11 +283,11 @@ impl PageLayout {
                 MIN_SIDE_MARGIN
             }
         };
-        let margins = (fit(left), fit(right));
-        if margins == self.margins {
+        let side = fit(left).max(fit(right));
+        if side == self.side {
             return false;
         }
-        self.margins = margins;
+        self.side = side;
         self.refit();
         true
     }
@@ -429,7 +429,7 @@ impl PageLayout {
 
     /// The fit follows the first page known, so pages keep their relative sizes, as they do on paper. Two side by side share the room.
     fn refit(&mut self) -> bool {
-        let room = (self.frame_width - self.margins.0 - self.margins.1).max(1.0);
+        let room = (self.frame_width - 2.0 * self.side).max(1.0);
         let fit = match self.spread {
             Spread::Single => READING_WIDTH.min(room) / f64::from(self.usual.width),
             Spread::TwoUp | Spread::TwoUpCover => ((2.0 * READING_WIDTH + PAGE_GAP).min(room) - PAGE_GAP).max(1.0) / (2.0 * f64::from(self.usual.width)),
@@ -496,13 +496,13 @@ impl PageLayout {
         }
     }
 
-    /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right.
-    /// In the middle of the window when there's room, and otherwise moved left to keep clear of the top right corner, but never past the left margin.
+    /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right. Always the middle when it fits, so the gutters are equal; the margins are the same both sides ([`Self::side`]), so nothing at a corner moves it.
     fn row_middle(&self, page: u32) -> f64 {
         let half = self.frame_width / 2.0;
+        let mut shift = 0.0;
         let width = |page: u32| f64::from(self.size(page).width) * self.fit;
         let (lowest, highest) = match self.spread {
-            Spread::Single => (self.margins.0 + width(page) / 2.0, self.frame_width - self.margins.1 - width(page) / 2.0),
+            Spread::Single => (self.side + width(page) / 2.0, self.frame_width - self.side - width(page) / 2.0),
             _ => {
                 let (first, second) = self.row_pages(self.row_of(page));
                 let pages = [Some(first), second];
@@ -510,13 +510,14 @@ impl PageLayout {
                 let usual = f64::from(self.usual.width) * self.fit;
                 let left = pages.into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(usual, width);
                 let right = pages.into_iter().flatten().find(|page| self.on_the_right(*page)).map_or(usual, width);
-                (
-                    self.margins.0 + left + PAGE_GAP / 2.0,
-                    self.frame_width - self.margins.1 - right - PAGE_GAP / 2.0,
-                )
+                // A pair of different widths is centred as a whole, so its gutters are equal; the gap between them is off the middle by half the difference.
+                if second.is_some() {
+                    shift = (left - right) / 2.0;
+                }
+                (self.side + left + PAGE_GAP / 2.0, self.frame_width - self.side - right - PAGE_GAP / 2.0)
             }
         };
-        half.min(highest).max(lowest)
+        (half + shift).min(highest).max(lowest)
     }
 
     /// The widest a page is known to be, and the window's room.
@@ -526,7 +527,7 @@ impl PageLayout {
             Spread::Single => widest,
             Spread::TwoUp | Spread::TwoUpCover => 2.0 * widest + PAGE_GAP,
         };
-        self.frame_width.max(pages + self.margins.0 + self.margins.1)
+        self.frame_width.max(pages + 2.0 * self.side)
     }
 
     /// **The document's width for a view from `top` to `bottom`,** in document points: the window's room, and wider only where a row the view reaches runs past it, as a fold-out does. So there's room to scroll across beside the wide page while it shows, and none beside every other row, which [`Self::document_width`] would leave (PLAN, side-by-side follow-ups). A view over more than [`MAX_WIDTH_PAGES`] pages of their own size takes the whole document's.
@@ -552,7 +553,7 @@ impl PageLayout {
                 rect.x + rect.width
             })
             .fold(0.0, f64::max);
-        self.frame_width.max(right + self.margins.1)
+        self.frame_width.max(right + self.side)
     }
 
     pub fn document_height(&self) -> f64 {
@@ -991,13 +992,58 @@ mod tests {
                         rect.x + rect.width <= frame - CORNER_MARGIN + 1e-6,
                         "{spread:?} at {frame}: page {page} {rect:?}"
                     );
-                    assert!(rect.x >= MIN_SIDE_MARGIN - 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
+                    assert!(rect.x >= CORNER_MARGIN - 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
                 }
-                if spread == Spread::Single && frame >= READING_WIDTH + 2.0 * CORNER_MARGIN {
+                if spread == Spread::Single {
                     assert!(
                         (layout.rect(0).x + layout.rect(0).width / 2.0 - frame / 2.0).abs() < 1e-6,
-                        "centred with room: {frame}"
+                        "centred at every width: {frame}"
                     );
+                }
+            }
+        }
+    }
+
+    /// Failure (owner, 2026-11-12): "In some pdfs the pages aren't centered (with equal black gutters on both sides)". The right margin was 96 for the agent icon and the left 56, so any window narrower than the reading width plus both (952 points, which the sidebar makes common) put every page left of centre, and a pair of different widths hung its gap, not itself, on the middle. At any width, zoomed layout, page size mix and margin pair (the window's, a pane's), every row that fits has equal gutters, and a row too wide starts at the margin.
+    #[test]
+    fn every_row_has_equal_gutters_at_any_width_and_layout() {
+        let sizes: [(f32, f32); 6] = [(612.0, 792.0), (595.0, 842.0), (842.0, 595.0), (300.0, 400.0), (1190.0, 842.0), (432.0, 648.0)];
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            for margins in [
+                (MIN_SIDE_MARGIN, CORNER_MARGIN),
+                (PANE_MARGIN, PANE_MARGIN),
+                (PANE_MARGIN, CORNER_MARGIN),
+                (0.0, 0.0),
+            ] {
+                for frame in [300.0, 480.0, 560.0, 740.0, 951.0, 1000.0, 1180.0, 1440.0, 2200.0, 3400.0] {
+                    for first in 0..sizes.len() {
+                        let mut layout = PageLayout::with_spread(12, spread);
+                        layout.set_margins(margins.0, margins.1);
+                        layout.set_frame(frame);
+                        for page in 0..12u32 {
+                            let (width, height) = sizes[(first + page as usize * 7) % sizes.len()];
+                            layout.set_page_size(page, PageBox { width, height });
+                        }
+                        for page in 0..12u32 {
+                            let rect = layout.rect(page);
+                            let (one, two) = layout.row_pages(layout.row_of(page));
+                            // A page alone in a two-up row sits in its column, as if its pair were there, so it is not centred by itself.
+                            if spread != Spread::Single && two.is_none() {
+                                continue;
+                            }
+                            let (a, b) = (layout.rect(one), two.map_or(layout.rect(one), |p| layout.rect(p)));
+                            let (left, right) = (a.x.min(b.x), frame - (a.x + a.width).max(b.x + b.width));
+                            if (a.x + a.width).max(b.x + b.width) - a.x.min(b.x) > frame - 2.0 * layout.side + 1e-6 {
+                                // Wider than the room: starts at the margin and runs on.
+                                assert!((left - layout.side).abs() < 1e-6, "{spread:?} {margins:?} {frame}: wide row {page} {rect:?}");
+                                continue;
+                            }
+                            assert!(
+                                (left - right).abs() < 1.0,
+                                "{spread:?} {margins:?} frame {frame} first {first}: page {page} has gutters {left} and {right}"
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -64,8 +64,13 @@ SCOPE
 cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh
 cp "$SOURCE/tools/hooks/pre-push" tools/hooks/pre-push
 printf '#!/usr/bin/env bash\n' > tools/pdfium.sh
+# The ratchet has its own test (tools/ratchet-test.sh); here it, and the tools' tests, only log that they ran, and STUB_FAIL can fail them.
+for tool in ratchet ratchet-test check-test; do
+  printf '#!/usr/bin/env bash\necho %s >> "$CALLS"\n[ "${STUB_FAIL:-}" != %s ]\n' "$tool" "$tool" > "tools/$tool.sh"
+  chmod +x "tools/$tool.sh"
+done
 printf '#!/usr/bin/env bash\necho app-build >> "$CALLS"\n[ "${STUB_FAIL:-}" != app-build ]\n' > app/build.sh
-chmod +x tools/pdfium.sh app/build.sh
+chmod +x tools/pdfium.sh tools/ratchet.sh app/build.sh
 printf 'mod stale;\nfn guard_one() {}\n' > crates/alpha/src/lib.rs
 echo one > crates/beta/src/lib.rs
 echo "fn life_test() {}" > crates/gamma/src/lib.rs
@@ -94,7 +99,7 @@ commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
 sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
 # Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
@@ -234,7 +239,7 @@ fresh_ledger
 commit_code clippy-fails
 out=$(STUB_FAIL=clippy STUB_EXIT=101 full); rc=$?
 check "the failure's exit code comes through" "101" "$rc"
-check "it stops at the first failing stage, after the layout's two" "3" "$(ran)"
+check "it stops at the first failing stage, after the ratchet and the layout's two" "4" "$(ran)"
 check "a clippy error is the compile gate's: no run is in the ledger" "0" "$(runs_in_ledger)"
 has "and it says no test was queued" "no test was queued" "$out"
 check "a failure isn't remembered as a pass" "no-passes" "$([ -s "$PASSES" ] && echo has-passes || echo no-passes)"
@@ -245,14 +250,14 @@ before=$(runs_in_ledger)
 out=$(STUB_FAIL=clippy STUB_EXIT=101 full); rc=$?
 check "the queue refuses the same failure, with its exit" "101" "$rc"
 has "and shows why" "heavy: refused" "$out"
-check "and nothing ran but the layout's two checks, which build nothing" "2" "$(ran)"
+check "and nothing ran but the ratchet and the layout's two checks, which build nothing" "3" "$(ran)"
 check "and it costs no budget" "$before" "$(runs_in_ledger)"
 
 # Failure (review V1): code laid out by hand reaches clippy and the tests, minutes spent before the cheapest check says no.
 fresh_ledger
 commit_code fmt-fails
 out=$(STUB_FAIL="fmt --all --check" STUB_EXIT=1 full); rc=$?
-check "a layout off stops the run first" "1 1" "$rc $(ran)"
+check "a layout off stops the run first, after the ratchet" "1 2" "$rc $(ran)"
 check "and costs no run: it is found before the queue" "0" "$(runs_in_ledger)"
 has "and says nothing was queued" "nothing was queued" "$out"
 STUB_FAIL="fmt --all --check" STUB_EXIT=1 tools/check.sh --quick > /dev/null 2>&1
@@ -557,6 +562,31 @@ git checkout -q main
 branch_with() { git checkout -q main; git checkout -qb "$1"; fresh_ledger; }
 sel() { : > "$CALLS"; rm -f "$CALLS.slow"; sel_full "$@" > "$X/sel.out"; echo $?; cp "$CALLS" "$X/sel.calls"; : > "$CALLS"; }
 sel_has() { grep -c -- "$1" "$X/sel.calls" | tr -d ' '; }
+# Failure: structure that grew found only after the queue, or a tool's own test run by hand and forgotten. The ratchet runs first in every mode; the tools'
+# tests run in a full run when something under tools/ changed, before the gate, and a failure there queues nothing.
+git checkout -q main
+git checkout -qb tools-1
+fresh_ledger
+echo g >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-for-ratchet
+out=$(STUB_FAIL=ratchet STUB_EXIT=1 tools/check.sh --quick 2>&1); rc=$?
+check "a grown structure stops the quick check before anything" "1 1" "$rc $(ran)"
+out=$(STUB_FAIL=ratchet full); rc=$?
+check "and the full one, with nothing queued" "1 1" "$rc $(ran)"
+sel > /dev/null
+check "a change outside tools/ runs neither of the tools' tests" "0" "$(sel_has 'ratchet-test\|check-test')"
+echo t > tools/note.txt && git add . && git commit -qm tools-change-2
+fresh_ledger
+sel > /dev/null
+check "a change under tools/ runs the ratchet's test and this one" "1 1" "$(sel_has '^ratchet-test') $(sel_has '^check-test')"
+has "and says how long" "the tools' tests took" "$(cat "$X/sel.out")"
+fresh_ledger
+: > "$CALLS"
+out=$(STUB_FAIL=check-test STUB_EXIT=1 sel_full); rc=$?
+check "a failing tool test stops the full run before the gate" "1 true" "$rc $([ "$(grep -c 'clippy' "$CALLS")" = 0 ] && echo true || echo false)"
+has "naming it" "tools/check-test.sh failed" "$out"
+: > "$CALLS"
+git checkout -q main
+
 branch_with sel-window
 echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-only
 check "a change to a window crate passes selectively" "0" "$(sel)"

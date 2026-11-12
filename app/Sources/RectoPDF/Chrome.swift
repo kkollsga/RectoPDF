@@ -100,12 +100,23 @@ import AppKit
         }
     }
 
-    @objc func mouseEntered(with event: NSEvent) {
+    // AppKit calls these by name on a tracking area's owner, and this class isn't a responder, so a plain `@objc` would make them `mouseEnteredWith:`, which nothing calls: the corner never answered a real pointer, though `recto qa corner-pointer` (the method behind) did. Say the name AppKit uses.
+    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {
         if let mark = (event.trackingArea?.userInfo?["corner"] as? String).flatMap(Self.mark(named:)) { pointer(mark, inside: true) }
     }
 
-    @objc func mouseExited(with event: NSEvent) {
+    @objc(mouseExited:) func mouseExited(with event: NSEvent) {
         if let mark = (event.trackingArea?.userInfo?["corner"] as? String).flatMap(Self.mark(named:)) { pointer(mark, inside: false) }
+    }
+
+    /// The corners being watched and where, for QA: name to rect, in the watched view's coordinates.
+    var watchedCorners: [String: NSRect] {
+        Dictionary(uniqueKeysWithValues: areas.compactMap { area in (area.userInfo?["corner"] as? String).map { ($0, area.rect) } })
+    }
+
+    /// Whether the areas really are on a view with this object as owner, for QA.
+    func areasAreOn(_ view: NSView) -> Bool {
+        !areas.isEmpty && areas.allSatisfy { area in area.owner === self && view.trackingAreas.contains(area) }
     }
 
     /// What QA reads: what Rust says shows, and what's drawn.

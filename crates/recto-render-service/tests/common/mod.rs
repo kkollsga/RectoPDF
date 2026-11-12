@@ -28,7 +28,7 @@ pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     let started = Instant::now();
     while !condition() {
         assert!(started.elapsed() < Duration::from_secs(30), "gave up waiting for {what}");
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
 }
 

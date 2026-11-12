@@ -123,3 +123,48 @@ fn check_for_updates_is_in_the_rectopdf_menu_in_every_build() {
     let status = run.ok(&["update", "status"]);
     assert!(status["build"].is_string(), "it says what kind of build this is: {status}");
 }
+
+/// A document whose pages differ in width: the first sets the fit, and the rest are narrower.
+fn mixed_widths() -> recto_testpdf::TempPdf {
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+    let list: Vec<Page> = [612.0_f32, 300.0, 500.0, 400.0, 612.0, 350.0]
+        .iter()
+        .map(|width| {
+            let mut page = Page::new(text_lines(&["A page"]));
+            page.media = (*width, 200.0);
+            page
+        })
+        .collect();
+    TempPdf::new("mixed.pdf", &pages(&list))
+}
+
+/// Failure (owner, 2026-11-12): "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this." The right margin kept 96 points for the agent icon against the left's 56, so in a window narrower than about 950 points every page sat left of centre. In the real window, at a width where that showed, every page showing has the same room left and right (within a point), with the sidebar shown and hidden, whether the zoom level and the page number are showing or not, and for pages of different widths.
+#[test]
+fn pages_are_centred_in_the_page_area_with_the_sidebar_shown_and_hidden() {
+    let Some(run) = Run::start() else { return };
+    let file = mixed_widths();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "resize", "900x700"]);
+    run.settled();
+    let centred = |run: &Run<'_>, when: &str| {
+        let state = run.report();
+        let gutters = state["app"]["pages"]["page_gutters"].as_array().unwrap().clone();
+        assert!(gutters.len() >= 2, "{when}: pages showing: {state}");
+        for page in &gutters {
+            let (left, right) = (page["left"].as_f64().unwrap(), page["right"].as_f64().unwrap());
+            assert!(
+                (left - right).abs() < 1.0,
+                "{when}: page {} has {left} to its left and {right} to its right",
+                page["page"]
+            );
+        }
+    };
+    centred(&run, "sidebar shown, level and number showing");
+    run.ok(&["qa", "button", "sidebar"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["sidebar_hidden"], true);
+    centred(&run, "sidebar hidden");
+    run.ok(&["qa", "button", "sidebar"]);
+    run.settled();
+    centred(&run, "sidebar back");
+}

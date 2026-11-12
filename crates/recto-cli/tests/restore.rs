@@ -1412,7 +1412,7 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let started = std::time::Instant::now();
     while !done() {
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "{what}");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // ratchet: poll
     }
 }
 

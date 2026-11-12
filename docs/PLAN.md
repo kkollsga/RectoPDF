@@ -394,8 +394,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Bugs from the owner, 2026-11-12 (fixed alongside phase R, each with its test)
 
-- [ ] **Window controls with the sidebar hidden.** Owner: "when sidebar is hidden the traffic light buttons and sidebar toggle doesn't appear at all, they should appear when hovering over the the left corner." The 2026-11-08 rule (hide, then show on hover) only half works: they hide and never come back.
-- [ ] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
+- [x] **Window controls with the sidebar hidden.** Owner: "when sidebar is hidden the traffic light buttons and sidebar toggle doesn't appear at all, they should appear when hovering over the the left corner." The 2026-11-08 rule (hide, then show on hover) only half works: they hide and never come back.
+- [x] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
 
 ## Phase R: Restructuring, after the first release and before any other new feature
 
@@ -406,7 +406,7 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 **R0. Fast feedback and guards (tools only), first and all of it**
 - [ ] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
 - [ ] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
-- [ ] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
+- [x] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
 - [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
 - [ ] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
 - [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
@@ -418,6 +418,8 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [ ] R1.4 [14] Launch and late state, quit and hand-off, update, and the sleep writer as state machines with the clock passed in, arrivals tested in every order; about 20 update tests ported; the window drawn from Rust's state alone. 4–6 d
 
 **R2. One action, one implementation (track B)**
+
+Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cli and ui interfaces are built on top calling the same methods".
 - [ ] R2.1 [5] A typed `Event` enum, with session methods returning what changed. Merges before R1.2 starts moving files. 1–2 d
 - [ ] R2.2 [8, 9] The command registry: a module per feature holding its payload, handler, table rows, wording and events; a `Route` column in place of the four routing sites; one record-command implementation; no default arms for `draws`, `tab` or `reads_pages`. 5–7 d, a table group per merge
 - [ ] R2.3 [10] A person's actions run commands through the same executor as an agent's: the about 14 parallel `CoreCall` arms go, the about 8 window-only actions get commands, and a test proves every menu item, palette entry, key and control maps to a command or is listed as host-only. Needs R1.2 and R2.2. 4–6 d
@@ -430,6 +432,7 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [ ] R3.4 [13, reduced] Swift: `QAChannel` by area, and a pane file per feature where one is next touched. 1 d
 
 **R4. Test homes, the feature kit, and proof**
+- [ ] Found 2026-11-12: `recto-reader`'s engine tests (`a_file_that_doesnt_answer_holds_up_no_other_tab`, `a_page_from_an_added_pdf_that_changed_isnt_drawn`, `a_slow_page_scrolled_away_from_is_cancelled`, `a_real_page_reaches_the_host_as_surfaces`, `a_closed_window_lets_the_worker_go`) fail on their 15 to 25 s bounds while another full check runs its app tests (load 10 to 12), and pass alone in about 5 s. Find what they wait on and why it takes 5 s alone; fix the wait or the product, in its own commit with a test.
 - [ ] R4.1 In-process agent tests move from `recto-cli/tests` to `recto-agent`; the app tests get a crate of their own; the about 15 fixed waits go; helper waits say what they saw. 2–3 d
 - [ ] R4.2 `docs/FEATURES.md` (how to add a feature, one page), a scaffold, the brief template with a test list by tier, one shared function per policy (write paths, levels, protected PDFs) with a guard, and a contact sheet of every feature's shots, light and dark. 2 d
 - [ ] R4.3 Pilot: one real feature from phase 4 built this way and measured against the review's exit numbers, then a process review and what it teaches into the guide. 1–2 d

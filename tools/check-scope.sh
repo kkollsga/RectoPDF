@@ -88,7 +88,7 @@ affected_crates() {
 # (the lines the run prints at its start, saying what it selected and why, and what it skipped).
 select_scope() {
   local mode=$1 base files file c all_crates affected="" reasons="" skipped=""
-  scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
+  scope_tools=0 scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
   all_crates=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
   base=${CHECK_BASE:-$(git merge-base main HEAD 2>/dev/null || true)}
   if [ "$mode" = --full ]; then
@@ -103,6 +103,7 @@ select_scope() {
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue
+    case "$file" in tools/*) scope_tools=1 ;; esac
     case "$file" in
       crates/recto-headings/*) headings=1 ;;
       crates/*/*)

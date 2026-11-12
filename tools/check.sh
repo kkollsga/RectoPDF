@@ -373,6 +373,26 @@ run() {
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
 trap 'rm -f "$check_mark" "$check_mark.tree"' EXIT
+# Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
+ratchet_started=$(date +%s)
+tools/ratchet.sh
+echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
+# The tools' own tests, when a change touched tools/ (a full run only): the tool is held by the tool and not by someone running its test by hand. Each
+# builds nothing and runs on a throwaway repository and lock, so nothing is queued for them.
+if [ "$mode" = --full ] && [ "$scope_tools" = 1 ]; then
+  tools_started=$(date +%s)
+  for tool_test in tools/ratchet-test.sh tools/check-test.sh; do
+    [ -f "$tool_test" ] || continue
+    "$tool_test" > "${TMPDIR:-/tmp}/recto-tool-test.$$" 2>&1 || {
+      echo "check: $tool_test failed, so nothing was queued:" >&2
+      grep -v '^ok' "${TMPDIR:-/tmp}/recto-tool-test.$$" | tail -20 >&2
+      rm -f "${TMPDIR:-/tmp}/recto-tool-test.$$"
+      exit 1
+    }
+  done
+  rm -f "${TMPDIR:-/tmp}/recto-tool-test.$$"
+  echo "check: the tools' tests took $(($(date +%s) - tools_started)) s"
+fi
 # The compile gate, before any test is queued. The layout first, outside the queue as it builds nothing: one layout, so two branches that each add a field
 # to a struct literal merge without a conflict (guide §2.8). `cargo fmt --all` fixes it. Then clippy and the Windows check, a quick job of their own: a
 # failure is refused at once the next time on the same code, and no full run is counted for it.
