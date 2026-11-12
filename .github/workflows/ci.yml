@@ -1,6 +1,13 @@
 # A clean checkout on someone else's Mac: what passes here doesn't depend on this machine's folders.
 # Runs on main and on build/* branches before they merge (owner, 2026-11-11), never on outside pull requests, skips docs, and a newer
 # push to the same branch cancels an older run.
+#
+# The cache, and its limit. GitHub keeps 10 GB of cache for the repository and evicts the least recently used beyond it. On 2026-11-12 it held 10.81 GB in 8
+# caches, the Rust ones about 3.1 GB each, and a part's cache saved on a branch was evicted within 20 minutes, so the next run fell back to an old one and
+# saved again (70 to 80 s a part). So: two Rust caches per Cargo.lock, `check-core-<hash>` and `check-app-<hash>` (window and lifecycle build the same
+# things and share one), saved only on main and only on a miss. Every job restores, a branch from main's, falling back by prefix to main's latest when its
+# Cargo.lock differs, so it starts warm. With the sandbox jobs' (about 0.15 and 0.22 GB) and PDFium's (3 MB) that is about 6.6 GB a lock. A new cache, a
+# cache per job or per branch, or a save on branches puts it past 10 GB again: count it against this first.
 name: CI
 on:
   push:
@@ -13,7 +20,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  check:
+  # What a full check runs, in three jobs at once instead of one after the other (a run took 12 to 15 minutes in one job, 2026-11-12). The one definition of what runs
+  # is still tools/check.sh: CHECK_PART names the part (tools/check-scope.sh has the tiers), and together the parts are everything `tools/check.sh --full` runs
+  # with CI set. core: the compile gate, the workspace tests and the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh). window: the app, built, and
+  # the tests of drawing, AppKit, the bridge and restoring state. lifecycle: the app again, and the tests of updates, Launch Services, long sessions, a thousand
+  # tabs and what is left registered. Each builds the app itself: one build job to hand it over would make the other two wait for it (87 to 140 s) and then
+  # download it, to save the 20 s of Rust each app part builds. The ratchet (tools/ratchet.sh) runs first in every part. The tools' own tests run in core only
+  # when what they test changed since CI's base (`ci_base` in tools/check-scope.sh), which needs the history: core checks out all of it, the app parts one commit.
+  parts:
+    name: check (${{ matrix.part }})
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, window, lifecycle]
     runs-on: macos-26
     timeout-minutes: 30
     env:
@@ -22,10 +41,13 @@ jobs:
       # Every failure in one round trip, not only the first.
       NEXTEST_PROFILE: ci
       CARGO_TERM_COLOR: always
+      CHECK_PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # 0 is all of it. Written so, as `0` alone reads as false in an expression and would give 1.
+          fetch-depth: ${{ matrix.part != 'core' && 1 || 0 }}
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
@@ -41,21 +63,37 @@ jobs:
         with:
           path: target/pdfium
           key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Two caches, core's and the app parts', saved only on main (the cache at the top of this file). A branch restores main's, the same lock's or by prefix
+      # the latest; the plain `check-` prefix is the old single job's, for the first run of this layout.
+      - name: Rust's cache, restored
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: check-
-      - name: Full check
+          key: check-${{ matrix.part == 'core' && 'core' || 'app' }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            check-${{ matrix.part == 'core' && 'core' || 'app' }}-
+            check-
+      - name: Full check, this part
         run: tools/check.sh --full
         env:
           # A failing test's quiet-run logs are copied here before its state folder goes (crates/recto-cli/tests/common/mod.rs).
           RECTO_TEST_LOGS: ${{ runner.temp }}/recto-test-logs
       # What CI saw, when it fails: run 43054237265 said only that the app had gone, so a crash, a time limit and a test looking too late
       # couldn't be told apart (2026-11-11). The quiet runs' logs above, and the system's crash reports for the app and its helpers.
+      # Before the logs and artifacts, so a failure there can't lose it. The second app part to get here finds the key taken and only says so.
+      - name: Rust's cache, saved on main
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Crash reports, when the check failed
         if: failure()
         run: |
@@ -68,10 +106,33 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: check-logs-${{ github.run_attempt }}
+          name: check-logs-${{ matrix.part }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/recto-test-logs
           retention-days: 7
           if-no-files-found: ignore
+      # Per-test durations of this part (tools/check-times.sh), for a process review: `tools/check.sh --slow` reads the same files on a Mac.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-times-${{ matrix.part }}-${{ github.run_attempt }}
+          path: .git/recto-test-times
+          retention-days: 14
+          if-no-files-found: ignore
+  # The one name that stands for the whole check, as the single job was called: the three parts pass together or this fails. Nothing else to run, so a cheap runner.
+  check:
+    needs: parts
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # `needs.parts.result` is success only when every part of the matrix succeeded; failure, cancelled and skipped all fail this job, so a required
+      # check named `check` can never read as passing because a part didn't run.
+      - name: All three parts passed
+        env:
+          RESULT: ${{ needs.parts.result }}
+        run: |
+          echo "check (core, window, lifecycle): $RESULT"
+          [ "$RESULT" = success ] || { echo "A part did not succeed ($RESULT), so check fails." >&2; exit 1; }
   # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
   # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
   # change in either between versions fails here, not on a user's Mac as a renderer that won't start.

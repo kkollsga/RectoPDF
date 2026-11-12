@@ -395,10 +395,10 @@ impl Inner {
         self.core.push(CoreCall::Reconcile);
     }
 
-    /// On the way out: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process.
+    /// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process.
     pub(crate) fn forget_a_quiet_copy(&self) {
         if let Some(app) = self.updates.app()
-            && forgets_on_quit(self.qa.is_some(), &app)
+            && recto_update::rules::forgets_itself(self.qa.is_some(), &app)
         {
             recto_platform::registry::forget_soon(&app);
         }
@@ -559,14 +559,6 @@ pub(crate) fn draws_a_page(folder: &Path) -> bool {
     })();
     let _ = std::fs::remove_file(&file);
     drew == Some(true)
-}
-
-/// The one install, which nothing forgets.
-const THE_ONE_INSTALL: &str = "/Applications/RectoPDF.app";
-
-/// Whether a copy forgets itself with Launch Services when it quits: a quiet run's, and never the one install.
-pub(crate) fn forgets_on_quit(quiet: bool, app: &Path) -> bool {
-    quiet && app != Path::new(THE_ONE_INSTALL)
 }
 
 /// What a refusal to install comes to, for an agent: a code that doesn't change, our words, and what to do next.
@@ -751,14 +743,6 @@ mod tests {
         let table = text.rfind("xref\n0 5").unwrap();
         assert!(text.contains(&format!("startxref\n{table}\n")));
         assert!(text.contains("1 0 0 rg 0 0 64 64 re f"));
-    }
-
-    /// Failure: the owner's own app forgets itself with Launch Services at a quit, and drops out of Open With, or a quiet run's copy stays registered.
-    #[test]
-    fn only_a_quiet_copy_forgets_itself() {
-        assert!(forgets_on_quit(true, Path::new("/w/tree/app/build.noindex/RectoPDF.app")));
-        assert!(!forgets_on_quit(false, Path::new("/w/tree/app/build.noindex/RectoPDF.app")), "a normal run");
-        assert!(!forgets_on_quit(true, Path::new(THE_ONE_INSTALL)), "never the one install");
     }
 
     /// Failure: a time that's passed arms a timer that fires at once and again and again, or a time far off comes out as anything but itself. At rest it's one timer a day.

@@ -1,5 +1,5 @@
 enum crates/recto-agent/src/lib.rs::Command 68
-ffi crates/recto-ffi/src 11671
+ffi crates/recto-ffi/src 11666
 file crates/recto-agent/src/lib.rs 2403
 file crates/recto-agent/src/table.rs 4530
 file crates/recto-control/src/record_store.rs 1502

@@ -279,6 +279,55 @@ fn a_quiet_run_ends_with_what_started_it() {
     assert_eq!(reply["error"]["code"], "owner_gone", "{reply}");
 }
 
+/// Failure: a quiet run that ends with what started it leaves its copy registered with Launch Services, a second RectoPDF in Open With: the
+/// run exited without the forgetting a quit does, and no test's guard forgets a run that ended by itself (CI run 43195226598: the lifecycle tests
+/// alone left `app/build.noindex/RectoPDF.app` registered after `a_quiet_run_ends_with_what_started_it`; with every app test, a later test's
+/// guard had forgotten it by chance). A copy of its own, so no other test's run of the built app is counted: it's registered while it runs,
+/// and once its starter has ended, and the run with it, it isn't.
+#[test]
+fn a_quiet_run_that_ends_with_its_starter_forgets_its_copy() {
+    let Some(copy) = OwnCopy::new() else { return };
+    let registered = || recto_platform::registry::registered().iter().any(|found| found.path.starts_with(&copy.bundle));
+    let within = |limit: Duration, holds: &dyn Fn() -> bool| {
+        let began = std::time::Instant::now();
+        while !holds() {
+            if began.elapsed() > limit {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(250)); // ratchet: poll
+        }
+        true
+    };
+    let mut owner = std::process::Command::new("/bin/sleep").arg("120").spawn().unwrap();
+    let state = super::common::State::new();
+    let owner_pid = owner.id().to_string();
+    let executable = copy.executable();
+    let (reply, code) = state.json(&[
+        "qa",
+        "start",
+        "--app",
+        executable.to_str().unwrap(),
+        "--time-limit",
+        "2m",
+        "--owner",
+        &owner_pid,
+    ]);
+    assert_eq!(code, 0, "{reply}");
+    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
+    assert!(
+        within(Duration::from_secs(20), &registered),
+        "the system never registered the running copy, so this shows nothing"
+    );
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    ends(pid, "the process it was started for was killed");
+    assert!(
+        within(Duration::from_secs(10), &|| !registered()),
+        "{} is still registered 10 s after its quiet run ended with its starter",
+        copy.bundle.display()
+    );
+}
+
 /// Failure: something outside the app changes a quiet run's activation policy, and a report or a settle look taken before the guard hears of it says `accessory`, failing a test that compares states (`an_installer_killed_after_the_swap_loses_nothing`, in a full check, 2026-11-11), with the run off its rules until the guard catches up. Here the run turns itself `accessory` every 15 ms, as that change would, and every look says `prohibited`.
 ///
 #[test]

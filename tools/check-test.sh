@@ -9,7 +9,10 @@ X=$(mktemp -d "${TMPDIR:-/tmp}/check-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock" HEAVY_TESTING=1 MIN_FREE=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
-unset CHECK_ALL CHECK_BASE CHECK_AGAIN HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS NEXTEST_PROFILE CI
+# Everything check.sh and the queue read from the environment, so a run on CI (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*) or in a shell of someone's own makes no
+# difference: the first full run of the three-part CI layout failed 119 cases because CHECK_PART=core leaked in. A case below runs a slice with them all set.
+unset CHECK_ALL CHECK_BASE CHECK_AGAIN CHECK_PART HEAVY_RETRY HEAVY_SOLO HEAVY_PRIORITY HEAVY_CLASS CARGO_BUILD_JOBS CARGO_TARGET_DIR NEXTEST_PROFILE CI TMPDIR_CHECK
+for name in $(env | sed -n 's/^\(GITHUB_[A-Z0-9_]*\|NEXTEST_[A-Z0-9_]*\|CHECK_[A-Z0-9_]*\)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -29,6 +32,11 @@ case "$*" in
   metadata*) echo '{"packages":[{"name":"alpha","dependencies":[]},{"name":"beta","dependencies":[{"name":"alpha","path":"/x"},{"name":"serde","path":null}]},{"name":"gamma","dependencies":[]}]}'; exit 0 ;;
 esac
 echo "$*" >> "$CALLS"
+# With STUB_JUNIT, a nextest run writes the JUnit the real one does: a core test, a process test (alpha::proc) and, in the slow stage, the same process test.
+if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
+  mkdir -p target/nextest/default
+  printf '<testsuites>\n<testsuite name="alpha">\n<testcase name="t1" classname="alpha" timestamp="2026-11-12T10:00:00.000+01:00" time="0.500"/>\n<testcase name="p1" classname="alpha::proc" timestamp="2026-11-12T10:00:01.000+01:00" time="1.500"/>\n</testsuite>\n</testsuites>\n' > target/nextest/default/junit.xml
+fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
@@ -49,13 +57,16 @@ export PATH="$X/bin:$PATH" CALLS="$X/calls"
 git init -q --bare -b main "$X/origin.git"
 git init -q -b main "$X/repo"
 cd "$X/repo" || exit 1
-mkdir -p tools/sysguard tools/hooks app crates/alpha/src crates/beta/src crates/gamma/src docs
+mkdir -p tools/sysguard tools/hooks app crates/alpha/tests crates/alpha/src crates/beta/src crates/gamma/src docs
 cp "$SOURCE/tools/check.sh" tools/check.sh
 # The real rules, with this repository's own guards and tiers: alpha has a guard, gamma is what the lifecycle tier is about, beta is a window crate.
 cp "$SOURCE/tools/check-scope.sh" tools/check-scope.sh
+cp "$SOURCE/tools/check-times.sh" tools/check-times.sh
+echo "fn p1() {}" > crates/alpha/tests/proc.rs
 cat >> tools/check-scope.sh <<'SCOPE'
 GUARD_TESTS='test(~guard_one) | test(~stale::)'
 APP_BINARIES=''
+PROCESS_BINARIES='alpha::proc'
 LIFECYCLE_TESTS='test(~life_test)'
 WINDOW_TESTS="test(~window_test) & !($LIFECYCLE_TESTS)"
 WINDOW_CRATES='beta'
@@ -101,6 +112,14 @@ check "a full run passes" "0" "$rc"
 sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
 check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
+# Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
+if [ -z "${CHECK_TEST_SLICE:-}" ]; then
+  slice=$(CI=true CHECK_PART=core CHECK_ALL=1 CHECK_BASE=HEAD NEXTEST_PROFILE=ci GITHUB_ACTIONS=true RECTO_QA_SLOW=ci CHECK_TEST_SLICE=1 bash "$SOURCE/tools/check-test.sh" 2>&1)
+  check "the cases pass with CI's variables set (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*)" "0" "$(printf '%s\n' "$slice" | grep -c '^FAIL')"
+  has "and that slice did run" "ok    every stage runs" "$slice"
+else
+  echo "slice done"; exit 0
+fi
 : > "$CALLS"
 # Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
 check "only the slow stage runs with every waiting point late" "1" "$(wc -l < "$CALLS.slow" | tr -d ' ')"
@@ -688,5 +707,179 @@ check "dirty selective runs are in the ledger as dirty" "2 +dirty" "$(runs_in_le
 check "they count against the budget of two" "2" "$(tools/check.sh --runs | sed -n 's/^sel-dirty: \([0-9]*\) of.*/\1/p')"
 check "so a third needs a reason" "3" "$(sel)"
 git checkout -q -- crates/gamma/src/lib.rs
+
+# --- Test durations (tools/check-times.sh) and named parts of a full run ---------------------------------------------------------------------------------
+TIMES=.git/recto-test-times
+branch_with times
+echo t1 >> crates/alpha/src/lib.rs && git add . && git commit -qm times-1
+# Failure: durations lost between stages (nextest overwrites its JUnit), or not kept at all, so a process review has nothing to read.
+check "no durations before any run" "0" "$(ls $TIMES 2>/dev/null | wc -l | tr -d ' ')"
+STUB_JUNIT=1 full > /dev/null
+check "a full run keeps durations in one file" "1" "$(ls $TIMES | grep -c 'tsv$')"
+f=$(ls $TIMES/*.tsv | head -1)
+check "the file says commit, scope, part and result" "run	$(git rev-parse HEAD)	all	all	pass" "$(awk -F'\t' '$1 == "run" { print $1 "\t" $2 "\t" $4 "\t" $5 "\t" $6 }' "$f")"
+check "it has the wall time of the stages" "1" "$(grep -c '^stage	other-tests	' "$f")"
+check "a core test is in tier 1" "tier	1" "$(grep '^tier	1	' "$f" | cut -f1,2)"
+# Each stage that ran nextest wrote the same two tests: they count once each, however many stages' JUnit holds them, and the slow stage's copies apart.
+check "a test in several stages' JUnit counts once" "1 1" "$(grep '^tier	1	' "$f" | cut -f3) $(grep '^tier	2	' "$f" | cut -f3)"
+check "the slow stage's tests are kept apart from the tiers" "slow	2" "$(grep '^slow	' "$f" | cut -f1,2)"
+check "the slowest tests are listed with their binary and seconds" "true" "$([ "$(grep -c '^test	2	[a-z-]*	alpha::proc	1.50	p1$' "$f")" -ge 1 ] && echo true || echo false)"
+check "and the full run is on the ledger as before" "pass" "$(last_ledger_field 4)"
+check "no scratch files are left in the repository's git dir" "0" "$(ls .git | grep -c 'part$')"
+# Failure: the folder grows for ever (a file a run, each with a few dozen lines), or the newest are the ones deleted.
+for n in $(seq 10 33); do printf 'run\told%s\t2020-01-01 00:00\tall\tall\tpass\n' "$n" > "$TIMES/202001010000$n-old$n.tsv"; done
+commit_code times-2
+STUB_JUNIT=1 full > /dev/null
+check "only the newest 20 runs are kept" "20" "$(ls $TIMES | grep -c 'tsv$')"
+check "the run just made is among them" "1" "$(grep -l "$(git rev-parse HEAD)" $TIMES/*.tsv | wc -l | tr -d ' ')"
+check "and the oldest are the ones gone, the newer old ones kept" "0 1" "$(ls $TIMES | grep -c 'old10\.\|old15\.') $(ls $TIMES | grep -c 'old33\.')"
+# Failure: a run stopped from outside, or one with no JUnit (a stub, a refusal), leaves a file that says nothing.
+rm -rf $TIMES
+commit_code times-3
+full > /dev/null
+check "a run that wrote no JUnit keeps nothing" "0" "$(ls $TIMES 2>/dev/null | wc -l | tr -d ' ')"
+
+# Failure: --slow cannot say which tier is over its budget, or hides it.
+rm -rf $TIMES; mkdir -p $TIMES
+printf 'run\taaaaaaaaaaaaaaaa\t2026-11-12 10:00\tall\tall\tpass\nstage\tother-tests\t100\nstage\tapp-tests\t300\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t200.0\ntier\t4\t8\t300.0\t200.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T100000-aaaaaaaaaaaa.tsv
+printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\nstage\tslow\t120\ntier\t1\t50\t30.0\t20.0\ntier\t2\t10\t90.0\t50.0\ntier\t3\t40\t500.0\t130.0\ntier\t4\t0\t0.0\t0.0\nslow\t25\t400.0\ntest\t3\tapp-tests\trecto-cli::app\t42.10\tdrawing_is_slow\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
+out=$(tools/check.sh --slow 2>&1); rc=$?
+check "--slow exits 0 even over budget" "0" "$rc"
+has "it lists the slowest tests with seconds and binary" "42.1 s  3     recto-cli::app  drawing_is_slow" "$out"
+has "a tier over its budget is named, with by how much" "wall 130 s: OVER by 40 s" "$out"
+check "a tier within it is not" "0" "$(printf '%s\n' "$out" | grep -E '^  (1|2) ' | grep -c OVER)"
+has "the tier that wasn't in the run says so" "(no tests in this run)" "$out"
+has "the slow stage's total is there" "25 tests, 400 test-seconds, 120 s wall" "$out"
+# Failure: two tiers that share one nextest run each get a wall that overlaps the other's, so neither number is true. The pair gets the run's wall, once, against both budgets.
+printf 'run\tdddddddddddddddd\t2026-11-12 13:00\tall\tall\tpass\nstage\tapp-tests\t400\ntier\t3\t40\t500.0\t380.0\ntier\t4\t8\t300.0\t390.0\n' > $TIMES/20261112T130000-dddddddddddd.tsv
+out=$(tools/check.sh --slow 2>&1)
+has "tiers sharing a run are given the run's wall against both budgets added" "tiers 3+4 (window + lifecycle): 400 s wall against 330 s (90 + 240), OVER by 70 s" "$out"
+has "each with its own test count and test-seconds, and a note on the overlap" "shares its run with tier 3" "$out"
+has "and says CI gives the per-tier wall" "CI runs them as separate jobs" "$out"
+rm -f $TIMES/20261112T130000-dddddddddddd.tsv
+# The comparison needs the run of everything before the latest; it shows the change per stage.
+printf 'run\tbbbbbbbbbbbbbbbb\t2026-11-12 11:00\tall\tall\tpass\nstage\tother-tests\t120\nstage\tapp-tests\t290\ntier\t1\t1\t1.0\t1.0\n' > $TIMES/20261112T110000-bbbbbbbbbbbb.tsv
+out=$(tools/check.sh --slow 2>&1)
+has "the latest run of everything is compared with the one before: slower" "other-tests 120 100 +20" "$(printf '%s' "$out" | tr -s ' ')"
+has "and faster" "app-tests 290 300 -10" "$(printf '%s' "$out" | tr -s ' ')"
+# A selective run or a part is newer but isn't a run of everything, so it isn't what the comparison goes by.
+printf 'run\tcccccccccccccccc\t2026-11-12 12:00\tselective\tall\tpass\nstage\tother-tests\t5\n' > $TIMES/20261112T120000-cccccccccccc.tsv
+has "a selective run is shown first but isn't compared" "Latest kept run: commit cccccccccccc" "$(tools/check.sh --slow 2>&1)"
+has "and the comparison skips it" "(bbbbbbbbbbbb against aaaaaaaaaaaa)" "$(tools/check.sh --slow 2>&1)"
+rm -rf $TIMES
+has "with nothing kept it says where they will be" "No test durations kept yet" "$(tools/check.sh --slow 2>&1)"
+
+# Failure: the tiers' lists drift from the tests, or a binary renamed drops its tests into tier 1 unseen.
+mv crates/alpha/tests/proc.rs crates/alpha/tests/proc2.rs
+: > "$CALLS"
+out=$(full); rc=$?
+check "a process binary that isn't there stops the check before anything runs" "2 0" "$rc $(ran)"
+has "and names it" "process binary alpha::proc" "$out"
+mv crates/alpha/tests/proc2.rs crates/alpha/tests/proc.rs
+: > "$CALLS"
+# The tier of an app test comes from nextest's own filterset: the lifecycle ones are named by it, the rest of the app binaries are the window's.
+. tools/check-scope.sh; . tools/check-times.sh
+printf 'recto-cli::restore update::an_update\n' > "$X/life"
+got=$(printf 'app-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an_update\napp-tests\t3.000\t100.000\t103.000\trecto-cli::app\ta_window_test\nother-tests\t0.100\t50.000\t50.100\trecto-cli::socket\ts\nother-tests\t0.100\t50.000\t50.100\trecto-core\tc\nslow\t9.000\t200.000\t209.000\trecto-cli::app\ta_window_test\n' |
+  APP_BINARIES='app restore' PROCESS_BINARIES='recto-cli::socket' times_summarise "$X/life" | grep -E '^(tier|slow)' | awk -F'\t' '{ printf "%s%s=%s ", $1, $2, $3 }')
+check "tests are put in their tier, the slow stage's apart" "tier1=1 tier2=1 tier3=1 tier4=1 slow9.0=9.0 " "$(printf '%s' "$got" | sed 's/slow1=/slow9.0=/')"
+
+# Failure: a test that is in two stages' JUnit counted twice (the app tests are in the workspace stage too, where they skip in no time), which doubled the
+# window and lifecycle test counts and put their time in the wrong stage; or the slow stage's late copies added into a tier.
+printf 'recto-cli::restore update::an_update\n' > "$X/life2"
+got=$(printf 'other-tests\t0.010\t10.000\t10.010\trecto-cli::app\ta_window_test\nother-tests\t0.010\t10.000\t10.010\trecto-cli::restore\tupdate::an_update\nother-tests\t0.100\t10.000\t10.100\trecto-core\tc\napp-tests\t3.000\t100.000\t103.000\trecto-cli::app\ta_window_test\napp-tests\t2.000\t100.000\t102.000\trecto-cli::restore\tupdate::an_update\nslow\t9.000\t200.000\t209.000\trecto-cli::app\ta_window_test\nslow\t8.000\t200.000\t208.000\trecto-cli::restore\tupdate::an_update\n' |
+  APP_BINARIES='app restore' PROCESS_BINARIES='' times_summarise "$X/life2")
+tiers_of() { printf '%s\n' "$got" | awk -F'\t' '$1 == "tier" && $3 > 0 { printf "%s:%s:%s ", $2, $3, $4 }'; }
+check "a test in two stages counts once, with the time of the stage where it ran" "1:1:0.1 3:1:3.0 4:1:2.0 " "$(tiers_of)"
+check "the slow stage is kept apart and never added into a tier" "slow 2 17.0" "$(printf '%s\n' "$got" | awk -F'\t' '$1 == "slow" { print "slow " $2, $3 }')"
+check "and the slowest list names each test once" "1" "$(printf '%s\n' "$got" | grep -c '^test	3	.*	a_window_test$')"
+
+# Failure: a part of a full run does the other part's work, or is remembered as a pass of everything, or CI's jobs overlap in what they run.
+branch_with parts
+echo p >> crates/alpha/src/lib.rs && git add . && git commit -qm parts-1
+check "a named part that doesn't exist is refused" "2" "$(CHECK_PART=bogus CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; echo $?)"
+check "and a part with --quick" "2" "$(CHECK_PART=core tools/check.sh --quick > /dev/null 2>&1; echo $?)"
+: > "$CALLS"
+CHECK_PART=core full > "$X/part.out"
+check "core has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
+: > "$CALLS"
+CI=true CHECK_PART=core CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
+check "on CI with no base to compare with, the tools' own tests run, in core" "1 1" "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"
+check "the gate runs once in core" "1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS")"
+: > "$CALLS"
+CI=true CHECK_PART=window CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
+check "and not in an app part" "0" "$(grep -c '^check-test$' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=core full > /dev/null
+check "core runs the gate and the workspace" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace\|--no-tests=pass -p\|--no-tests=pass' "$CALLS")"
+check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=window full > /dev/null
+check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
+check "with the notices, and no gate or workspace tests" "1 0 0" "$(grep -c -- '--test notices' "$CALLS") $(grep -c '^clippy' "$CALLS") $(grep -c -- '--workspace' "$CALLS")"
+check "and no tools' tests" "0" "$(grep -c '^check-test$' "$CALLS")"
+check "and no registrations" "0" "$(grep -c -- '--test registrations' "$CALLS")"
+: > "$CALLS"
+CHECK_PART=lifecycle full > /dev/null
+check "lifecycle runs the lifecycle tier and the registrations" "1 1 0" "$(grep -c 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- '--test registrations' "$CALLS") $(grep -c 'window_test' "$CALLS")"
+check "and not the notices" "0" "$(grep -c -- '--test notices' "$CALLS")"
+check "no part is a ledger line, a pass, or a stamp for the push guard" "0 0 0" "$(runs_in_ledger) $([ -f "$PASSES" ] && wc -l < "$PASSES" | tr -d ' ' || echo 0) $([ -f "$CHECKED" ] && wc -l < "$CHECKED" | tr -d ' ' || echo 0)"
+: > "$CALLS"
+CHECK_PART=window full > /dev/null
+check "a part runs again on the same code: it is never remembered" "true" "$([ "$(wc -l < "$CALLS" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
+: > "$CALLS"
+# The three parts are what a run of everything is: the same commands, except that the app tests are split by tier (the window part's filter and the
+# lifecycle part's, which together are every test in the binaries) and the slow stage is split the same way.
+full > /dev/null
+all_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
+: > "$CALLS"
+for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; done
+parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
+check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
+check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session -j 4$' "$CALLS")"
+
+# Failure: CI ran the tools' own tests on every run, 173 s of core whatever changed (run 43195226598), or skips them when what they test changed since CI's
+# base, or when that base can't be worked out. The base: on main the commit the push came after, on a branch where it left origin/main. What they test is
+# tools/ (the hooks too), .config/ and .github/, here and on CI alike.
+git checkout -q main
+git push -q origin main
+ci_core() { : > "$CALLS"; env CI=true CHECK_PART=core "$@" tools/check.sh --full > "$X/ci.out" 2>&1; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"; }
+branch_ci() { ci_core GITHUB_REF_NAME="$(git rev-parse --abbrev-ref HEAD)" GITHUB_EVENT_NAME=push; }
+git checkout -qb ci-crate
+echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-crate
+check "on CI, a branch that changed no tool since origin/main skips the tools' tests" "0 0" "$(branch_ci)"
+has "and says why" "the tools' tests are skipped: nothing under tools/, .config/ or .github/ changed since $(git merge-base origin/main HEAD | cut -c1-12)" "$(cat "$X/ci.out")"
+check "but still runs the rest of core" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
+for changed in tools/hooks/pre-push .config/nextest.toml .github/workflows/ci.yml; do
+  git checkout -q main; git checkout -qb "ci-$(basename "$changed")"
+  mkdir -p "$(dirname "$changed")" && echo "# $changed" >> "$changed" && git add . && git commit -qm "ci $changed"
+  echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate after $changed"
+  check "on CI, a branch that changed $changed runs them, whatever came after" "1 1" "$(branch_ci)"
+  has "naming it" "the tools' tests run: $changed changed since" "$(cat "$X/ci.out")"
+done
+check "and here, off CI, a branch that changed .github/ runs them too, by the same rule" "1 1" "$(: > "$CALLS"; sel_full > /dev/null; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")")"
+git checkout -q ci-crate
+git update-ref -d refs/remotes/origin/main
+check "a branch with no origin/main to compare with runs them" "1 1" "$(branch_ci)"
+has "saying why" "CI's base couldn't be worked out" "$(cat "$X/ci.out")"
+git fetch -q origin
+# main: what came since the push before, which the event names.
+git checkout -q main
+before=$(git rev-parse HEAD)
+echo cm >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-main-crate
+event() { printf '{"before":"%s"}\n' "$1" > "$X/event.json"; echo "$X/event.json"; }
+on_main() { ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$(event "$1")"; }
+check "on main, a push with no tool changed since the one before skips them" "0 0" "$(on_main "$before")"
+echo "# t" >> tools/note.txt && git add . && git commit -qm ci-main-tools
+echo cm >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-main-crate-2
+check "a push with a tool changed in any of its commits runs them" "1 1" "$(on_main "$before")"
+check "a push with only the last commit after the tools' change skips them" "0 0" "$(on_main "$(git rev-parse HEAD~1)")"
+check "a first push (before is all zeros) runs them" "1 1" "$(on_main 0000000000000000000000000000000000000000)"
+check "a before that isn't a commit here runs them" "1 1" "$(on_main 1234567890123456789012345678901234567890)"
+check "a before that isn't in HEAD's history runs them" "1 1" "$(on_main "$(git rev-parse ci-crate)")"
+check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF_NAME=main GITHUB_EVENT_PATH="$(event "$before")")"
+check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
+check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

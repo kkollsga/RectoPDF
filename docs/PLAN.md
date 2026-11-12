@@ -398,6 +398,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [x] **Pages not centred.** Owner: "In some pdfs the pages aren't centered (with equal black gutters on both sides), pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this."
 
 - [ ] **No way to update now from Settings.** Owner, 2026-11-12, with build 0.1.0.2 ready and waiting for five idle minutes: "I dont see the update now button in settings." The app menu's *Update to X.Y.Z…* is the only place today. Settings shows a waiting update and a button that installs it now; check too that the menu item was really there and enabled while the build waited.
+- [ ] Found 2026-11-12: Launch Services on the owner's Mac still lists a second RectoPDF at /Applications/.RectoPDF-update/unpacking/RectoPDF.app, left by the hung install; the folder is gone. An unpacked build must never be registered (or is forgotten when its folder goes), with a test; and this one stale entry needs clearing.
 - [ ] **Found 2026-11-12, installing 0.1.0.2: a development build's install hangs on opening its zip.** `recto update install <zip>` with the zip on `/Volumes/EksternalHome` didn't answer within 120 s, and `update status` said "Downloading RectoPDF 0.1.0.2…" for over five minutes. A sample showed the updater's thread inside `open()` of the zip (`recto_update::zip::unpack`, `stage.rs:259`), with macOS's `UserNotificationCenter` running: most likely the system's "access files on a removable volume" question, waiting on the owner. Fix: the app never opens a path an agent names without a bound (the `recto` process reads the zip and hands over the bytes or a copy in the app's own folder, or the open has a deadline), the command answers at once, the words say what it's waiting for, and a test with an open that never returns. Also find why the copy asks again (the release's signature against the dev builds' ad hoc one).
 
 ## Phase R: Restructuring, after the first release and before any other new feature
@@ -410,9 +411,9 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [x] R0.1 `--quick` covers changes since the branch left `main`, runs dependents' registration guards, and a compile gate runs before a test job is queued. 1 d
 - [x] R0.2 `--full` selects tests by what changed, with the app tests split into window and lifecycle tiers; CI still runs everything. Waits on the owner's answer below. 1–1.5 d
 - [x] R0.3 Ratchets in `--quick`: sizes of files, functions, structs and enums that may only shrink, fixed sleeps in tests, and a hub-touch report per branch. 1 d
-- [ ] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
+- [x] R0.4 Per-test durations kept from each full run; `check.sh --slow` lists the slowest and each tier against its budget. 0.5 d
 - [x] R0.5 `docs/ENGINEERING.md` split per crate, so merges stop conflicting in it. 0.5 d
-- [ ] R0.6 CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
+- [ ] R0.6 (the three-part layout is merged, 2026-11-12; its first green run took 15.5 min of wall on a branch that changed the tools, with cold caches and macOS jobs queueing behind another branch, so under 10 minutes is not shown yet: measure main and the next two branch runs, and go back to fewer parts if five macOS jobs a run keep queueing) CI's app tests in two parallel jobs; CI under 10 minutes. 0.5 d
 
 **R1. The app core out of the bridge (track A)**
 - [x] R1.1 [4] The pure part of `reconcile` (500 lines) into a `model` function, with 20 unit tests (notice precedence, Save icon, pane labels, contents changes). 2–3 d
