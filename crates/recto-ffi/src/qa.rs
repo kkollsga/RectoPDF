@@ -757,7 +757,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
             "lower-right:out",
         ]),
         "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => crate::sidebar_access::is_qa_value(value),
+        "accessibility" => recto_app::sidebar_access::is_qa_value(value),
         "scroller_style" => one_of(&["legacy", "overlay"]),
         "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
         "focus" => one_of(&["page", "sidebar", "find"]),

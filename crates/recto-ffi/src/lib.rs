@@ -1371,7 +1371,7 @@ struct Inner {
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     tool: snapshot_tool::Tool,
-    folds: sidebar_access::Folds,
+    folds: recto_app::sidebar_access::Folds,
     chrome: recto_app::chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
     printing: printing::Printing,
@@ -2021,7 +2021,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             tool: snapshot_tool::Tool::default(),
-            folds: sidebar_access::Folds::default(),
+            folds: recto_app::sidebar_access::Folds::default(),
             chrome: recto_app::chrome::Chrome::default(),
             printing: printing::Printing::default(),
             keys,

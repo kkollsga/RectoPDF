@@ -8,6 +8,7 @@ pub mod model;
 pub mod passwords;
 pub mod privacy;
 pub mod prompts;
+pub mod sidebar_access;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
