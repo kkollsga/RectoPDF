@@ -52,6 +52,8 @@ struct Launch {
     how: String,
     /// What the state folder's messages held as this launch began: the launch before's, which the app keeps one launch back only.
     messages_before: Option<String>,
+    /// The state folder's files as this launch began, with sizes and times, so a file written later shows (a sleep file a quit rewrote, 2026-11-12).
+    files_before: String,
     last_state: Option<Value>,
 }
 
@@ -71,12 +73,14 @@ pub fn launching(state: &State) -> usize {
         }));
     });
     let messages_before = std::fs::read_to_string(&state.paths.server_messages).ok().map(|text| tail(&text, LOG_CAP));
+    let files_before = files_of(&state.root);
     let mut launches = LAUNCHES.lock().unwrap_or_else(PoisonError::into_inner);
     launches.push(Launch {
         pid: 0,
         state_root: state.root.clone(),
         how: "qa start".into(),
         messages_before,
+        files_before,
         last_state: None,
     });
     launches.len() - 1
@@ -96,6 +100,7 @@ pub fn met(state: &State, pid: u32, how: &str) {
         state_root: state.root.clone(),
         how: how.into(),
         messages_before: None,
+        files_before: files_of(&state.root),
         last_state: None,
     });
 }
@@ -174,8 +179,10 @@ pub fn at_failure(state: &State) {
         if let Some(text) = &launch.messages_before {
             folder.put(&format!("messages/{own}/before-launch-{}.txt", index + 1), text.as_bytes());
         }
+        folder.put(&format!("messages/{own}/files-before-launch-{}.txt", index + 1), launch.files_before.as_bytes());
     }
     drop(launches);
+    folder.put(&format!("messages/{own}/files-at-failure.txt"), files_of(&state.root).as_bytes());
     let paths = &state.paths;
     let logs = [
         paths.server_messages.clone(),
@@ -249,6 +256,32 @@ fn write_once(folder: &mut Folder) {
         "\nevidence of this failure: {}\nrun it again here as it ran:\n  {again}\n",
         folder.path.display()
     );
+}
+
+/// A state folder's files, a line each: size, modification time to the microsecond, path. Names and times only, nothing read: cheap enough for every launch.
+fn files_of(root: &Path) -> String {
+    fn walk(base: &Path, at: &Path, into: &mut Vec<String>, depth: usize) {
+        for entry in std::fs::read_dir(at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if depth < 4 {
+                    walk(base, &path, into, depth + 1);
+                }
+                continue;
+            }
+            let at = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or_else(|| "?".to_owned(), |since| format!("{}.{:06}", since.as_secs(), since.subsec_micros()));
+            into.push(format!("{:>10} {at} {}", meta.len(), path.strip_prefix(base).unwrap_or(&path).display()));
+        }
+    }
+    let mut lines = Vec::new();
+    walk(root, root, &mut lines, 0);
+    lines.sort_by(|a, b| a.split_whitespace().nth(2).cmp(&b.split_whitespace().nth(2)));
+    lines.join("\n") + "\n"
 }
 
 /// The one command that runs this test again here as it ran: CI's limits, its profile and concurrency (`tools/check.sh --like-ci`), and the slow mode's seams and seed as this run met them.

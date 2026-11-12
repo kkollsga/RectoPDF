@@ -49,6 +49,10 @@ fn check_the_folder(root: &Path, status: &std::process::ExitStatus, said: &str) 
     let messages: Vec<String> = listing(folder).into_iter().filter(|file| file.starts_with("messages/")).collect();
     assert!(messages.iter().any(|file| file.ends_with("/before-launch-2.txt")), "{messages:?}");
     assert!(messages.iter().any(|file| file.ends_with("/server-messages.txt")), "{messages:?}");
+    // The state folder's files as each launch began and at the failure, so a file written in between shows.
+    for listing in ["/files-before-launch-1.txt", "/files-before-launch-2.txt", "/files-at-failure.txt"] {
+        assert!(messages.iter().any(|file| file.ends_with(listing)), "{listing}: {messages:?}");
+    }
     // The before and after: each launch's last `qa state`.
     for launch in [1, 2] {
         let state: serde_json::Value = serde_json::from_str(&read(&format!("launch-{launch}-qa-state.json"))).unwrap();
