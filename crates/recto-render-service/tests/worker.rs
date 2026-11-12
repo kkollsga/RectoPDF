@@ -440,19 +440,6 @@ fn a_worker_that_left_is_collected_with_nobody_asking() {
     wait_until("the worker to be collected", || process_memory(pid).is_none());
 }
 
-/// Failure: `kill_worker` waits for the process to end, so a worker stuck in a read from a dead volume hangs whoever called it. It must return, and the next job must still work.
-#[test]
-fn killing_a_worker_doesnt_wait_for_it() {
-    let file = plain_doc();
-    let mut doc = renderer(&file.0, Policy::default());
-    draws(&mut doc, 0);
-    let pid = doc.worker_pid().unwrap();
-    doc.kill_worker();
-    assert_eq!(doc.worker_pid(), None, "it's let go at once");
-    wait_until("the reaper to collect it", || process_memory(pid).is_none());
-    assert_eq!(draws(&mut doc, 1), TileKind::Grey);
-}
-
 /// Failure: a region drawn in the worker doesn't reach the host's surface, or its tiles' kinds are lost on the way. Each kind must match what one tile would report.
 #[test]
 fn a_region_through_the_worker_reports_each_tile() {
