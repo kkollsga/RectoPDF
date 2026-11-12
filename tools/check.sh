@@ -101,6 +101,28 @@ docs_only_since() {
   git merge-base --is-ancestor "$1" HEAD 2>/dev/null && [ -z "$(git diff --name-only "$1" HEAD | grep -vE '^docs/|\.md$')" ]
 }
 branch=$(git symbolic-ref --short -q HEAD || echo detached)
+# On `main`, a pass is stamped for the push guard only while the last pushed main commit's CI isn't red, unless that red is marked known with a date
+# (tools/push-main.sh --known, at most 7 days; PLAN R0.7e): merges went on over a red main four times, and one red went unseen (2026-11-12). The pass
+# is still remembered, so once CI is green or the red is marked, the same code stamps without running again. gh missing, signed out or offline is a
+# warning, never a wait: push-main.sh bounds every call.
+main_ci_allows_stamp() {
+  [ "$branch" = main ] && [ -x tools/push-main.sh ] || return 0
+  local said rc=0
+  said=$(tools/push-main.sh --status 2>&1) || rc=$?
+  said=${said#push-main: }
+  case "$rc" in
+    0) echo "check: $said" ;;
+    1)
+      {
+        echo "check: not stamped for the push guard: $said"
+        echo "Fix main first (tools/push-main.sh --watch shows the failure, its rates and its evidence), or, if the failure is understood and tracked, mark it"
+        echo "known for at most a week: tools/push-main.sh --known <sha> --until YYYY-MM-DD --why \"what is known\". The pass is remembered: run this again then."
+      } >&2
+      return 1
+      ;;
+    *) echo "check: warning: $said The pass is stamped without knowing it." >&2 ;;
+  esac
+}
 
 # Whether a ledger line's commit still counts against this branch's budget. Only a run of code still in HEAD's history counts: a merge taken back off, or
 # commits set aside, aren't what's being checked now (on main, a merge identical to a passed branch was refused, its count made of runs of two merges that
@@ -233,6 +255,10 @@ case "$mode" in
         passed_at=$(printf '%s' "$known" | cut -f3)
         known_scope=$(printf '%s' "$known" | cut -f4)
         if [ -z "$known_scope" ] || [ "$known_scope" = all ]; then
+          if ! main_ci_allows_stamp; then
+            echo "check: this code already passed, on commit $passed_commit at $passed_at, so nothing ran, but this commit isn't stamped." >&2
+            exit 4
+          fi
           stamp_checked
           echo "check: this code already passed, on commit $passed_commit at $passed_at. Only documents, if anything, have changed since, so nothing ran and this commit counts as checked. CHECK_AGAIN=1 runs it for real."
         else
@@ -506,7 +532,9 @@ if [ "$ledger_commit" = "$started_commit" ]; then
     # The scope goes with the pass: only a pass of everything is remembered for any scope, and only it lets `main` be pushed. A selective pass is
     # remembered for the same selection and never stamps the push guard: the same code on `main`, or with other changes under it, still runs everything.
     printf '%s\t%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" "$scope_key" >> "$passes"
-    [ "$scope_key" != all ] || stamp_checked "$started_commit"
+    if [ "$scope_key" = all ]; then
+      if main_ci_allows_stamp; then stamp_checked "$started_commit"; else status=4; fi
+    fi
   fi
 fi
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" "$([ "$scope_key" = all ] && echo all || echo selective)" >> "$ledger"
