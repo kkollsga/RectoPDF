@@ -366,8 +366,9 @@ def write_baseline(path, entries):
 # ---- A move ------------------------------------------------------------------------------------------------------------------------------
 def moved(root, bpath, old, new):
     """Renames the baseline entries of code that moved unchanged, from `old` to `new`: a file's path (every entry under it: the file, its sleeps, its
-    functions, structs, enums and impls) or one item's key (`path::Name`). Refused unless the old one is gone from the tree, the new one is there, and
-    no number measured at the new place is higher than its entry. It never raises a number; --update lowers it later as usual."""
+    functions, structs, enums and impls) or one item's key (`path::Name`). Refused unless the old one is gone from the tree (for a path: or no longer
+    measures over its budget there, for every entry's kind, as when a small new file takes its name), the new one is there, and no number measured at
+    the new place is higher than its entry. It never raises a number; --update lowers it later as usual."""
     base, problems = read_baseline(bpath)
     if problems:
         print('ratchet --moved: the baseline has problems, fix them first:')
@@ -389,9 +390,13 @@ def moved(root, bpath, old, new):
             print('ratchet --moved: refused: nothing at %s to take the entry' % new)
             return 1
     else:
+        # A new file may take the old path (a bridge file keeping a module's name, say): that's still a move, as long as the old path no longer
+        # holds the offender. One that still measures over its budget, for any entry's kind, is a copy.
         if os.path.exists(os.path.join(root, old)):
-            print('ratchet --moved: refused: %s still exists, so it was copied, not moved' % old)
-            return 1
+            still = ['%s %s measures %d' % (k, key, cur[(k, key)]) for k, key in picked if cur.get((k, key), 0) > limit(k, key, {})]
+            if still:
+                print('ratchet --moved: refused: %s still exists and still holds the offender (%s), so it was copied, not moved' % (old, '; '.join(still)))
+                return 1
         if not os.path.exists(os.path.join(root, new)):
             print('ratchet --moved: refused: %s does not exist' % new)
             return 1
