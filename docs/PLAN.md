@@ -418,6 +418,8 @@ The review, the target structure and each step's proof are in `docs/reviews/2026
 - [ ] R1.4 [14] Launch and late state, quit and hand-off, update, and the sleep writer as state machines with the clock passed in, arrivals tested in every order; about 20 update tests ported; the window drawn from Rust's state alone. 4–6 d
 
 **R2. One action, one implementation (track B)**
+
+Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cli and ui interfaces are built on top calling the same methods".
 - [ ] R2.1 [5] A typed `Event` enum, with session methods returning what changed. Merges before R1.2 starts moving files. 1–2 d
 - [ ] R2.2 [8, 9] The command registry: a module per feature holding its payload, handler, table rows, wording and events; a `Route` column in place of the four routing sites; one record-command implementation; no default arms for `draws`, `tab` or `reads_pages`. 5–7 d, a table group per merge
 - [ ] R2.3 [10] A person's actions run commands through the same executor as an agent's: the about 14 parallel `CoreCall` arms go, the about 8 window-only actions get commands, and a test proves every menu item, palette entry, key and control maps to a command or is listed as host-only. Needs R1.2 and R2.2. 4–6 d
