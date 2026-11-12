@@ -3,6 +3,7 @@
 
 pub mod chrome;
 pub mod clock;
+pub mod linking;
 pub mod model;
 pub mod privacy;
 #[cfg(any(test, feature = "testkit"))]

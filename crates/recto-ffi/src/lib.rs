@@ -14,7 +14,6 @@ mod palette;
 mod panes;
 pub mod passwords;
 mod printing;
-
 mod qa;
 mod records;
 mod saver;
@@ -1369,7 +1368,7 @@ struct Inner {
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
     notice_tab: AtomicU32,
     /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
-    link_prompt: Mutex<Option<linking::LinkPrompt>>,
+    link_prompt: Mutex<Option<recto_app::linking::LinkPrompt>>,
     /// Link sheets asked so far, which numbers each.
     link_prompts_made: AtomicU64,
     /// Saves from the window: how many run, and what one that failed says.
@@ -4605,7 +4604,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
     reader.save_problem = inner.save_ui.problem();
-    reader.link_prompt = lock(&inner.link_prompt).clone();
+    reader.link_prompt = lock(&inner.link_prompt).clone().map(Into::into);
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
     let recto_app::SidebarParts {
