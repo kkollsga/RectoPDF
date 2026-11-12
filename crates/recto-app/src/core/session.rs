@@ -136,8 +136,11 @@ pub fn migrate_older_settings(inner: &Inner) {
 
 /// One pass by one thread over every other tab's file, once after a restore. A stat each, or a lookup by number if that wasn't it. It's gone as soon as it's been round, with nothing kept for a file that's as it was, and it can sit in a file on a dead volume as long as that likes.
 pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
+    // Counted, so a test can wait for it to have been round, and not for a time.
+    inner.life.others_looking.fetch_add(1, Ordering::SeqCst);
+    let looking = inner;
     let inner = Arc::clone(inner);
-    let _ = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
+    let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let files = inner.host.session.with_session(|session| session.files_to_look_at());
         let mut changed = false;
         for (id, path, stamp) in files {
@@ -154,11 +157,18 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
         if changed {
             inner.core.push(CoreCall::Reconcile);
         }
+        inner.life.others_looking.fetch_sub(1, Ordering::SeqCst);
     });
+    if spawned.is_err() {
+        looking.life.others_looking.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Runs the socket from here on, now the session's as it was: nothing asked of it could be about an empty one, or open over what's coming back.
 pub fn start_serving(inner: &Arc<Inner>) {
+    if !inner.serving.socket {
+        return;
+    }
     let waiting = lock(&inner.serving.waiting_server).take();
     let ending = Arc::clone(&inner.listener);
     let served = Arc::clone(&inner.host);
@@ -194,6 +204,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
             (Some(one), Some(other)) => Some(one.min(other)),
             (one, other) => one.or(other),
         }) else {
+            if inner.core.has_ended() {
+                return;
+            }
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }

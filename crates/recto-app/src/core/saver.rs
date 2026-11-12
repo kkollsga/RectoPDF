@@ -3,7 +3,7 @@
 //! **No thread at rest, and none waiting.** Saying something's changed is an atomic store, and the first time a nudge to the session thread, which is parked anyway. It keeps the one deadline there is, by parking with a timeout rather than for good, so there's nothing per tab and no timer. When it comes due, a one-shot thread does the writing and ends. So a scroll on the UI thread waits for nothing, and a window left reading has no extra thread for its minute.
 
 use super::{CoreCall, CoreQueue, Inner, lock};
-use crate::clock::{Clock, SystemClock};
+use crate::clock::Clock;
 use crate::saver as app;
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
@@ -19,8 +19,9 @@ pub struct Saver {
     inner: OnceLock<Weak<Inner>>,
     /// The record's been read, so what's written is what came of it. Nothing's written before that.
     started: AtomicBool,
-    /// What `crate::saver`'s decisions go by.
-    clock: SystemClock,
+    /// What `crate::saver`'s decisions go by: when edits and the record come due. The host's clock, a test's fake one. How long a flush has, and how long its steps took,
+    /// are real time and go by `Instant`, as a wait on the disk is.
+    clock: Arc<dyn Clock>,
     /// A writing thread is there, or asked for.
     writer_alive: AtomicBool,
     /// The session thread knows there's a deadline. So saying it again is one atomic.
@@ -37,13 +38,13 @@ pub struct Saver {
 }
 
 impl Saver {
-    pub fn new(store: RecordStore, core: Arc<CoreQueue>) -> Self {
+    pub fn new(store: RecordStore, core: Arc<CoreQueue>, clock: Arc<dyn Clock>) -> Self {
         Self {
             store: Arc::new(store),
             core,
             inner: OnceLock::new(),
             started: AtomicBool::new(false),
-            clock: SystemClock::new(),
+            clock,
             writer_alive: AtomicBool::new(false),
             armed: AtomicBool::new(false),
             view_changed: AtomicBool::new(false),
@@ -204,6 +205,11 @@ impl Saver {
         }
     }
 
+    /// Whether a writing thread is there, or asked for.
+    pub fn is_writing(&self) -> bool {
+        self.writer_alive.load(Ordering::SeqCst)
+    }
+
     pub fn has_failed(&self) -> bool {
         lock(&self.last_error).is_some()
     }
@@ -252,6 +258,7 @@ impl Saver {
                 message: "The app hasn't finished starting.".to_string(),
             });
         }
+        // Real time, not the clock: how long this flush may wait on the session thread and the disk, and how long its steps took.
         let began = Instant::now();
         // A hand-off can wait, and an update mustn't go on something unfinished. A quit is going anyway, so it writes what there is.
         if !inner.core.flush(limit) && force {

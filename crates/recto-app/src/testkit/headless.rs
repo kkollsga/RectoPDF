@@ -1,0 +1,485 @@
+//! **The app with no window** (step R1.3): the same core the window runs on ([`Inner::start`]), started on fakes of what the host gives it, so a test of what the app
+//! decides runs in this process, in milliseconds, instead of launching `RectoPDF.app`.
+//!
+//! What's real: the session thread, the state's reading and writing on the real [`RecordStore`] in a temp folder, files read on their own threads with the real
+//! loader, the page views, the saver's writer, a quit's flush. What's a fake: the clock ([`FakeClock`]), the listener ([`FakeListener`]), the window (nothing draws,
+//! and what the host would call when its window opens and closes is called by the kit, in the host's order). What's not there unless asked: the control socket (an
+//! agent's command goes through the same [`Host::run`] the socket's server calls), the search index and generated contents.
+//!
+//! **How a test stays deterministic.** There's no fixed sleep anywhere here. Every wait is for a condition, bounded, and fails naming what it was still waiting for:
+//! [`HeadlessApp::settle`] waits for the session thread to have taken everything queued and every file being read, then for the threads the product starts for a
+//! password, a look at files and a write of the record to have finished, and takes what they queued. Time the app's rules go by moves only by
+//! [`HeadlessApp::advance`]. What's left to real time is what's real in the product too: a flush's limit on a slow disk, the sleep files' lock.
+
+use super::{FakeClock, FakeListener, Heard};
+use crate::core::{Inner, Start};
+use crate::launch::LaunchArgs;
+use crate::listener::QuitAnswer;
+use crate::queue::CoreCall;
+use crate::reader_view::ReaderView;
+use recto_agent::{AgentError, Level};
+use recto_control::StatePaths;
+use recto_control::host::Host;
+use recto_testpdf::TempDir;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+/// The longest any one wait in the kit is given before the test fails with what it saw. Far past anything the product takes on a loaded machine, and short enough
+/// that a hang fails the test rather than the run.
+pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
+
+/// How often a bounded wait looks again.
+const LOOK_EVERY: Duration = Duration::from_millis(2);
+
+/// **A state folder and a folder for the test's files, kept between runs of the app,** as a disk is between launches. [`HeadlessApp::quit`] gives it back, to
+/// [`Disk::start`] again on.
+pub struct Disk {
+    root: TempDir,
+    paths: StatePaths,
+}
+
+impl Disk {
+    /// A fresh one, in the system's temp folder: nothing in the state, no files.
+    #[must_use]
+    pub fn new() -> Self {
+        let root = TempDir::new("recto-headless-");
+        let state = root.join("state");
+        // Private to this user, as a state folder must be, or the record's lock isn't taken and the app runs as one that isn't keeping it.
+        #[cfg(unix)]
+        let made = std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&state);
+        #[cfg(not(unix))]
+        let made = std::fs::create_dir(&state);
+        made.expect("a state folder");
+        std::fs::create_dir(root.join("files")).expect("a folder for the test's files");
+        let paths = StatePaths::overridden(&state).expect("a temp state folder is allowed");
+        Self { root, paths }
+    }
+
+    /// The state folder's paths: the record, the backups, the socket.
+    #[must_use]
+    pub fn paths(&self) -> &StatePaths {
+        &self.paths
+    }
+
+    /// Where the test's own files go: outside the state folder, as a person's documents are.
+    #[must_use]
+    pub fn files(&self) -> PathBuf {
+        self.root.join("files")
+    }
+
+    /// Writes a file of the test's, by name, and says where it is.
+    pub fn file(&self, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.files().join(name);
+        std::fs::write(&path, bytes).expect("writing a test's file");
+        path
+    }
+
+    /// A PDF of `pages` pages, each with a line of text naming it, by name.
+    pub fn pdf(&self, name: &str, pages: usize) -> PathBuf {
+        let pages: Vec<recto_testpdf::Page> = (1..=pages)
+            .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{name} page {page}")])))
+            .collect();
+        self.file(name, &recto_testpdf::pages(&pages))
+    }
+
+    /// The app, started on this disk as a launch would be, with what [`Builder`] gives by default.
+    #[must_use]
+    pub fn start(self) -> HeadlessApp {
+        Builder::default().start_on(self)
+    }
+
+    /// A builder, to start the app on this disk with something other than the defaults.
+    #[must_use]
+    pub fn builder(self) -> DiskBuilder {
+        DiskBuilder {
+            disk: self,
+            builder: Builder::default(),
+        }
+    }
+}
+
+impl Default for Disk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What the app starts with, other than the disk.
+#[derive(Clone, Debug, Default)]
+pub struct Builder {
+    indexing: bool,
+    clock_ms: u64,
+    open: Vec<PathBuf>,
+}
+
+impl Builder {
+    /// With the search index and generated contents, as the app has them. Off by default: they start threads of their own that a test of anything else needn't wait for.
+    #[must_use]
+    pub fn indexing(mut self, on: bool) -> Self {
+        self.indexing = on;
+        self
+    }
+
+    /// Where the fake clock starts, in milliseconds.
+    #[must_use]
+    pub fn clock_at(mut self, ms: u64) -> Self {
+        self.clock_ms = ms;
+        self
+    }
+
+    /// Files named at launch, as a double-click on a PDF with the app not running gives them.
+    #[must_use]
+    pub fn open(mut self, path: impl Into<PathBuf>) -> Self {
+        self.open.push(path.into());
+        self
+    }
+
+    /// On a fresh disk.
+    #[must_use]
+    pub fn start(self) -> HeadlessApp {
+        self.start_on(Disk::new())
+    }
+
+    /// **A launch, as the host makes it, with no window:** the core started, the state read on its thread and waited for, the window "opened" as the host does when
+    /// the state's in, then `ready`, and everything that set going settled.
+    fn start_on(self, disk: Disk) -> HeadlessApp {
+        let clock = Arc::new(FakeClock::at(self.clock_ms));
+        let listener = Arc::new(FakeListener::default());
+        let inner = Inner::start(Start {
+            listener: Arc::clone(&listener) as Arc<dyn crate::Listener>,
+            clock: Arc::clone(&clock) as Arc<dyn crate::clock::Clock>,
+            paths: disk.paths.clone(),
+            args: LaunchArgs::default(),
+            // A test's source: no network, whatever the environment says.
+            update_source: recto_update::source::resolve(false, true, None, None),
+            socket: false,
+            indexing: self.indexing,
+        })
+        .expect("the core starts");
+        // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
+        assert!(
+            inner.saver.store.holds_the_record(),
+            "the headless app didn't get the record's lock in {}",
+            disk.paths.root.display()
+        );
+        let app = HeadlessApp {
+            inner: Some(inner),
+            clock,
+            listener,
+            disk: Some(disk),
+        };
+        // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's patience isn't armed: a test that wants the window up without the
+        // state calls `restore_patience_over` itself.
+        app.core().begin_restore();
+        app.wait_until("the state to be read and restore_ready heard", || app.listener.count(&Heard::RestoreReady) > 0);
+        // `restoreReady`, as the host does it on time.
+        let inner = app.core();
+        let with_state = inner.state_read();
+        if inner.window_should_open() {
+            inner.window_opened();
+        } else {
+            inner.window_closed();
+        }
+        if with_state {
+            inner.shown_with_state();
+        }
+        inner.ready(&self.open);
+        app.settle();
+        app
+    }
+}
+
+/// [`Builder`] on a disk of the test's.
+pub struct DiskBuilder {
+    disk: Disk,
+    builder: Builder,
+}
+
+impl DiskBuilder {
+    #[must_use]
+    pub fn indexing(mut self, on: bool) -> Self {
+        self.builder = self.builder.indexing(on);
+        self
+    }
+
+    #[must_use]
+    pub fn open(mut self, path: impl Into<PathBuf>) -> Self {
+        self.builder = self.builder.open(path);
+        self
+    }
+
+    #[must_use]
+    pub fn start(self) -> HeadlessApp {
+        self.builder.start_on(self.disk)
+    }
+}
+
+/// **The running app, with no window.** Dropped without [`Self::quit`], it ends as a killed app does: nothing more is written.
+pub struct HeadlessApp {
+    inner: Option<Arc<Inner>>,
+    clock: Arc<FakeClock>,
+    listener: Arc<FakeListener>,
+    disk: Option<Disk>,
+}
+
+impl HeadlessApp {
+    /// On a fresh disk, with the defaults.
+    #[must_use]
+    pub fn start() -> Self {
+        Builder::default().start()
+    }
+
+    #[must_use]
+    pub fn builder() -> Builder {
+        Builder::default()
+    }
+
+    /// The core, as `AppCore` holds it: what a test calls for anything the window calls, by the same method.
+    ///
+    /// # Panics
+    ///
+    /// Only once the app has quit, which takes it by value, so never.
+    #[must_use]
+    pub fn core(&self) -> &Arc<Inner> {
+        self.inner.as_ref().expect("the app is running")
+    }
+
+    /// The disk it runs on.
+    ///
+    /// # Panics
+    ///
+    /// Never while it runs.
+    #[must_use]
+    pub fn disk(&self) -> &Disk {
+        self.disk.as_ref().expect("the app is running")
+    }
+
+    /// **What the window sends, as a call on the session thread's queue.** Step R2.3 makes this `run(Command, Actor::Person)`: the window sends the command the CLI
+    /// sends, and this goes. Doesn't wait: [`Self::settle`] does.
+    pub fn send(&self, call: CoreCall) {
+        self.core().core.push(call);
+    }
+
+    /// Opens a file as the window's Open does, and settles.
+    pub fn open(&self, path: &Path) {
+        self.core().open_file(path.to_path_buf());
+        self.settle();
+    }
+
+    /// **An agent's command, at `level`,** as a line of JSON the way `recto` sends it, through the same refusal and [`Host::run`] as the socket's server. Waits for what
+    /// it answers, and doesn't settle.
+    ///
+    /// # Errors
+    ///
+    /// The command's own refusal or failure, as the agent would get it.
+    pub fn agent(&self, level: Level, line: &str) -> Result<Value, AgentError> {
+        let command = recto_agent::parse(line)?;
+        if !recto_agent::allowed(level, command.access()) {
+            return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
+        }
+        let mut events = Vec::new();
+        self.core().host.run(level, &command, &mut events)
+    }
+
+    /// **Waits for the app to be at rest:** everything queued for the session thread taken, every file being read in, every password being tried and every look at
+    /// files done, the record's writer through, and the page views' layer changes taken as the host takes them. Bounded, and never a fixed sleep.
+    ///
+    /// # Panics
+    ///
+    /// Past [`WAIT_LIMIT`], naming what was still under way.
+    pub fn settle(&self) {
+        let began = Instant::now();
+        loop {
+            let left = WAIT_LIMIT.saturating_sub(began.elapsed());
+            assert!(
+                self.core().core.flush(left),
+                "settle: the session thread didn't take what was queued, with the files being read, in {WAIT_LIMIT:?}; still under way: {:?}",
+                self.under_way()
+            );
+            self.take_ops();
+            let busy = self.under_way();
+            if busy.is_empty() {
+                // What finished just now queued what came of it, and that's taken too.
+                assert!(
+                    self.core().core.flush(left),
+                    "settle: the session thread didn't take the last of what was queued"
+                );
+                return;
+            }
+            assert!(began.elapsed() < WAIT_LIMIT, "settle: still under way after {WAIT_LIMIT:?}: {busy:?}");
+            std::thread::sleep(LOOK_EVERY); // ratchet: poll
+        }
+    }
+
+    /// What's still going on off the session thread, in words, for a wait's failure.
+    fn under_way(&self) -> Vec<String> {
+        let inner = self.core();
+        let mut busy = Vec::new();
+        if crate::lock(&inner.tools.prompts.passwords).trying() {
+            busy.push("a password being tried".to_string());
+        }
+        let reads = inner.life.reads_running.load(Ordering::SeqCst);
+        if reads > 0 {
+            busy.push(format!("{reads} file(s) being read"));
+        }
+        if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
+            busy.push("the other tabs' files being looked at".to_string());
+        }
+        let looks = inner.sleeper.looks_running();
+        if looks > 0 {
+            busy.push(format!("{looks} look(s) at a woken tab's file"));
+        }
+        if inner.saver.is_writing() {
+            busy.push("the record being written".to_string());
+        }
+        busy
+    }
+
+    /// The page views' layer changes, taken and applied as the host's UI thread does on `ops_ready`, so what's drawn and let go goes as it would.
+    fn take_ops(&self) {
+        let inner = self.core();
+        for engine in inner.panes.engines(&inner.engine) {
+            drop(engine.drain());
+            engine.applied();
+        }
+    }
+
+    /// Moves the app's clock on, and has the session thread look at its deadlines again. Doesn't settle.
+    pub fn advance(&self, ms: u64) {
+        self.clock.advance(ms);
+        self.core().core.nudge();
+    }
+
+    /// The reader's model, as the window pulls it.
+    #[must_use]
+    pub fn reader(&self) -> ReaderView {
+        crate::lock(&self.core().published).reader.clone()
+    }
+
+    /// The sidebar's model but its rows, as the window pulls it.
+    #[must_use]
+    pub fn sidebar(&self) -> crate::SidebarView {
+        (*crate::lock(&self.core().published).sidebar).clone()
+    }
+
+    /// The sidebar's tab rows.
+    #[must_use]
+    pub fn tabs(&self) -> Vec<crate::SidebarRow> {
+        self.core().sidebar_tabs()
+    }
+
+    /// `qa state`'s `session`: the record as it would be written now, and each tab's edits in full.
+    #[must_use]
+    pub fn session_json(&self) -> Value {
+        self.core().state_json()
+    }
+
+    /// `qa state`'s `record`: how the record's writing and the sleep files have gone.
+    #[must_use]
+    pub fn record_json(&self) -> Value {
+        self.core().record_report()
+    }
+
+    /// Everything the host has heard so far, in order.
+    #[must_use]
+    pub fn heard(&self) -> Vec<Heard> {
+        self.listener.heard()
+    }
+
+    /// The listener, to count or take what it heard.
+    #[must_use]
+    pub fn listener(&self) -> &FakeListener {
+        &self.listener
+    }
+
+    /// The fake clock.
+    #[must_use]
+    pub fn clock(&self) -> &FakeClock {
+        &self.clock
+    }
+
+    /// Waits for `what` to be true, looking every few milliseconds.
+    ///
+    /// # Panics
+    ///
+    /// Past [`WAIT_LIMIT`], naming `what` and what's still under way.
+    pub fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
+        let began = Instant::now();
+        while !done() {
+            assert!(
+                began.elapsed() < WAIT_LIMIT,
+                "waited {WAIT_LIMIT:?} for {what}; under way: {:?}; heard: {:?}",
+                self.under_way(),
+                self.listener.heard().len()
+            );
+            std::thread::sleep(LOOK_EVERY); // ratchet: poll
+        }
+    }
+
+    /// **A quit, as the menu asks for one:** everything written on the quit's thread, the answer heard, the socket ended, and the core let go of as the process would
+    /// be ended, so its disk can be started on again in this process. Says what the quit answered, beside the disk.
+    ///
+    /// # Panics
+    ///
+    /// If no answer comes in [`WAIT_LIMIT`], or something keeps the core past it.
+    #[must_use]
+    pub fn quit(mut self) -> (QuitAnswer, Disk) {
+        let answers = || {
+            self.listener
+                .heard()
+                .into_iter()
+                .filter_map(|heard| match heard {
+                    Heard::QuitAnswer(answer) => Some(answer),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = answers().len();
+        self.core().quit_requested();
+        self.wait_until("the quit's answer", || answers().len() > before);
+        let answer = answers().pop().expect("an answer");
+        // `applicationWillTerminate`, which a quiet run reaches whatever the answer.
+        self.core().shutdown();
+        let disk = self.end();
+        (answer, disk)
+    }
+
+    /// **The app killed:** nothing more is written, and the disk is as the last write left it.
+    #[must_use]
+    pub fn kill(mut self) -> Disk {
+        self.end()
+    }
+
+    /// Lets go of the core, as a process ending does: the page views end, the session thread returns once it's through what's queued, and every thread that held the
+    /// core has let go of it, so the record's lock goes with it.
+    fn end(&mut self) -> Disk {
+        if let Some(inner) = self.inner.take() {
+            for engine in inner.panes.engines(&inner.engine) {
+                engine.shut_down();
+            }
+            inner.core.end();
+            let began = Instant::now();
+            while Arc::strong_count(&inner) > 1 {
+                assert!(
+                    began.elapsed() < WAIT_LIMIT,
+                    "the core is still held by {} other(s) {WAIT_LIMIT:?} after it was ended",
+                    Arc::strong_count(&inner) - 1
+                );
+                std::thread::sleep(LOOK_EVERY); // ratchet: poll
+            }
+        }
+        self.disk.take().expect("the disk")
+    }
+}
+
+impl Drop for HeadlessApp {
+    fn drop(&mut self) {
+        // A test that failed is unwinding through here: its failure is the one to see, so nothing here adds a second.
+        if self.inner.is_some() && !std::thread::panicking() {
+            drop(self.end());
+        }
+    }
+}

@@ -183,4 +183,16 @@ impl Inner {
         bar.push(crate::snapshot_menu::tools_menu(self.tools.tool.is_on()));
         bar
     }
+
+    /// The reader has dismissed the notice, or its time's up: every notice that goes by itself goes.
+    pub fn dismiss_selection_notice(&self) {
+        for engine in self.panes.engines(&self.engine) {
+            engine.dismiss_selection_notice();
+        }
+        lock(&self.window.action_notice).take();
+        self.tools.tool.dismiss_notice();
+        self.tools.printing.dismiss_notice();
+        self.updates.dismiss_notice();
+        self.core.push(CoreCall::Reconcile);
+    }
 }

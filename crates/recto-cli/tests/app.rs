@@ -2541,35 +2541,6 @@ fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
     );
 }
 
-/// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
-#[test]
-fn the_palettes_run_keeps_to_each_commands_level() {
-    let Some(run) = Run::start() else { return };
-    let file = numbered(4);
-    run.ok(&["open", file.0.to_str().unwrap()]);
-    run.settled();
-    run.state.set_level(Level::Control);
-    let zoomed = run.ok(&["palette", "zoom in", "--run"]);
-    assert_eq!(zoomed["ran"]["id"], "view.zoom_in", "{zoomed}");
-    let (update, code) = run.state.json(&["palette", "check for updates", "--run"]);
-    assert_ne!(code, 0, "an update's install needs Full: {update}");
-    assert_eq!(update["error"]["code"], "permission_denied", "{update}");
-    let rotated = run.ok(&["palette", "rotate all pages right", "--run"]);
-    assert_eq!(rotated["ran"]["id"], "rotate.right", "{rotated}");
-    let edits = run.ok(&["edits"]);
-    assert_eq!(edits["edited"], true, "{edits}");
-    // Below Full, `discard` throws away only agents' steps: it going through says the step is the agent's, as `page rotate` makes it, and not the owner's.
-    let (discarded, code) = run.state.json(&["discard"]);
-    assert_eq!(code, 0, "the step is the agent's: {discarded}");
-    run.state.set_level(Level::ReadOnly);
-    assert!(
-        run.ok(&["palette", "zoom"])["items"].as_array().is_some_and(|items| !items.is_empty()),
-        "listing is reading"
-    );
-    let (refused, code) = run.state.json(&["palette", "zoom in", "--run"]);
-    assert_ne!(code, 0, "running is doing: {refused}");
-}
-
 /// Waits for the sheet over the window to be of this kind, and gives the state then.
 fn sheet_of(run: &Run, kind: &str) -> Value {
     wait_for(run, |state| state["app"]["sheet"]["kind"] == kind)
@@ -2683,68 +2654,6 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
     );
 }
 
-/// Failure: wrong passwords are asked for without end, or Cancel leaves the sheet coming back at once; the person isn't told why it stopped.
-#[test]
-fn wrong_passwords_are_bounded_and_cancel_is_heard() {
-    let Some(run) = Run::start() else { return };
-    let file = TempPdf::new("locked.pdf", &common::locked_with("right", 1));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
-    sheet_of(&run, "password");
-    run.ok(&["qa", "sheet-answer", "second"]);
-    let cancelled = wait_for(&run, |state| state["app"]["sheet"] == json!({}));
-    assert_eq!(cancelled["app"]["home"], true, "nothing opened: {cancelled}");
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
-    for tries_left in (1..5).rev() {
-        sheet_of(&run, "password");
-        type_password(&run, "wrong");
-        wait_for(&run, |state| {
-            state["app"]["sheet"]["informative"]
-                .as_str()
-                .is_some_and(|text| text.contains(&format!("{tries_left} tr")))
-        });
-    }
-    type_password(&run, "wrong");
-    let stopped = wait_for(&run, |state| {
-        state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("stopped asking"))
-    });
-    assert_eq!((&stopped["app"]["sheet"], &stopped["app"]["home"]), (&json!({}), &json!(true)), "{stopped}");
-}
-
-/// Failure (review O2): with two protected files opened together, the second's ask takes the first's place, or a password typed for the file the sheet names is tried on the other, so neither opens, or the wrong one does.
-#[test]
-fn two_protected_files_opened_together_each_get_their_own_password() {
-    let Some(run) = Run::start() else { return };
-    let first = TempPdf::new("first.pdf", &common::locked_with("one", 1));
-    let second = TempPdf::new("second.pdf", &common::locked_with("two", 2));
-    run.ok(&["qa", "open-file", first.0.to_str().unwrap()]);
-    run.ok(&["qa", "open-file", second.0.to_str().unwrap()]);
-    let mut opened = Vec::new();
-    for _ in 0..2 {
-        let asked = sheet_of(&run, "password");
-        let names = asked["app"]["sheet"]["informative"].as_str().unwrap().to_string();
-        // Whichever's asked about first, its own password opens it.
-        let (password, name) = if names.contains("first.pdf") {
-            ("one", "first")
-        } else {
-            assert!(names.contains("second.pdf"), "{asked}");
-            ("two", "second")
-        };
-        assert!(!opened.contains(&name), "asked about {name} twice: {asked}");
-        type_password(&run, password);
-        wait_for(&run, |state| {
-            state["session"]["tabs"].as_array().is_some_and(|tabs| {
-                tabs.iter()
-                    .any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&format!("{name}.pdf"))))
-            })
-        });
-        opened.push(name);
-    }
-    let both = wait_for(&run, |state| {
-        state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2)
-    });
-    assert!(both["app"]["copy_notice"].to_string().find("didn't open").is_none(), "{both}");
-}
-
 /// Failure (review O5): passwords are kept by path, so a protected file moved while it's open loses its password, and its pages, drawn again, say it needs one, with no sheet to type it in.
 #[test]
 fn a_protected_file_moved_while_open_keeps_its_password() {
@@ -2793,77 +2702,6 @@ fn qa_password_is_only_for_a_tests_own_file() {
     let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
     assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
     std::fs::remove_dir_all(&outside).ok();
-}
-
-/// Failure (review O8): File > Open Recent misses files opened, lists them out of order, opens another file than the item showed once the list has moved, doesn't open one, or Clear Menu leaves any.
-#[test]
-fn open_recent_lists_opens_and_clears() {
-    let Some(run) = Run::start() else { return };
-    let (a, b) = (numbered(3), outlined());
-    run.ok(&["open", a.0.to_str().unwrap()]);
-    run.ok(&["open", b.0.to_str().unwrap()]);
-    run.settled();
-    let recent_items = |state: &Value| -> Vec<(String, String)> {
-        let file = state["app"]["menu_bar"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|menu| menu["title"] == "File")
-            .unwrap()["items"]
-            .as_array()
-            .unwrap()
-            .clone();
-        file.iter()
-            .filter_map(|item| Some((item["id"].as_str()?.to_string(), item["title"].as_str()?.to_string())))
-            .filter(|(id, _)| id.starts_with("recent.") && id != "recent.clear")
-            .collect()
-    };
-    let state = run.report();
-    let ids: Vec<String> = state["app"]["menu_bar"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|menu| menu["title"] == "File")
-        .unwrap()["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["id"].as_str().unwrap().to_string())
-        .collect();
-    let at = ids.iter().position(|id| id == "file.open_recent").expect("Open Recent in File");
-    assert!(
-        ids[at + 1].starts_with("recent.") && ids[at + 2].starts_with("recent.") && ids[at + 3] == "recent.clear",
-        "{ids:?}"
-    );
-    let items = recent_items(&state);
-    let name = |document: &TempPdf| document.0.file_stem().unwrap().to_str().unwrap().to_string();
-    assert_eq!(
-        items.iter().map(|(_, title)| title.clone()).collect::<Vec<_>>(),
-        [name(&b), name(&a)],
-        "newest first: {items:?}"
-    );
-    let listed = run.ok(&["recent"]);
-    assert_eq!(listed["count"], 2);
-    assert_eq!(listed["files"][0]["untrusted"]["path"], b.0.to_str().unwrap(), "newest first: {listed}");
-    // The item for the older file, kept from before the list moves: it opens that file, not whatever's at its old place in the list.
-    let older = items[1].0.clone();
-    run.ok(&["close", "--tab", "#1"]);
-    run.ok(&["open", a.0.to_str().unwrap()]);
-    run.ok(&["close"]);
-    run.settled();
-    assert_eq!(recent_items(&run.report())[0].1, name(&a), "the list moved, and only the other file is open");
-    run.ok(&["qa", "menu", &older]);
-    let a_name = a.0.file_name().unwrap().to_str().unwrap().to_string();
-    wait_for(&run, |state| {
-        state["session"]["tabs"]
-            .as_array()
-            .is_some_and(|tabs| tabs.len() == 2 && tabs.iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&a_name))))
-    });
-    run.ok(&["qa", "menu", "recent.clear"]);
-    let cleared = wait_for(&run, |state| {
-        state["session"]["recent"].is_null() || state["session"]["recent"].as_array().is_some_and(Vec::is_empty)
-    });
-    assert!(recent_items(&cleared).is_empty(), "{cleared}");
 }
 
 /// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.

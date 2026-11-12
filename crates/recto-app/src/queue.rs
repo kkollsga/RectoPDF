@@ -186,6 +186,9 @@ pub struct CoreQueue {
     reconcile_queued: AtomicBool,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
     pub frozen: AtomicBool,
+    /// The session thread is to end once it's through what's queued. Only a headless app's quit asks this, to start again on the same disk in the same process; the app's
+    /// own session thread never ends, as the process does.
+    ended: AtomicBool,
 }
 
 impl CoreQueue {
@@ -218,13 +221,24 @@ impl CoreQueue {
         marker.wait(limit)
     }
 
+    /// The session thread ends once it's through what's queued: see [`Self::ended`].
+    pub fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.nudge();
+    }
+
+    /// Whether the session thread is to end.
+    pub fn has_ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
     /// Wakes whoever's waiting on this, to look at its deadline again.
     pub fn nudge(&self) {
         let _calls = lock(&self.calls);
         self.ready.notify_one();
     }
 
-    /// The next call, or `None` when `deadline` says something's due: one wait for both, so the state's one deadline costs no thread or timer of its own. `deadline` is asked again on every wake, and no more than that.
+    /// The next call, or `None` when `deadline` says something's due, or the thread is to end: one wait for both, so the state's one deadline costs no thread or timer of its own. `deadline` is asked again on every wake, and no more than that.
     pub fn next_or_due(&self, deadline: impl Fn() -> Option<Duration>) -> Option<CoreCall> {
         let mut calls = lock(&self.calls);
         loop {
@@ -233,6 +247,9 @@ impl CoreQueue {
                     self.reconcile_queued.store(false, Ordering::SeqCst);
                 }
                 return Some(call);
+            }
+            if self.has_ended() {
+                return None;
             }
             calls = match deadline() {
                 None => self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner),

@@ -97,3 +97,14 @@ pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
 pub fn host_word(action: HostAction) -> &'static str {
     app::host_word(action)
 }
+
+/// What's in the palette's field now, as it's typed.
+pub fn typed(inner: &Inner, text: &str) {
+    inner.tools.palette.typed(text);
+}
+
+/// Escape, or the keyboard going elsewhere.
+pub fn close(inner: &Inner) {
+    inner.tools.palette.close();
+    inner.listener.model_changed();
+}

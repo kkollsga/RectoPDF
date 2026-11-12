@@ -1,10 +1,10 @@
-ffi crates/recto-ffi/src 2652
+ffi crates/recto-ffi/src 2376
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524
 file crates/recto-control/src/record_store.rs 1502
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 1936
+file crates/recto-ffi/src/lib.rs 1662
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274

@@ -89,3 +89,47 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
         reads.start_restored(inner, id, path, stamp);
     }
 }
+
+/// **The window's side of opening and tapping,** as `AppCore` forwards it: each goes on the session thread, as waking a cold tab or reading a file can wait on a disk.
+impl Inner {
+    pub fn open_file(&self, path: PathBuf) {
+        // Asked for before the state's read: what a launch that goes back passes on.
+        if !self.life.restored.load(Ordering::SeqCst) {
+            updates::note_asked_to_open(std::slice::from_ref(&path));
+        }
+        self.core.push(CoreCall::Open(path));
+    }
+
+    /// A row was tapped.
+    pub fn tap_row(&self, row: SidebarRow) {
+        let call = match (row.kind, row.page) {
+            (crate::RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
+            (crate::RowKind::Contents, Some(page)) => CoreCall::Jump(TabId(row.tab), page.saturating_sub(1), 0.0),
+            (crate::RowKind::Contents, None) => return,
+            (crate::RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
+                Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
+                None => return,
+            },
+        };
+        self.core.push(call);
+    }
+
+    /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
+    pub fn tap_row_adding(&self, row: SidebarRow) {
+        match row.kind {
+            crate::RowKind::Tab => self.core.push(CoreCall::CompareClick(TabId(row.tab))),
+            crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),
+        }
+    }
+
+    /// A contents row's chevron was tapped: its sections fold or open.
+    pub fn toggle_contents_section(&self, first: u32) {
+        let entry = lock(&self.published)
+            .contents
+            .get(first as usize)
+            .map(|entry| (entry.tab, entry.entry, entry.expandable));
+        if let Some((tab, entry, true)) = entry {
+            self.core.push(CoreCall::ToggleSection(TabId(tab), entry));
+        }
+    }
+}

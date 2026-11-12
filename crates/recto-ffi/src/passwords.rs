@@ -1,7 +1,6 @@
 //! **The password prompt's record,** as the host draws it. Who's asked, what it says and how many tries are `recto_app::passwords`'s.
 
 pub use recto_app::passwords::PasswordPrompt;
-pub(crate) use recto_app::passwords::{Wrong, stopped_asking};
 
 /// The sheet's words, and which ask they're for.
 #[uniffi::remote(Record)]

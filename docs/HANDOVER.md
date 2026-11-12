@@ -6,7 +6,7 @@ For the coordinator who picks this up in a fresh session. Read `AGENTS.md` first
 
 - `main` is `edde0c1` plus this note, pushed. Its local full check passed. GitHub's CI was green on `edde0c1` (read 2026-11-12, after the restart).
 - The Mac was restarted to clear macOS's `xprotectd` (3.9 GB, see "The machine"). Nothing of ours was running.
-- One worktree is left on purpose: `.worktrees/headless-kit` on `build/headless-kit`, with one commit, `6930625`, marked WIP: a predecessor's partly written constructor for the core. It may not build.
+- No worktree is left.
 - The owner's RectoPDF is on development build 0.1.0.4, agent access Full, development builds allowed.
 - Phase R (the restructuring) is the only project. Its plan, with every step's status, is in `docs/PLAN.md` under "Phase R". The review behind it is `docs/reviews/2026-11-12-development-speed.md`.
 
@@ -21,19 +21,15 @@ In their words, 2026-11-12: "after this project is done the codebase is easily m
 | R0.1–R0.5, R0.7 | Done: the quick check with registration guards, the compile gate, a branch's full check by what changed, the ratchet, per-test times and `check.sh --slow`, the docs split, and "one failure is enough" (evidence folders, rerun lines, CI's N-of-M table, `tools/push-main.sh`, `check.sh --like-ci`) |
 | R0.6 | Tried and undone: three CI parts needed five macOS jobs a run and GitHub couldn't supply them. CI's check is one job again |
 | R1.1 | Done: the view model is a pure function |
-| R1.2, R1.3 | Largely done: the app's whole core lives in `recto_app::core`; the bridge is 2,652 production lines (11,970 that morning). **Not done: the test kit and any ported test** |
+| R1.2, R1.3 | Largely done: the app's whole core lives in `recto_app::core`; the bridge is 2,652 production lines (11,970 that morning). The headless kit exists and five app tests are ported; the rest of the ports wait on CI's per-test seconds |
 | R2.1 | Done: typed events |
 | R2.2 | The `recto-agent` side is done: a `Cmd` trait, eight families, 45 commands migrated. 23 commands and the routing lists are left (the list is in the merge of `build/commands`) |
 | R3.1 | Done: `Session`'s `impl` and tests split by concern |
 | R1.4, R2.3, R2.4, R3.2–R3.4, R4 | Not started |
 
-**The next task.** Its whole brief is `docs/HANDOVER-brief-headless-kit.md`: give that file to one Opus worker as written. In short, on `build/headless-kit`:
-1. `AppCore::start` becomes a constructor in `recto-app` taking the listener, the clock and the engine's hooks; the saver and sleeper go on the injected clock where a wait is a decision, and stay on real time where it's a real wait (the sleep files' try-lock loop, the flush's deadline, the writer's hold-back).
-2. The `HeadlessApp` kit in `recto-app`'s `testkit` feature: start on a temp folder with `FakeClock` and `FakeListener`, `send`, `agent`, `settle` (a bounded wait, never a sleep), read the models, `advance`, `quit` and start again. **Have it call back once the kit can start and quit an empty app, before porting.**
-3. Port the app tests that check a Rust rule (about 90 of the 229). An app test is deleted only when its twin has been shown failing on the bug it names, seeded on a temporary commit.
-4. The whole-state restore guard in process, so a new `qa state` field fails the quick check. Three workers lost two full runs each to this today.
+**R1.3's kit merged the same evening** (the constructor, `HeadlessApp`, five ports; see the plan's R1.3 entry for the numbers and what's left). It showed that window-tier app tests cost under a second each on a quiet Mac, so the seconds are in R1.4.
 
-Then R1.4 (launch, restore, quit, update and sleep as state machines on the clock; its inputs are listed in the merges of `build/app-core-3` and `build/core-move`), then R2.3 (the window sends the same commands as the CLI: the owner's rule, "all features should be implemented once").
+**The next task** is R1.4 (launch, restore, quit, update and sleep as state machines on the clock; its inputs are listed in the merges of `build/app-core-3` and `build/core-move`), then R2.3 (the window sends the same commands as the CLI: the owner's rule, "all features should be implemented once").
 
 ## Rules the owner set today (all in `AGENTS.md`, in their words)
 

@@ -14,12 +14,17 @@ pub mod saving;
 pub mod session;
 pub mod sleeper;
 pub mod snapshot_tool;
+pub mod start;
 pub mod updates;
 
 mod comparison;
 mod editing;
+#[cfg(test)]
+mod headless;
+mod launching;
 mod navigation;
 mod opening;
+mod quitting;
 mod unlocking;
 
 use comparison::*;
@@ -29,6 +34,7 @@ use navigation::*;
 use opening::*;
 pub use reconcile::*;
 pub use session::*;
+pub use start::*;
 use unlocking::*;
 
 use crate::RecentFile;
@@ -169,13 +175,13 @@ pub struct Inner {
     /// A comparison's panes past the first, and what the UI thread needs to keep them in step.
     pub panes: panes::Panes,
     pub core: Arc<CoreQueue>,
-    pub listener: Arc<dyn crate::Listener>,
+    pub(crate) listener: Arc<dyn crate::Listener>,
     pub published: Mutex<Published>,
     pub saver: Arc<Saver>,
-    pub sleeper: sleeper::Sleeper,
+    pub(crate) sleeper: sleeper::Sleeper,
     pub qa: Option<Arc<QaBridge>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
-    pub keys: Arc<recto_reader::engine::Keyring>,
+    pub(crate) keys: Arc<recto_reader::engine::Keyring>,
     pub life: Lifecycle,
     pub serving: Serving,
     pub window: WindowParts,
@@ -186,26 +192,28 @@ pub struct Inner {
 /// R1.4 makes a state machine on the clock.
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state.
-    pub update_facts: Mutex<Option<recto_update::updater::Facts>>,
+    pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>,
     pub started: Instant,
     /// The record's been read and applied, whatever it said.
     pub restored: AtomicBool,
     /// The host has made what it shows from the state that was read: at once, or by making the window again when it came in late. What `qa wait-settled` waits for first.
-    pub shown_with_state: AtomicBool,
+    pub(crate) shown_with_state: AtomicBool,
     /// The window went up without the state, past its patience.
-    pub shown_without_state: AtomicBool,
+    pub(crate) shown_without_state: AtomicBool,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     pub holding_tab: Mutex<Option<TabId>>,
     /// Where a hand-off has got to.
-    pub hand_off_state: AtomicU8,
+    pub(crate) hand_off_state: AtomicU8,
     /// In a QA run, files being read wait here, as they would for a slow disk.
-    pub qa_hold_reads: AtomicBool,
+    pub(crate) qa_hold_reads: AtomicBool,
     /// Files being read now, which a hand-off waits for.
-    pub reads_running: AtomicU32,
+    pub(crate) reads_running: AtomicU32,
+    /// The one pass over the other tabs' files after a restore, while it's under way: what a test waits for, as nothing else does.
+    pub(crate) others_looking: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
     pub sheets: AtomicU32,
     /// When the user last touched the app, in milliseconds of `started`. One number, set by what the event monitor calls, with no timer.
-    pub last_input_ms: AtomicU64,
+    pub(crate) last_input_ms: AtomicU64,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
 }
@@ -213,10 +221,12 @@ pub struct Lifecycle {
 /// **The control socket:** where the state lives, the server waiting for the session to be as it was, and what stops it and announces to its watchers.
 pub struct Serving {
     /// The control socket, ready to run once the session's as it was, so nothing asks about an empty one or opens over it.
-    pub waiting_server: Mutex<Option<Server>>,
-    pub stopper: Mutex<Option<Stopper>>,
-    pub announcer: Mutex<Option<Announcer>>,
+    pub(crate) waiting_server: Mutex<Option<Server>>,
+    pub(crate) stopper: Mutex<Option<Stopper>>,
+    pub(crate) announcer: Mutex<Option<Announcer>>,
     pub paths: Option<StatePaths>,
+    /// Whether the socket is served at all. The app's always is; a test's core has none unless it asks, so nothing binds it later either.
+    pub(crate) socket: bool,
 }
 
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
@@ -227,20 +237,20 @@ pub struct WindowParts {
     pub watchdog: Watchdog,
     pub dark: AtomicBool,
     pub panel_open: AtomicBool,
-    pub open_failure: Mutex<Option<String>>,
+    pub(crate) open_failure: Mutex<Option<String>>,
     /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub action_notice: Mutex<Option<String>>,
+    pub(crate) action_notice: Mutex<Option<String>>,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub notice_tab: AtomicU32,
+    pub(crate) notice_tab: AtomicU32,
 }
 
 /// **The window's features with state of their own:** the sheets that ask, saving's, the snapshot tool, the sidebar's folds, the chrome's marks, printing, ⌘K and
 /// Find's field.
 pub struct Tools {
     /// The sheets that ask: a password, or whether to open a link.
-    pub prompts: crate::prompts::Prompts,
+    pub(crate) prompts: crate::prompts::Prompts,
     /// Saves from the window: how many run, and what one that failed says.
-    pub save_ui: saving::SaveUi,
+    pub(crate) save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     pub tool: snapshot_tool::Tool,
     pub folds: crate::sidebar_access::Folds,
@@ -248,9 +258,9 @@ pub struct Tools {
     /// A print being prepared, or waiting for the host to hand to the system.
     pub printing: printing::Printing,
     /// ⌘K's palette, on the UI thread.
-    pub palette: crate::palette::Palette,
+    pub(crate) palette: crate::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
-    pub find_field: Mutex<crate::find::Field>,
+    pub(crate) find_field: Mutex<crate::find::Field>,
 }
 
 // `new` is public for the bridge, which builds the app; launch is no default state.
@@ -269,6 +279,7 @@ impl Lifecycle {
             update_facts: Mutex::new(None),
             hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
             reads_running: AtomicU32::new(0),
+            others_looking: AtomicU32::new(0),
             sheets: AtomicU32::new(0),
             qa_hold_reads: AtomicBool::new(false),
         }
@@ -811,6 +822,7 @@ mod tests {
             saver: Arc::new(Saver::new(
                 RecordStore::open(&StatePaths::overridden(&state).unwrap(), Flavor::App),
                 Arc::new(CoreQueue::default()),
+                Arc::new(crate::clock::SystemClock::new()),
             )),
             running: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),

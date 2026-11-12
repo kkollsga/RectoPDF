@@ -1,6 +1,5 @@
 //! **Saving's records, as the host draws them.** The rules are `recto_app::saving`'s, and the window's saves `recto_app::core::saving`'s.
 
-pub(crate) use recto_app::core::saving::*;
 pub use recto_app::saving::SaveProblem;
 pub use recto_app::saving::{CloseButton, CloseChoice, ClosePrompt, SavePanelModel};
 
