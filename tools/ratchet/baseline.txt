@@ -1,5 +1,5 @@
 enum crates/recto-agent/src/lib.rs::Command 68
-ffi crates/recto-ffi/src 11666
+ffi crates/recto-ffi/src 11663
 file crates/recto-agent/src/lib.rs 2403
 file crates/recto-agent/src/table.rs 4530
 file crates/recto-control/src/record_store.rs 1502
@@ -10,9 +10,8 @@ file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
-file crates/recto-session/src/lib.rs 3722
 file crates/recto-session/src/record.rs 1561
-file crates/recto-update/src/updater.rs 2858
+file crates/recto-update/src/updater.rs 2807
 fn crates/recto-agent/src/human.rs::render 231
 fn crates/recto-agent/src/lib.rs::execute_held 291
 fn crates/recto-agent/src/print.rs::print_with_caps 152
@@ -45,8 +44,7 @@ impl crates/recto-reader/src/tiles.rs::Reader 138
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
-impl crates/recto-session/src/lib.rs::Session 192
-impl crates/recto-update/src/updater.rs::Updater 56
+impl crates/recto-update/src/updater.rs::Updater 54
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
 sleep app/qa/save-shots.sh 1
@@ -62,14 +60,14 @@ sleep crates/recto-cli/tests/app/marks.rs 1
 sleep crates/recto-cli/tests/app/opening.rs 1
 sleep crates/recto-cli/tests/app/quiet.rs 4
 sleep crates/recto-cli/tests/common/app.rs 5
-sleep crates/recto-cli/tests/compare.rs 4
+sleep crates/recto-cli/tests/compare.rs 3
 sleep crates/recto-cli/tests/find.rs 3
 sleep crates/recto-cli/tests/index.rs 14
 sleep crates/recto-cli/tests/levels.rs 1
 sleep crates/recto-cli/tests/long_session.rs 2
 sleep crates/recto-cli/tests/memory.rs 12
 sleep crates/recto-cli/tests/restore.rs 18
-sleep crates/recto-cli/tests/restore/update.rs 24
+sleep crates/recto-cli/tests/restore/update.rs 23
 sleep crates/recto-cli/tests/save.rs 2
 sleep crates/recto-cli/tests/socket.rs 5
 sleep crates/recto-control/src/client.rs 1
