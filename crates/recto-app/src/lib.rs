@@ -4,11 +4,13 @@
 pub mod chrome;
 pub mod clock;
 pub mod linking;
+pub mod menus;
 pub mod model;
 pub mod passwords;
 pub mod privacy;
 pub mod prompts;
 pub mod sidebar_access;
+pub mod snapshot_menu;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 

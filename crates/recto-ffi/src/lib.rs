@@ -2423,8 +2423,8 @@ impl AppCore {
             &self.inner.updates.menu_item().title,
             &items,
         );
-        bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
-        bar
+        bar.push(recto_app::snapshot_menu::tools_menu(self.inner.tool.is_on()));
+        bar.into_iter().map(Into::into).collect()
     }
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
@@ -2482,8 +2482,8 @@ impl AppCore {
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
-        snapshot_tool::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
-        panel
+        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
+        panel.into()
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -2502,7 +2502,7 @@ impl AppCore {
         }
         let Some(action) = menus::action(&id) else { return HostAction::None };
         match action {
-            menus::Action::Host(host) => return host,
+            menus::Action::Host(host) => return host.into(),
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
@@ -2692,6 +2692,9 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let layout = reader.panes.get(pane as usize).map_or(reader.layout.as_str(), |view| view.layout.as_str());
         menus::context_menu(record::Spread::from_name(layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
@@ -2876,7 +2879,7 @@ impl AppCore {
 
     /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.
     pub fn zoom_label(&self, magnification: f64, fit: f64) -> menus::ZoomLabel {
-        menus::zoom_label(magnification, fit)
+        menus::zoom_label(magnification, fit).into()
     }
 
     /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
