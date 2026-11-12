@@ -87,6 +87,8 @@ impl Run<'static> {
 }
 
 /// A copy of the built app that's one test's alone: an APFS clone beside the build, so it costs no disk and is the build byte for byte. The system sends an `open` of a bundle to a run of that bundle, whichever test started it, and turns a quiet run it reaches into a regular app before the app hears of it, until the run's guard puts it back (2026-11-11: about a millisecond later, and the reopen event some 40 ms after that). So a test that opens the bundle on purpose opens a copy of its own, and reaches no other test's run. The system forgets it, and it's removed, when it's dropped, a panic included.
+///
+/// **A tile in the Dock, for good:** Launch Services makes a quiet run it reopens a regular app for about a millisecond, and the Dock adds a tile for that which outlives the process and the copy's folder, until the Dock restarts (owner, 2026-11-12: "there is like a billion rectopdf instances"; the two quiet tests left 6 tiles in one run here and about 20 for the coordinator, and every full check ran them). The guard's put-back doesn't change it: going through `accessory` first left 8 tiles from 4 runs, as the plain way did. A copy with `LSUIElement` is made an accessory app instead, and the Dock adds nothing for it (0 tiles from 6 runs, 8 opens each), so every copy is that one, and the tests see `accessory` where the app would see `regular`: the same put-back, a different name. The `regular` case itself isn't tested in a run: one open of the byte-for-byte copy still left a tile (2026-11-12), so no test makes the real bundle regular on a developer's Mac.
 #[allow(dead_code)] // Only a test that opens the bundle needs one.
 pub struct OwnCopy {
     pub bundle: PathBuf,
@@ -94,7 +96,26 @@ pub struct OwnCopy {
 
 #[allow(dead_code)]
 impl OwnCopy {
+    /// `LSUIElement`, and signed again ad hoc on the outside only (as `copy_app` in the restore tests does, the renderer's sandbox kept).
     pub fn new() -> Option<Self> {
+        let copy = Self::clone_of_build()?;
+        let plist = copy.bundle.join("Contents/Info.plist");
+        let edit = Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Add :LSUIElement bool true"])
+            .arg(&plist)
+            .output()
+            .unwrap();
+        assert!(edit.status.success(), "{}", String::from_utf8_lossy(&edit.stderr));
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&copy.bundle)
+            .output()
+            .unwrap();
+        assert!(signed.status.success(), "{}", String::from_utf8_lossy(&signed.stderr));
+        Some(copy)
+    }
+
+    fn clone_of_build() -> Option<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let built = app_path()?.ancestors().nth(3)?.canonicalize().ok()?;
         let folder = loop {
@@ -114,6 +135,19 @@ impl OwnCopy {
 
     pub fn executable(&self) -> PathBuf {
         self.bundle.join("Contents/MacOS/RectoPDF")
+    }
+
+    /// What `open -g` of this copy does, on this state folder and quiet, should it start a copy rather than reach the one running. The only way a test opens a copy.
+    pub fn open_quietly(&self, state: &Path) {
+        let opened = Command::new("/usr/bin/open")
+            .arg("-g")
+            .arg("--env")
+            .arg(format!("{}={}", recto_control::state::STATE_ENV, state.display()))
+            .arg(&self.bundle)
+            .args(["--args", "--qa"])
+            .output()
+            .unwrap();
+        assert!(opened.status.success(), "{opened:?}");
     }
 }
 
