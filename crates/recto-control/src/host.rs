@@ -339,7 +339,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
             return answer;
         }
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
-        let closing = matches!(command, Command::Close { .. })
+        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
             .flatten();
         let result = recto_agent::execute(&self.access(), level, command, events);

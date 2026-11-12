@@ -10,6 +10,7 @@ pub mod linking;
 pub mod reading;
 pub mod session;
 pub mod sync;
+pub mod tabs;
 pub mod text;
 
 use crate::table::{self, Access, Spec};
@@ -207,6 +208,19 @@ family! {
 }
 
 family! {
+    /// Opening and moving around.
+    pub enum Move {
+        Goto(linking::Goto),
+        Back(linking::Back),
+        Forward(linking::Forward),
+        Follow(linking::Follow),
+        Recent(tabs::Recent),
+        RecentClear(tabs::RecentClear),
+        Close(tabs::Close),
+    }
+}
+
+family! {
     /// Waiting instead of polling.
     pub enum Waits {
         Wait(sync::Wait),
@@ -276,6 +290,7 @@ type Words = fn(&str, &Value) -> Option<String>;
 const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Start::TAGS, Start::parse, Start::human),
     (Read::TAGS, Read::parse, Read::human),
+    (Move::TAGS, Move::parse, Move::human),
     (Waits::TAGS, Waits::parse, Waits::human),
     (Rights::TAGS, Rights::parse, Rights::human),
     (Session::TAGS, Session::parse, Session::human),
@@ -315,15 +330,15 @@ const PARTS: &[&[Spec]] = &[
     <reading::Signatures as Cmd>::ROWS,
     <reading::Sidebar as Cmd>::ROWS,
     table::ROWS_OPEN,
-    table::ROWS_GOTO,
-    table::ROWS_BACK,
-    table::ROWS_FORWARD,
+    <linking::Goto as Cmd>::ROWS,
+    <linking::Back as Cmd>::ROWS,
+    <linking::Forward as Cmd>::ROWS,
     <linking::Links as Cmd>::ROWS,
-    table::ROWS_FOLLOW,
+    <linking::Follow as Cmd>::ROWS,
     table::ROWS_TAP,
-    table::ROWS_RECENT,
-    table::ROWS_RECENT_CLEAR,
-    table::ROWS_CLOSE,
+    <tabs::Recent as Cmd>::ROWS,
+    <tabs::RecentClear as Cmd>::ROWS,
+    <tabs::Close as Cmd>::ROWS,
     table::ROWS_PAGE_MOVE,
     table::ROWS_PAGE_ROTATE,
     table::ROWS_PAGE_DELETE,

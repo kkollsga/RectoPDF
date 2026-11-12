@@ -143,26 +143,7 @@ pub fn render(tag: &str, data: &Value) -> String {
     }
     match tag {
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
-        "open" | "goto" | "back" | "forward" | "follow" => place(data),
-        "recent" => match data["files"].as_array().filter(|files| !files.is_empty()) {
-            Some(files) => {
-                let mut out = format!("{} opened lately, newest first:", count(files.len() as u64, "file", "files"));
-                for file in files {
-                    let open = file["open_tab"].as_str().map(|tab| format!(", open as {tab}")).unwrap_or_default();
-                    let path = file["untrusted"]["path"].as_str().map(|path| format!(" at {path:?}")).unwrap_or_default();
-                    let _ = write!(out, "\n{}. {:?}{path}{open}", number(&file["file"]), text(&file["untrusted"]["name"]));
-                }
-                let _ = write!(out, "\n{QUOTED_NAMES}");
-                out
-            }
-            None => "No files opened lately.".to_string(),
-        },
-        "recent_clear" => if data["cleared"] == true {
-            "Cleared the list of files opened lately."
-        } else {
-            "There were no files opened lately to clear."
-        }
-        .to_string(),
+        "open" => place(data),
         "palette" => {
             let mut out = String::new();
             if let Some(ran) = data["ran"].as_object() {
@@ -263,13 +244,6 @@ pub fn render(tag: &str, data: &Value) -> String {
                 for item in busy {
                     let _ = write!(out, "\n- {}", text(&item["message"]));
                 }
-            }
-            out
-        }
-        "close" => {
-            let mut out = format!("Closed #{}. {} open.", number(&data["closed"]), count(number(&data["count"]), "tab", "tabs"));
-            if data["active"].is_object() {
-                let _ = write!(out, "\nActive: {}\n{QUOTED_NAMES}", tab_line(&data["active"]));
             }
             out
         }

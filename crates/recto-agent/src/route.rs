@@ -19,6 +19,7 @@ impl Command {
     /// Where this is answered. Spelled out for every command, so a new one can't go to the wrong place by default.
     pub fn route(&self) -> Runs {
         match self {
+            Self::Move(command) => command.route(),
             Self::Read(command) => command.route(),
             Self::Start(command) => command.route(),
             Self::Waits(command) => command.route(),
@@ -36,13 +37,6 @@ impl Command {
             | Self::View { zoom: Some(_), .. } => Runs::App,
             Self::Open { .. }
             | Self::Tap { .. }
-            | Self::Goto { .. }
-            | Self::Follow { .. }
-            | Self::Back { .. }
-            | Self::Forward { .. }
-            | Self::Close { .. }
-            | Self::Recent {}
-            | Self::RecentClear {}
             | Self::Budget {}
             | Self::View { zoom: None, .. }
             | Self::Find { .. }

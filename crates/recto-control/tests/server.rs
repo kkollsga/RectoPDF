@@ -58,14 +58,14 @@ impl Host for Stand {
                 self.wheres.fetch_add(1, Ordering::SeqCst);
                 Ok(json!({ "huge": "x".repeat(5_000_000) }))
             }
-            Command::Goto { page, .. } => {
+            Command::Move(recto_agent::commands::Move::Goto(recto_agent::commands::linking::Goto { page, .. })) => {
                 events.push(Event::PageChanged {
                     tab: recto_session::TabId(1),
                     page: *page,
                 });
                 Ok(json!({ "page": page }))
             }
-            Command::Close { .. } => {
+            Command::Move(recto_agent::commands::Move::Close(recto_agent::commands::tabs::Close { .. })) => {
                 events.push(Event::TabClosed { tab: recto_session::TabId(1) });
                 Ok(json!({ "closed": true }))
             }

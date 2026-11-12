@@ -170,6 +170,8 @@ pub enum Command {
     #[serde(skip)]
     Session(commands::Session),
     #[serde(skip)]
+    Move(commands::Move),
+    #[serde(skip)]
     Read(commands::Read),
     Open {
         path: PathBuf,
@@ -181,38 +183,6 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
-    /// A jump to a page, by its number or by what the file calls it. Back comes here again.
-    Goto {
-        #[serde(default = "active_tab")]
-        tab: String,
-        #[serde(default)]
-        page: Option<u32>,
-        #[serde(default)]
-        label: Option<String>,
-    },
-    /// Follows a link within the document, as a click does. Never a web address.
-    Follow {
-        #[serde(default = "active_tab")]
-        tab: String,
-        page: u32,
-        link: u32,
-    },
-    Back {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    Forward {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    Close {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// Files opened lately, as File > Open Recent lists them.
-    Recent {},
-    /// Clears that list, as Open Recent > Clear Menu does.
-    RecentClear {},
     Budget {},
     /// How the app shows pages.
     View {
@@ -416,6 +386,7 @@ impl Command {
     /// The name on the wire, which is the first column of the command table with spaces as underscores. Spelled out so a new command can't compile without one.
     pub fn tag(&self) -> &'static str {
         match self {
+            Self::Move(command) => command.tag(),
             Self::Read(command) => command.tag(),
             Self::Start(command) => command.tag(),
             Self::Waits(command) => command.tag(),
@@ -423,13 +394,6 @@ impl Command {
             Self::Session(command) => command.tag(),
             Self::Open { .. } => "open",
             Self::Tap { .. } => "tap",
-            Self::Goto { .. } => "goto",
-            Self::Follow { .. } => "follow",
-            Self::Back { .. } => "back",
-            Self::Forward { .. } => "forward",
-            Self::Close { .. } => "close",
-            Self::Recent {} => "recent",
-            Self::RecentClear {} => "recent_clear",
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
@@ -465,6 +429,7 @@ impl Command {
     /// Who may run this. From the command table, with the one case the table can't express.
     pub fn access(&self) -> Access {
         match self {
+            Self::Move(command) => command.access(),
             Self::Read(command) => command.access(),
             Self::Start(command) => command.access(),
             Self::Waits(command) => command.access(),
@@ -501,6 +466,7 @@ impl Command {
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
         match self {
+            Self::Move(command) => return command.draws(),
             Self::Read(command) => return command.draws(),
             Self::Start(command) => return command.draws(),
             Self::Waits(command) => return command.draws(),
@@ -524,6 +490,7 @@ impl Command {
             }
         };
         match self {
+            Self::Move(command) => command.log_details(),
             Self::Read(command) => command.log_details(),
             Self::Start(command) => command.log_details(),
             Self::Waits(command) => command.log_details(),
@@ -532,15 +499,10 @@ impl Command {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            // A label is from the file, so it isn't kept: only that one was asked for.
-            Self::Goto { tab, page, label } => json!({ "tab": tab_of(tab), "page": page, "by_label": label.is_some() }),
-            Self::Follow { tab, page, link } => json!({ "tab": tab_of(tab), "page": page, "link": link }),
-            Self::Back { tab } | Self::Forward { tab } => json!({ "tab": tab_of(tab) }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab }
-            | Self::Close { tab }
             | Self::Edits { tab }
             | Self::Undo { tab }
             | Self::Redo { tab }
@@ -560,9 +522,7 @@ impl Command {
             Self::Find {
                 query, next, previous, close, ..
             } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
-            Self::Recent {}
-            | Self::RecentClear {}
-            | Self::View { .. }
+            Self::View { .. }
             | Self::Budget {}
             | Self::SessionShow {}
             | Self::SessionSave {}
@@ -578,6 +538,7 @@ impl Command {
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
         match self {
+            Self::Move(command) => return command.reads_pages(),
             Self::Read(command) => return command.reads_pages(),
             Self::Start(command) => return command.reads_pages(),
             Self::Waits(command) => return command.reads_pages(),
@@ -585,31 +546,28 @@ impl Command {
             Self::Session(command) => return command.reads_pages(),
             _ => {}
         }
-        matches!(self, Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Follow { .. })
+        matches!(self, Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// Whether it reads nothing of a document, so it may act on one the user opened with its password.
     fn protected_ok(&self) -> bool {
         match self {
+            Self::Move(command) => command.protected_ok(),
             Self::Read(command) => command.protected_ok(),
             Self::Start(command) => command.protected_ok(),
             Self::Waits(command) => command.protected_ok(),
             Self::Rights(command) => command.protected_ok(),
             Self::Session(command) => command.protected_ok(),
-            _ => matches!(self, Self::Close { .. } | Self::Tap { .. }),
+            _ => matches!(self, Self::Tap { .. }),
         }
     }
 
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
+            Self::Move(command) => command.tab(),
             Self::Read(command) => command.tab(),
             Self::Tap { tab }
-            | Self::Goto { tab, .. }
-            | Self::Follow { tab, .. }
-            | Self::Back { tab }
-            | Self::Forward { tab }
-            | Self::Close { tab }
             | Self::BudgetRender { tab, .. }
             | Self::BudgetViewport { tab, .. }
             | Self::Edits { tab }
@@ -1017,6 +975,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
 
 fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     match command {
+        Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Open { path, page } => open(access, path, *page, events),
         Command::Tap { tab } => {
@@ -1027,56 +986,6 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
                 let switched = s.tap(id)?;
                 event::switched(s, switched, events);
                 Ok(sidebar_json(s))
-            })
-        }
-        Command::Goto {
-            tab,
-            page: Some(page),
-            label: None,
-        } => access.with(|s| {
-            let id = select(s, tab)?;
-            go_to(s, id, *page)?;
-            events.push(page_now(s, id));
-            Ok(where_json(s, id))
-        }),
-        Command::Recent {} => Ok(access.with(|s| recent_json(s, level))),
-        Command::RecentClear {} => access.with(|s| {
-            let cleared = s.clear_recent();
-            Ok(json!({ "cleared": cleared }))
-        }),
-        Command::Goto {
-            tab,
-            page: None,
-            label: Some(label),
-        } => linking::goto_label(access, tab, label, events),
-        Command::Goto { .. } => Err(AgentError::new(
-            "usage",
-            "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
-            exit::USAGE,
-        )
-        .then("`recto goto 12`, or `recto goto label iv`.")),
-        Command::Follow { tab, page, link } => linking::follow(access, tab, *page, *link, events),
-        Command::Back { tab } => linking::step(access, tab, true, events),
-        Command::Forward { tab } => linking::step(access, tab, false, events),
-        Command::Close { tab } => {
-            // What would refuse it comes first: no reading a file for a close that won't happen.
-            let id = access.with(|s| {
-                let id = select(s, tab)?;
-                refuse_close_that_loses_something(s, id, level)?;
-                Ok::<_, AgentError>(id)
-            })?;
-            read_ahead(access, |s| s.wake_for_close(id));
-            access.with(|s| {
-                let id = select(s, tab)?;
-                refuse_close_that_loses_something(s, id, level)?;
-                // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
-                if level >= Level::Full && s.has_undone_owner_steps(id) {
-                    s.discard_edits(id);
-                }
-                let closed = s.close(id)?;
-                event::closed(s, closed, events);
-                // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
-                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
             })
         }
         Command::View { zoom: Some(_), .. } => {
@@ -2108,7 +2017,7 @@ mod tests {
         };
         wake(Command::Tap { tab: "#1".into() });
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(1));
-        wake(Command::Close { tab: "#1".into() });
+        wake(Command::from(crate::commands::tabs::Close { tab: "#1".into() }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(2));
         // Opening a file whose tab has gone cold.
         wake(Command::Open {
@@ -2133,7 +2042,7 @@ mod tests {
         let off = run(&mut session, Level::Off, &Command::from(crate::commands::reading::Sidebar {})).unwrap_err();
         assert_eq!(off.code, "permission_denied");
         assert_eq!(off.exit, exit::PERMISSION);
-        let read_only = run(&mut session, Level::ReadOnly, &Command::Close { tab: "#1".into() }).unwrap_err();
+        let read_only = run(&mut session, Level::ReadOnly, &Command::from(crate::commands::tabs::Close { tab: "#1".into() })).unwrap_err();
         assert_eq!(read_only.code, "permission_denied");
         assert_eq!(session.tabs().len(), 1);
         assert!(
@@ -2267,18 +2176,18 @@ mod tests {
             Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
             Command::from(crate::commands::reading::Sidebar {}),
             Command::Tap { tab: tab() },
-            Command::Goto {
+            Command::from(crate::commands::linking::Goto {
                 tab: tab(),
                 page: Some(1),
                 label: None,
-            },
+            }),
             Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
-            Command::Follow { tab: tab(), page: 1, link: 1 },
-            Command::Back { tab: tab() },
-            Command::Forward { tab: tab() },
-            Command::Recent {},
-            Command::RecentClear {},
-            Command::Close { tab: tab() },
+            Command::from(crate::commands::linking::Follow { tab: tab(), page: 1, link: 1 }),
+            Command::from(crate::commands::linking::Back { tab: tab() }),
+            Command::from(crate::commands::linking::Forward { tab: tab() }),
+            Command::from(crate::commands::tabs::Recent {}),
+            Command::from(crate::commands::tabs::RecentClear {}),
+            Command::from(crate::commands::tabs::Close { tab: tab() }),
             Command::Budget {},
             Command::Compare {
                 tabs: None,
@@ -3096,7 +3005,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(replace.code, "permission_denied", "replacing another file is Full's");
         for level in [Level::Control, Level::Full] {
-            let close = run(&mut s, level, &Command::Close { tab: "#1".into() }).unwrap_err();
+            let close = run(&mut s, level, &Command::from(crate::commands::tabs::Close { tab: "#1".into() })).unwrap_err();
             assert_eq!(close.code, "unsaved_changes", "{level:?}");
             assert!(close.next.contains("discard"), "{}", close.next);
         }
@@ -3108,7 +3017,7 @@ mod tests {
         );
         run(&mut s, Level::Control, &Command::Discard { tab: "#1".into() }).unwrap();
         assert!(!s.is_edited(TabId(1)));
-        assert!(run(&mut s, Level::Control, &Command::Close { tab: "#1".into() }).is_ok());
+        assert!(run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: "#1".into() })).is_ok());
     }
 
     fn owners_rotation(s: &mut Session<Fake>, page: u32) {
@@ -3143,7 +3052,7 @@ mod tests {
                 path: "/d/b.pdf".into(),
                 at: 1,
             },
-            Command::Close { tab: tab() },
+            Command::from(crate::commands::tabs::Close { tab: tab() }),
         ]
     }
 
@@ -3165,7 +3074,12 @@ mod tests {
             run(&mut s, Level::Control, &Command::Discard { tab: tab() }).unwrap_err().code,
             "would_discard_user_edits"
         );
-        assert_eq!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code, "unsaved_changes");
+        assert_eq!(
+            run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() }))
+                .unwrap_err()
+                .code,
+            "unsaved_changes"
+        );
         check_still_there(&s, "before any undo");
         // Undone, one at a time. Undoing is allowed, since it can be redone. Nothing that clears them is, at any point.
         for left in [1, 0] {
@@ -3218,7 +3132,7 @@ mod tests {
         .expect("only the agent's own undone step goes");
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
         // Closing with the agent's own step undone still can't happen, because the user's edits are unsaved.
-        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(close.code, "unsaved_changes");
         assert!(
             close.message.contains("user's") && close.next.contains(ASK_FULL),
@@ -3229,7 +3143,7 @@ mod tests {
         assert_eq!(turned_pages(&s), users, "nothing of the user's has gone");
         // At Full, it's the holder's call, as it was.
         run(&mut s, Level::Full, &Command::Discard { tab: tab() }).unwrap();
-        assert!(run(&mut s, Level::Full, &Command::Close { tab: tab() }).is_ok());
+        assert!(run(&mut s, Level::Full, &Command::from(crate::commands::tabs::Close { tab: tab() })).is_ok());
     }
 
     /// Failure: an agent's `undo` hides the user's edit. It's off the page, so every answer read `saved: true` and nothing said it was there to lose, and the session's own close, the app's way out, would have gone through. At Full it's still the holder's call, and goes through this time because it's said on purpose.
@@ -3255,10 +3169,12 @@ mod tests {
         );
         assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the app's route refuses too");
         assert_eq!(
-            run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code,
+            run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() }))
+                .unwrap_err()
+                .code,
             "would_clear_redo"
         );
-        let closed = run(&mut s, Level::Full, &Command::Close { tab: tab() }).unwrap();
+        let closed = run(&mut s, Level::Full, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap();
         assert_eq!(closed["count"], 0, "at Full it closes, as it did: {closed}");
     }
 
@@ -3282,7 +3198,7 @@ mod tests {
         run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).expect("a new edit may clear its own undone step");
         assert!(!s.page_edits(id).unwrap().can_redo());
         // A close with unsaved edits stops, and says the way on, and that way works at Control.
-        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!((close.code, close.exit), ("unsaved_changes", exit::FAILED));
         assert!(
             close.next.contains("recto discard") && !close.next.contains("Full") && close.ask.is_none(),
@@ -3304,7 +3220,7 @@ mod tests {
         .unwrap();
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
         assert!(s.page_edits(id).unwrap().can_redo());
-        run(&mut s, Level::Control, &Command::Close { tab: tab() }).expect("nothing of the user's is at stake");
+        run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).expect("nothing of the user's is at stake");
         assert!(s.tabs().is_empty());
     }
 
@@ -3422,7 +3338,10 @@ mod tests {
             )["did"],
             "Pages 3-4 are already at 3, so nothing changed."
         );
-        assert!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).is_ok(), "and so it closes");
+        assert!(
+            run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).is_ok(),
+            "and so it closes"
+        );
     }
 
     /// Failure: an edit through the agent interface is recorded as the user's, so it's protected from the agent that made it, or recorded as nobody's. Every edit command must be an agent's, however it gets to the session.
@@ -3506,7 +3425,7 @@ mod tests {
         // The cap isn't an agent erasing anything: all the agent's steps can come off, and undo isn't refused.
         while run(&mut s, Level::Control, &Command::Undo { tab: tab() }).is_ok() {}
         assert!(s.is_edited(TabId(1)), "it still differs from the file, and says so");
-        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert!(
             close.next.contains("past the undo limit"),
             "what it can't do must not be offered: {}",
@@ -3527,7 +3446,7 @@ mod tests {
         }
         assert!(own.page_edits(TabId(1)).unwrap().history_dropped());
         run(&mut own, Level::Control, &Command::Discard { tab: tab() }).expect("all of it is its own");
-        assert!(run(&mut own, Level::Control, &Command::Close { tab: tab() }).is_ok());
+        assert!(run(&mut own, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).is_ok());
     }
 
     /// Failure: the refusal mentions only undone steps, so an agent with unsaved edits runs `redo` as told and brings back a delete it had backed out of, thinking that clears the way. It must name all that's at stake and each honest way on, including that saving doesn't exist. Nothing here may loosen the rule.
@@ -3539,7 +3458,7 @@ mod tests {
         owners_rotation(&mut s, 1);
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
 
-        let both = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let both = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(
             (both.code, both.exit),
             ("would_clear_redo", exit::PERMISSION),
@@ -3563,7 +3482,7 @@ mod tests {
             assert!(both.next.contains(must), "{must}: {}", both.next);
         }
 
-        let at_full = run(&mut s, Level::Full, &Command::Close { tab: tab() }).unwrap_err();
+        let at_full = run(&mut s, Level::Full, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(
             (at_full.code, at_full.exit),
             ("unsaved_changes", exit::FAILED),
@@ -3572,13 +3491,13 @@ mod tests {
         assert!(!at_full.next.contains("needs Full"), "{}", at_full.next);
 
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        let only_undone = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let only_undone = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(only_undone.code, "would_clear_redo");
         assert!(!only_undone.message.contains("unsaved"), "nothing's unsaved now: {}", only_undone.message);
 
         run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
         run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
-        let only_unsaved = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        let only_unsaved = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(only_unsaved.code, "unsaved_changes");
         assert!(!only_unsaved.next.contains("recto redo"), "there's nothing to redo: {}", only_unsaved.next);
         assert_eq!(s.tabs().len(), 1, "none of these closed it");
@@ -3719,11 +3638,11 @@ mod tests {
         let error = run(
             &mut s,
             Level::Control,
-            &Command::Goto {
+            &Command::from(crate::commands::linking::Goto {
                 tab: "#1".into(),
                 page: Some(11),
                 label: None,
-            },
+            }),
         )
         .unwrap_err();
         assert_eq!((error.code, error.exit), ("no_such_page", exit::NOT_FOUND));
@@ -3731,11 +3650,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::Goto {
+                &Command::from(crate::commands::linking::Goto {
                     tab: "#1".into(),
                     page: Some(0),
                     label: None
-                }
+                })
             )
             .unwrap_err()
             .code,
@@ -3745,11 +3664,11 @@ mod tests {
             run(
                 &mut s,
                 Level::Control,
-                &Command::Goto {
+                &Command::from(crate::commands::linking::Goto {
                     tab: "#1".into(),
                     page: Some(10),
                     label: None
-                }
+                })
             )
             .unwrap()["page"],
             10
@@ -3853,8 +3772,13 @@ mod recent_tests {
         let file = TempPdf::new("report.pdf", &pages(&[Page::new(text_lines(&["a"]))]));
         let mut session = Session::new(DiskLoader);
         session.open(&file.0).unwrap();
-        assert_eq!(run(&mut session, Level::ReadOnly, &Command::Recent {}).unwrap_err().code, "permission_denied");
-        let control = run(&mut session, Level::Control, &Command::Recent {}).unwrap();
+        assert_eq!(
+            run(&mut session, Level::ReadOnly, &Command::from(crate::commands::tabs::Recent {}))
+                .unwrap_err()
+                .code,
+            "permission_denied"
+        );
+        let control = run(&mut session, Level::Control, &Command::from(crate::commands::tabs::Recent {})).unwrap();
         assert_eq!(
             (
                 control["count"].as_u64(),
@@ -3865,11 +3789,19 @@ mod recent_tests {
         );
         assert_eq!(control["files"][0]["untrusted"]["path"], file.0.to_str().unwrap());
         assert_eq!(
-            run(&mut session, Level::ReadOnly, &Command::RecentClear {}).unwrap_err().code,
+            run(&mut session, Level::ReadOnly, &Command::from(crate::commands::tabs::RecentClear {}))
+                .unwrap_err()
+                .code,
             "permission_denied"
         );
-        assert_eq!(run(&mut session, Level::Control, &Command::RecentClear {}).unwrap()["cleared"], true);
-        assert_eq!(run(&mut session, Level::Control, &Command::Recent {}).unwrap()["count"], 0);
+        assert_eq!(
+            run(&mut session, Level::Control, &Command::from(crate::commands::tabs::RecentClear {})).unwrap()["cleared"],
+            true
+        );
+        assert_eq!(
+            run(&mut session, Level::Control, &Command::from(crate::commands::tabs::Recent {})).unwrap()["count"],
+            0
+        );
     }
 }
 
@@ -3956,24 +3888,24 @@ mod protected_tests {
                     context: None,
                 }),
                 Command::from(crate::commands::text::Text { tab: tab.clone(), page: 1 }),
-                Command::Goto {
+                Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: Some(2),
                     label: None,
-                },
-                Command::Goto {
+                }),
+                Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: None,
                     label: Some("ii".into()),
-                },
+                }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
-                Command::Follow {
+                Command::from(crate::commands::linking::Follow {
                     tab: tab.clone(),
                     page: 1,
                     link: 1,
-                },
-                Command::Back { tab: tab.clone() },
-                Command::Forward { tab: tab.clone() },
+                }),
+                Command::from(crate::commands::linking::Back { tab: tab.clone() }),
+                Command::from(crate::commands::linking::Forward { tab: tab.clone() }),
                 Command::Find {
                     query: Some("Secret".into()),
                     next: false,
