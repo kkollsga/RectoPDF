@@ -54,6 +54,7 @@ sleep crates/recto-agent/src/agreement.rs 1
 sleep crates/recto-agent/src/generated.rs 1
 sleep crates/recto-agent/src/index.rs 1
 sleep crates/recto-agent/src/render.rs 1
+sleep crates/recto-app/src/sleep_queue.rs 2
 sleep crates/recto-cli/src/qa.rs 12
 sleep crates/recto-cli/tests/app.rs 8
 sleep crates/recto-cli/tests/app/marks.rs 1
@@ -79,7 +80,6 @@ sleep crates/recto-core/tests/save.rs 2
 sleep crates/recto-ffi/src/lib.rs 2
 sleep crates/recto-ffi/src/qa.rs 5
 sleep crates/recto-ffi/src/saving.rs 3
-sleep crates/recto-ffi/src/sleep_queue.rs 2
 sleep crates/recto-ffi/src/sleeper.rs 3
 sleep crates/recto-ffi/src/updates.rs 2
 sleep crates/recto-ffi/src/watchdog.rs 1

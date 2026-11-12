@@ -78,8 +78,8 @@ pub(crate) struct Sleeper {
     writing: Mutex<()>,
     /// Writes waiting for [`Self::writing`] that someone's waiting on, a flush's or being asked's: the queue's writer lets them go first.
     others_waiting: AtomicU32,
-    /// Sleep files written off the session's time, waiting for their one writer: [`crate::sleep_queue`].
-    leaving: Mutex<crate::sleep_queue::LeavingQueue>,
+    /// Sleep files written off the session's time, waiting for their one writer: [`recto_app::sleep_queue`].
+    leaving: Mutex<recto_app::sleep_queue::LeavingQueue>,
     counts: Counts,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
@@ -136,7 +136,7 @@ impl Sleeper {
             this_hour: Mutex::new((Instant::now(), 0)),
             writing: Mutex::new(()),
             others_waiting: AtomicU32::new(0),
-            leaving: Mutex::new(crate::sleep_queue::LeavingQueue::default()),
+            leaving: Mutex::new(recto_app::sleep_queue::LeavingQueue::default()),
             counts: Counts::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
         }
@@ -371,7 +371,7 @@ impl Inner {
         }
     }
 
-    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
+    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`recto_app::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
     pub(crate) fn queue_those_leaving(&self) {
         let left = self.host.session.with_session(|session| session.take_left_warm());
         let mut start = false;
@@ -418,10 +418,10 @@ impl Inner {
     /// **The queue's one writer:** oldest first, until there's none, and then it ends. Each is taken from the queue only as it's about to be written, and counted till it's done, so what's held is what the queue's caps allow. A write someone's waiting on goes first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either came before or comes after.
     fn write_leaving(&self) {
         let queue = &self.sleeper.leaving;
-        let _running = crate::sleep_queue::WriterRunning::enter(queue);
+        let _running = recto_app::sleep_queue::WriterRunning::enter(queue);
         loop {
             // Its own statement, so the queue's lock is let go before the write: in a `while let` it would be held through it.
-            let next = lock(queue).next();
+            let next = lock(queue).take_next();
             let Some((facts, material)) = next else { return };
             self.sleeper.let_others_go_first();
             let one_at_a_time = lock(&self.sleeper.writing);
