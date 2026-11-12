@@ -116,6 +116,8 @@ final class CenteringClipView: NSClipView {
     let documentView = PageDocumentView()
     /// The slim thumb over the right edge, in place of the system's scroller and its track (owner, 2026-11-08: "Scroll bar track is quite wide. Can you make it thinner with a small margin on the right side so its centered on the thumb?"), the same as the sidebar's.
     let thumb = ThumbView()
+    /// Its counterpart along the bottom for a page wider than the pane.
+    let across = HorizontalThumbView()
     private let core: AppCore
     private let isQuiet: Bool
     /// Which pane this is, left to right: 0 with one tab showing. Rust's page view for it goes by this.
@@ -171,11 +173,9 @@ final class CenteringClipView: NSClipView {
         // The page goes under the transparent title bar, with nothing above or over it.
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.commandScrolled = { [weak self] event in self?.commandScroll(event) }
-        // Up and down, the slim thumb and no track, whatever the system's setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"). Across, when zoomed past the window, the system's own, in its own style.
+        // Up and down, the slim thumb and no track, whatever the system's setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"). Across, when zoomed past the window, the slim thumb along the bottom (`HorizontalThumbView`): no system scroller anywhere on a page area, as a fading one's knob animation kept every pane's scroller for good.
         scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.scrollerStyle = scrollerStyle(system: scrollView.scrollerStyle)
+        scrollView.hasHorizontalScroller = false
         scrollView.allowsMagnification = true
         scrollView.minMagnification = limits.minZoom
         scrollView.maxMagnification = limits.maxZoom
@@ -189,6 +189,8 @@ final class CenteringClipView: NSClipView {
         thumb.room = { [weak clip] in clip?.room ?? (0, 0) }
         thumb.scrollTo = { [weak self] y in self?.thumbMoved(to: y) }
         thumb.attach(to: scrollView)
+        across.scrollTo = { [weak self] x in self?.scroll(acrossTo: x) }
+        across.attach(to: scrollView)
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(viewMoved), name: NSView.boundsDidChangeNotification, object: clip)
         center.addObserver(self, selector: #selector(pinchStarted), name: NSScrollView.willStartLiveMagnifyNotification, object: scrollView)
@@ -596,11 +598,6 @@ final class CenteringClipView: NSClipView {
         layoutChanged()
     }
 
-    /// The style this pane's scrollers take, given the one asked for. A pane past the first is made when a comparison starts and let go when it ends, and its fading overlay scroller left one `NSScroller` behind each time (with its recognizers and tracking areas, about 6 KB): scrolling starts the knob's fade, an `NSAnimationManagerAnimation` on the scroller, and the animation never finishes once the pane is out of the window, nor does it let go of its target. Classic scrollers don't fade, so a pane that's let go leaves nothing. Found on `build/compare-leak`; it showed on a slow Mac, where the test's pane was gone before the fade began on a fast one.
-    func scrollerStyle(system: NSScroller.Style) -> NSScroller.Style {
-        pane > 0 ? .legacy : system
-    }
-
     func windowClosing() {
         closed = true
         NotificationCenter.default.removeObserver(self)
@@ -696,6 +693,7 @@ final class CenteringClipView: NSClipView {
             (scrollView.contentView as? CenteringClipView)?.room = (topRoom, bottomRoom)
             documentView.setFrameSize(NSSize(width: width, height: height))
             thumb.refresh()
+            across.refresh()
             viewportDirty = true
         case let .magnify(value):
             if scrollView.magnification != value {
@@ -821,6 +819,15 @@ final class CenteringClipView: NSClipView {
         scrollView.reflectScrolledClipView(clip)
     }
 
+    /// The thumb across moved, or its strip clicked: the reader's own scroll, to this x.
+    private func scroll(acrossTo x: CGFloat) {
+        readerScrolling = true
+        defer { readerScrolling = false }
+        let clip = scrollView.contentView
+        clip.setBoundsOrigin(clip.constrainBoundsRect(NSRect(origin: NSPoint(x: x, y: clip.bounds.minY), size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+    }
+
     /// The thumb dragged, or its strip clicked above or below it: the reader's own scroll, to there.
     private func thumbMoved(to y: CGFloat) {
         scroll(by: Double(y - scrollView.contentView.bounds.minY))
@@ -828,6 +835,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["highlight_layers": highlightLayers.count, "snapshot_box": snapshotBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "view_height": scrollView.contentView.bounds.height, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_gutters": pageGutters(), "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification, "thumb": thumb.report, "vertical_scroller": scrollView.hasVerticalScroller, "end_room": [(scrollView.contentView as? CenteringClipView)?.room.top ?? 0, (scrollView.contentView as? CenteringClipView)?.room.bottom ?? 0]]
+        ["highlight_layers": highlightLayers.count, "snapshot_box": snapshotBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "view_height": scrollView.contentView.bounds.height, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_gutters": pageGutters(), "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification, "thumb": thumb.report, "thumb_across": across.report, "vertical_scroller": scrollView.hasVerticalScroller, "end_room": [(scrollView.contentView as? CenteringClipView)?.room.top ?? 0, (scrollView.contentView as? CenteringClipView)?.room.bottom ?? 0]]
     }
 }

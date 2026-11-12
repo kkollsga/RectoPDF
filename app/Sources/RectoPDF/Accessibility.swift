@@ -18,8 +18,9 @@ extension MainWindowController {
             done = sidebar.performFoldAction(Int(row))
         case let .thumb(list, increment):
             let thumbs: [String: ThumbView] = ["contents": sidebar.contentsThumb, "tabs": sidebar.tabsThumb, "find": sidebar.find.thumb, "pages": pages.thumb]
-            let thumb = thumbs[list]
-            done = (increment ? thumb?.accessibilityPerformIncrement() : thumb?.accessibilityPerformDecrement()) ?? false
+            let thumb = list == "pages_across" ? nil : thumbs[list]
+            let across = list == "pages_across" ? readingPane.across : nil
+            done = (increment ? (thumb?.accessibilityPerformIncrement() ?? across?.accessibilityPerformIncrement()) : (thumb?.accessibilityPerformDecrement() ?? across?.accessibilityPerformDecrement())) ?? false
         }
         return done ? nil : core.qaAccessibilityRefusal(value: value)
     }

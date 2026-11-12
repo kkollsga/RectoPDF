@@ -567,7 +567,7 @@ final class BookMark: NSView {
     func layout() {
         // Thin scrollers that come with scrolling and fade, as in Pages, with nothing reserved for them, unless the Mac is set to always show them. With the setting on automatic and a mouse paired, AppKit puts classic ones back whatever a view was told, so it's said again here. QA can ask for either.
         let style = delegate.qa?.scrollerStyle ?? (UserDefaults.standard.string(forKey: "AppleShowScrollBars") == "Always" ? .legacy : .overlay)
-        for area in paneAreas where area.scrollView.scrollerStyle != area.scrollerStyle(system: style) { area.scrollView.scrollerStyle = area.scrollerStyle(system: style) }
+        for area in paneAreas where area.scrollView.scrollerStyle != style { area.scrollView.scrollerStyle = style }
         // The sidebar's lists always have the slim thumb over their margin, with no track, whatever the setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"), so they're overlay whatever AppKit puts back.
         for view in [sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != .overlay { view.scrollerStyle = .overlay }
         sidebar.updateContentsScroller()
@@ -645,7 +645,7 @@ final class BookMark: NSView {
             let label = index < paneLabels.count && !paneLabels[index].isHidden ? paneLabels[index] : nil
             let report = area.report()
             let note = index < paneNotes.count && !paneNotes[index].isHidden ? paneNotes[index].label.text : nil
-            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroller_style": report["scroller_style"] ?? "", "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
+            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
         }
     }
 
