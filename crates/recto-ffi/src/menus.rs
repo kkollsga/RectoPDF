@@ -1,9 +1,12 @@
 //! The menu bar's and the panel's records, as the host draws them. The lists, what each item does and when it's enabled are `recto_app::menus`'s.
 
+use crate::lock;
 use recto_app::menus as app;
 pub(crate) use recto_app::menus::{
     Action, Enable, RecentItem, action, context_menu, enable_rule, enabled_by_reading, menu_bar_with, panel, plain_key, zoom_from_word, zoom_label,
 };
+use recto_session::{Paper, ViewSettings, record};
+use std::sync::Arc;
 
 /// One item of a menu. An empty `id` is a line between items.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -168,4 +171,48 @@ impl From<app::PanelModel> for PanelModel {
             sections: panel.sections.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+impl From<HostAction> for app::HostAction {
+    fn from(action: HostAction) -> Self {
+        match action {
+            HostAction::None => Self::None,
+            HostAction::ShowOpenPanel => Self::ShowOpenPanel,
+            HostAction::ShowAbout => Self::ShowAbout,
+            HostAction::ShowSettings => Self::ShowSettings,
+            HostAction::Quit => Self::Quit,
+            HostAction::CloseWindow => Self::CloseWindow,
+            HostAction::ShowSavePanel => Self::ShowSavePanel,
+            HostAction::ConfirmClose => Self::ConfirmClose,
+            HostAction::ShowPrintPanel => Self::ShowPrintPanel,
+            HostAction::FocusPalette => Self::FocusPalette,
+            HostAction::FocusFind => Self::FocusFind,
+            HostAction::ShowGoTo => Self::ShowGoTo,
+        }
+    }
+}
+
+/// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
+pub(crate) fn bar_now(core: &crate::AppCore) -> Vec<app::MenuModel> {
+    let reader = lock(&core.inner.published).reader.clone();
+    let recent = Arc::clone(&lock(&core.inner.published).recent);
+    let items: Vec<RecentItem> = recent
+        .iter()
+        .map(|file| RecentItem {
+            key: &file.key,
+            name: &file.name,
+        })
+        .collect();
+    let mut bar = menu_bar_with(
+        ViewSettings {
+            paper: Paper::from_name(&reader.paper),
+            sidebar_hidden: reader.sidebar_hidden,
+            agent_icon_hidden: reader.agent_icon_hidden,
+        },
+        record::Spread::from_name(&reader.layout),
+        &core.inner.updates.menu_item().title,
+        &items,
+    );
+    bar.push(recto_app::snapshot_menu::tools_menu(core.inner.tool.is_on()));
+    bar
 }

@@ -446,7 +446,7 @@ impl QaBridge {
             | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
-                if !self.inner().is_some_and(|inner| inner.palette_open()) {
+                if !self.inner().is_some_and(|inner| inner.palette.is_open()) {
                     return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
                 }
             }

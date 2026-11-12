@@ -927,7 +927,7 @@ impl AppHost {
             };
             let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
             // A tab's name is the file's, so it's marked as the document's words.
-            let row_json = |row: &palette::PaletteRow| {
+            let row_json = |row: &recto_app::palette::PaletteRow| {
                 if row.from_file {
                     json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } })
                 } else {
@@ -944,7 +944,7 @@ impl AppHost {
                 // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
                 let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
                     Some(direct) => {
-                        palette::close(&core.inner);
+                        core.inner.palette.close();
                         self.run_counted(level, &direct, events)?;
                         HostAction::None
                     }
@@ -1376,7 +1376,7 @@ struct Inner {
     /// A print being prepared, or waiting for the host to hand to the system.
     printing: printing::Printing,
     /// ⌘K's palette, on the UI thread.
-    palette: Mutex<palette::State>,
+    palette: recto_app::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
     find_field: Mutex<find::Field>,
 }
@@ -2028,7 +2028,7 @@ impl AppCore {
             notice_tab: AtomicU32::new(0),
             prompts: recto_app::prompts::Prompts::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
-            palette: Mutex::new(palette::State::default()),
+            palette: recto_app::palette::Palette::default(),
             find_field: Mutex::new(find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -2404,27 +2404,7 @@ impl AppCore {
 
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
-        let reader = lock(&self.inner.published).reader.clone();
-        let recent = Arc::clone(&lock(&self.inner.published).recent);
-        let items: Vec<menus::RecentItem> = recent
-            .iter()
-            .map(|file| menus::RecentItem {
-                key: &file.key,
-                name: &file.name,
-            })
-            .collect();
-        let mut bar = menus::menu_bar_with(
-            ViewSettings {
-                paper: Paper::from_name(&reader.paper),
-                sidebar_hidden: reader.sidebar_hidden,
-                agent_icon_hidden: reader.agent_icon_hidden,
-            },
-            record::Spread::from_name(&reader.layout),
-            &self.inner.updates.menu_item().title,
-            &items,
-        );
-        bar.push(recto_app::snapshot_menu::tools_menu(self.inner.tool.is_on()));
-        bar.into_iter().map(Into::into).collect()
+        menus::bar_now(self).into_iter().map(Into::into).collect()
     }
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
@@ -2511,7 +2491,7 @@ impl AppCore {
                 if lock(&self.inner.published).reader.sidebar_hidden {
                     self.inner.core.push(CoreCall::SetSidebarHidden(false));
                 }
-                palette::open(&self.inner);
+                self.inner.palette.open();
                 self.inner.listener.model_changed();
                 return HostAction::FocusPalette;
             }
@@ -2580,7 +2560,7 @@ impl AppCore {
 
     /// What's in the palette's field now, as it's typed.
     pub fn palette_typed(&self, text: String) {
-        palette::typed(&self.inner, &text);
+        self.inner.palette.typed(&text);
     }
 
     /// ↑ (-1) and ↓ (1) in the palette.
@@ -2595,7 +2575,7 @@ impl AppCore {
 
     /// Escape, or the keyboard going elsewhere.
     pub fn palette_close(&self) {
-        palette::close(&self.inner);
+        self.inner.palette.close();
         self.inner.listener.model_changed();
     }
 

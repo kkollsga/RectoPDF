@@ -6,6 +6,7 @@ pub mod clock;
 pub mod linking;
 pub mod menus;
 pub mod model;
+pub mod palette;
 pub mod passwords;
 pub mod privacy;
 pub mod prompts;
