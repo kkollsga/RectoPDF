@@ -151,7 +151,7 @@ Of `CoreCall`'s 39 variants, about 14 repeat a command, about 8 are actions an a
 
 **Swift is thin** (6,121 lines, no user-facing wording, enable rules and timer lengths from Rust). Its cost is concentration in three files and a 136-method bridge.
 
-**Test homes.** `recto-cli/tests` holds 21,306 lines in 23 binaries against 1,674 lines of CLI source. Seven of those binaries test the app, which has no test home of its own. Ten (about 4,700 lines) call `recto-agent` in process and never run the CLI. Every edit to session, agent, control, core, index or platform relinks all 23.
+**Test homes.** `recto-cli/tests` holds 21,306 lines in 23 binaries against 1,674 lines of CLI source. Seven of those binaries test the app, which has no test home of its own. Ten (about 4,700 lines) call `recto-agent` in process and never run the CLI. **Corrected the same day: that last sentence is wrong.** It came from a search for `Command::new`, which missed the shared `common::State` helper; a call-graph pass that follows helpers (R4.1's worker) found that every one of those files runs the real `recto`, and only three tests in them don't. So nothing can move to `recto-agent` as it is; the cost is real, but the fix is either porting rules to in-process tests or a light harness crate, not moving files. Every edit to session, agent, control, core, index or platform relinks all 23.
 
 ### 2.6 Builds (this Mac, 2026-11-12, load 2 to 5, one sample each)
 
