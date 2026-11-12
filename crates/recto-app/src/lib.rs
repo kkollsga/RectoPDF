@@ -15,6 +15,7 @@ pub mod passwords;
 pub mod pressure;
 pub mod privacy;
 pub mod prompts;
+pub mod saving;
 pub mod sidebar_access;
 pub mod snapshot_menu;
 #[cfg(any(test, feature = "testkit"))]

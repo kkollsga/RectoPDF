@@ -2619,7 +2619,7 @@ impl AppCore {
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
     pub fn save_panel(&self) -> saving::SavePanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
+        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note).into()
     }
 
     /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
@@ -2643,6 +2643,7 @@ impl AppCore {
             save_off,
             self.inner.save_ui.disagreement_now().as_deref(),
         )
+        .into()
     }
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
@@ -4583,7 +4584,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = inner.save_ui.problem();
+    reader.save_problem = inner.save_ui.problem().map(Into::into);
     reader.link_prompt = lock(&inner.prompts.link).clone().map(Into::into);
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();

@@ -23,3 +23,6 @@ recto-reader.workspace = true
 recto-session.workspace = true
 recto-update.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+recto-testpdf.workspace = true
