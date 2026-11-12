@@ -445,7 +445,11 @@ fn comparisons_leave_no_views_behind() {
         for _ in 0..times {
             run.ok(&["compare", "--tabs", "#1,#2"]);
             run.settled();
-            let before = views_alive(run.pid).get(FADE).copied().unwrap_or(0);
+            let before = if fades.get() {
+                views_alive(run.pid).get(FADE).copied().unwrap_or(0)
+            } else {
+                0
+            };
             // A scroll shows the scrollers, which then fade.
             run.ok(&["qa", "scroll", "400"]);
             run.settled();
