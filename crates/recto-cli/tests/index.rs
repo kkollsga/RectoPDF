@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::State;
+use common::{Raw, State};
 use recto_agent::{Level, exit};
 use recto_index::corpus::CorpusKey;
 use recto_testpdf::{Page, TempPdf, form_bomb, hidden_text_page, pages, text_lines};
@@ -69,15 +69,23 @@ fn totals_agree(indexed: &Value, scanned: &Value, args: &[&str]) {
     }
 }
 
+/// One command line, read as `recto` reads it, sent over one connection: the two routes are the session's, and a process per query adds nothing to what's
+/// compared (58 of them made one test 4 s on CI). `recto` itself is held to the same answer by `the_index_answers_as_reading_the_pages_does`.
+fn over_the_socket(state: &State, args: &[&str]) -> Value {
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    let invocation = recto_agent::table::parse_cli(&args).unwrap_or_else(|error| panic!("{args:?}: {error:?}"));
+    Raw::connect(state).call(&serde_json::from_str(&invocation.wire()).unwrap())
+}
+
 /// Holds a search answered from the index to the same search read page by page, field by field, and says which route each took.
 fn index_matches_scan(state: &State, args: &[&str]) -> Value {
-    let (indexed, code) = state.json(args);
-    assert_eq!(code, 0, "{args:?}: {indexed}");
+    let indexed = over_the_socket(state, args);
+    assert_eq!(indexed["ok"], true, "{args:?}: {indexed}");
     assert_eq!(indexed["data"]["route"], "index", "{args:?} wasn't answered from the index: {indexed}");
     let mut with_scan = args.to_vec();
     with_scan.push("--scan");
-    let (scanned, code) = state.json(&with_scan);
-    assert_eq!(code, 0, "{args:?}: {scanned}");
+    let scanned = over_the_socket(state, &with_scan);
+    assert_eq!(scanned["ok"], true, "{args:?}: {scanned}");
     assert_eq!(scanned["data"]["route"], "scan", "{scanned}");
     totals_agree(&indexed, &scanned, args);
     let answer = indexed.clone();
@@ -129,6 +137,12 @@ fn the_index_answers_as_reading_the_pages_does() {
     assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
     let (no_text, _) = state.json(&["search", "zzzqqqxx"]);
     assert_eq!(no_text["data"]["coverage"]["no_text_pages"], serde_json::json!([14]), "{no_text}");
+    // `recto` itself, once each way: what it says is the session's answer, and it reads `--scan`.
+    for args in [&["search", "common"][..], &["search", "common", "--scan"][..]] {
+        let (by_recto, code) = state.json(args);
+        assert_eq!(code, 0, "{args:?}: {by_recto}");
+        assert_eq!(by_recto, over_the_socket(&state, args), "{args:?}");
+    }
 }
 
 /// Failure: a blind agent's request: an answer stopped at its limit says nothing about how many there are in all, so it pages through a document to count. It must count past the limit from the index, and page by page must say it can't.
