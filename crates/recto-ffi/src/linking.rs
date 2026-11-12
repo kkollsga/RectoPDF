@@ -1,6 +1,6 @@
 //! **Links, Back and Forward, and the go-to field: the words and the choices,** for the host to draw: the records here, the rules in `recto_app::linking`. Rust says what a link does and how it's put; the host shows a hint, a hand, and the system's sheet, and opens an address only when this says the person chose to.
 
-use recto_app::linking as app;
+pub use recto_app::linking::LinkPrompt;
 pub(crate) use recto_app::linking::{MAX_TYPED_PAGE, hint_for, no_such_page, page_words, swipe_goes_back};
 
 /// What hovering over a page shows: the pointer's look, and a line saying where a link goes.
@@ -13,7 +13,7 @@ pub struct PointerLook {
 }
 
 /// The sheet that asks before a web or email address opens. Owner's brief, 2026-11-08: "External URIs open only after a clear, Rust-worded confirmation that shows the real target."
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct LinkPrompt {
     /// Which asking this is, so an answer is to the sheet that was shown and no later one.
     pub id: u64,
@@ -31,17 +31,4 @@ pub struct PageField {
     /// The page being read, by its label if it has one, to type over.
     pub editing_text: String,
     pub tooltip: String,
-}
-
-impl From<app::LinkPrompt> for LinkPrompt {
-    fn from(prompt: app::LinkPrompt) -> Self {
-        Self {
-            id: prompt.id,
-            title: prompt.title,
-            message: prompt.message,
-            open_title: prompt.open_title,
-            cancel_title: prompt.cancel_title,
-            address: prompt.address,
-        }
-    }
 }

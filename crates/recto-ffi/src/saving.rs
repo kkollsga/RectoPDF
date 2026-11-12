@@ -3,6 +3,7 @@
 
 use crate::saver::Saver;
 use recto_agent::saving::SaveSupport;
+pub use recto_app::saving::SaveProblem;
 use recto_app::saving::{self as app, replace_answered};
 pub(crate) use recto_app::saving::{SAVED_NOT_CLOSED, SaveUi, close_prompt, panel_for, save_from_gate};
 use recto_core::save::SaveStep;
@@ -67,7 +68,7 @@ impl SaveSupport for AppSaving {
 }
 
 /// A save that didn't happen, as an alert over the window. Every word is Rust's.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SaveProblem {
     pub title: String,
     pub message: String,
@@ -117,17 +118,6 @@ pub enum CloseChoice {
     SaveAs,
     DontSave,
     Cancel,
-}
-
-impl From<app::SaveProblem> for SaveProblem {
-    fn from(problem: app::SaveProblem) -> Self {
-        Self {
-            title: problem.title,
-            message: problem.message,
-            save_as_title: problem.save_as_title,
-            ok_title: problem.ok_title,
-        }
-    }
 }
 
 impl From<app::SavePanelModel> for SavePanelModel {

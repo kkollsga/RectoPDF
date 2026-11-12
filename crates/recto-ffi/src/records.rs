@@ -2,7 +2,7 @@
 //! themselves stay in `lib.rs` because their shape is the Swift contract. The three sheets that ask something (`save_problem`, `link_prompt`, `password_prompt`) are the bridge's
 //! own and are set by the caller after the conversion.
 
-use crate::{AppListener, PaneView, QuitAnswer, ReaderView, RowKind, SelectionNotice, SidebarRow, SidebarView};
+use crate::{AppListener, QuitAnswer, ReaderView, RowKind, SidebarRow, SidebarView};
 use recto_app as app;
 use std::sync::Arc;
 
@@ -107,45 +107,11 @@ impl From<app::SidebarView> for SidebarView {
     }
 }
 
-impl From<app::PaneView> for PaneView {
-    fn from(pane: app::PaneView) -> Self {
-        Self {
-            tab: pane.tab,
-            title: pane.title,
-            reading: pane.reading,
-            layout: pane.layout,
-            note: pane.note,
-        }
-    }
-}
-
-impl From<app::SelectionNotice> for SelectionNotice {
-    fn from(notice: app::SelectionNotice) -> Self {
-        Self {
-            text: notice.text,
-            action_title: notice.action_title,
-            action_id: notice.action_id,
-            fades: notice.fades,
-        }
-    }
-}
-
-impl From<SelectionNotice> for app::SelectionNotice {
-    fn from(notice: SelectionNotice) -> Self {
-        Self {
-            text: notice.text,
-            action_title: notice.action_title,
-            action_id: notice.action_id,
-            fades: notice.fades,
-        }
-    }
-}
-
 /// The reader model with its sheets empty: the caller sets the bridge's own.
 impl From<app::ReaderModel> for ReaderView {
     fn from(model: app::ReaderModel) -> Self {
         Self {
-            panes: model.panes.into_iter().map(Into::into).collect(),
+            panes: model.panes,
             compare_synced: model.window.compare_synced,
             home: model.window.home,
             note: model.note,
@@ -164,7 +130,7 @@ impl From<app::ReaderModel> for ReaderView {
             sidebar_width: model.window.sidebar_width,
             highlight_dark_colour: model.paper.highlight_dark_colour,
             highlight_lighten: model.paper.highlight_lighten,
-            selection_notice: model.selection_notice.map(Into::into),
+            selection_notice: model.selection_notice,
             saving: model.save.saving,
             save_tooltip: model.save.tooltip,
             save_problem: None,

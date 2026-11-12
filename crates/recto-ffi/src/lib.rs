@@ -25,7 +25,9 @@ pub mod updates;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
+pub use recto_app::SelectionNotice;
 use recto_app::queue::{CoreCall, CoreQueue, FileRead, Flushed, Reading};
 use recto_app::watchdog::Watchdog;
 use recto_app::{ContentsEntry, PaneSnapshot, panes, privacy};
@@ -346,7 +348,7 @@ pub enum ContentsMove {
 }
 
 /// A comparison's pane, as its label says it.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct PaneView {
     pub tab: u32,
     /// Its file's name, cleaned, so it's only ever drawn as text.
@@ -462,7 +464,7 @@ fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, rec
 }
 
 /// What to say by the page about a copy.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct SelectionNotice {
     pub text: String,
     /// The button, if there's one.
@@ -4194,7 +4196,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         {
             asks.ask(passwords::Target::Tab(id), &path);
         }
-        asks.prompt().map(Into::into)
+        asks.prompt()
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
@@ -4224,8 +4226,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             offers_copy_anyway: notice.offers_copy_anyway,
             fades: notice.fades,
         }),
-        printing: inner.printing.selection_notice().map(Into::into),
-        tool: inner.tool.selection_notice().map(Into::into),
+        printing: inner.printing.selection_notice(),
+        tool: inner.tool.selection_notice(),
         action: lock(&inner.action_notice).clone(),
         update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
     }
@@ -4257,8 +4259,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = inner.save_ui.problem().map(Into::into);
-    reader.link_prompt = lock(&inner.prompts.link).clone().map(Into::into);
+    reader.save_problem = inner.save_ui.problem();
+    reader.link_prompt = lock(&inner.prompts.link).clone();
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
     let recto_app::SidebarParts {
