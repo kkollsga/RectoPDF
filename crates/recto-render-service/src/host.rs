@@ -156,7 +156,7 @@ pub struct ServiceConfig {
 pub enum Workers {
     #[default]
     MayStart,
-    /// Only by the worker that's running, as it is. None is started, opened again for a replaced file, made heavy or tried again in a new one, and one waiting to retire takes nothing more: each of those ends the job with [`RenderFailure::WouldStart`].
+    /// Only by the worker that's running, as it is. None is started, opened again for a replaced file, made heavy or tried again in a new one, and one waiting to retire takes nothing for another page than the one it drew last: each of those ends the job with [`RenderFailure::WouldStart`].
     OnlyTheOneThere,
 }
 
@@ -941,13 +941,13 @@ impl DocRenderer {
 
     /// **Whether PDFium rebuilt the file's cross-reference data by scanning it,** for the agreement gate. Starts a worker if none is running.
     pub fn repaired(&mut self) -> Result<bool, RenderFailure> {
-        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
+        self.ensure_worker(WorkerClass::Normal, None, None).map_err(RenderFailure::from)?;
         self.repaired.ok_or(RenderFailure::Unavailable)
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
     pub fn page_count(&mut self) -> Result<u32, RenderFailure> {
-        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
+        self.ensure_worker(WorkerClass::Normal, None, None).map_err(RenderFailure::from)?;
         self.page_count.ok_or(RenderFailure::Unavailable)
     }
 
@@ -1580,7 +1580,7 @@ impl DocRenderer {
         let mut retried = false;
         let mut idle_retries = 0;
         loop {
-            self.ensure_worker(class, generation)?;
+            self.ensure_worker(class, Some(page), generation)?;
             let Some(worker) = self.worker.as_mut() else {
                 return Err(RenderFailure::Unavailable.into());
             };
@@ -1725,17 +1725,15 @@ impl DocRenderer {
     }
 
     /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the other way round. A failure
-    /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `generation` is the job this is for, so a long open can be cancelled.
-    fn ensure_worker(&mut self, class: WorkerClass, generation: Option<u64>) -> Result<(), JobFailure> {
+    /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `page` is the page the job is about, if it's about one, and `generation` the job, so a long open can be cancelled.
+    fn ensure_worker(&mut self, class: WorkerClass, page: Option<u32>, generation: Option<u64>) -> Result<(), JobFailure> {
         if self.workers == Workers::OnlyTheOneThere {
             self.reap_if_gone();
             let fits = self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Normal || worker.heavy);
-            // One waiting to retire (heavy, past its line or its surfaces) goes as it would have; one with another file than what's at its path now isn't drawn from.
-            if !fits || self.retire_after_page.is_some() || file_stamp(&self.path).ok() != self.opened_stamp {
-                return Err(RenderFailure::WouldStart {
-                    heavy: class == WorkerClass::Heavy,
-                }
-                .into());
+            // One waiting to retire (heavy, past its line or its surfaces) takes nothing for another page, by the rule [`Self::retire_if_other_page`] keeps outside this mode: what's still of the page it drew last, that page's image boxes and size, it does, as it would have. One with another file than what's at its path now isn't drawn from.
+            let (retiring, heavy) = (self.retire_after_page.is_some_and(|last| page != Some(last)), class == WorkerClass::Heavy);
+            if !fits || retiring || file_stamp(&self.path).ok() != self.opened_stamp {
+                return Err(RenderFailure::WouldStart { heavy }.into());
             }
             return Ok(());
         }

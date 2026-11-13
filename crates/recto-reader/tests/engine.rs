@@ -1185,3 +1185,139 @@ fn a_worker_killed_drawing_a_place_left_is_not_started_again() {
     assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
     assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
 }
+
+/// Ten pages of text, then thirty with a photograph over their top left quarter, of red and blue, which dark paper keeps as it is while it turns the rest over. The photograph is `edge` pixels square, run-length coded so the file stays small, and big enough decoded that drawing it takes its worker past a retirement line text leaves it under.
+fn text_then_photos(edge: usize) -> TempPdf {
+    let list: Vec<Page> = (0..40)
+        .map(|index| {
+            if index < 10 {
+                Page::new(text_lines(&[&format!("Page number {index}")]))
+            } else {
+                Page::new(b"q 306 0 0 396 0 396 cm /Im0 Do Q".to_vec())
+            }
+        })
+        .collect();
+    // Squares of 50 pixels, each colour a run: a length byte of 257 less the run, then the colour's index.
+    let mut data = Vec::new();
+    for y in 0..edge {
+        let mut x = 0;
+        while x < edge {
+            let colour = ((x / 50 + y / 50) % 2) as u8;
+            let run = (50 - x % 50).min(edge - x).min(128);
+            data.extend_from_slice(&[(257 - run) as u8, colour]);
+            x += run;
+        }
+    }
+    data.push(128);
+    let image = first_extra_object(list.len());
+    TempPdf::new(
+        "photos.pdf",
+        &pages_with(
+            &list,
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![Object::Stream {
+                dict: format!(
+                    "/Type /XObject /Subtype /Image /Width {edge} /Height {edge} /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 <FF00000000FF>] /Filter /RunLengthDecode"
+                ),
+                data,
+            }],
+        ),
+    )
+}
+
+/// The colours in the tiles these ops attach to these pages, red, green and blue, each once: every pixel of a surface, or a tile of one colour's colour.
+#[allow(unsafe_code)]
+fn tile_colours_on(ops: &[Op], pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    let mut colours = std::collections::BTreeSet::new();
+    for op in ops {
+        match op {
+            Op::Attach { page, surface: 0, rgb, .. } if pages.contains(page) => colours.extend(rgb.map(bytes)),
+            Op::Attach { page, surface, .. } if pages.contains(page) => {
+                // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+                let Some(surface) = (unsafe { recto_platform::surface::PixelSurface::from_host_reference(*surface) }) else {
+                    continue;
+                };
+                let _ = surface.with_pixels(|pixels| colours.extend(pixels.chunks_exact(4).map(|pixel| [pixel[2], pixel[1], pixel[0]])));
+            }
+            _ => {}
+        }
+    }
+    colours
+}
+
+/// Whether tiles with these colours were put on dark paper by a look decided with the page's images known: the paper around the photograph turned over to the paper's tone, and none of it dimmed white, as a page judged whole, with nothing known of its images, is.
+fn turned_over_around_the_photo(colours: &std::collections::BTreeSet<[u8; 3]>) -> bool {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    colours.contains(&bytes(PaperKind::Dark.rgb())) && !colours.contains(&bytes(dim_rgb(0xFF_FF_FF)))
+}
+
+/// What a failure says of these colours: how many, and whether the paper's tone and dimmed white are among them.
+fn said(colours: &std::collections::BTreeSet<[u8; 3]>) -> String {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    format!(
+        "{} colours, the paper's tone {}, dimmed white {}",
+        colours.len(),
+        colours.contains(&bytes(PaperKind::Dark.rgb())),
+        colours.contains(&bytes(dim_rgb(0xFF_FF_FF)))
+    )
+}
+
+/// Tab 1 of `file` shown again where it was left, on dark paper: the colours of what the host is told to attach to `pages`.
+fn shown_again_at_its_place(engine: &Engine, file: &TempPdf, pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    engine.activate(1, 40, 0, tab_map(file), &[2], None, recto_reader::layout::Spread::Single);
+    let mut ops = engine.set_viewport(view(30_000.0));
+    engine.applied();
+    ops.extend(pump(engine, HANG));
+    assert!(settles(engine), "{}", engine.report().0);
+    tile_colours_on(&ops, pages)
+}
+
+/// What a fresh engine that never drew anything for a tab left puts on dark paper for `pages` of `file`, at the place the tests leave tab 1 at: the control.
+fn drawn_fresh_at_the_place(file: &TempPdf, pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    let engine = engine_with(file, 40, recto_render_service::Policy::default(), &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    let mut ops = engine.set_viewport(view(30_000.0));
+    engine.applied();
+    ops.extend(pump(&engine, HANG));
+    assert!(settles(&engine), "{}", engine.report().0);
+    tile_colours_on(&ops, pages)
+}
+
+/// Failure (review round 2, B1): on dark paper, a preview drawn for a tab left takes its worker past its retirement line (a page with a photograph, as is common), and the page's image boxes, asked straight after in the same job, were refused as though for another page. The look decided without them (the page judged whole, so dimmed) was kept for the page, and the person's own tiles of it went by that look when they came back: the page a dimmed white instead of turned over around its photograph, until the look was cleared. Back at its place, tab 1's tiles of the page drawn for it are turned over as a fresh engine's are.
+#[test]
+fn a_page_drawn_for_a_tab_left_by_a_worker_past_its_line_keeps_its_look_on_dark_paper() {
+    let mib = 1024 * 1024;
+    let (first, second) = (text_then_photos(3000), document(1));
+    // Text leaves a worker at about 6 MiB, and drawing the photograph takes it to about 16 (measured, debug).
+    let policy = recto_render_service::Policy {
+        retire_bytes: 11 * mib,
+        idle_exit: Duration::from_secs(600),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    let draws = sleep_draws_end(&engine);
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let pictured: Vec<u32> = material
+        .pictures
+        .iter()
+        .map(|picture| picture.page)
+        .filter(|page| owed.contains(page))
+        .collect();
+    assert!(
+        !pictured.is_empty(),
+        "the first page at its place was drawn, by the worker that was there: {draws}"
+    );
+    let fresh = drawn_fresh_at_the_place(&first, &pictured);
+    assert!(turned_over_around_the_photo(&fresh), "the control: {}", said(&fresh));
+    let back = shown_again_at_its_place(&engine, &first, &pictured);
+    assert!(!back.is_empty(), "tab 1's page {pictured:?} was shown");
+    assert!(
+        turned_over_around_the_photo(&back),
+        "as a fresh draw has it ({}): {}, {draws}",
+        said(&fresh),
+        said(&back)
+    );
+}
