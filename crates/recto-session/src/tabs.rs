@@ -116,7 +116,7 @@ impl<L: DocLoader> Session<L> {
         let history = history.filter(|taken| self.tabs.confinement().admits_edits(&taken.restored.edits));
         if let Some(id) = self.tab_for_file(path, stamp) {
             // Read already, so no read with the session held if it's cold.
-            self.give_woken(id, Ok(facts), stamp);
+            self.sleeper().give_woken(id, Ok(facts), stamp);
             self.reach_open_file(id, path);
             return Ok(id);
         }
@@ -188,7 +188,7 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         self.tabs.note_password_used(id);
-        self.give_woken(id, Ok(facts), stamp);
+        self.sleeper().give_woken(id, Ok(facts), stamp);
         if self.tabs.active() == Some(id) {
             self.activate(id);
         }
@@ -206,7 +206,7 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.tab(id).is_none() || self.tabs.needs_password(id) {
             return;
         }
-        self.forget_read(id);
+        self.sleeper().forget_read(id);
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.problem = Some(OpenError::PasswordNeeded);
         }
@@ -261,7 +261,7 @@ impl<L: DocLoader> Session<L> {
         }
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
         // A list that won't read: nothing unsaved is at stake, or this wouldn't have got here. Its journal's left for a launch to look at.
-        if !self.wake_list(id) {
+        if !self.sleeper().wake_list(id) {
             self.lists.forget_asleep(id);
             self.journals.forget_name(id);
         }

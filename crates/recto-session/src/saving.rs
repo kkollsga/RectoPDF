@@ -14,8 +14,8 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.folds = None;
         }
-        if !self.wake_list(id) {
-            self.give_up_on_asleep(id);
+        if !self.sleeper().wake_list(id) {
+            self.sleeper().give_up_on_asleep(id);
         }
         let kept = kept.or_else(|| {
             saved_as?;
@@ -90,7 +90,7 @@ impl<L: DocLoader> Session<L> {
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
-        if !self.wake_list(id) {
+        if !self.sleeper().wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
         // Edits that don't fit the file name no version of it to save onto.
@@ -140,7 +140,7 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         if self.saves.end(id) {
-            self.let_go(id);
+            self.sleeper().let_go(id);
             if let Some(list) = self.lists.get_mut(id)
                 && list.saving().is_some()
             {
@@ -166,7 +166,7 @@ impl<L: DocLoader> Session<L> {
         if self.saves.doubted(id) {
             return;
         }
-        self.wake_list(id);
+        self.sleeper().wake_list(id);
         if let Some(edits) = self.lists.get_mut(id) {
             edits.note_saving(target, keeping);
         }
@@ -178,8 +178,8 @@ impl<L: DocLoader> Session<L> {
         if self.saves.is_saving(id) {
             return false;
         }
-        if !self.wake_list(id) {
-            self.give_up_on_asleep(id);
+        if !self.sleeper().wake_list(id) {
+            self.sleeper().give_up_on_asleep(id);
             if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.set_notice(None);
             }

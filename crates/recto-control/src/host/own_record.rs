@@ -30,7 +30,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
     /// No pictures for a tab here, and no journals kept as it goes, so all it can let go of is what it's read.
     fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
         Ok(self.with(|session| Slept {
-            dormant: session.go_dormant(tab),
+            dormant: session.sleeper().go_dormant(tab),
             list_asleep: session.lists().is_asleep(tab),
         }))
     }

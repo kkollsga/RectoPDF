@@ -24,6 +24,7 @@ mod restore;
 mod saving;
 mod sidebar;
 mod sleep_tests;
+mod sleeper;
 mod tabs;
 mod tiers;
 mod trail_tests;
