@@ -51,3 +51,27 @@ fn an_agents_step_is_heard_once() {
     let said = agent_said(&app, r#"{"cmd":"find","next":true}"#);
     assert_eq!(names(&said), ["page_changed", "find_changed"], "{said:?}");
 }
+
+/// Failure: Return in the Find field is heard with `page_changed` twice, once for the jump to the hit and again when the page view, bringing the hit into
+/// view, says it's on the page the session already had. A page is announced when it changed, and only then.
+#[test]
+fn return_in_find_is_heard_with_one_page_changed() {
+    let app = findable();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    // The first hit is on the page being read, and the second on page 10.
+    for to in [1, 10] {
+        drop(app.heard_events());
+        app.act(UiAction::FindReturn { forward: true });
+        app.settle();
+        let heard = app.heard_events();
+        let pages: Vec<_> = heard
+            .iter()
+            .filter_map(|event| match event {
+                recto_agent::Event::PageChanged { page, .. } => Some(*page),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages, [Some(to)], "{heard:?}");
+    }
+}
