@@ -23,7 +23,7 @@ pub mod updates;
 pub mod view;
 
 use crate::table::{self, Access, Spec};
-use crate::{AgentError, Command, Event, Level, Runs, SessionAccess};
+use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -58,9 +58,10 @@ pub trait OnlyAsks {
     fn only_asks(&self) -> bool;
 }
 
-/// What a command runs with: the session, the level it was asked at, and the events it makes.
+/// What a command runs with: the session, who asked and the level that goes by ([`Actor::level`]), and the events it makes.
 pub struct Cx<'a, A> {
     pub access: &'a A,
+    pub actor: Actor,
     pub level: Level,
     pub events: &'a mut Vec<Event>,
 }

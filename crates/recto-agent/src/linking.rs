@@ -96,7 +96,7 @@ pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value
 }
 
 /// `recto follow`: what a click on a link does, within the document. A web address is the person's to open, and never an agent's.
-pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &str, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let (id, position, found) = read(access, tab, page)?;
     let chosen = link.checked_sub(1).and_then(|at| found.links.get(at as usize)).ok_or_else(|| {
         AgentError::new("no_such_link", format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND)
@@ -107,11 +107,11 @@ pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, eve
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
                 let to = s.position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
-                s.jump_as(id, to, within.map_or(0.0, f64::from), Author::Agent)?;
+                s.jump_as(id, to, within.map_or(0.0, f64::from), by)?;
                 "page"
             }
             LinkTarget::History { back } => {
-                let moved = s.step_as(id, *back, Author::Agent)?;
+                let moved = s.step_as(id, *back, by)?;
                 if !moved {
                     return Err(nothing_that_way(*back));
                 }
@@ -143,10 +143,10 @@ fn nothing_that_way(back: bool) -> AgentError {
 }
 
 /// `recto back` and `recto forward`, as ⌘[ and ⌘] do.
-pub fn step<A: SessionAccess>(access: &A, tab: &str, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &str, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let moved = s.step_as(id, back, Author::Agent)?;
+        let moved = s.step_as(id, back, by)?;
         if !moved {
             return Err(nothing_that_way(back));
         }
@@ -156,14 +156,14 @@ pub fn step<A: SessionAccess>(access: &A, tab: &str, back: bool, events: &mut Ve
 }
 
 /// `recto goto label iv`: the page the file calls that, or a plain number no page is called, as the go-to field reads it.
-pub fn goto_label<A: SessionAccess>(access: &A, tab: &str, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &str, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let page = s.page_for_typed(id, label).ok_or_else(|| {
             AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND)
                 .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
         })?;
-        s.jump_as(id, page, 0.0, Author::Agent)?;
+        s.jump_as(id, page, 0.0, by)?;
         events.push(page_now(s, id));
         Ok(where_json(s, id))
     })

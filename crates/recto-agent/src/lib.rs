@@ -4,6 +4,8 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod actor;
+pub use actor::Actor;
 pub mod agreement;
 pub mod commands;
 pub mod event;
@@ -470,7 +472,7 @@ pub fn run_indexed<L: DocLoader + Clone>(
     command: &Command,
     indexing: Option<&dyn index::Indexing>,
 ) -> Result<Value, AgentError> {
-    execute(&Direct(RefCell::new(session), indexing), level, command, &mut Vec::new())
+    execute(&Direct(RefCell::new(session), indexing), Actor::Agent(level), command, &mut Vec::new())
 }
 
 /// What's chosen, in a word: `auto` goes with the window.
@@ -531,15 +533,15 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
     json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "sidebar": !session.view().sidebar_hidden })
 }
 
-/// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
-pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+/// **The one executor:** runs one command for whoever asked, `actor`, noting what happened in `events`. The person's actions at the window and an agent's commands both come here; what tells them apart is [`Actor`]'s. Commands that only a long-running session can answer say so.
+pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let needed = command.access();
-    if !allowed(level, needed) {
-        return Err(refusal(table::display_name(command.tag()), level, needed));
+    if !actor.may(needed) {
+        return Err(refusal(table::display_name(command.tag()), actor.level(), needed));
     }
     // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
     if command.route() == Runs::Record {
-        return execute_held(access, level, command, events);
+        return execute_held(access, actor, command, events);
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
@@ -548,6 +550,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some("active"));
     if let Some(selector) = about
         && !command.protected_ok()
+        && !actor.sees_protected()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
     {
         return Err(protected_refusal());
@@ -570,7 +573,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )
         .then("`recto discard` gives up on them, and `recto session show` says what's known of them.")),
-        _ => execute_held(access, level, command, events),
+        _ => execute_held(access, actor, command, events),
     };
     let held = held.map(|(id, _)| id);
     if let Some(id) = held {
@@ -579,19 +582,20 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     result
 }
 
-fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+fn execute_held<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let level = actor.level();
     match command {
-        Command::Measure(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Updates(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Start(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Session(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Qa(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Record(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Measure(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Edit(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Move(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Read(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Updates(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Start(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Waits(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Rights(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Session(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Qa(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Record(command) => command.run(&mut commands::Cx { access, actor, level, events }),
     }
 }
 
@@ -703,13 +707,13 @@ fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Lo
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
 /// `recto goto`: a jump, so Back comes here again, as following a link does.
-fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32) -> Result<(), AgentError> {
+fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, by: Author) -> Result<(), AgentError> {
     let position = page
         .checked_sub(1)
         .filter(|position| *position < session.pages_in(id))
         .ok_or_else(no_such_page)?;
-    // An agent's mark, which gives way to the person's in the trail.
-    session.jump_as(id, position, 0.0, recto_session::Author::Agent)?;
+    // An agent's mark gives way to the person's in the trail.
+    session.jump_as(id, position, 0.0, by)?;
     Ok(())
 }
 
@@ -775,7 +779,7 @@ fn which_pages(pages: &str, one: &str, many: &str) -> String {
 
 fn edit<A: SessionAccess>(
     access: &A,
-    level: Level,
+    actor: Actor,
     tab: &str,
     events: &mut Vec<Event>,
     did: String,
@@ -783,14 +787,21 @@ fn edit<A: SessionAccess>(
 ) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        keep_owners_undone_steps(s, id, level)?;
-        s.set_agent_at_full(level >= Level::Full);
-        s.edit_pages_as(id, Author::Agent, change)?;
+        keep_owners_undone_steps(s, id, actor.level())?;
+        note_agent_at_full(s, actor);
+        s.edit_pages_as(id, actor.author(), change)?;
         events.push(edits_changed(s, id));
         let mut data = edit_state_json(s, id);
         data["did"] = json!(did);
         Ok(with_place_note(s, id, data))
     })
+}
+
+/// An agent's edit, undo or redo says whether it's at Full, which may push past the owner's steps. The person's edits are the owner's, and say nothing of it.
+fn note_agent_at_full<L: DocLoader>(session: &mut Session<L>, actor: Actor) {
+    if let Actor::Agent(level) = actor {
+        session.set_agent_at_full(level >= Level::Full);
+    }
 }
 
 /// What asking for Full is for, where only that would do. The one command an agent can run to get there.
@@ -1277,7 +1288,7 @@ mod tests {
             gate.release.store(false, Ordering::SeqCst);
             gate.armed.store(true, Ordering::SeqCst);
             let shared = Arc::clone(&session);
-            let running = std::thread::spawn(move || execute(&*shared, Level::Control, &command, &mut Vec::new()).map(|_| ()));
+            let running = std::thread::spawn(move || execute(&*shared, Actor::Agent(Level::Control), &command, &mut Vec::new()).map(|_| ()));
             while !gate.inside.load(Ordering::SeqCst) {
                 std::thread::yield_now();
             }
@@ -2719,6 +2730,66 @@ mod tests {
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
         assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
+    }
+
+    /// Failure: the person's edit through a command is recorded as an agent's, so an agent below Full may throw it away, undo it past them or lose it with a new
+    /// edit; or the person's undo of an agent's step counts as the agent's. The same commands as the window sends, run as the person, are the owner's.
+    #[test]
+    fn every_edit_by_a_person_is_the_owners() {
+        let tab = || "#1".to_string();
+        let commands = [
+            Command::from(crate::commands::editing::PageRotate {
+                tab: tab(),
+                pages: "all".into(),
+                degrees: 90,
+            }),
+            Command::from(crate::commands::editing::PageMove {
+                tab: tab(),
+                pages: "1".into(),
+                to: 2,
+            }),
+            Command::from(crate::commands::editing::PageDelete { tab: tab(), pages: "1".into() }),
+            Command::from(crate::commands::editing::PageInsert {
+                tab: tab(),
+                path: "/d/b.pdf".into(),
+                at: 1,
+            }),
+        ];
+        for command in commands {
+            let mut s = edit_session();
+            execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &command, &mut Vec::new()).unwrap();
+            assert!(
+                s.page_edits(TabId(1)).unwrap().holds_owner_edits(),
+                "{} by the person is the owner's",
+                command.tag()
+            );
+            // An agent below Full can't throw it away, as it couldn't one made through the window's own call.
+            let discard = Command::from(crate::commands::editing::Discard { tab: tab() });
+            assert_eq!(
+                run(&mut s, Level::Control, &discard).unwrap_err().code,
+                "would_discard_user_edits",
+                "{}",
+                command.tag()
+            );
+        }
+        // An agent's step, undone and redone by the person: the person's undo is theirs, and leaves the agent's step the agent's.
+        let mut s = edit_session();
+        run(&mut s, Level::Control, &commands_rotate(tab())).unwrap();
+        for step in [
+            Command::from(crate::commands::editing::Undo { tab: tab() }),
+            Command::from(crate::commands::editing::Redo { tab: tab() }),
+        ] {
+            execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &step, &mut Vec::new()).unwrap();
+        }
+        assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "the agent's step stays the agent's");
+    }
+
+    fn commands_rotate(tab: String) -> Command {
+        Command::from(crate::commands::editing::PageRotate {
+            tab,
+            pages: "1".into(),
+            degrees: 90,
+        })
     }
 
     /// Failure: an agent makes enough edits that the user's step falls off the capped list, and then its discard counts only what's left on the list, and throws away the user's edit, still in the page order, along with its own. And the reverse: an agent's step falling off must not stop it clearing up.

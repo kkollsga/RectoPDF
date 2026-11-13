@@ -41,7 +41,7 @@ impl Stand {
 }
 
 impl Host for Stand {
-    fn run(&self, _level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn run(&self, _actor: recto_agent::Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         self.ran.lock().unwrap().push(command.tag());
         match command {
             Command::Read(recto_agent::commands::Read::Facts(recto_agent::commands::reading::Facts { .. })) => panic!("a bug in a command"),

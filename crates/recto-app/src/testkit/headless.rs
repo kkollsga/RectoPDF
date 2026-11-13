@@ -457,7 +457,7 @@ impl HeadlessApp {
             return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
         }
         let mut events = Vec::new();
-        self.core().host.run(level, &command, &mut events)
+        self.core().host.run(recto_agent::Actor::Agent(level), &command, &mut events)
     }
 
     /// **`recto <words>`, at `level`,** as the CLI turns the words into its line and sends it: [`Self::agent`] on that line.

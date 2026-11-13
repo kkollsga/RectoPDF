@@ -9,7 +9,7 @@ use recto_agent::commands::record::Records;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
 use recto_agent::{
-    AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
+    Actor, AgentError, Command, Condition, ConditionState, DrawableLoader, Event, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
 };
 
 mod own_record;
@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 
 /// The session, as the server sees it. Called from job threads, never the thread watching the socket.
 pub trait Host: Send + Sync + 'static {
-    /// Runs a command at a level.
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
+    /// Runs a command for whoever asked: an agent at its level over the socket, or the person at the window.
+    fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
     /// Looks at a condition once.
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState;
     /// How many tabs are open. Must never block: `status` answers from the socket's own thread.
@@ -272,12 +272,12 @@ pub fn store_error(error: StoreError) -> AgentError {
 }
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
         let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
             .flatten();
-        let result = recto_agent::execute(&self.access(), level, command, events);
+        let result = recto_agent::execute(&self.access(), actor, command, events);
         if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
             generator.cancel_path(path);
         }

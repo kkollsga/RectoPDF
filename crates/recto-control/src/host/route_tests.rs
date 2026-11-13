@@ -45,14 +45,18 @@ fn own_refusal(command: &Command) -> Option<&'static str> {
 #[test]
 fn every_route_answers_as_declared_on_a_session_with_no_record() {
     let host = SessionHost::new(Fake);
-    host.run(Level::Full, &parse(r#"{"cmd":"open","path":"/d/a.pdf"}"#).expect("open"), &mut Vec::new())
-        .expect("opened");
+    host.run(
+        recto_agent::Actor::Agent(Level::Full),
+        &parse(r#"{"cmd":"open","path":"/d/a.pdf"}"#).expect("open"),
+        &mut Vec::new(),
+    )
+    .expect("opened");
     let mut seen = 0;
     for line in REQUESTS.lines() {
         let Ok(command) = parse(line) else { continue };
         let Some(expected) = own_refusal(&command) else { continue };
         seen += 1;
-        let answer = host.run(Level::Full, &command, &mut Vec::new());
+        let answer = host.run(recto_agent::Actor::Agent(Level::Full), &command, &mut Vec::new());
         let code = answer.as_ref().err().map(|error| error.code);
         assert_eq!(
             code,

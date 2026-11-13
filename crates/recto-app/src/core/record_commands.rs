@@ -88,7 +88,9 @@ mod tests {
     use serde_json::Value;
 
     fn run(app: &HeadlessApp, level: Level, line: &str) -> Result<Value, AgentError> {
-        app.core().host.run(level, &parse(line).expect("a command"), &mut Vec::new())
+        app.core()
+            .host
+            .run(recto_agent::Actor::Agent(level), &parse(line).expect("a command"), &mut Vec::new())
     }
 
     /// Failure: the app answers the record's commands otherwise than it did when it answered them itself, now that `recto-agent` makes the answers it shares with the session with no window: its hand-off check is the windowless "any moment's safe" in place of its own look, a tab asked to sleep doesn't go through its sleeper, a save loses its timings, or a restore loses the active tab. Or the level isn't checked on this path, which only the server checked before.

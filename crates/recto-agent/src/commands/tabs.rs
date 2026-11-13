@@ -39,7 +39,7 @@ impl Cmd for Open {
         json!({ "page": self.page, "untrusted": super::log_file(&self.path) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        open(cx.access, &self.path, self.page, cx.events)
+        open(cx.access, cx.actor, &self.path, self.page, cx.events)
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -269,7 +269,7 @@ pub(crate) const ROWS_CLOSE: &[Spec] = &[Spec {
     ..BASE
 }];
 
-fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     require_absolute(path)?;
     let wrong_page = |pages: u32| {
         AgentError::new(
@@ -288,7 +288,7 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     let existing = access.with(|s| {
         let id = s.tab_for_file(path, stamp)?;
         // Whether a page is in a protected document would say how long it is.
-        if page.is_some() && s.withheld_from_agents(id) {
+        if page.is_some() && !actor.sees_protected() && s.withheld_from_agents(id) {
             return Some(Err(protected_refusal()));
         }
         let pages = s.pages_in(id);
@@ -318,7 +318,7 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     };
     access.with(|s| {
         if let Some(page) = page {
-            go_to(s, id, page)?;
+            go_to(s, id, page, actor.author())?;
         }
         events.push(if is_new { event::tab_opened(s, id) } else { event::tab_activated(s, id) });
         if page.is_some() {

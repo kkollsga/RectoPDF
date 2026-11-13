@@ -32,11 +32,11 @@ pub const MAX_INPUT: usize = 256 * 1024;
 struct Guarded(SessionHost<NamedLoader>);
 
 impl Host for Guarded {
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn run(&self, actor: recto_agent::Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         if command.draws() {
             return Err(AgentError::new("not_here", "Nothing draws in this check.", recto_agent::exit::FAILED));
         }
-        self.0.run(level, command, events)
+        self.0.run(actor, command, events)
     }
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
         self.0.check(condition, tab, page)

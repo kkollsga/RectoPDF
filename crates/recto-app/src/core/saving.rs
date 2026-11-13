@@ -108,7 +108,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
         replace,
     });
     let mut events = Vec::new();
-    match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
+    match inner.host.run(recto_agent::Actor::Agent(recto_agent::Level::Full), &command, &mut events) {
         Ok(data) => {
             let notes: Vec<&str> = data["notes"]
                 .as_array()
