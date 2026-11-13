@@ -3,6 +3,7 @@
 
 mod exits;
 mod files;
+mod find;
 mod launch;
 mod levels;
 mod palette;

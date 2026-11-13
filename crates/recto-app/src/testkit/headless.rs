@@ -8,7 +8,7 @@
 //!
 //! **How a test stays deterministic.** There's no fixed sleep anywhere here. Every wait is for a condition, bounded, and fails naming what it was still waiting for:
 //! [`HeadlessApp::settle`] waits for the session thread to have taken everything queued and every file being read, then for the threads the product starts for a
-//! password, a look at files and a write of the record to have finished, and takes what they queued. Time the app's rules go by moves only by
+//! password, a look at files, a write of the record and Find to have finished, and takes what they queued. Time the app's rules go by moves only by
 //! [`HeadlessApp::advance`]. What's left to real time is what's real in the product too: a flush's limit on a slow disk, the sleep files' lock.
 
 use super::update_bed::UpdateBed;
@@ -519,6 +519,10 @@ impl HeadlessApp {
         }
         if inner.saver.is_writing() {
             busy.push("the record being written".to_string());
+        }
+        // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
+        if inner.host.session.finder().has_thread() {
+            busy.push("Find looking".to_string());
         }
         busy
     }
