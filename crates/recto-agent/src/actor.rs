@@ -56,6 +56,14 @@ impl Actor {
         matches!(self, Self::Person)
     }
 
+    /// **The person, at the window,** whose command comes from a control and returns at once: the window draws what the session publishes as it comes, so
+    /// nothing is waited for, and what the person does at it may arrange it, as their Find shows the sidebar it's in. An agent's command answers once, with
+    /// what it waited for, and doesn't rearrange the person's window (R2.3, A6).
+    #[must_use]
+    pub fn at_the_window(self) -> bool {
+        matches!(self, Self::Person)
+    }
+
     /// An agent, at Full. What only an agent at Full may push past is the owner's, as their own edits are.
     #[must_use]
     pub fn is_agent_at_full(self) -> bool {
@@ -82,5 +90,6 @@ mod tests {
         assert_eq!(Actor::Person.author(), Author::Owner);
         assert_eq!(Actor::Agent(Level::Full).author(), Author::Agent);
         assert!(Actor::Person.sees_protected() && !Actor::Agent(Level::Full).sees_protected());
+        assert!(Actor::Person.at_the_window() && !Actor::Agent(Level::Full).at_the_window());
     }
 }

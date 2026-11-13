@@ -469,13 +469,11 @@ impl FileReads {
             }
             Reading::Tab(tab) => {
                 let then = self.then.remove(&Reading::Tab(tab));
-                // Only if it's still what's wanted, or a comparison's. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
+                // Only if it's still what's wanted: the tab last asked for wins, a ⌘-click's as a tap's. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
                 if let Some(command) = then
-                    && (self.wanted_tab == Some(tab) || super::comparison::runs_once_read(&command))
+                    && self.wanted_tab == Some(tab)
                 {
-                    if self.wanted_tab == Some(tab) {
-                        self.wanted_tab = None;
-                    }
+                    self.wanted_tab = None;
                     host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
                     return Some(person::read_in(*command, None));
                 }

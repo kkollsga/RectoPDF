@@ -377,7 +377,7 @@ fn a_launch_an_update_opened_waits_for_its_state_however_late() {
     let second = app.disk().pdf("beta.pdf", 6);
     app.open(&second);
     app.agent(Level::Control, r#"{"cmd":"page_rotate","pages":"2","degrees":90}"#).expect("an edit");
-    app.send(crate::queue::CoreCall::Find(crate::find::FindCall::Typed("beta page".into())));
+    app.act(crate::core::controls::UiAction::FindTyped { text: "beta page".into() });
     app.settle();
     let before = app.session_json();
     bed.releases.offer(NEW);

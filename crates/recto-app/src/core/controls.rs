@@ -5,7 +5,7 @@
 //! The bridge's per-control methods are each a call to [`Inner::act`] until the bridge has the one export (R2.3's last commit); nothing else of the window's
 //! comes in another way.
 
-use super::{CoreCall, HostAction, Inner, find};
+use super::{HostAction, Inner};
 use crate::SidebarRow;
 use crate::saving::CloseChoice;
 use std::path::PathBuf;
@@ -101,12 +101,27 @@ impl Inner {
                 self.open_recent(key);
                 Acted::DONE
             }
-            UiAction::FindTyped { text } => self.find_call(find::FindCall::Typed(text)),
-            UiAction::FindOpen => self.find_call(find::FindCall::Open),
-            UiAction::FindClose => self.find_call(find::FindCall::Close),
+            UiAction::FindTyped { text } => {
+                self.find_typed_for_person(text);
+                Acted::DONE
+            }
+            UiAction::FindOpen => {
+                self.find_open_for_person();
+                Acted::DONE
+            }
+            UiAction::FindClose => {
+                self.find_close_for_person();
+                Acted::DONE
+            }
             // The person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
-            UiAction::FindReturn { forward } => self.find_call(find::FindCall::Step(forward, recto_agent::find::Going::Jump)),
-            UiAction::FindChoose { row } => self.find_call(find::FindCall::Choose(row)),
+            UiAction::FindReturn { forward } => {
+                self.find_step_for_person(forward, true);
+                Acted::DONE
+            }
+            UiAction::FindChoose { row } => {
+                self.find_choose_for_person(row);
+                Acted::DONE
+            }
             UiAction::PageTyped { text } => Acted {
                 host: HostAction::None,
                 understood: self.page_typed(&text),
@@ -134,10 +149,5 @@ impl Inner {
                 Acted::DONE
             }
         }
-    }
-
-    fn find_call(&self, call: find::FindCall) -> Acted {
-        self.core.push(CoreCall::Find(call));
-        Acted::DONE
     }
 }

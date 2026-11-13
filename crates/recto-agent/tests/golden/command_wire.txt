@@ -267,15 +267,15 @@
 {"cmd":"Palette"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find"}
-    ok find Find { query: None, next: false, previous: false, close: false, limit: None }
+    ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 {"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
-    ok find Find { query: Some("q"), next: true, previous: true, close: true, limit: Some(3) }
+    ok find Find { query: Some("q"), next: true, previous: true, jump: false, hit: None, open: false, close: true, limit: Some(3) }
 {"cmd":"find","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find","query":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find","query":null}
-    ok find Find { query: None, next: false, previous: false, close: false, limit: None }
+    ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 {"cmd":"find","next":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find","next":null}
@@ -291,11 +291,11 @@
 {"cmd":"find","limit":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find","limit":null}
-    ok find Find { query: None, next: false, previous: false, close: false, limit: None }
+    ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 ["find"]
-    ok find Find { query: None, next: false, previous: false, close: false, limit: None }
+    ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 ["find","q",true,true,true,3]
-    ok find Find { query: Some("q"), next: true, previous: true, close: true, limit: Some(3) }
+    ok find Find { query: Some("q"), next: true, previous: true, jump: true, hit: Some(3), open: false, close: false, limit: None }
 {"cmd":"Find"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare"}

@@ -421,13 +421,8 @@ mod tests {
             CoreCall::Events(Vec::new()),
             CoreCall::GeneratedFinished,
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
-            CoreCall::Find(crate::find::FindCall::Typed("a".into())),
-            CoreCall::Find(crate::find::FindCall::Open),
-            CoreCall::Find(crate::find::FindCall::Close),
-            CoreCall::Find(crate::find::FindCall::Step(true, recto_agent::find::Going::Jump)),
-            CoreCall::Find(crate::find::FindCall::Choose(0)),
             CoreCall::Find(crate::find::FindCall::News),
-            CoreCall::Find(crate::find::FindCall::Reveal(1, hit)),
+            CoreCall::Find(crate::find::FindCall::Effect(recto_agent::Effect::Reveal { tab, hit })),
             CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
             CoreCall::Run(Box::new(PersonCommand::finishing(
                 recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
@@ -456,20 +451,15 @@ mod tests {
             CoreCall::GeneratedFinished => 14,
             CoreCall::GeneratedView(..) => 15,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 16,
-                crate::find::FindCall::Open => 17,
-                crate::find::FindCall::Close => 18,
-                crate::find::FindCall::Step(..) => 19,
-                crate::find::FindCall::Choose(_) => 20,
-                crate::find::FindCall::News => 21,
-                crate::find::FindCall::Reveal(..) => 22,
+                crate::find::FindCall::News => 16,
+                crate::find::FindCall::Effect(_) => 17,
             },
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 23,
-                Origin::Finishing => 24,
+                Origin::Input => 18,
+                Origin::Finishing => 19,
             },
         };
-        (place, 25)
+        (place, 20)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -484,18 +474,7 @@ mod tests {
             "one sample of every call, and of every find call"
         );
         let a_persons = |call: &CoreCall| {
-            matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
-                || matches!(
-                    call,
-                    CoreCall::Find(
-                        crate::find::FindCall::Typed(_)
-                            | crate::find::FindCall::Open
-                            | crate::find::FindCall::Close
-                            | crate::find::FindCall::Step(..)
-                            | crate::find::FindCall::Choose(_)
-                            | crate::find::FindCall::Reveal(..)
-                    )
-                )
+            matches!(call, CoreCall::Run(run) if run.origin == Origin::Input) || matches!(call, CoreCall::Find(crate::find::FindCall::Effect(_)))
         };
         for call in calls {
             let queue = CoreQueue::default();

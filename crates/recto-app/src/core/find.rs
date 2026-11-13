@@ -1,16 +1,19 @@
-//! **The sidebar's Find: its records and the calls.** What it shows, what each call does and when the host is told are `crate::find`'s; this hands it the app's parts it
-//! reaches, as a [`FindHandle`], and converts what comes back.
+//! **The sidebar's Find: its records, the person's controls, and what a command asks of it** (step R2.3, C5g). Typing in the field, ⌘F, Escape, ⌘G and
+//! ⇧⌘G, Return and ⇧Return and a click on a hit's row are `find <query>`, `find --open`, `find --close`, `find --next|--previous [--jump]` and
+//! `find --hit N`, the command an agent sends, run for the person by the one executor. What it shows and when the host is told are `crate::find`'s; this
+//! hands it the app's parts it reaches, as a [`FindHandle`], and converts what comes back.
 
-use super::Inner;
+use super::{Inner, lock, person};
 use crate::find::{self as app, FindHandle};
 pub use crate::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
 pub use crate::find::{FindRow, FindRowKind, FindView};
-use recto_agent::Event;
+use recto_agent::commands::{Move, finding::Find};
+use recto_agent::{Command, Effect, Event};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// What Find reaches of the app, for one call.
 fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
-    let set_view = |events: &mut Vec<Event>, change: fn(&mut recto_session::ViewSettings)| super::set_view(inner, events, change);
     step(&FindHandle {
         session: &inner.host.session,
         field: &inner.tools.find_field,
@@ -18,15 +21,104 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listene
         panes: &inner.panes,
         engine: &inner.engine,
         listener: &*inner.listener,
-        set_view: &set_view,
     })
 }
 
-/// **What a command asks of the window, carried out on the session thread,** whoever asked: Find's hit selected and brought into view.
-pub fn effects(core: std::sync::Arc<crate::queue::CoreQueue>) -> recto_control::host::Effects {
-    std::sync::Arc::new(move |effect| match effect {
-        recto_agent::Effect::Reveal { tab, hit } => core.push(crate::queue::CoreCall::Find(FindCall::Reveal(tab.0, hit))),
-    })
+/// **What a command asks of the window,** whoever asked, carried out on the session thread: an agent's through its queue, as it runs on a thread of its own.
+pub fn effects(core: Arc<crate::queue::CoreQueue>) -> recto_control::host::Effects {
+    Arc::new(move |effect| core.push(crate::queue::CoreCall::Find(FindCall::Effect(effect))))
+}
+
+/// **The same for the person's command,** which runs on the session thread: carried out at once, in the call that ran it, as the window's own Find did.
+pub fn effects_now(inner: &Arc<Inner>) -> recto_control::host::Effects {
+    let inner = Arc::clone(inner);
+    Arc::new(move |effect| carry_out(&inner, effect))
+}
+
+/// Find's hit selected and brought into view, or the person's step kept for when its hit is known.
+fn carry_out(inner: &Inner, effect: Effect) {
+    handle(inner, |find| find.carry_out(effect));
+}
+
+/// **What the window does with how the person's Find went:** why what they typed can't be found, on the line under the field, as a query too long; and a
+/// step kept for its hit forgotten when Find closes. Then the host's told, as Find's view isn't in what `reconcile` compares.
+pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+    let Command::Move(Move::Find(asked)) = ran.command else {
+        return;
+    };
+    {
+        let mut field = lock(&inner.tools.find_field);
+        if asked.close {
+            field.clear_pending();
+        } else if asked.query.is_some() || asked.open || asked.next || asked.previous {
+            let too_long = recto_agent::find::too_long();
+            field.set_note(
+                ran.refused()
+                    .filter(|error| error.code == too_long.code && error.message == too_long.message)
+                    .map(|_| too_long.message),
+            );
+        }
+    }
+    inner.listener.model_changed();
+}
+
+impl Inner {
+    /// What's in the Find field now, as it's typed: `find <query>`.
+    pub fn find_typed_for_person(self: &Arc<Self>, text: String) {
+        person::submit(
+            self,
+            Find {
+                query: Some(text),
+                ..Find::default()
+            }
+            .into(),
+        );
+    }
+
+    /// ⌘F, or the field's own button: `find --open`, which shows the sidebar Find is in.
+    pub fn find_open_for_person(self: &Arc<Self>) {
+        person::submit(self, Find { open: true, ..Find::default() }.into());
+    }
+
+    /// Escape in the field, or its close button: `find --close`.
+    pub fn find_close_for_person(self: &Arc<Self>) {
+        person::submit(
+            self,
+            Find {
+                close: true,
+                ..Find::default()
+            }
+            .into(),
+        );
+    }
+
+    /// ⌘G and ⇧⌘G, a step, or Return and ⇧Return in the field, a jump, so Back comes here again: `find --next|--previous [--jump]`.
+    pub fn find_step_for_person(self: &Arc<Self>, forward: bool, jump: bool) {
+        person::submit(
+            self,
+            Find {
+                next: forward,
+                previous: !forward,
+                jump,
+                ..Find::default()
+            }
+            .into(),
+        );
+    }
+
+    /// A click on a row of Find's list: `find --hit N`, the hit that row is. A page's row is no hit, and does nothing.
+    pub fn find_choose_for_person(self: &Arc<Self>, row: u32) {
+        if let Some(index) = handle(self, |find| find.hit_of_row(row)).and_then(|index| u32::try_from(index).ok()) {
+            person::submit(
+                self,
+                Find {
+                    hit: Some(index),
+                    ..Find::default()
+                }
+                .into(),
+            );
+        }
+    }
 }
 
 pub fn is_open(inner: &Inner) -> bool {

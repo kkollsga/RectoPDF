@@ -9,6 +9,7 @@ mod editing;
 mod exits;
 mod files;
 mod find;
+mod finding;
 mod input_to_frame;
 mod launch;
 mod levels;

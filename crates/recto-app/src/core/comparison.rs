@@ -27,12 +27,6 @@ fn compare_words(error: &AgentError) -> Option<&'static str> {
         .map(CompareError::message)
 }
 
-/// **A person's comparison runs once its pane's read is in,** whatever they've asked for meanwhile, as the window's ⌘-click and move into a pane always did:
-/// unlike a tap, it isn't dropped for a tab asked for since.
-pub fn runs_once_read(command: &Command) -> bool {
-    matches!(command, Command::Move(Move::Compare(_)))
-}
-
 impl Inner {
     /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
     pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {

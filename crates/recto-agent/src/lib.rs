@@ -443,6 +443,11 @@ pub trait SessionAccess {
     }
     /// What the window's to do after this command, if there's a window: see [`Effect`]. A session with no window has nothing to show.
     fn effect(&self, _effect: Effect) {}
+    /// **The person's passwords, for their own Find** in a document they opened with one ([`find::FindPlan::with_keys`]): only for an actor who may see
+    /// protected documents ([`Actor::sees_protected`]), so an agent's `find` never gets them. A session with no window has none.
+    fn find_keys(&self, _actor: Actor) -> Option<find::KeyLookup> {
+        None
+    }
     /// How this host reads what a command needs, if it mustn't wait on a disk: see [`later`]. Every host but the window's session thread reads in place.
     fn reads_later(&self) -> Option<&dyn later::ReadLater> {
         None
@@ -1801,10 +1806,7 @@ mod tests {
             }),
             Command::from(crate::commands::finding::Find {
                 query: Some("x".into()),
-                next: false,
-                previous: false,
-                close: false,
-                limit: None,
+                ..Default::default()
             }),
             Command::from(crate::commands::text::Index { tab: tab(), agent: false }),
             Command::from(crate::commands::view::Palette {
@@ -3557,24 +3559,26 @@ mod protected_tests {
                 Command::from(crate::commands::linking::Forward { tab: tab.clone() }),
                 Command::from(crate::commands::finding::Find {
                     query: Some("Secret".into()),
-                    next: false,
-                    previous: false,
-                    close: false,
-                    limit: None,
+                    ..Default::default()
                 }),
                 Command::from(crate::commands::finding::Find {
-                    query: None,
                     next: true,
-                    previous: false,
-                    close: false,
-                    limit: None,
+                    ..Default::default()
+                }),
+                Command::from(crate::commands::finding::Find::default()),
+                // The forms C5g added: a step as a jump, a hit by its index, and opening Find, which finds the draft again.
+                Command::from(crate::commands::finding::Find {
+                    next: true,
+                    jump: true,
+                    ..Default::default()
                 }),
                 Command::from(crate::commands::finding::Find {
-                    query: None,
-                    next: false,
-                    previous: false,
-                    close: false,
-                    limit: None,
+                    hit: Some(0),
+                    ..Default::default()
+                }),
+                Command::from(crate::commands::finding::Find {
+                    open: true,
+                    ..Default::default()
                 }),
                 Command::from(crate::commands::editing::Edits { tab: tab.clone() }),
                 Command::from(crate::commands::reading::Signatures { tab: tab.clone() }),

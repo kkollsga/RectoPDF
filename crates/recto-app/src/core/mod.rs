@@ -582,8 +582,13 @@ impl Inner {
         let result = match verb {
             // What ⌘F and Escape do.
             "find" => {
-                self.core
-                    .push(CoreCall::Find(if value == "open" { find::FindCall::Open } else { find::FindCall::Close }));
+                let (open, close) = (value == "open", value != "open");
+                let find = recto_agent::commands::finding::Find {
+                    open,
+                    close,
+                    ..Default::default()
+                };
+                self.core.push(CoreCall::Run(crate::queue::PersonCommand::input(find.into())));
                 self.core.flush(Duration::from_secs(5));
                 Ok(())
             }

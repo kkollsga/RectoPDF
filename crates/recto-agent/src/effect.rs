@@ -8,4 +8,6 @@ use recto_session::TabId;
 pub enum Effect {
     /// Find went to a hit: the page view selects it and brings it into view, as ⌘G's does.
     Reveal { tab: TabId, hit: crate::find::Hit },
+    /// The person's step to a hit not known yet, as their query still runs: kept, and taken when it's known, or dropped when the query ends without it.
+    FindStepPending { forward: bool, going: crate::find::Going },
 }
