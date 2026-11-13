@@ -94,6 +94,13 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// **Generated contents stopped:** the tab shows its file's own, and where generated ones stood is forgotten, so the note offers them again. One
+    /// operation, as the tab's choice and the generated contents it's about change together.
+    pub fn stop_generated_contents(&mut self, id: TabId) {
+        self.choose_generated(id, false);
+        self.generated.forget(id);
+    }
+
     /// Opens a contents section that's closed, or closes one that's open, as its chevron does. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". What following the place opens is the default, and only what differs from it is kept, at most [`record::MAX_CONTENTS_FOLDS`], in the record.
     ///
     /// Says whether the section's open now, or `None` if it isn't one: the entry has nothing under it, or the tab's contents aren't read.

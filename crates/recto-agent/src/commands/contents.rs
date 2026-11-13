@@ -195,10 +195,7 @@ impl Cmd for ContentsStop {
         if let (Some(generating), Some(path)) = (access.generating(), path) {
             generating.cancel_files(Some(&[path]));
         }
-        access.with(|s| {
-            s.choose_generated(id, false);
-            s.generated_mut().forget(id);
-        });
+        access.with(|s| s.stop_generated_contents(id));
         Ok(json!({ "tab": id.0, "stopped": making }))
     }
     fn human(data: &Value) -> String {

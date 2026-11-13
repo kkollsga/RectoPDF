@@ -2,7 +2,7 @@
 
 use crate::{GeneratedView, MAX_GENERATED_VIEWS, TabId};
 
-/// Generated contents the sidebar knows of. What's public here reads where a tab's stand, or forgets them; noting them goes by the tab on screen and its
+/// Generated contents the sidebar knows of. What's public here reads where a tab's stand; noting them goes by the tab on screen and its
 /// file's version, so it stays with the session.
 #[derive(Debug)]
 pub struct Generated {
@@ -55,14 +55,5 @@ impl Generated {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.generated.len()
-    }
-}
-
-/// What a caller outside the crate may change of the generated contents: only forgetting a tab's. Noting them goes by the tab on screen and its file's
-/// version, so it stays the session's.
-impl crate::parts::PartMut<'_, Generated> {
-    /// [`Generated::forget`], which the session's own operations call too.
-    pub fn forget(&mut self, id: TabId) {
-        self.0.forget(id);
     }
 }

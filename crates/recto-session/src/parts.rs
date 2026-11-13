@@ -50,11 +50,6 @@ impl<L: DocLoader> Session<L> {
         &self.generated
     }
 
-    /// What a caller outside the crate may change of it: see [`PartMut`].
-    pub fn generated_mut(&mut self) -> PartMut<'_, generated::Generated> {
-        PartMut(&mut self.generated)
-    }
-
     /// The tabs that keep their contents, most recent first, and the reads of cold tabs' files made ahead of waking them.
     pub fn warm(&self) -> &warm::Warm {
         &self.warm
