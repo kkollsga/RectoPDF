@@ -130,7 +130,8 @@ pub enum Out {
     HandOffQuit,
     /// The host's told the control socket's session has ended ([`crate::Listener::session_ended`]). At most once.
     SessionEnded,
-    /// Keeping the record came to something: restore the saved session now, or say the window won't be remembered ([`keeping::Out`]).
+    /// Keeping the record came to something: restore the saved session now, keep the record from here (with the window made again from a late try's restore),
+    /// or say the window won't be remembered ([`keeping::Out`]). Settling either way is where the updater is told of a launch held back.
     Keeping(keeping::Out),
 }
 
@@ -228,14 +229,14 @@ impl Life {
                 Some(Out::QuitStayed)
             }
             Event::QuitStayed => None,
-            // Kept late: the host's told as at a launch, and makes the window again from it once ([`Self::may_remake_window`]).
-            Event::Keeping(event) => match self.keeping.step(event, now_ms) {
-                Some(keeping::Out::Kept) => {
+            // Kept late: the window may be made again from it, once ([`Self::may_remake_window`]); the caller tells the host as at a launch, and the updater.
+            Event::Keeping(event) => {
+                let out = self.keeping.step(event, now_ms);
+                if out == Some(keeping::Out::Kept { remake: true }) {
                     self.late_kept = true;
-                    Some(Out::RestoreReady { with_state: true, late: true })
                 }
-                other => other.map(Out::Keeping),
-            },
+                out.map(Out::Keeping)
+            }
         }
     }
 

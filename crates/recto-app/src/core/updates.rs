@@ -155,8 +155,8 @@ impl Host for Hooks {
         TestLaunch { args, env, direct: false }
     }
 
-    /// Whether this copy keeps the record as the updater's told of the launch ([`tell_launch`], which has waited for the lock as long as reading would before it,
-    /// or held the launch back until whether it's kept has settled): never asking for the lock here, so a launch told it's a second copy can't take it after.
+    /// Whether this copy keeps the record as the updater's told of the launch ([`tell_launch`]: after the launch's one wait for the lock, or held back until
+    /// whether it's kept has settled): never asking for the lock here, so a launch told it's a second copy can't take it after.
     fn keeps_the_record(&self) -> bool {
         self.inner().is_some_and(|inner| inner.saver.store.holds_the_record())
     }
@@ -198,28 +198,47 @@ impl Host for Hooks {
 #[derive(Default)]
 pub struct LaunchFacts {
     pub facts: Option<Facts>,
-    /// Held back: the record's lock didn't come at the launch.
+    /// Held back: the record's lock didn't come at the launch. Until the updater's been told and has heard of the first frame.
     pub held: bool,
-    /// The first frame, shown while they were held, by the updater's wall clock.
+    /// The first frame, shown while they were held, by the updater's wall clock. Kept here and not in the updater's own early frame
+    /// ([`recto_update::updater::Updater::first_frame`] keeps one that comes before it's told of the launch, and tells it as it's told): for a late keep the updater's
+    /// told of the launch before the saved session is read, so its own would be told then, with no tabs read yet, and the installer's look at whether the new
+    /// version misread the record couldn't be made. This one's told after the read is in ([`first_frame_after_launch`]), with the tabs it came up with.
     pub first_frame_at: Option<u64>,
 }
 
-/// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]), on the thread that reads the state, before it reads: so a version that
-/// keeps failing goes back here, and not by reading on. At the launch it waits for the record's lock as long as reading would, as an app that's just quit can still
-/// be letting go of it, and a quick quit and reopen isn't a second copy; not got by then, what's known is held back and nothing about an update can begin (the
-/// updater has no version to go by: a check or an install is answered that it's still starting, and its timer isn't set). Told again once that's settled: by the
-/// late try that got the lock, before the saved session is read, as a launch is, or as a second copy once it's said the window won't be remembered. A quit or a
-/// hand-off before then tells it nothing, and nothing of the updater's is written.
+impl LaunchFacts {
+    /// **Held back and not yet told:** what can't be once keeping has settled ([`crate::lifecycle::keeping::Keeping::settled`]), as settling is where they're
+    /// taken to be told.
+    #[must_use]
+    pub fn untold(&self) -> bool {
+        self.held && self.facts.is_some()
+    }
+}
+
+/// **The updater told of the launch, or held back** (at the launch, on the thread that reads the state, before it reads): `keeps` is the answer of the launch's
+/// one wait for the record's lock ([`super::launching::read_state`]), as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't
+/// a second copy. Kept: told now ([`tell_launch`]), so a version that keeps failing goes back here, and not by reading on. Not kept: what's known is held back and
+/// nothing about an update can begin (the updater has no version to go by: a check or an install is answered that it's still starting, and its timer isn't set),
+/// until keeping has settled, where it's told ([`super::keeping`]): by the late try that got the lock, before the saved session is read, as a launch is; or as a
+/// second copy once it's said the window won't be remembered. A quit or a hand-off before then tells it nothing, and nothing of the updater's is written.
+pub fn hold_or_tell(inner: &Inner, keeps: bool) -> recto_update::updater::AtLaunch {
+    if !keeps {
+        let mut launch = lock(&inner.life.update_facts);
+        if launch.facts.is_some() {
+            launch.held = true;
+        }
+        return recto_update::updater::AtLaunch::GoOn;
+    }
+    tell_launch(inner)
+}
+
+/// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]) with what the host knows, once: the facts are taken, so a second telling
+/// has nothing to tell. Whether this copy keeps the record is the store's answer as it stands ([`Hooks::keeps_the_record`]). On a thread that can wait.
 pub fn tell_launch(inner: &Inner) -> recto_update::updater::AtLaunch {
     let Some(facts) = lock(&inner.life.update_facts).facts.take() else {
         return recto_update::updater::AtLaunch::GoOn;
     };
-    if inner.life.keeping() == crate::lifecycle::keeping::Keeping::NotAsked && !inner.saver.store.wait_for_lock() {
-        let mut launch = lock(&inner.life.update_facts);
-        launch.facts = Some(facts);
-        launch.held = true;
-        return recto_update::updater::AtLaunch::GoOn;
-    }
     inner.updates.launched(facts)
 }
 

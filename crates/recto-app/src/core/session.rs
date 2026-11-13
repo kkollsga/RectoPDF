@@ -101,7 +101,7 @@ pub fn apply_restored(
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
     }
-    let (say_notice, kept) = keeping::taken_in(inner, other_instance, first_time, reads);
+    let (say_notice, remake) = keeping::taken_in(inner, other_instance, first_time, reads);
     if !say_notice {
         notice = None;
     }
@@ -121,7 +121,7 @@ pub fn apply_restored(
         look_at_other_files(inner, id);
     }
     inner.saver.start();
-    let ready = inner.life.step(crate::lifecycle::Event::StateRead).or(kept);
+    let ready = inner.life.step(crate::lifecycle::Event::StateRead).or(remake);
     if first_time {
         start_serving(inner);
     }

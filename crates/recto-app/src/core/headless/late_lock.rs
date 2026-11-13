@@ -333,6 +333,50 @@ fn an_update_whose_old_copy_still_holds_the_record_comes_back_as_it_was() {
     );
 }
 
+/// How many times the updater says a new version came up from the update it arrived by: once a launch, at most.
+fn times_said_updated(disk: &Disk) -> usize {
+    std::fs::read_to_string(disk.update_files().log)
+        .unwrap_or_default()
+        .matches("updated from")
+        .count()
+}
+
+/// Failure (review, 2026-11-13, the blocker): the launch's wait for the record's lock runs out with the old copy still letting go, the updater is held back for
+/// it, and then the lock is let go before the state's read, which waited for it a second time and got it: the copy kept the record with nothing settling the
+/// machine through a try, so the updater was never told. For the rest of the run every check was "still starting", no timer, and after an update the installer
+/// never saw it come up, waited out its two minutes, stopped the new version and put the record from before the update over what the person had done. The lock
+/// let go at that moment (the read held at its seam, past the launch's wait): the read goes by the launch's one answer, a try keeps the record, the updater is
+/// told once, `update status` says it updated, and the installer sees the new version up with the tab it was handed.
+#[test]
+fn a_lock_let_go_between_the_launchs_wait_and_its_read_still_tells_the_updater() {
+    let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
+    let app = disk.builder().update(&bed).another_keeps().hold(&[Seam::State]).start();
+    // The window's first frame, as the host tells it with the launch held back.
+    crate::core::updates::first_frame_shown(app.core());
+    drop(old_on_its_way_out);
+    app.let_through(Seam::State, 1);
+    app.wait_until("the state taken in", || app.core().state_read());
+    app.settle();
+    assert!(!app.core().saver.store.holds_the_record(), "the read didn't take the lock: it's the try's");
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the try's read of the saved session at its seam", || app.waiting(Seam::State) > 0);
+    app.let_through(Seam::State, 1);
+    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+    app.settle();
+    assert_eq!(tab_names(&app), ["alpha"], "the session the hand-off wrote");
+    app.wait_for("the installer to see it up", || installer_sees(app.disk(), &plan));
+    let status = app.update_status();
+    assert_eq!(status["status"], "updated", "{status}");
+    assert_eq!(status["second_copy"], false, "{status}");
+    assert!(app.core().updates.next_wake().is_some(), "its timer: {status}");
+    assert_eq!(
+        times_said_updated(app.disk()),
+        1,
+        "told once: {}",
+        std::fs::read_to_string(app.disk().update_files().log).unwrap_or_default()
+    );
+}
+
 /// Failure (the coordinator's condition, 2026-11-13): while the launch is held back nothing of an update can begin, so a copy that turns out to be a second copy
 /// has started a check, a download, a plan or a hand-off; or the person's check is passed over in silence. The person's check while it tries is answered that
 /// it's still starting and starts nothing; once the tries run out the copy is a second copy, as before, and refuses an install as one.

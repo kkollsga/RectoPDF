@@ -581,8 +581,8 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
         assert!(!life.may_remake_window(3_000, false), "nor while the saved session's read");
         assert_eq!(
             life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 3_050),
-            Some(Out::RestoreReady { with_state: true, late: true }),
-            "the host's told, as at a launch"
+            Some(Out::Keeping(keeping::Out::Kept { remake: true })),
+            "kept, the window to be made again from it: the host's told, as at a launch"
         );
         assert_eq!(life.may_remake_window(3_060, touched), !touched, "touched {touched}");
         let _ = life.step(Event::ShownWithState, 3_070);
@@ -595,7 +595,10 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
 #[test]
 fn the_ordinary_late_state_is_made_into_the_window_as_before() {
     let mut life = Life::default();
-    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 0), None);
+    assert_eq!(
+        life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 0),
+        Some(Out::Keeping(keeping::Out::Kept { remake: false }))
+    );
     let _ = life.step(
         Event::PatienceOver {
             may_be_reopened_by_update: false,
@@ -618,7 +621,7 @@ fn a_quit_or_a_hand_off_stops_trying_for_the_lock() {
     for event in [Event::QuitAsked, Event::HandOffWriting] {
         let mut life = trying_for_the_lock();
         let _ = life.step(event, 400);
-        assert_eq!(life.keeping(), keeping::Keeping::NotKept, "{event:?}");
+        assert_eq!(life.keeping(), keeping::Keeping::Stopped, "{event:?}");
         assert_eq!(life.keeping_due(1_000), None, "{event:?}: no more tries");
     }
 }

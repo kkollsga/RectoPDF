@@ -46,19 +46,15 @@ fn as_done(inner: &Inner, reads: &FileReads) -> u64 {
 
 /// **The state's been taken in** (`session::apply_restored`), with `other_instance` when it was refused for the lock. The first time, whether this copy keeps
 /// the record starts here; taken in with the lock while it's trying or restoring (a late try's restore, or any other read), it keeps it from here. Says whether
-/// the notice that came with what was read is said now (not while it's trying), and what the app's life comes to: the window made again from a late keep's
-/// restore.
+/// the notice that came with what was read is said now (not while it's trying), and what the host is told: the window made again from a late keep's restore.
 pub(super) fn taken_in(inner: &Arc<Inner>, other_instance: bool, first_time: bool, reads: &FileReads) -> (bool, Option<crate::lifecycle::Out>) {
     let keeps = inner.saver.store.holds_the_record();
-    let mut out = None;
+    let mut host = None;
     if first_time || keeps {
         let as_read = if keeps { 0 } else { as_done(inner, reads) };
-        out = inner.life.step(LifeEvent::Keeping(KeepingEvent::Read { keeps, as_read }));
+        host = step(inner, KeepingEvent::Read { keeps, as_read });
     }
-    if matches!(out, Some(crate::lifecycle::Out::RestoreReady { .. })) {
-        tell_the_updater(inner, false);
-    }
-    (!(other_instance && inner.life.keeping().trying()), out)
+    (!(other_instance && inner.life.keeping().trying()), host)
 }
 
 /// After every call on the session thread, while it's trying: the person having opened or changed something stops it, and that's said now.
@@ -67,8 +63,8 @@ pub(super) fn look_after_call(inner: &Arc<Inner>, reads: &FileReads) {
         return;
     }
     let now_as = as_done(inner, reads);
-    if let Some(out) = inner.life.step(LifeEvent::Keeping(KeepingEvent::Looked { now_as })) {
-        say(inner, out);
+    if step(inner, KeepingEvent::Looked { now_as }).is_some() {
+        inner.core.push(CoreCall::Reconcile);
     }
 }
 
@@ -78,8 +74,9 @@ pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
         return;
     }
     let now_as = as_done(inner, reads);
-    if let Some(out) = inner.life.step(LifeEvent::Keeping(KeepingEvent::Looked { now_as })) {
-        say(inner, out);
+    let looked = inner.life.step(LifeEvent::Keeping(KeepingEvent::Looked { now_as }));
+    if looked.is_some() {
+        let _ = settled(inner, looked);
         inner.core.push(CoreCall::Reconcile);
         return;
     }
@@ -107,35 +104,80 @@ pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
                 launching::read_state(inner);
             }
         }
-        Some(out) => {
-            say(inner, out);
+        out => {
+            let _ = settled(inner, out);
             inner.core.push(CoreCall::Reconcile);
         }
-        None => {}
     }
+}
+
+/// **A step of keeping the record, and what it settles carried out:** every step the session thread makes of it, so the one place keeping settles is where
+/// the updater is told of a launch held back, and a launch held back and settled can't be left untold, by any route (a debug build says so if it is).
+fn step(inner: &Arc<Inner>, event: KeepingEvent) -> Option<crate::lifecycle::Out> {
+    let out = inner.life.step(LifeEvent::Keeping(event));
+    settled(inner, out)
+}
+
+/// What keeping settled to, carried out: told to the updater either way; the notice when it isn't kept; and the host told to make the window again from a late
+/// try's restore, which is returned for the caller to tell it once the session thread's call has ended.
+fn settled(inner: &Arc<Inner>, out: Option<crate::lifecycle::Out>) -> Option<crate::lifecycle::Out> {
+    let host = match out {
+        Some(crate::lifecycle::Out::Keeping(KeepingOut::Kept { remake })) => {
+            tell_the_updater(inner);
+            remake.then_some(crate::lifecycle::Out::RestoreReady { with_state: true, late: true })
+        }
+        Some(crate::lifecycle::Out::Keeping(KeepingOut::SayNotKept)) => {
+            say_not_kept(inner);
+            None
+        }
+        _ => None,
+    };
+    debug_assert!(
+        !(inner.life.keeping().settled() && lock(&inner.life.update_facts).untold()),
+        "keeping settled ({:?}) with the launch still held back from the updater",
+        inner.life.keeping()
+    );
+    host
 }
 
 /// The window won't be remembered: said as it always was, in the record's words, and the updater's told this is a second copy.
-fn say(inner: &Arc<Inner>, out: crate::lifecycle::Out) {
-    if out == crate::lifecycle::Out::Keeping(KeepingOut::SayNotKept) {
-        *lock(&inner.host.notice) = Some(record::notices::OTHER_INSTANCE.to_owned());
-        tell_the_updater(inner, true);
+fn say_not_kept(inner: &Arc<Inner>) {
+    *lock(&inner.host.notice) = Some(record::notices::OTHER_INSTANCE.to_owned());
+    tell_the_updater(inner);
+}
+
+/// **The updater told of a launch that was held back,** now that keeping has settled. What's held is taken here, on the session thread, so it can't be left
+/// held once settled; it's told on a thread of its own, as that touches files: of the launch, if it hadn't been (a second copy, or a copy that came to keep the
+/// record by another route than a late try, whose read tells it), and then of a first frame shown meanwhile, with the tabs that were read. Nothing at all for a
+/// launch that wasn't held back.
+fn tell_the_updater(inner: &Arc<Inner>) {
+    let (facts, held) = {
+        let mut launch = lock(&inner.life.update_facts);
+        (launch.facts.take(), launch.held)
+    };
+    if facts.is_none() && !held {
+        return;
+    }
+    let facts = Arc::new(Mutex::new(facts));
+    let (telling, theirs) = (Arc::clone(inner), Arc::clone(&facts));
+    let told = std::thread::Builder::new()
+        .name("recto-update-frame".into())
+        .stack_size(512 * 1024)
+        .spawn(move || tell(&telling, lock(&theirs).take()));
+    // With no thread to be had, what's held isn't left held for the rest of the run: told here, on the session thread, as the one thing that can still tell it.
+    if told.is_err() {
+        tell(inner, lock(&facts).take());
     }
 }
 
-/// The updater told of a launch that was held back, on a thread of its own as it touches files: as a second copy (`launch`), or, once a late keep's restore is
-/// in (told of the launch by then, before the read), the first frame shown meanwhile with the tabs that were read.
-fn tell_the_updater(inner: &Arc<Inner>, launch: bool) {
-    let telling = Arc::clone(inner);
-    let _ = std::thread::Builder::new()
-        .name("recto-update-frame".into())
-        .stack_size(512 * 1024)
-        .spawn(move || {
-            if launch {
-                let _ = updates::tell_launch(&telling);
-            }
-            updates::first_frame_after_launch(&telling);
-        });
+/// Told, on the thread that tells it.
+fn tell(inner: &Inner, facts: Option<recto_update::updater::Facts>) {
+    if let Some(facts) = facts
+        && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
+    {
+        std::process::exit(0);
+    }
+    updates::first_frame_after_launch(inner);
 }
 
 /// **The window as it is, kept until it's made again** from a late keep's restore (`apply_restored`): its frame, focus, sidebar width and Settings, which the

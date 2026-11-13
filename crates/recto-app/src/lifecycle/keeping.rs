@@ -56,8 +56,10 @@ pub enum Keeping {
     Trying { since_ms: u64, tries: u32, as_read: u64 },
     /// A try got the lock, and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's done.
     Restoring,
-    /// It doesn't, for good: the tries ran out or the person started working in the window first (both said), or a quit or a hand-off began (not said).
+    /// It doesn't, for good: the tries ran out or the person started working in the window first. Said, and the updater told it's a second copy.
     NotKept,
+    /// A quit or an update's hand-off began while it tried: no more tries, nothing said, and the updater told nothing, as the app is going.
+    Stopped,
 }
 
 /// What happens to it.
@@ -79,9 +81,10 @@ pub enum Event {
 pub enum Out {
     /// It has the lock: the saved session is read and taken in, as at a launch.
     Restore,
-    /// The saved session's in: the window is made again from it, once, as a launch's is.
-    Kept,
-    /// The window won't be remembered: the notice is shown, in today's words.
+    /// **It keeps the record from here,** by whatever route: told to the updater as a copy that keeps it, if its launch was held back. `remake` when a late
+    /// try's saved session is in: the window is made again from it, once, as a launch's is.
+    Kept { remake: bool },
+    /// **The window won't be remembered:** the notice is shown, in today's words, and the updater told this is a second copy.
     SayNotKept,
 }
 
@@ -92,7 +95,7 @@ impl Keeping {
         match (*self, event) {
             (Self::NotAsked, Event::Read { keeps: true, .. }) => {
                 *self = Self::Keeps;
-                None
+                Some(Out::Kept { remake: false })
             }
             (Self::NotAsked, Event::Read { keeps: false, as_read }) => {
                 *self = Self::Trying {
@@ -104,12 +107,12 @@ impl Keeping {
             }
             (Self::Restoring, Event::Read { keeps: true, .. }) => {
                 *self = Self::Keeps;
-                Some(Out::Kept)
+                Some(Out::Kept { remake: true })
             }
             // Read with the lock by another way while it tries: the state can't say it's trying in a window that keeps the record.
             (Self::Trying { .. }, Event::Read { keeps: true, .. }) => {
                 *self = Self::Keeps;
-                None
+                Some(Out::Kept { remake: false })
             }
             (Self::Trying { as_read, .. }, Event::Looked { now_as }) if now_as != as_read => {
                 *self = Self::NotKept;
@@ -129,7 +132,7 @@ impl Keeping {
                 None
             }
             (Self::Trying { .. }, Event::Stopped) => {
-                *self = Self::NotKept;
+                *self = Self::Stopped;
                 None
             }
             // A state taken in again without the lock, a look at a window as it was, a try that comes when nothing's trying, or a quit once it's settled or
@@ -144,6 +147,13 @@ impl Keeping {
         let Self::Trying { since_ms, tries, .. } = *self else { return None };
         let at = since_ms.saturating_add(TRY_EVERY_MS.saturating_mul(u64::from(tries) + 1));
         Some(Duration::from_millis(at.saturating_sub(now_ms)))
+    }
+
+    /// **Whether it has settled,** keeping the record or not: every way into either is a transition that says so ([`Out::Kept`] or [`Out::SayNotKept`]),
+    /// which is where the updater is told of a launch that was held back, so a launch held back and settled can't be left untold.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        matches!(self, Self::Keeps | Self::NotKept)
     }
 
     /// Whether it's still trying.
@@ -216,7 +226,7 @@ mod tests {
         assert_eq!(keeping.step(Event::Stopped, 2_002), None, "nor a quit, whose write waits for it");
         assert_eq!(
             keeping.step(Event::Read { keeps: true, as_read: 0 }, 2_050),
-            Some(Out::Kept),
+            Some(Out::Kept { remake: true }),
             "the window made again from it"
         );
         assert_eq!(keeping, Keeping::Keeps);
@@ -227,7 +237,11 @@ mod tests {
             "what the person does after that is remembered, not said"
         );
         let mut from_the_start = Keeping::default();
-        assert_eq!(from_the_start.step(Event::Read { keeps: true, as_read: 7 }, 0), None);
+        assert_eq!(
+            from_the_start.step(Event::Read { keeps: true, as_read: 7 }, 0),
+            Some(Out::Kept { remake: false }),
+            "kept, and nothing made again"
+        );
         assert_eq!(from_the_start.due(0), None);
         assert_eq!(
             from_the_start.step(Event::Read { keeps: false, as_read: 7 }, 1),
@@ -243,7 +257,7 @@ mod tests {
     #[test]
     fn a_read_with_the_lock_while_it_tries_keeps_the_record() {
         let mut keeping = trying_from(0);
-        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 500), None);
+        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 500), Some(Out::Kept { remake: false }));
         assert_eq!(keeping, Keeping::Keeps);
         assert_eq!(keeping.due(500), None);
         assert_eq!(keeping.step(Event::Looked { now_as: 8 }, 600), None, "and nothing's said after");
@@ -255,7 +269,7 @@ mod tests {
     fn a_quit_or_a_hand_off_stops_the_trying_quietly() {
         let mut keeping = trying_from(0);
         assert_eq!(keeping.step(Event::Stopped, 400), None, "nothing said");
-        assert_eq!(keeping, Keeping::NotKept);
+        assert_eq!(keeping, Keeping::Stopped);
         assert_eq!(keeping.due(1_000), None, "no more tries");
         assert_eq!(keeping.step(Event::Tried { got: true }, 1_000), None, "nor a restore");
     }
@@ -290,5 +304,59 @@ mod tests {
         assert_eq!(keeping, Keeping::NotKept);
         assert_eq!(keeping.due(400), None, "no more tries");
         assert_eq!(keeping.step(Event::Tried { got: true }, 1_000), None, "nor a restore");
+    }
+
+    /// Every state the machine can be in, with what it was read with: the states to walk every event from.
+    fn every_state() -> Vec<Keeping> {
+        let mut states = vec![Keeping::NotAsked, Keeping::Keeps, Keeping::Restoring, Keeping::NotKept, Keeping::Stopped];
+        for tries in [0, 1, TRIES - 1] {
+            states.push(Keeping::Trying {
+                since_ms: 0,
+                tries,
+                as_read: 7,
+            });
+        }
+        states
+    }
+
+    /// Every event, each way it can come.
+    fn every_event() -> Vec<Event> {
+        let mut events = vec![Event::Stopped, Event::Tried { got: true }, Event::Tried { got: false }];
+        for keeps in [true, false] {
+            events.push(Event::Read { keeps, as_read: 7 });
+            events.push(Event::Read { keeps, as_read: 8 });
+        }
+        events.push(Event::Looked { now_as: 7 });
+        events.push(Event::Looked { now_as: 8 });
+        events
+    }
+
+    /// Failure (review, 2026-11-13, the blocker: a lock got in the launch's read after its first wait went to `Keeps` with nothing said, so the updater, held back
+    /// for the lock, was never told of the launch: no timer, every check "still starting", and after an update the installer's two minutes ran out and it put the
+    /// record from before the update over the person's): a way into keeping the record or not keeping it that doesn't say so, which is where the updater is told.
+    /// Every event from every state: settling always says how, saying how is always a settling, and once settled nothing settles again.
+    #[test]
+    fn every_way_into_settled_says_so_and_only_once() {
+        let mut walked = 0;
+        for state in every_state() {
+            for event in every_event() {
+                let mut after = state;
+                let out = after.step(event, TRY_EVERY_MS * u64::from(TRIES));
+                let says = matches!(out, Some(Out::Kept { .. } | Out::SayNotKept));
+                let settles = !state.settled() && after.settled();
+                assert_eq!(says, settles, "{state:?} on {event:?} to {after:?} said {out:?}");
+                if state.settled() {
+                    assert_eq!(after, state, "{state:?} settled, and {event:?} moved it to {after:?}");
+                }
+                if let Some(Out::Kept { .. }) = out {
+                    assert_eq!(after, Keeping::Keeps, "{state:?} on {event:?}");
+                }
+                if let Some(Out::SayNotKept) = out {
+                    assert_eq!(after, Keeping::NotKept, "{state:?} on {event:?}");
+                }
+                walked += 1;
+            }
+        }
+        assert_eq!(walked, every_state().len() * every_event().len());
     }
 }

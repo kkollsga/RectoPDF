@@ -182,15 +182,24 @@ impl Inner {
 }
 
 /// **The state read and handed to the session thread,** on a thread that can wait: at the launch ([`Inner::begin_restore`]), and once a late try has got the
-/// record's lock ([`super::keeping`]), the one way the state is read for a launch. The updater's told of the launch first ([`updates::tell_launch`]), before
-/// anything's read, so a version that keeps failing goes back here and not by reading on.
+/// record's lock ([`super::keeping`]), the one way the state is read for a launch. **The lock is asked for once:** one wait of the store's patience, whose
+/// answer the updater is told ([`updates::hold_or_tell`]) and the read goes by, so a lock that comes after the wait can't be got by the read with the updater
+/// still held back (the review's blocker of 2026-11-13); it's the late try's to take. The updater's told of a copy that keeps the record before anything's read,
+/// so a version that keeps failing goes back here and not by reading on.
 pub(super) fn read_state(inner: &Arc<Inner>) {
     let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
-    if updates::tell_launch(inner) == recto_update::updater::AtLaunch::Exit {
+    let keeps = inner.saver.store.wait_for_lock();
+    if updates::hold_or_tell(inner, keeps) == recto_update::updater::AtLaunch::Exit {
         std::process::exit(0);
     }
     recto_platform::slow::pause(recto_platform::slow::Seam::State);
-    let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
+    let loaded = if !keeps {
+        Loaded::OtherInstance
+    } else if misreads {
+        Loaded::Nothing
+    } else {
+        inner.saver.store.load()
+    };
     let loaded = updates::fall_back_if_unreadable(inner, loaded);
     updates::note_tabs_read(&loaded);
     inner.core.push(CoreCall::Restored(Box::new(loaded)));
