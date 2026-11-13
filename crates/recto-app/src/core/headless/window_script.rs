@@ -30,14 +30,6 @@ mod bridge {
         };
         app.window.as_ref().is_some_and(|window| window.minimised)
     }
-
-    pub fn contents_user_scrolled(inner: &Inner) {
-        lock(&inner.window.contents_follow).user_scrolled(inner.life.started.elapsed().as_secs_f64());
-    }
-
-    pub fn contents_is_following(inner: &Inner) -> bool {
-        lock(&inner.window.contents_follow).is_following()
-    }
 }
 
 /// A screen the window is on, with a name that needs cleaning.
@@ -129,8 +121,8 @@ const STEPS: &[(&str, Step)] = &[
         said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
     }),
     ("contents scrolled by the person", |inner| {
-        bridge::contents_user_scrolled(inner);
-        said(bridge::contents_is_following(inner))
+        inner.window.contents_user_scrolled(inner.life.started.elapsed().as_secs_f64());
+        said(inner.window.contents_following())
     }),
     ("settings opened", |inner| {
         inner

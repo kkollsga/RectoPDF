@@ -246,14 +246,26 @@ Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
 Window::pub fn comes_back_hidden(&self, reopened: bool) -> bool
+Window::pub fn contents_following(&self) -> bool
+Window::pub fn contents_moving(&self) -> bool
+Window::pub fn contents_pointer(&self, inside: bool)
 Window::pub fn contents_position(&self, y: f64, saver: &Saver)
+Window::pub fn contents_reached(&self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove
+Window::pub fn contents_row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64>
+Window::pub fn contents_shifted(&self, by: f64)
+Window::pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64>
+Window::pub fn contents_user_scrolled(&self, now: f64)
+Window::pub fn contents_view_changed(&self)
 Window::pub fn focus_changed(&self, view: &str, saver: &Saver)
 Window::pub fn focus_view(&self) -> &'static str
 Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
 Window::pub fn hidden_changed(&self, hidden: bool, saver: &Saver)
+Window::pub fn main_busy(&self, block: bool) -> bool
+Window::pub fn main_idle(&self)
 Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)
 Window::pub fn new(watchdog: Watchdog) -> Self
 Window::pub fn opens_in_background(&self, reopened: bool) -> bool
+Window::pub fn panel_open(&self) -> bool
 Window::pub fn set_appearance_choice(&self, choice: &str, saver: &Saver)
 Window::pub fn set_dark(&self, dark: bool, core: &CoreQueue)
 Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)

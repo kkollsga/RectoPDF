@@ -39,7 +39,6 @@ use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, Follow
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -717,19 +716,23 @@ impl AppCore {
 
     /// The reader scrolled the contents themselves.
     pub fn contents_user_scrolled(&self) {
-        lock(&self.inner.window.contents_follow).user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
+        self.inner.window.contents_user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
     }
 
     /// The pointer came into the contents or left them.
     pub fn contents_pointer(&self, inside: bool) {
-        lock(&self.inner.window.contents_follow).pointer(inside);
+        self.inner.window.contents_pointer(inside);
     }
 
     /// The place being read is now on this row. What to do about it.
     pub fn contents_reached(&self, row: Option<u32>, scroll_y: f64, height: f64, reduce_motion: bool) -> ContentsMove {
         let rows = lock(&self.inner.published).sidebar.contents_count;
         let now = self.inner.life.started.elapsed().as_secs_f64();
-        match lock(&self.inner.window.contents_follow).reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion) {
+        match self
+            .inner
+            .window
+            .contents_reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion)
+        {
             FollowMove::Stay => ContentsMove::Stay,
             FollowMove::SetTo(y) => ContentsMove::SetTo { y },
             FollowMove::Move => ContentsMove::Move,
@@ -738,17 +741,17 @@ impl AppCore {
 
     /// One frame of a move: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
     pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
-        lock(&self.inner.window.contents_follow).step(position, dt)
+        self.inner.window.contents_step(position, dt)
     }
 
     /// The contents' area changed height.
     pub fn contents_view_changed(&self) {
-        lock(&self.inner.window.contents_follow).view_changed();
+        self.inner.window.contents_view_changed();
     }
 
     /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to change in view, where the host fades them over.
     pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
-        lock(&self.inner.window.contents_follow).row_change(
+        self.inner.window.contents_row_change(
             ContentsRowChange {
                 from,
                 removed,
@@ -761,15 +764,15 @@ impl AppCore {
 
     /// Rows above changed, and the host moved its scroll by this many points to match.
     pub fn contents_shifted(&self, by: f64) {
-        lock(&self.inner.window.contents_follow).shifted(by);
+        self.inner.window.contents_shifted(by);
     }
 
     pub fn contents_is_following(&self) -> bool {
-        lock(&self.inner.window.contents_follow).is_following()
+        self.inner.window.contents_following()
     }
 
     pub fn contents_is_moving(&self) -> bool {
-        lock(&self.inner.window.contents_follow).is_moving()
+        self.inner.window.contents_moving()
     }
 
     pub fn reader(&self) -> ReaderView {
@@ -860,7 +863,7 @@ impl AppCore {
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        let mut panel = menus::panel(self.inner.window.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
+        let mut panel = menus::panel(self.inner.window.panel_open(), reader.edit_mode, reader.can_rotate);
         recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool.is_on(), reader.edit_mode);
         panel
     }
@@ -1142,12 +1145,12 @@ impl AppCore {
 
     /// The UI thread has woken, or (`block`) a block of the host's begins on it. True if no stretch was under way and this began one, which `main_idle` ends.
     pub fn main_busy(&self, block: bool) -> bool {
-        self.inner.window.watchdog.enter(block)
+        self.inner.window.main_busy(block)
     }
 
     /// The UI thread is about to sleep.
     pub fn main_idle(&self) {
-        self.inner.window.watchdog.idle();
+        self.inner.window.main_idle();
     }
 
     /// The answer to a QA request, as JSON. `ok` false makes it a failure, with `json` as the words.

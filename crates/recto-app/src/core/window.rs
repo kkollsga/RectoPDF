@@ -9,7 +9,7 @@ use crate::queue::{CoreCall, CoreQueue};
 use crate::records::ScreenInfo;
 use crate::watchdog::Watchdog;
 use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, FocusView, Rect, ScreenRecord, SettingsWindow, WindowRecord};
-use recto_session::{ContentsFollow, TabId};
+use recto_session::{ContentsFollow, ContentsRowChange, ContentsView, FollowMove, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -233,6 +233,66 @@ impl Window {
     pub fn set_dark(&self, dark: bool, core: &CoreQueue) {
         self.dark.store(dark, Ordering::SeqCst);
         core.push(CoreCall::Reconcile);
+    }
+
+    /// The reader scrolled the contents themselves, `now` seconds into the launch.
+    pub fn contents_user_scrolled(&self, now: f64) {
+        lock(&self.contents_follow).user_scrolled(now);
+    }
+
+    /// The pointer came into the contents or left them.
+    pub fn contents_pointer(&self, inside: bool) {
+        lock(&self.contents_follow).pointer(inside);
+    }
+
+    /// The place being read is now on this row of the contents, as they are in `view`: what to do about it.
+    pub fn contents_reached(&self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove {
+        lock(&self.contents_follow).reached(row, view, now, reduce_motion)
+    }
+
+    /// One frame of a move: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
+    pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
+        lock(&self.contents_follow).step(position, dt)
+    }
+
+    /// The contents' area changed height.
+    pub fn contents_view_changed(&self) {
+        lock(&self.contents_follow).view_changed();
+    }
+
+    /// Rows closed or opened: how many points to move the scroll by with no animation, or nothing if the rows are to change in view.
+    pub fn contents_row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64> {
+        lock(&self.contents_follow).row_change(change, scroll_y)
+    }
+
+    /// Rows above changed, and the host moved its scroll by this many points to match.
+    pub fn contents_shifted(&self, by: f64) {
+        lock(&self.contents_follow).shifted(by);
+    }
+
+    /// Whether the contents follow the place being read.
+    pub fn contents_following(&self) -> bool {
+        lock(&self.contents_follow).is_following()
+    }
+
+    /// Whether the contents are moving to it now.
+    pub fn contents_moving(&self) -> bool {
+        lock(&self.contents_follow).is_moving()
+    }
+
+    /// The UI thread has woken, or (`block`) a block of the host's begins on it: true if this began a stretch the hang watchdog times.
+    pub fn main_busy(&self, block: bool) -> bool {
+        self.watchdog.enter(block)
+    }
+
+    /// The UI thread is about to sleep.
+    pub fn main_idle(&self) {
+        self.watchdog.idle();
+    }
+
+    /// Whether the sidebar's panel is open.
+    pub fn panel_open(&self) -> bool {
+        self.panel_open.load(Ordering::SeqCst)
     }
 
     /// Where the Settings window was, if it was open.
