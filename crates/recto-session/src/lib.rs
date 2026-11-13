@@ -75,7 +75,7 @@ pub enum Tier {
 }
 
 /// One tab. Everything else about it can be rebuilt from disk.
-// size: asserted <= 256 by `tab_record_stays_small`. Held per tab, including cold ones.
+// size: asserted <= 224 (today's, 2 of them padding) by `tab_record_stays_small`. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
     /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.
@@ -961,6 +961,12 @@ pub struct DrawNote {
     /// The failure's stable code, or `None` if it was drawn.
     pub failure: Option<&'static str>,
 }
+
+/// The session lives behind the app's one mutex and is handed between its threads: nothing in it may hold a lock, a cell or anything else that isn't `Send`. Failure caught: a component of `Session` (R3.2) brings state of its own that can't cross threads, which would only show in another crate's build.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<Session<DiskLoader>>();
+};
 
 impl Default for Session<DiskLoader> {
     fn default() -> Self {
