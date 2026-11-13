@@ -99,6 +99,11 @@ impl<L: DocLoader> Session<L> {
                     self.clear_history(id, ClearReason::FileChanged);
                 }
                 let has_edits = self.lists.has_list(id);
+                // A clean tab takes the new version's stamp, so what was read of the version before goes with it, here where the stamp moves: held, it would
+                // be shown as this version's contents and written into a sleep file named for this version.
+                if !has_edits {
+                    self.sleeper().forget_read(id);
+                }
                 if let Some(tab) = self.tabs.tab_mut(id) {
                     if has_edits {
                         // The stamp stays the version the edits were made on, and they don't fit what's there now.
