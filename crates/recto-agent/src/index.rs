@@ -193,7 +193,7 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![TabFile {
             path,
-            expected: s.lists().get(id).map(|_| s.tabs().own_stamp(id)),
+            expected: s.lists().get(id).map(|_| s.tabs().own_stamp(id).filter(|_| s.notices().fit(id).fits())),
             added: false,
             pages_used: s.pages().count(id),
         }];

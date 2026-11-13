@@ -145,7 +145,7 @@ fn dropped_stamp() -> (HeadlessApp, PathBuf, Vec<u8>, String) {
 /// Failure (S1, review round 1): with the stamp dropped, the tab's pages were still taken to be current, so `text`, `render`, `select`, `export` and print to PDF
 /// read the five-page file by the ten-page list's numbers, and print to PDF wrote the edited composition over the other version's pages into a new file (what
 /// Save As is refused for), with no refusal; `search` returned hits on the other version's pages. Each is refused, nothing is written, and no word of the other
-/// version comes back as the edited document's. And (F4a) the agent was told the user could put the earlier version back, which nothing names here.
+/// version comes back as the edited document's. So did `contents`, `signatures` and `facts`, which took no claim for a current one. And (F4a) the agent was told the user could put the earlier version back, which nothing names here.
 #[test]
 fn with_no_stamp_nothing_reads_the_other_version_as_the_edited_document() {
     let (app, file, theirs, tab) = dropped_stamp();
@@ -157,6 +157,11 @@ fn with_no_stamp_nothing_reads_the_other_version_as_the_edited_document() {
         assert!(!format!("{error:?}").contains("Theirs"), "{words:?}: nothing of the other version: {error:?}");
         error
     };
+    // Contents, signatures and facts read the file by its pages too, against the edited list's numbers.
+    assert_eq!(refused(&["contents"]).code, "source_changed", "contents");
+    assert_eq!(refused(&["signatures"]).code, "source_changed", "signatures");
+    let facts = app.recto(Level::Full, &["facts", "--tab", &tab]).expect("facts");
+    assert_eq!(facts["file_changed_since_edits"], true, "{facts}");
     for page in ["3", "9"] {
         assert_eq!(refused(&["text", "--page", page]).code, "source_changed", "text of page {page}");
         assert_eq!(refused(&["select", page]).code, "source_changed", "select on page {page}");
