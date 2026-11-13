@@ -37,7 +37,8 @@ fn the_palettes_run_keeps_to_each_commands_level() {
 /// Failure (rule 6 and the levels, review of 2026-11-13): an agent's `palette --run` of a row with no command of its own ran as the person, through the
 /// window's own control, so an agent at Full skipped the refusal a document opened with its password gives every agent's command, and made the owner's edit:
 /// Rotate in edit mode rotated a protected page, and Find opened on it with the person's passwords. An agent's action is an agent's whatever route it takes:
-/// such a row is refused, and nothing about the document changes; nor does File > Close by the palette close over the owner's edits.
+/// a row is the agent's own command, refused as that command is (edit mode's Rotate is `page rotate --pages N`, refused on a protected tab with its own
+/// code), and nothing about the document changes; nor does File > Close by the palette close over the owner's edits.
 #[test]
 fn an_agents_palette_run_never_runs_as_the_person() {
     let app = HeadlessApp::start();
@@ -51,6 +52,17 @@ fn an_agents_palette_run_never_runs_as_the_person() {
     app.settle();
     assert!(app.reader().edit_mode, "the person's edit mode");
     let before = app.session_json();
+    // Edit mode's Rotate by the palette is `page rotate --pages N` as the agent, refused as that command is on a protected tab, with its own code.
+    let direct = app.agent(Level::Full, r#"{"cmd":"page_rotate","tab":"active","pages":"1","degrees":90}"#);
+    let by_palette = app.agent(Level::Full, r#"{"cmd":"palette","query":"rotate this page right","run":true}"#);
+    assert_eq!(
+        (
+            direct.map(drop).map_err(|error| error.code.to_string()),
+            by_palette.map(drop).map_err(|error| error.code.to_string())
+        ),
+        (Err("protected".to_string()), Err("protected".to_string())),
+        "refused the same way"
+    );
     for query in ["rotate this page right", "find…"] {
         let line = format!(r#"{{"cmd":"palette","query":"{query}","run":true}}"#);
         let result = app.agent(Level::Full, &line);
