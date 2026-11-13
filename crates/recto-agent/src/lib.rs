@@ -568,8 +568,8 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
             // Its edits' list, if it's asleep, is read back from its journal: a bounded private file in the app's own state folder, never the PDF or its
             // volume, so it's read here, on whatever thread runs this, the window's session thread included, as that thread's own taps, opens and edits
             // always have (coordinator, 2026-11-13).
-            let awake = s.wake_list(id);
-            s.touch(id);
+            let awake = s.sleeper().wake_list(id);
+            s.sleeper().touch(id);
             s.dormancy_mut().hold(id);
             Some((id, awake))
         })
@@ -586,7 +586,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     };
     let held = held.map(|(id, _)| id);
     if let Some(id) = held {
-        access.with(|s| s.let_go(id));
+        access.with(|s| s.sleeper().let_go(id));
     }
     result
 }
@@ -730,7 +730,7 @@ fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Lo
     let loader = access.with(|s| s.loader().clone());
     let stamp = recto_platform::file_stamp(&path).ok();
     let loaded = loader.load(&path);
-    access.with(|s| s.give_woken(id, loaded, stamp));
+    access.with(|s| s.sleeper().give_woken(id, loaded, stamp));
     Ok(())
 }
 
@@ -1459,7 +1459,7 @@ mod tests {
     fn give_what_was_asked(deferring: &Deferring<'_>) {
         let woke = deferring.woke.borrow_mut().drain(..).next_back();
         if let Some((tab, path)) = woke {
-            deferring.with(|s| s.give_woken(tab, Fake.load(&path), None));
+            deferring.with(|s| s.sleeper().give_woken(tab, Fake.load(&path), None));
             return;
         }
         assert_eq!(
