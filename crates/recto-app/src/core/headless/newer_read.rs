@@ -138,59 +138,80 @@ fn finds_jump_after_the_persons_scroll_past_a_sent_jump_marks_where_they_scrolle
 /// Failure (S1, synced scroll): in a comparison with synced scroll, the person's scroll in the other pane takes the pane read along on its page after a
 /// jump was sent it, with no look; an agent's `back` then marks the jump's 0.9 for Forward where the pane had followed to: the command takes the views in,
 /// and only a look forgot a sent jump.
+///
+/// Failure (one run of a full check, 2026-11-13, at a load of 16 to 22): the follow is sent to a's page view "now or soon", and soon when a's own thread
+/// holds its lock at that instant, as it does for moments throughout a drawing job; it's taken by that thread only at the job's end. A read of a's places
+/// in between, as `back` takes them in to mark where the reader is, said 0.9, where the person's scroll in b had already sent a on: the mark lost the
+/// person's newer move for an older read. Forced with a's page view held busy (`Engine::hold_busy`), so the follow is left pending until after `back`.
 #[test]
 fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
-    let disk = Disk::new();
-    let (a, b) = (disk.pdf("a.pdf", 30), disk.pdf("b.pdf", 30));
-    let app = disk.start();
-    app.open(&b);
-    app.open(&a);
-    let (b_tab, a_tab) = (app.tabs()[0].tab, app.tabs()[1].tab);
-    // Both on page 5 as synced scroll begins, so it keeps them on the same page.
-    agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{b_tab}","page":5,"within":0.5}}"##));
-    agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{a_tab}","page":5,"within":0.3}}"##));
-    agent(&app, &format!(r##"{{"cmd":"compare","toggle":"#{b_tab}"}}"##));
-    agent(&app, r#"{"cmd":"compare","sync":"on"}"#);
-    agent(&app, &format!(r##"{{"cmd":"compare","reading":"#{a_tab}"}}"##));
-    app.settle();
-    let inner = std::sync::Arc::clone(app.core());
-    let pane_of = |tab: u32| {
-        (0..inner.panes.count())
-            .find(|pane| inner.panes.tab_of(*pane).map(|id| id.0) == Some(tab))
-            .expect("in a pane")
-    };
-    let (a_pane, b_pane) = (pane_of(a_tab), pane_of(b_tab));
-    assert_eq!(inner.panes.reading(), a_pane, "a is read");
-    a_jump_sent_and_arrived_at(&app);
-    // The person's own scroll in b's pane, a little way down its page 5, as the host tells of it; a's pane follows on its page 5.
-    let b_engine = inner.panes.engine(&inner.engine, b_pane).expect("b's page view");
-    let b_place = b_engine.places().1.into_iter().find(|(tab, _)| *tab == b_tab).expect("b's place").1;
-    let looks = app.looks_done();
-    let scroll = |y: f64, seq: u64| recto_reader::Viewport {
-        y,
-        magnification: b_place.magnification,
-        backing: 2.0,
-        scrolled_to: seq,
-        ..recto_reader::Viewport::default()
-    };
-    drop(inner.panes.viewport(&inner.engine, b_pane, false, scroll(b_place.y, u64::MAX - 1)));
-    drop(
-        inner
-            .panes
-            .viewport(&inner.engine, b_pane, true, scroll(b_place.y + 0.1 * page_height(&app), u64::MAX - 1)),
-    );
-    // The window would make b's pane the one read, by a call of its own still to come: the agent's `back` here is on a, ahead of it.
-    inner.panes.focus(a_pane);
-    let (page, followed) = views_place(&app);
-    assert!(page == 4 && (followed - 0.9).abs() > 0.05, "a's pane followed b's on page 5: {page} {followed}");
-    assert_eq!(app.looks_done(), looks, "no look since the scroll");
-    agent(&app, r#"{"cmd":"back"}"#);
-    app.settle();
-    let (marked, trail) = last_stop_on_page_5(&app, false);
-    assert!(
-        (f64::from(marked) - followed).abs() < 0.01,
-        "Back marked {marked} for Forward, where a's pane followed to {followed} after the jump to 0.9: {trail}"
-    );
+    for busy in [false, true] {
+        let disk = Disk::new();
+        let (a, b) = (disk.pdf("a.pdf", 30), disk.pdf("b.pdf", 30));
+        let app = disk.start();
+        app.open(&b);
+        app.open(&a);
+        let (b_tab, a_tab) = (app.tabs()[0].tab, app.tabs()[1].tab);
+        // Both on page 5 as synced scroll begins, so it keeps them on the same page.
+        agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{b_tab}","page":5,"within":0.5}}"##));
+        agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{a_tab}","page":5,"within":0.3}}"##));
+        agent(&app, &format!(r##"{{"cmd":"compare","toggle":"#{b_tab}"}}"##));
+        agent(&app, r#"{"cmd":"compare","sync":"on"}"#);
+        agent(&app, &format!(r##"{{"cmd":"compare","reading":"#{a_tab}"}}"##));
+        app.settle();
+        let inner = std::sync::Arc::clone(app.core());
+        let pane_of = |tab: u32| {
+            (0..inner.panes.count())
+                .find(|pane| inner.panes.tab_of(*pane).map(|id| id.0) == Some(tab))
+                .expect("in a pane")
+        };
+        let (a_pane, b_pane) = (pane_of(a_tab), pane_of(b_tab));
+        assert_eq!(inner.panes.reading(), a_pane, "a is read");
+        a_jump_sent_and_arrived_at(&app);
+        // The person's own scroll in b's pane, a little way down its page 5, as the host tells of it; a's pane follows on its page 5, to as far down it.
+        let b_engine = inner.panes.engine(&inner.engine, b_pane).expect("b's page view");
+        let a_engine = inner.panes.engine(&inner.engine, a_pane).expect("a's page view");
+        let b_place = b_engine.places().1.into_iter().find(|(tab, _)| *tab == b_tab).expect("b's place").1;
+        let looks = app.looks_done();
+        let scroll = |y: f64, seq: u64| recto_reader::Viewport {
+            y,
+            magnification: b_place.magnification,
+            backing: 2.0,
+            scrolled_to: seq,
+            ..recto_reader::Viewport::default()
+        };
+        drop(inner.panes.viewport(&inner.engine, b_pane, false, scroll(b_place.y, u64::MAX - 1)));
+        a_engine.hold_busy(busy);
+        drop(
+            inner
+                .panes
+                .viewport(&inner.engine, b_pane, true, scroll(b_place.y + 0.1 * page_height(&app), u64::MAX - 1)),
+        );
+        let (page, followed) = b_engine.reading_anchor().expect("b's place");
+        assert!(
+            page == 4 && (followed - 0.9).abs() > 0.05,
+            "b's scroll stays on its page 5, away from 0.9: {page} {followed}"
+        );
+        // The window would make b's pane the one read, by a call of its own still to come: the agent's `back` here is on a, ahead of it.
+        inner.panes.focus(a_pane);
+        if !busy {
+            let (page, at) = views_place(&app);
+            assert!(
+                page == 4 && (at - followed).abs() < 0.01,
+                "a's pane followed b's on page 5 to {followed}: {page} {at}"
+            );
+        }
+        assert_eq!(app.looks_done(), looks, "no look since the scroll");
+        agent(&app, r#"{"cmd":"back"}"#);
+        a_engine.hold_busy(false);
+        app.settle();
+        let (marked, trail) = last_stop_on_page_5(&app, false);
+        assert!(
+            (f64::from(marked) - followed).abs() < 0.01,
+            "Back marked {marked} for Forward, where a's pane was following b's to {followed} after the jump to 0.9 (the follow left pending for a's \
+             page view's own thread: {busy}): {trail}"
+        );
+    }
 }
 
 /// Failure: an agent's `back`, `forward` or `goto` takes in where the page views are and then marks where the reader is, under two locks on the session,
