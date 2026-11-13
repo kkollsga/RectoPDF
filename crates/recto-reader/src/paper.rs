@@ -17,7 +17,7 @@
 //! - **Several pictures** are one background between them: each is judged by itself, what they cover together is their share, and the background is what's outside the kept ones.
 //! - **A page with no picture kept** turns over as before, whatever its background: a page of text, a large drawing in vectors, which has no picture to keep, and a page of white-backed pictures.
 //!
-//! **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. That's unchanged: the page with a photo over 53% of it, judged whole, is dimmed, as its photo is too much colour for a page of white. A page is judged whole only when its images can't be had: a page that fails at every zoom, or an asking that was stopped; a page drawn at a lower resolution is asked as any page is (`recto-render-service`, `image_boxes`). A look refused a worker isn't decided at all, and so isn't remembered (`engine/run.rs`). There's one [`PageLook`] a page while its renderer lives, so its tiles, preview, lower-resolution version and the picture it sleeps as can't disagree. **Across a renderer dropped and made again, as a tab sleeps and wakes, the look is decided again,** from the preview if that's drawn first or the look picture otherwise, and what's decided can differ only in part: whether the page turns over or is dimmed doesn't hang on which picture it's decided from (0 of 1,291 pages differed between pictures 1,144, 512 and 128 pixels tall, `tests/look_survey.rs`, `sizes`), but whether one image on it turns over with the page or is kept can (7 of 292 pages with images between the look picture and the largest preview, 29 at a lower resolution's quarter), so such an image can change across a sleep and a wake. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
+//! **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. That's unchanged: the page with a photo over 53% of it, judged whole, is dimmed, as its photo is too much colour for a page of white. A page is judged whole only when its images can't be had: a page that fails at every zoom, an asking that was stopped, or a page with more images than an answer holds, too many to tell apart; a page drawn at a lower resolution is asked as any page is (`recto-render-service`, `image_boxes`). A look refused a worker isn't decided at all, and so isn't remembered (`engine/run.rs`). There's one [`PageLook`] a page while its renderer lives, so its tiles, preview, lower-resolution version and the picture it sleeps as can't disagree. **Across a renderer dropped and made again, as a tab sleeps and wakes, the look is decided again,** from the preview if that's drawn first or the look picture otherwise, and what's decided can differ only in part: whether the page turns over or is dimmed doesn't hang on which picture it's decided from (0 of 1,291 pages differed between pictures 1,144, 512 and 128 pixels tall, `tests/look_survey.rs`, `sizes`), but whether one image on it turns over with the page or is kept can (7 of 292 pages with images between the look picture and the largest preview, 29 at a lower resolution's quarter), so such an image can change across a sleep and a wake. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
 
 /// Which paper a tile was drawn for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1284,6 +1284,20 @@ mod tests {
             PageLook::decide(None, &photo_page, PAGE_STRIDE, PAGE.0, PAGE.1).dim,
             "a photo over 53% of a white page, judged whole, as before 2026-11-13"
         );
+    }
+
+    /// Failure: a catalogue page of 72 photos on white, too many images for a worker to tell apart, turns over round one bright block, as when the worker answered with one box round them all, kept as a picture over 90% of a page whose margins are white. A worker now answers that it can't tell, and a page whose images aren't known is judged whole: its photos are too much colour for a page of white, so it's dimmed, as before 2026-11-13.
+    #[test]
+    fn a_page_of_too_many_photos_to_tell_apart_is_dimmed_whole() {
+        let photos: Vec<([f64; 4], Part)> = (0..72)
+            .map(|at| {
+                let (column, row) = (f64::from(at % 8), f64::from(at / 8));
+                ([0.06 + column * 0.11, 0.05 + row * 0.1, 0.15 + column * 0.11, 0.13 + row * 0.1], Part::Photo)
+            })
+            .collect();
+        let pixels = made_page(&photos, WHITE, INK);
+        let look = PageLook::decide(None, &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(look.dim, "{look:?}");
     }
 
     /// Failure: a picture page's colours change, or it's left as bright as it was, or black text on it goes unreadable. Each channel falls by the same share, and black stays black.
