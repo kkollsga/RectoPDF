@@ -118,6 +118,79 @@ impl Twins {
             "{what}: the record keeps the same"
         );
     }
+
+    /// [`Self::assert_same`]'s comparison, said rather than asserted, short: where the two apps' window models differ (their fields, as `Debug` prints them),
+    /// whether their pages are zoomed the same, and the record's keys that differ. Empty when they show and keep the same. For a test that lists every
+    /// difference it finds before it fails.
+    pub fn differences(&self, except: &[&str]) -> Vec<String> {
+        let mut found = Vec::new();
+        let fields = |app: &HeadlessApp, root: &str| {
+            let mut shown = format!("{:?} {:?}", app.reader(), app.sidebar()).replace(root, "<files>");
+            for key in except {
+                shown = shown
+                    .replace(&format!("{key}: true"), &format!("{key}: _"))
+                    .replace(&format!("{key}: false"), &format!("{key}: _"));
+            }
+            shown.split(", ").map(str::to_string).collect::<Vec<_>>()
+        };
+        let (person, agent) = (fields(&self.person, &self.roots[0]), fields(&self.agent, &self.roots[1]));
+        let shown: Vec<String> = person
+            .iter()
+            .zip(&agent)
+            .filter(|(person, agent)| person != agent)
+            .take(4)
+            .map(|(person, agent)| format!("person `{person}`, agent `{agent}`"))
+            .collect();
+        if !shown.is_empty() || person.len() != agent.len() {
+            found.push(format!("the window shows otherwise: {}", shown.join("; ")));
+        }
+        let zoom = |app: &HeadlessApp| {
+            let inner = app.core();
+            inner
+                .panes
+                .engines(&inner.engine)
+                .iter()
+                .map(recto_reader::Engine::magnification)
+                .collect::<Vec<_>>()
+        };
+        if zoom(&self.person) != zoom(&self.agent) {
+            found.push(format!("zoomed otherwise: person {:?}, agent {:?}", zoom(&self.person), zoom(&self.agent)));
+        }
+        let kept = |app: &HeadlessApp, root: &str| {
+            let mut record: Value = serde_json::from_str(&app.session_json().to_string().replace(root, "<files>")).expect("json");
+            strip(&mut record, &[&["file"], except].concat());
+            record
+        };
+        let mut paths = Vec::new();
+        differing("", &kept(&self.person, &self.roots[0]), &kept(&self.agent, &self.roots[1]), &mut paths);
+        if !paths.is_empty() {
+            found.push(format!("the record keeps otherwise at {}", paths.join(", ")));
+        }
+        found
+    }
+}
+
+/// The paths where two records differ, the first few.
+fn differing(at: &str, person: &Value, agent: &Value, paths: &mut Vec<String>) {
+    if paths.len() >= 6 || person == agent {
+        return;
+    }
+    match (person, agent) {
+        (Value::Object(one), Value::Object(other)) => {
+            for key in one.keys().chain(other.keys().filter(|key| !one.contains_key(*key))) {
+                differing(
+                    &format!("{at}.{key}"),
+                    one.get(key).unwrap_or(&Value::Null),
+                    other.get(key).unwrap_or(&Value::Null),
+                    paths,
+                );
+            }
+        }
+        _ => {
+            let short = |value: &Value| value.to_string().chars().take(100).collect::<String>();
+            paths.push(format!("{at} (person {}, agent {})", short(person), short(agent)));
+        }
+    }
 }
 
 /// Takes these keys out, wherever they are.
