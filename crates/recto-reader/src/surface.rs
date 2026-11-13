@@ -579,6 +579,12 @@ Asked::pub fn zoom_soon(self, engine: &Engine, value: f64) -> bool
 Changed (private struct)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
+DocRenderer: LookSource (trait impl)
+DocRenderer: LookSource::fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure>
+DocRenderer: LookSource::fn is_stale(&self, generation: u64) -> bool
+DocRenderer: LookSource::fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>
+DocRenderer: LookSource::fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>
+DocRenderer: LookSource::fn take_image_places_cleared(&mut self) -> bool
 DocView (pub(crate) struct, derives Debug)
 DocView::pub(crate) fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 DocView::pub(crate) fn fit(&self) -> f64
@@ -683,9 +689,10 @@ Links::pub fn at(&self, x: f64, y: f64) -> Option<crate::links::LinkHit>
 Links::pub fn own_file_page(&self, position: u32) -> Option<u32>
 Links::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
 Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
+Looks (pub(super) struct, derives Debug, Default)
 LowResNote (pub(super) struct, derives Debug)
 Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
-NoLook (private enum)
+NoLook (pub(super) enum, derives Debug, PartialEq, Eq)
 Op (pub enum, derives Clone, Debug, PartialEq)
 OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
@@ -699,6 +706,7 @@ PageMap.pub slots: Option<Vec<(u16, u32)>>
 PageMap.pub turns: Option<Arc<[u8]>>
 PageNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Pending (private struct, derives Default)
+Picture (private enum)
 Place (pub(crate) struct, derives Debug)
 Place::pub(crate) fn has_moved_page(&self) -> bool
 Place::pub(crate) fn take_moved_page(&mut self) -> Option<u32>

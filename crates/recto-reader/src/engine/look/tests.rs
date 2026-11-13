@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use recto_render_service::{KillReason, LowResWhy, Tile, TileKind};
 use std::collections::VecDeque;
