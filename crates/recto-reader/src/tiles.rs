@@ -213,6 +213,52 @@ struct DocView {
 }
 
 impl DocView {
+    /// A tab it's never held, or that's gone cold, as the session has it: a saved place, if there is one, held to what a page can be.
+    #[allow(clippy::too_many_arguments)]
+    fn from_saved(tab: u32, pages: u32, page: u32, map: &PageMap, saved: Option<SavedPlace>, spread: Spread, margins: (f64, f64), floor: u64) -> Self {
+        let mut layout = PageLayout::with_spread(pages, spread);
+        layout.set_margins(margins.0, margins.1);
+        layout.set_turns(map.turns.clone());
+        // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
+        let saved = saved.filter(|saved| saved.page < pages.max(1));
+        if let Some(size) = saved.and_then(|saved| saved.page_size) {
+            layout.seed_usual(size);
+        }
+        let magnification = saved.map_or(1.0, |saved| {
+            if saved.magnification.is_finite() {
+                saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM)
+            } else {
+                1.0
+            }
+        });
+        let within = |value: f64| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+        let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
+        let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
+        let exact_y = saved
+            .filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite())
+            .map(|saved| (saved.y, saved.document_height));
+        DocView {
+            tab,
+            layout,
+            map: map.clone(),
+            magnification,
+            anchor: (page, 0.0),
+            tile_scale: 0.0,
+            issues: HashMap::new(),
+            heavy: HashMap::new(),
+            problem: None,
+            seen: HashSet::new(),
+            left_at,
+            scroll_x,
+            exact_y,
+            floor,
+            size_on_trust: false,
+            versions: HashMap::new(),
+            left_pictures: None,
+            width_shown: 0.0,
+        }
+    }
+
     /// A page's been drawn, for the QA count of blank steps on pages seen before. Held to [`MAX_SEEN_REMEMBERED`].
     fn note_seen(&mut self, page: u32) {
         if self.seen.len() >= MAX_SEEN_REMEMBERED && !self.seen.contains(&page) {
@@ -443,72 +489,14 @@ impl Reader {
             doc.scroll_x = self.viewport.x;
         }
         if self.hot != Some(tab) {
-            // While what it showed is still on the screen, and so all there.
-            if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
-                let pictures = self.pictures_in_view(left);
-                if let Some(doc) = self.docs.get_mut(&left) {
-                    doc.left_pictures = Some(pictures);
-                }
-            }
-            let last_page = self.place.last_view_page;
-            let (left_x, left_y) = (self.viewport.x, self.viewport.y);
-            if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
-                doc.left_at = last_page.map(|page| (page, doc.anchor));
-                doc.scroll_x = left_x;
-                doc.exact_y = Some((left_y, doc.layout.document_height()));
-            }
-            self.clear_screen();
-            self.hot = Some(tab);
-            self.place.last_view_page = None;
-            self.place.moved_page = None;
-            // A selection is in what's on screen, and a tab off screen holds none.
-            self.pointer.selecting.reset();
-            self.pointer.linking.clear();
+            self.leave_hot(tab);
         }
         let floor = self.work.next_generation;
-        let doc = self.docs.entry(tab).or_insert_with(|| {
-            let mut layout = PageLayout::with_spread(pages, spread);
-            layout.set_margins(self.margins.0, self.margins.1);
-            layout.set_turns(map.turns.clone());
-            // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
-            let saved = saved.filter(|saved| saved.page < pages.max(1));
-            if let Some(size) = saved.and_then(|saved| saved.page_size) {
-                layout.seed_usual(size);
-            }
-            let magnification = saved.map_or(1.0, |saved| {
-                if saved.magnification.is_finite() {
-                    saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM)
-                } else {
-                    1.0
-                }
-            });
-            let within = |value: f64| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
-            let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
-            let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
-            let exact_y = saved
-                .filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite())
-                .map(|saved| (saved.y, saved.document_height));
-            DocView {
-                tab,
-                layout,
-                map: map.clone(),
-                magnification,
-                anchor: (page, 0.0),
-                tile_scale: 0.0,
-                issues: HashMap::new(),
-                heavy: HashMap::new(),
-                problem: None,
-                seen: HashSet::new(),
-                left_at,
-                scroll_x,
-                exact_y,
-                floor,
-                size_on_trust: false,
-                versions: HashMap::new(),
-                left_pictures: None,
-                width_shown: 0.0,
-            }
-        });
+        let margins = self.margins;
+        let doc = self
+            .docs
+            .entry(tab)
+            .or_insert_with(|| DocView::from_saved(tab, pages, page, &map, saved, spread, margins, floor));
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
@@ -582,6 +570,31 @@ impl Reader {
         self.host.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
         self.refresh(MAX_ATTACH_PER_TURN);
+    }
+
+    /// Leaves the tab that was showing for `tab`: what it showed and where it was are kept with it, and the screen is cleared.
+    fn leave_hot(&mut self, tab: u32) {
+        // While what it showed is still on the screen, and so all there.
+        if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
+            let pictures = self.pictures_in_view(left);
+            if let Some(doc) = self.docs.get_mut(&left) {
+                doc.left_pictures = Some(pictures);
+            }
+        }
+        let last_page = self.place.last_view_page;
+        let (left_x, left_y) = (self.viewport.x, self.viewport.y);
+        if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
+            doc.left_at = last_page.map(|page| (page, doc.anchor));
+            doc.scroll_x = left_x;
+            doc.exact_y = Some((left_y, doc.layout.document_height()));
+        }
+        self.clear_screen();
+        self.hot = Some(tab);
+        self.place.last_view_page = None;
+        self.place.moved_page = None;
+        // A selection is in what's on screen, and a tab off screen holds none.
+        self.pointer.selecting.reset();
+        self.pointer.linking.clear();
     }
 
     /// Everything of tabs that have gone cold goes, as a cold tab holds nothing.
