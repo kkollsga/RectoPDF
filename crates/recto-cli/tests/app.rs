@@ -364,7 +364,11 @@ fn a_quiet_run_refuses_the_real_state() {
     // The app itself says the same, whoever starts it.
     // A copy's executable, not the build folder's: running the built one registers the build folder and nothing forgets it (`app_launch_guard`).
     let Some(copy) = common::app::OwnCopy::new() else { return };
-    let output = Command::new(copy.executable()).arg("--qa").env_remove(recto_control::state::STATE_ENV).output().unwrap();
+    let output = Command::new(copy.executable())
+        .arg("--qa")
+        .env_remove(recto_control::state::STATE_ENV)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("RECTO_STATE_DIR"),

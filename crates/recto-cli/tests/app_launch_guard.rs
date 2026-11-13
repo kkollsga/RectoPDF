@@ -49,7 +49,11 @@ fn no_test_starts_the_build_folders_app_itself() {
             }
         }
     }
-    assert!(found.is_empty(), "these start the build folder's own app; run a copy (`OwnCopy`) instead:\n{}", found.join("\n"));
+    assert!(
+        found.is_empty(),
+        "these start the build folder's own app; run a copy (`OwnCopy`) instead:\n{}",
+        found.join("\n")
+    );
 }
 
 /// Failure: the check above stops seeing the shapes it is for, and passes on code that starts the app.
