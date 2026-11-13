@@ -149,3 +149,100 @@ fn opening_a_file_thats_open_announces_its_tab_only_when_it_comes_to_the_front()
     assert_eq!(agent(&b), ["tab_activated"], "an agent's open brought b.pdf to the front");
     assert!(agent(&b).is_empty(), "and again, with it in front already");
 }
+
+/// Failure (R2.3, C5c): opening a file as the window does (the Open panel, Open Recent, a file named at launch) does something other than `open`: another tab
+/// made or brought forward, another event, or something else kept; or a file that doesn't open says nothing, or says it in an agent's words. Each on one app,
+/// and `open` at Full on the other: a file that isn't open, one that is, Open Recent's, and one named at launch.
+#[test]
+fn the_windows_opens_are_the_agents_open() {
+    let twins = Twins::on(&[("a.pdf", 3), ("b.pdf", 3)]);
+    for app in [&twins.person, &twins.agent] {
+        app.disk().pdf("c.pdf", 4);
+        app.disk().pdf("d.pdf", 5);
+    }
+    let open = |name: &str| {
+        let path = twins.agent.disk().files().join(name);
+        format!(r#"{{"cmd":"open","path":{:?}}}"#, path.display().to_string())
+    };
+    let steps: Vec<Step> = vec![
+        (
+            "the Open panel's new file",
+            Box::new(|app| {
+                app.act(UiAction::Open {
+                    path: app.disk().files().join("c.pdf"),
+                });
+            }),
+            open("c.pdf"),
+        ),
+        (
+            "a file that's open",
+            Box::new(|app| {
+                app.act(UiAction::Open {
+                    path: app.disk().files().join("a.pdf"),
+                });
+            }),
+            open("a.pdf"),
+        ),
+        (
+            "Open Recent",
+            Box::new(|app| {
+                let key = app
+                    .core()
+                    .recent_files()
+                    .into_iter()
+                    .find(|file| file.path.ends_with("b.pdf"))
+                    .expect("b.pdf's in the list")
+                    .key;
+                app.act(UiAction::OpenRecent { key });
+            }),
+            open("b.pdf"),
+        ),
+        (
+            "a file named at launch",
+            Box::new(|app| app.core().ready(&[app.disk().files().join("d.pdf")])),
+            open("d.pdf"),
+        ),
+    ];
+    for (what, person, line) in steps {
+        let (said, agent_said) = twins.both_with(person, &line);
+        assert_eq!(said, agent_said, "{what} and {line}: the same said");
+        assert!(!said.is_empty(), "{what}: something said");
+        twins.assert_same(&format!("{what} and {line}"), &[]);
+    }
+    assert_eq!(twins.person.tabs().len(), 4);
+    // A file that isn't a PDF says so by the window, in the session's words.
+    let not_pdf = twins.person.disk().file("notes.pdf", b"not a pdf at all");
+    twins.person.act(UiAction::Open { path: not_pdf });
+    twins.person.settle();
+    assert_eq!(
+        crate::lock(&twins.person.core().window.open_failure).clone().as_deref(),
+        Some(recto_core::OpenError::NotPdf.message()),
+        "the person's words"
+    );
+}
+
+/// Failure (R2.3, C5c): a file opened before the state's been read, as a launch by a double-click in the Finder asks, is opened at once on an empty session,
+/// and the state coming in after puts what was left over it, so the file asked for isn't open; or it waits for good. It's held until the state's in, then
+/// opened beside what came back.
+#[test]
+fn a_file_opened_before_the_state_is_in_opens_once_it_is() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    app.open(&a);
+    let (_, disk) = app.quit();
+    let app = disk.builder().hold(&[recto_platform::slow::Seam::State]).start();
+    app.act(UiAction::Open { path: b.clone() });
+    assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "taken, and any read for it done");
+    assert!(!app.core().state_read(), "the state's still held");
+    assert_eq!(
+        app.core().host.session.with_session(|session| session.tabs().len()),
+        0,
+        "nothing's opened before the state's in"
+    );
+    app.let_state_in();
+    app.settle();
+    let names: Vec<String> = app.tabs().into_iter().map(|row| row.text).collect();
+    assert_eq!(names.len(), 2, "what came back, and the file asked for: {names:?}");
+    assert_eq!(app.reader().shown_tab, app.tabs()[1].tab, "the file asked for is in front");
+}

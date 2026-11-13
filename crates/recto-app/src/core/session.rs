@@ -9,7 +9,7 @@ pub fn apply_restored(
     loaded: Loaded,
     synced: &mut Synced,
     reads: &mut FileReads,
-    deferred: &mut Vec<PathBuf>,
+    deferred: &mut Vec<Box<crate::queue::PersonCommand>>,
 ) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
@@ -113,8 +113,8 @@ pub fn apply_restored(
         return ready;
     }
     start_serving(inner);
-    for path in deferred.drain(..) {
-        inner.core.push(CoreCall::Open(path));
+    for run in deferred.drain(..) {
+        inner.core.push(CoreCall::Run(run));
     }
     ready
 }
@@ -205,7 +205,7 @@ pub fn start_serving(inner: &Arc<Inner>) {
 pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
-    let mut deferred: Vec<PathBuf> = Vec::new();
+    let mut deferred: Vec<Box<crate::queue::PersonCommand>> = Vec::new();
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
@@ -249,11 +249,11 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
             CoreCall::RestorePatienceOver => restore_patience_over(inner),
-            CoreCall::Open(path) if !inner.life.state_read() => {
-                deferred.push(path);
+            // An open waits for the state to be read, as what's opened goes over what comes back.
+            CoreCall::Run(run) if !inner.life.state_read() && opening::is_open(&run.command) => {
+                deferred.push(run);
                 continue;
             }
-            CoreCall::Open(path) => open(inner, &mut reads, path, &mut events),
             CoreCall::Read(read) => {
                 // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
                 if let Some(run) = reads.finished(inner, *read, &mut events) {
@@ -439,6 +439,13 @@ impl FileReads {
         }
     }
 
+    /// A read that couldn't start (past the cap, which says so itself, or no thread) leaves no command waiting for it, which nothing would ever run.
+    pub fn forget_unless_running(&mut self, what: &Reading) {
+        if !self.running.contains(what) {
+            self.then.remove(what);
+        }
+    }
+
     /// Takes a read in, and says the person's command it was for, if one's to run again now.
     pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
@@ -469,16 +476,12 @@ impl FileReads {
             Reading::Tab(tab) => {
                 let then = self.then.remove(&Reading::Tab(tab));
                 // Only if it's still what's wanted. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
-                if let Some(command) = then {
-                    if self.wanted_tab == Some(tab) {
-                        self.wanted_tab = None;
-                        host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                        return Some(person::read_in(*command, None));
-                    }
-                } else if self.wanted_tab == Some(tab) {
+                if let Some(command) = then
+                    && self.wanted_tab == Some(tab)
+                {
                     self.wanted_tab = None;
                     host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                    tap_now(inner, tab, events);
+                    return Some(person::read_in(*command, None));
                 }
             }
             Reading::Compare(clicked, tab) => {
@@ -498,8 +501,8 @@ impl FileReads {
                         .with_session(|session| session.focus_pane(tab).then(|| recto_agent::event::tab_activated(session, tab))),
                 );
             }
-            Reading::File(path) if self.then.contains_key(&Reading::File(path.clone())) => {
-                let command = self.then.remove(&Reading::File(path.clone())).expect("looked at");
+            Reading::File(path) => {
+                let command = self.then.remove(&Reading::File(path.clone()))?;
                 let fetched = recto_agent::later::Fetched {
                     stamp: read.stamp,
                     facts: read.loaded,
@@ -508,31 +511,6 @@ impl FileReads {
                 };
                 return Some(person::read_in(*command, Some((path, fetched))));
             }
-            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
-                host.session.with_session(|session| {
-                    let before = (session.tabs().len(), session.active());
-                    if read.unlocked {
-                        session.open_unlocked(&path, facts, read.stamp)
-                    } else {
-                        session.open_with_facts(&path, facts, read.stamp, read.history)
-                    }
-                    .map(|id| (id, before))
-                })
-            }) {
-                // A new tab is announced as opened; one already open by another name, as brought to the front if it wasn't there (by A2's rule).
-                Ok((id, (count, active))) => host.session.with_session(|session| {
-                    if session.tabs().len() > count {
-                        events.push(recto_agent::event::tab_opened(session, id));
-                    } else if active != Some(id) {
-                        events.push(recto_agent::event::tab_activated(session, id));
-                    }
-                }),
-                // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
-                Err(SessionError::Open(OpenError::PasswordNeeded)) => {
-                    lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, &path);
-                }
-                Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
-            },
         }
         None
     }

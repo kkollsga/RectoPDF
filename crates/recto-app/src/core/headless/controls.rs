@@ -41,9 +41,11 @@ fn every_control_returns_while_the_session_is_held() {
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 4), disk.pdf("b.pdf", 4));
     let saved_as = disk.files().join("copy.pdf");
+    let not_open = disk.pdf("c.pdf", 2);
     let app = disk.start();
     app.open(&a);
     app.open(&b);
+    let recent_key = app.core().recent_files()[0].key.clone();
     let rows = app.tabs();
     let (row, tab) = (rows[0].clone(), rows[0].tab);
     let contents = crate::SidebarRow {
@@ -89,6 +91,9 @@ fn every_control_returns_while_the_session_is_held() {
         UiAction::Menu { id: "edit.undo".into() },
         UiAction::Menu { id: "edit.redo".into() },
         UiAction::Menu { id: "edit_mode.done".into() },
+        // Opening a file that isn't open, and Open Recent's file, are a person's `open` (C5c).
+        UiAction::Open { path: not_open.clone() },
+        UiAction::OpenRecent { key: recent_key },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,

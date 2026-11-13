@@ -26,16 +26,6 @@ pub fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
     }
 }
 
-/// What a tap on a tab does, once whatever it needs from disk is here.
-pub fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    host.session.with_session(|session| {
-        if let Ok(switched) = session.tap(id) {
-            recto_agent::event::switched(session, switched, events);
-        }
-    });
-}
-
 /// The session's word for a layout, as the page view has it.
 pub fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
     match spread {

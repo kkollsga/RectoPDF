@@ -28,7 +28,7 @@ impl Inner {
             .find(|file| file.key == key)
             .map(|file| PathBuf::from(&file.path));
         if let Some(path) = path {
-            self.core.push(CoreCall::Open(path));
+            super::opening::open(&self.core, path);
         }
     }
 

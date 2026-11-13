@@ -151,6 +151,7 @@ impl ReadLater for Later<'_> {
         reads.wanted_tab = Some(tab);
         reads.then.insert(Reading::Tab(tab), Box::new(self.command.clone()));
         reads.start(self.inner, Reading::Tab(tab), path);
+        reads.forget_unless_running(&Reading::Tab(tab));
     }
 
     /// As an open's read always was, in the order asked, each to its end.
@@ -162,6 +163,7 @@ impl ReadLater for Later<'_> {
         reads.wanted_tab = None;
         reads.then.insert(Reading::File(path.to_path_buf()), Box::new(self.command.clone()));
         reads.start(self.inner, Reading::File(path.to_path_buf()), path.to_path_buf());
+        reads.forget_unless_running(&Reading::File(path.to_path_buf()));
         None
     }
 }

@@ -28,7 +28,6 @@ pub enum CoreCall {
     Unlocked(crate::passwords::Ask, Result<DocFacts, OpenError>, Option<FileStamp>, Arc<recto_core::Password>),
     /// The app's come to the front: the files showing are looked at, as another app may have changed them.
     LookAtShown,
-    Open(PathBuf),
     /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
     CompareClick(TabId),
     /// The reader's moved into another pane.
@@ -125,8 +124,7 @@ impl CoreCall {
     #[must_use]
     pub fn is_user_action(&self) -> bool {
         match self {
-            Self::Open(_)
-            | Self::CompareClick(_)
+            Self::CompareClick(_)
             | Self::FocusPane(_)
             | Self::SetSynced(_)
             | Self::ClearEditHistory
@@ -314,6 +312,13 @@ pub struct FileRead {
 mod tests {
     use super::*;
 
+    /// A person's open of a file, as the window queues it.
+    fn open(path: &str) -> CoreCall {
+        CoreCall::Run(PersonCommand::input(
+            recto_agent::parse(&format!(r#"{{"cmd":"open","path":"{path}"}}"#)).expect("a command"),
+        ))
+    }
+
     /// A person's tap on a tab's row, as the window queues it.
     fn tap(tab: u32) -> CoreCall {
         CoreCall::Run(PersonCommand::input(
@@ -330,7 +335,7 @@ mod tests {
         }
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
         queue.push(tap(2));
-        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(open("/d/a.pdf"));
         queue.push(CoreCall::Run(PersonCommand::input(
             recto_agent::parse(r#"{"cmd":"view","sidebar":"off"}"#).expect("a command"),
         )));
@@ -353,7 +358,7 @@ mod tests {
     fn an_abandoned_queue_takes_nothing_more() {
         let queue = CoreQueue::default();
         queue.push(tap(1));
-        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(open("/d/a.pdf"));
         queue.push(CoreCall::Reconcile);
         queue.abandon();
         assert!(queue.has_ended());
@@ -370,7 +375,7 @@ mod tests {
         queue.push(CoreCall::Run(PersonCommand::input(
             recto_agent::parse(r##"{"cmd":"goto","tab":"#1","page":2}"##).expect("a command"),
         )));
-        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(open("/d/a.pdf"));
         queue.push(CoreCall::Run(PersonCommand::input(
             recto_agent::parse(r#"{"cmd":"view","paper":"dark"}"#).expect("a command"),
         )));
@@ -425,7 +430,6 @@ mod tests {
                 Arc::new(recto_core::Password::new("pw").unwrap()),
             ),
             CoreCall::LookAtShown,
-            CoreCall::Open(PathBuf::from("/d/a.pdf")),
             CoreCall::CompareClick(tab),
             CoreCall::FocusPane(tab),
             CoreCall::SetSynced(true),
@@ -466,41 +470,40 @@ mod tests {
             CoreCall::Reconcile => 0,
             CoreCall::Unlocked(..) => 1,
             CoreCall::LookAtShown => 2,
-            CoreCall::Open(_) => 3,
-            CoreCall::CompareClick(_) => 4,
-            CoreCall::FocusPane(_) => 5,
-            CoreCall::SetSynced(_) => 6,
-            CoreCall::ClearEditHistory => 7,
-            CoreCall::SleepTabs(..) => 8,
-            CoreCall::MemoryPressure(_) => 9,
-            CoreCall::WokenFileIsOther(..) => 10,
-            CoreCall::FileLength(..) => 11,
-            CoreCall::LookAgain(_) => 12,
-            CoreCall::Page(..) => 13,
-            CoreCall::Read(_) => 14,
-            CoreCall::Flush(_) => 15,
-            CoreCall::Restored(_) => 16,
-            CoreCall::RestorePatienceOver => 17,
-            CoreCall::Events(_) => 18,
-            CoreCall::ContentsAction(..) => 19,
-            CoreCall::GeneratedFinished => 20,
-            CoreCall::GeneratedView(..) => 21,
-            CoreCall::ToggleSection(..) => 22,
+            CoreCall::CompareClick(_) => 3,
+            CoreCall::FocusPane(_) => 4,
+            CoreCall::SetSynced(_) => 5,
+            CoreCall::ClearEditHistory => 6,
+            CoreCall::SleepTabs(..) => 7,
+            CoreCall::MemoryPressure(_) => 8,
+            CoreCall::WokenFileIsOther(..) => 9,
+            CoreCall::FileLength(..) => 10,
+            CoreCall::LookAgain(_) => 11,
+            CoreCall::Page(..) => 12,
+            CoreCall::Read(_) => 13,
+            CoreCall::Flush(_) => 14,
+            CoreCall::Restored(_) => 15,
+            CoreCall::RestorePatienceOver => 16,
+            CoreCall::Events(_) => 17,
+            CoreCall::ContentsAction(..) => 18,
+            CoreCall::GeneratedFinished => 19,
+            CoreCall::GeneratedView(..) => 20,
+            CoreCall::ToggleSection(..) => 21,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 23,
-                crate::find::FindCall::Open => 24,
-                crate::find::FindCall::Close => 25,
-                crate::find::FindCall::Step(..) => 26,
-                crate::find::FindCall::Choose(_) => 27,
-                crate::find::FindCall::News => 28,
-                crate::find::FindCall::Reveal(..) => 29,
+                crate::find::FindCall::Typed(_) => 22,
+                crate::find::FindCall::Open => 23,
+                crate::find::FindCall::Close => 24,
+                crate::find::FindCall::Step(..) => 25,
+                crate::find::FindCall::Choose(_) => 26,
+                crate::find::FindCall::News => 27,
+                crate::find::FindCall::Reveal(..) => 28,
             },
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 30,
-                Origin::Finishing => 31,
+                Origin::Input => 29,
+                Origin::Finishing => 30,
             },
         };
-        (place, 32)
+        (place, 31)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -518,8 +521,7 @@ mod tests {
             matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
                 || matches!(
                     call,
-                    CoreCall::Open(_)
-                        | CoreCall::CompareClick(_)
+                    CoreCall::CompareClick(_)
                         | CoreCall::FocusPane(_)
                         | CoreCall::SetSynced(_)
                         | CoreCall::ClearEditHistory
