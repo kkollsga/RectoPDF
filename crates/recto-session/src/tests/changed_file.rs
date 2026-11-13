@@ -221,7 +221,7 @@ fn the_edits_own_version_back_under_another_notice_is_news() {
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     assert_eq!(bed.s.tier(a), Tier::Hot, "v2's contents are held");
-    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    bed.s.tabs.tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
     assert!(
         bed.s.apply_file_status(a, FileStatus::Same(made_on)),
         "v1 back is news, so what's held of v2 goes"
@@ -240,7 +240,7 @@ fn a_restored_tab_whose_file_changed_under_its_edits_doesnt_fit_till_a_look_says
     let made_on = bed.stamp_now();
     replace_file(&bed.path(), b"v2, saved by another app");
     assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
-    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    bed.s.tabs.tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
     let saved = bed.s.to_record();
     let journal = saved.tabs.iter().find(|tab| tab.id == a.0).and_then(|tab| tab.journal.clone()).unwrap();
     let mut edits = PageEdits::new(10);
@@ -337,7 +337,7 @@ fn dropped_stamp() -> (Bed, TabId, TabId) {
 /// `a` edited with no stamp since it was opened (the look at its file failed then), and nothing known against its edits.
 fn never_stamped() -> (Bed, TabId, TabId) {
     let (mut bed, a, b) = Bed::new(10);
-    bed.s.tabs_mut().tab_mut(a).unwrap().file.stamp = None;
+    bed.s.tabs.tab_mut(a).unwrap().file.stamp = None;
     bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
     (bed, a, b)
 }
