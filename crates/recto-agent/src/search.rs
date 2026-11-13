@@ -1553,7 +1553,11 @@ mod tests {
                 ..settings(&fixture)
             };
             answer = run(&fixture.plan, &query, "regex", &settings).unwrap();
-            assert!(started.elapsed() < wait + Duration::from_secs(10), "{:?} for a deadline of {wait:?}", started.elapsed());
+            assert!(
+                started.elapsed() < wait + Duration::from_secs(10),
+                "{:?} for a deadline of {wait:?}",
+                started.elapsed()
+            );
             let never_reached = answer["coverage"]["next_page"] == 1 && answer["coverage"]["failed_pages"] == json!([]);
             if !never_reached {
                 break;

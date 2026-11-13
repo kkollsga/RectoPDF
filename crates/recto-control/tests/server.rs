@@ -574,7 +574,12 @@ fn whole_lines_waiting_arent_a_stalled_line() {
     std::thread::sleep(Duration::from_millis(400));
     let mut reader = BufLine::default();
     for answer in 0..3 {
-        assert!(reader.next(&mut greedy).unwrap_or_else(|| panic!("answer {answer}: the connection was dropped"))["data"]["huge"].is_string());
+        assert!(
+            reader
+                .next(&mut greedy)
+                .unwrap_or_else(|| panic!("answer {answer}: the connection was dropped"))["data"]["huge"]
+                .is_string()
+        );
     }
     // And half a line is still caught.
     greedy.write_all(b"{\"cmd\":").unwrap();

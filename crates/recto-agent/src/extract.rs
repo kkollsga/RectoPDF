@@ -540,7 +540,10 @@ mod tests {
     /// Failure: a stop that comes before the worker is open is lost, so the stopped copy goes on drawing; or one after it doesn't reach the drawing.
     #[test]
     fn a_stop_is_kept_until_the_copy_looks() {
-        let file = recto_testpdf::TempPdf::new("stop.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Words"]))]));
+        let file = recto_testpdf::TempPdf::new(
+            "stop.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Words"]))]),
+        );
         // Stopped before its worker is open: the drawing it then starts is already stale.
         let early = ClipStop::default();
         early.clone().stop();
@@ -553,6 +556,9 @@ mod tests {
         late.attach(&doc);
         assert!(!doc.is_stale(0) && !late.is_stopped());
         late.clone().stop();
-        assert!(late.is_stopped() && doc.is_stale(0), "a stop after the worker was open didn't reach its drawing");
+        assert!(
+            late.is_stopped() && doc.is_stale(0),
+            "a stop after the worker was open didn't reach its drawing"
+        );
     }
 }

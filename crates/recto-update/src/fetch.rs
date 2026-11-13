@@ -318,7 +318,10 @@ pub(crate) mod tests {
         server.set("/a", Answer::Hang);
         let limit = Duration::from_millis(200);
         let started = std::time::Instant::now();
-        assert_eq!(get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, limit), Err(FetchError::TimedOut));
+        assert_eq!(
+            get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, limit),
+            Err(FetchError::TimedOut)
+        );
         assert!(started.elapsed() < limit + Duration::from_secs(10), "{:?}", started.elapsed());
     }
 

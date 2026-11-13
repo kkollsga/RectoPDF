@@ -86,7 +86,10 @@ fn an_agent_gets_generated_contents_without_hidden_headings() {
     assert!(shown.contains("Introduction") && !shown.contains("HIDDEN"), "{shown}");
     // Said first, before any entry, and not headed as the file's own. The words of the header are `human`'s own test's.
     let first_says_generated = |shown: &str| shown.lines().next().is_some_and(|line| line.contains("Generated"));
-    assert!(first_says_generated(&shown) && !shown.contains("from the file"), "labelled as generated: {shown}");
+    assert!(
+        first_says_generated(&shown) && !shown.contains("from the file"),
+        "labelled as generated: {shown}"
+    );
     let (waited, _, _) = state.text(&["wait", "contents-generated"]);
     assert!(first_says_generated(&waited) && !waited.contains("Open:"), "{waited}");
     // The file's own are still none: nothing was written to it.

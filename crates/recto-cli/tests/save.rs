@@ -157,9 +157,11 @@ fn a_delete_is_saved_by_rewriting() {
     assert_eq!(ok(&state, &["edits"])["edited"], false, "saved");
     // A session with no window keeps no copy of the deleted page, so undo can't go back past the save, and the answer says so rather than leaving it to be found.
     assert!(
-        saved["notes"].as_array().unwrap().iter().any(|note| note
-            .as_str()
-            .is_some_and(|note| note.to_lowercase().contains("undo"))),
+        saved["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().is_some_and(|note| note.to_lowercase().contains("undo"))),
         "{saved}"
     );
     assert_eq!(ok(&state, &["edits"])["can_undo"], false);

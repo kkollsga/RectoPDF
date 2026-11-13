@@ -430,7 +430,9 @@ mod tests {
     #[test]
     fn a_copy_over_many_files_keeps_few_workers() {
         let file = TempPdf::new("main.pdf", &words("The main file", 1));
-        let added: Vec<TempPdf> = (0..MAX_WORKERS).map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1))).collect();
+        let added: Vec<TempPdf> = (0..MAX_WORKERS)
+            .map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1)))
+            .collect();
         let mut session = opened(&file);
         for one in &added {
             run_command(

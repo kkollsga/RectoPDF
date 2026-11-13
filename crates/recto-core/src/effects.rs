@@ -765,10 +765,16 @@ mod tests {
             dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(),
             data: packed.finish().unwrap(),
         };
-        let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/XObject << /F {form} 0 R >>"), vec![bomb]));
+        let file = TempPdf::new(
+            "doc.pdf",
+            &pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/XObject << /F {form} 0 R >>"), vec![bomb]),
+        );
         let reader = open_reader(&file.0).unwrap();
         assert!(effects_within(&reader, 0, LIMIT).unwrap().jpeg_read_differently, "past the limit");
-        assert!(!effects_within(&reader, 0, 4 * LIMIT).unwrap().jpeg_read_differently, "the same drawing within a limit is read through");
+        assert!(
+            !effects_within(&reader, 0, 4 * LIMIT).unwrap().jpeg_read_differently,
+            "the same drawing within a limit is read through"
+        );
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.
