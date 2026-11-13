@@ -228,19 +228,23 @@ fn written(paths: &StatePaths, cmd: &str, outcome: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Failure (review of R2.5, S1): a command whose arguments its type refuses as it's read (`edit_mode` with a word that's neither on nor off) is answered as
-/// `"cmd":"unknown"` and logged as `unknown`, which the log counts as a repeat rather than writing: an agent's malformed attempt at a Control command has
-/// no line of its own in the person's log. It's answered and written under its own name each time, with its code and nothing of what it held; a line that
-/// isn't a command is still `unknown`.
+/// Failure (review of R2.5, S1, and its second review, B1): a command whose arguments its type refuses as it's read (`edit_mode` with a word that's neither
+/// on nor off) is answered as `"cmd":"unknown"` and logged as `unknown`, so an agent's malformed attempt at a Control command has no line of its own in the
+/// person's log; or it's written in full each time, so an agent at Off can repeat it to push out what earlier agents read, since a line is read before the
+/// level is looked at. It's answered under its own name each time and written under it once, with its code and nothing of what it held, and the repeats are
+/// one count; a line that isn't a command is still `unknown`.
 #[test]
 fn a_command_refused_as_its_read_is_answered_and_logged_as_itself() {
     let running = Running::start(Limits::default());
-    for _ in 0..2 {
+    for _ in 0..3 {
         let reply = running.call(&json!({ "cmd": "edit_mode", "set": "sideways" }));
         assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("edit_mode"), &json!("usage")), "{reply}");
     }
+    // `log` writes the counts before it reads.
+    assert_eq!(running.call(&json!({ "cmd": "log" }))["ok"], true);
     let lines = written(&running.paths, "edit_mode", "usage");
-    assert_eq!(lines.len(), 2, "each attempt is a line of its own: {lines:?}");
+    assert_eq!(lines.len(), 2, "one line by its name, and one count for the rest: {lines:?}");
+    assert!(lines[0]["count"].is_null() && lines[1]["count"] == 2, "{lines:?}");
     assert!(lines.iter().all(|line| line["details"].is_null()), "nothing of what it held: {lines:?}");
     let reply = running.call(&json!({ "cmd": "no_such_command" }));
     assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("unknown"), &json!("bad_command")), "{reply}");

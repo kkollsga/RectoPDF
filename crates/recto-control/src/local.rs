@@ -26,12 +26,13 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
 }
 
 /// Reads one line a client sent, and logs a refusal of it under the command it was for: `unknown` for a line that's no command, and the command's own name
-/// for one whose arguments its type refuses (step R2.5), which the log writes as a line of its own rather than counting it as a repeat. Only the name and
-/// the code: nothing of what the line held. The socket and `recto session` read every line through this, so a refusal reads and is logged alike by either.
+/// for one whose arguments its type refuses (step R2.5). The first of a kind is a line of its own and the repeats are counted
+/// ([`ActivityLog::record_refused_as_read`]): this runs before the level is looked at, so an agent at Off can repeat it. Only the name and the code: nothing
+/// of what the line held. The socket and `recto session` read every line through this, so a refusal reads and is logged alike by either.
 pub fn read_line(log: &mut ActivityLog, level: impl FnOnce() -> Level, line: &[u8]) -> Result<Command, Refused> {
     let read = std::str::from_utf8(line).map_or_else(|_| Err(Refused::not_a_command()), recto_agent::read);
     if let Err(refused) = &read {
-        log.record(refused.tag, level(), refused.error.code.as_str(), &Value::Null);
+        log.record_refused_as_read(refused.tag, level(), refused.error.code);
     }
     read
 }
