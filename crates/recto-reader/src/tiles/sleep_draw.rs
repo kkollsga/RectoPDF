@@ -237,7 +237,7 @@ fn fits(held: usize, width: u32, height: u32) -> bool {
 impl SleepDraws {
     /// **A tab's just left the screen,** with what it showed taken as its pictures and its place noted: the pages there it has no picture of are asked for. Nothing for a tab with no version said (its sleep file can't have pictures), or under pressure, and one whose pictures are at their cap takes nothing's place.
     pub(super) fn left(reader: &mut Reader, tab: u32) {
-        let Some(doc) = reader.docs.get(&tab) else { return };
+        let Some(doc) = reader.docs.views.get(&tab) else { return };
         let versioned = doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).is_some();
         if reader.wake.draws.quiet() || !versioned {
             return;
@@ -275,8 +275,9 @@ impl SleepDraws {
     /// Whether the person's view is waiting for something before anything's drawn for a tab off screen: a jump not arrived, a view with no height, a tab showing not laid out yet, or what it wants.
     fn view_waits(reader: &Reader) -> bool {
         let unlaid = reader
+            .docs
             .hot
-            .and_then(|tab| reader.docs.get(&tab))
+            .and_then(|tab| reader.docs.views.get(&tab))
             .is_some_and(|doc| doc.drawing.problem.is_none() && doc.drawing.tile_scale <= 0.0);
         reader.place.jump.is_some() || reader.viewport.height <= 0.0 || unlaid || reader.view_needs_something()
     }
@@ -287,7 +288,7 @@ impl SleepDraws {
             return None;
         }
         let mut owed = reader.wake.draws.owed.take()?;
-        let doc = reader.docs.get(&owed.tab);
+        let doc = reader.docs.views.get(&owed.tab);
         if let Some(doc) = doc
             && doc.layout.document_height() != owed.laid_out
         {
@@ -296,7 +297,7 @@ impl SleepDraws {
         }
         let tab = TabNow {
             held: doc.is_some(),
-            hot: reader.hot == Some(owed.tab),
+            hot: reader.docs.hot == Some(owed.tab),
             problem: doc.is_some_and(|doc| doc.drawing.problem.is_some()),
             pressure: reader.wake.draws.quiet(),
             picture_bytes: doc.map_or(0, picture_bytes),
@@ -386,7 +387,7 @@ impl SleepDraws {
 
     /// Whether a job for this tab is one asked here: it's owed pictures, and isn't the tab showing.
     pub(crate) fn is_for(reader: &Reader, tab: u32) -> bool {
-        reader.hot != Some(tab) && reader.wake.draws.owed.as_ref().is_some_and(|owed| owed.tab == tab)
+        reader.docs.hot != Some(tab) && reader.wake.draws.owed.as_ref().is_some_and(|owed| owed.tab == tab)
     }
 
     /// Whether what's running, for this tab and page, is still wanted for this: the person's view is waiting for nothing meanwhile.
@@ -413,7 +414,7 @@ impl SleepDraws {
 
     /// **A preview's been drawn and kept, as `id`:** if it's one asked here, a copy goes into what the tab was left with, under that's cap, and its page is done with whichever way it went. Kept for a tab off screen, the copy in the cache stays, so a return while the tab's still warm shows it, but as the oldest preview there, whether it went into what the tab was left with or not (its asking over as it landed, its copy not made): it's the first to go when there are too many, never one of the tab showing's.
     pub(super) fn drawn(reader: &mut Reader, tab: u32, page: u32, id: u64) {
-        if reader.hot == Some(tab) {
+        if reader.docs.hot == Some(tab) {
             return;
         }
         if let Some(entry) = reader.cache.entries.get_mut(&id) {
@@ -426,7 +427,7 @@ impl SleepDraws {
             owed.pages.retain(|owed| *owed != page);
         }
         let Some(picture) = reader.copy_preview(id) else { return };
-        let Some(doc) = reader.docs.get_mut(&tab) else { return };
+        let Some(doc) = reader.docs.views.get_mut(&tab) else { return };
         let left = doc.drawing.left_pictures.get_or_insert_with(Vec::new);
         let held: usize = left.iter().map(|picture| picture.bgra.len()).sum();
         if held + picture.bgra.len() > MAX_LEFT_PICTURE_BYTES {

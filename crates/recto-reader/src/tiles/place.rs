@@ -138,7 +138,7 @@ impl Reader {
     /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
     pub fn set_margins(&mut self, left: f64, right: f64) {
         self.margins = (left, right);
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return;
         };
         if doc.layout.set_margins(left, right) {
@@ -151,7 +151,7 @@ impl Reader {
     /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
     pub fn follow(&mut self, page: u32, within: f64) -> Option<u32> {
         self.wake.finish_wake();
-        let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
+        let doc = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab))?;
         let page = page.min(doc.layout.count().saturating_sub(1));
         let within = if within.is_finite() { within.clamp(0.0, 1.0) } else { 0.0 };
         doc.place.anchor = (page, within);
@@ -171,10 +171,11 @@ impl Reader {
     /// Exactly where each tab it holds is, for the session to keep. Hot and warm tabs: a few at most, and a cold tab's is already kept.
     pub fn places(&self) -> Vec<(u32, SavedPlace)> {
         self.docs
+            .views
             .values()
             .filter_map(|doc| {
                 let page_size = doc.layout.usual_size();
-                if self.hot == Some(doc.tab) {
+                if self.docs.hot == Some(doc.tab) {
                     let page = self.place.last_view_page?;
                     // Not yet arrived where it's been sent: what the view says is about somewhere else.
                     let (x, y) = if self.place.jump.is_some() {
@@ -219,12 +220,12 @@ impl Reader {
 
     /// Whether what's on the layers is the place on the hot tab, with nothing still on its way there: what makes it right to show a window.
     pub fn is_on_place(&self) -> bool {
-        self.hot.is_some() && self.place.jump.is_none() && self.is_settled()
+        self.docs.hot.is_some() && self.place.jump.is_none() && self.is_settled()
     }
 
     /// Lays the tab showing out another way: a page to a row, or two side by side. The reader stays on the page they were on, as far down it, and the zoom stays.
     pub fn set_spread(&mut self, spread: Spread) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return;
         };
         if !doc.layout.set_spread(spread) {
@@ -245,7 +246,7 @@ impl Reader {
         }
         // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
         self.wake.finish_wake();
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return false;
         };
         let page = page.min(doc.layout.count().saturating_sub(1));
@@ -263,7 +264,9 @@ impl Reader {
     /// Goes where the tab's anchor says, which is on this page, as a jump.
     pub(super) fn jump_to_anchor(&mut self, page: u32) {
         self.pointer.forget_reveal_unless(page);
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get(&tab)) else {
+            return;
+        };
         let y = doc.place_y();
         let seq = self.place.send();
         self.place.jump = Some(seq);
@@ -273,7 +276,7 @@ impl Reader {
 
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
     pub(super) fn lay_out(&mut self) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return;
         };
         doc.layout.set_margins(self.margins.0, self.margins.1);
@@ -297,7 +300,7 @@ impl Reader {
     /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
     pub(super) fn widen_for_view(&mut self) {
         let viewport = self.viewport;
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return;
         };
         let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);

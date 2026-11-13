@@ -11,7 +11,6 @@ use crate::paper::PaperKind;
 use recto_platform::FileStamp;
 use recto_proto::{MAX_SCALE, MIN_SCALE, TileRect};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,9 +30,9 @@ pub(crate) mod sleep_draw;
 mod wake;
 mod zoom;
 
-use cache::{Entry, TileCache, TileKey};
-pub(crate) use doc::DocView;
+use cache::{TileCache, TileKey};
 use doc::Issue;
+pub(crate) use doc::{DocView, Docs};
 use host::HostQueue;
 pub(crate) use jobs::Work;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
@@ -228,8 +227,8 @@ pub struct ReaderCounts {
 pub struct ReaderReport(pub Value);
 
 pub(crate) struct Reader {
-    docs: HashMap<u32, DocView>,
-    hot: Option<u32>,
+    /// The tabs held, hot and warm, and which is showing: the engine asks which tab shows, whether one's held and what it holds through this field's own methods.
+    pub(crate) docs: Docs,
     viewport: Viewport,
     paper: PaperKind,
     window_open: bool,
@@ -269,8 +268,7 @@ impl Default for Reader {
 impl Reader {
     pub fn new() -> Self {
         Self {
-            docs: HashMap::new(),
-            hot: None,
+            docs: Docs::new(),
             viewport: Viewport {
                 magnification: 1.0,
                 backing: 2.0,
@@ -297,41 +295,17 @@ impl Reader {
         self.viewport.scrolled_to
     }
 
-    /// The files a tab it holds has.
-    pub fn files_of(&self, tab: u32) -> Vec<PathBuf> {
-        self.docs.get(&tab).map_or_else(Vec::new, |doc| doc.map.files.clone())
-    }
-
-    /// Whether this tab's anything here: a view of it's held, so a sleep file has nothing to add.
-    pub fn holds(&self, tab: u32) -> bool {
-        self.docs.contains_key(&tab)
-    }
-
-    /// The version of the file a page of a tab is from, as a worker last said.
-    fn version_of_page(&self, tab: u32, page: u32) -> Option<u64> {
-        let doc = self.docs.get(&tab)?;
-        let (file, _) = doc.map.file_of(page)?;
-        doc.drawing.versions.get(file).copied()
-    }
-
-    /// Whether something drawn is of the version of its file there is now. Unknown on either side passes: before a worker's said, what there is is all there is.
-    fn is_current(&self, entry: &Entry) -> bool {
-        match (entry.version, self.version_of_page(entry.tab, entry.page)) {
-            (Some(drawn), Some(now)) => drawn == now,
-            _ => true,
-        }
-    }
-
     /// **A worker's said which version of a file it has.** If that's another than was said before, everything drawn of the old one goes from every tab of it, on screen and off, and is drawn again. What came from a sleep file with no version said goes too, as there's no knowing.
     pub fn note_version(&mut self, file: &std::path::Path, version: u64) {
         let tabs: Vec<u32> = self
             .docs
+            .views
             .values()
             .filter(|doc| doc.map.files.iter().any(|known| known == file))
             .map(|doc| doc.tab)
             .collect();
         for tab in tabs {
-            let Some(doc) = self.docs.get_mut(&tab) else { continue };
+            let Some(doc) = self.docs.views.get_mut(&tab) else { continue };
             let was = doc.drawing.versions.insert(file.to_path_buf(), version);
             if was == Some(version) {
                 continue;
@@ -358,13 +332,13 @@ impl Reader {
                     && entry.attached
                 {
                     let page = entry.page;
-                    if self.hot == Some(tab) {
+                    if self.docs.hot == Some(tab) {
                         self.detach(id, page);
                     }
                 }
                 self.cache.forget(id, &mut self.host);
             }
-            if self.hot == Some(tab) {
+            if self.docs.hot == Some(tab) {
                 self.refresh(MAX_ATTACH_PER_TURN);
             }
         }
@@ -374,7 +348,7 @@ impl Reader {
     pub fn key_given(&mut self, path: &std::path::Path) {
         self.work.keyless.retain(|file| file != path);
         self.work.reopen_files.push(path.to_path_buf());
-        for doc in self.docs.values_mut() {
+        for doc in self.docs.views.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
                 doc.drawing.problem = None;
                 doc.drawing.issues.clear();
@@ -383,33 +357,8 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
-    /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
-    pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp> {
-        let doc = self.docs.get(&tab)?;
-        doc.map
-            .files
-            .iter()
-            .position(|known| known == file)
-            .filter(|at| *at > 0)
-            .and_then(|at| doc.map.expected.get(at).copied().flatten())
-    }
-
-    /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
-    pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
-        self.docs.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))
-    }
-
-    pub fn hot_tab(&self) -> Option<u32> {
-        self.hot
-    }
-
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()
-    }
-
-    /// The tab showing's view, if one is: where the engine reads its points, pages, place and zoom from ([`DocView`]'s own methods, in `tiles/geometry.rs`).
-    pub(crate) fn doc(&self) -> Option<&DocView> {
-        self.hot.and_then(|tab| self.docs.get(&tab))
     }
 
     /// Makes a tab the one on screen, with its place. A tab seen before keeps its layout and zoom.
@@ -417,20 +366,21 @@ impl Reader {
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread) {
         self.keep_only(warm, tab);
         // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
-        let staying = self.hot == Some(tab);
+        let staying = self.docs.hot == Some(tab);
         // What was selected when a renderer saw the file replaced, for a save that turns out to have written what was shown.
         let selected_before_change = self.pointer.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
-        if staying && let Some(doc) = self.docs.get_mut(&tab) {
+        if staying && let Some(doc) = self.docs.views.get_mut(&tab) {
             // Across the page, as the view has it now: what's taken up again goes back there.
             doc.place.scroll_x = self.viewport.x;
         }
-        if self.hot != Some(tab) {
+        if self.docs.hot != Some(tab) {
             self.leave_hot(tab);
         }
         let floor = self.work.next_generation;
         let margins = self.margins;
         let doc = self
             .docs
+            .views
             .entry(tab)
             .or_insert_with(|| DocView::from_saved(tab, pages, page, &map, saved, spread, margins, floor));
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
@@ -493,17 +443,21 @@ impl Reader {
             }
         }
         // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
-        if let Some(doc) = self.docs.get_mut(&tab) {
+        if let Some(doc) = self.docs.views.get_mut(&tab) {
             doc.drawing.left_pictures = None;
         }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
-        if let Some(doc) = self.docs.get_mut(&tab)
+        if let Some(doc) = self.docs.views.get_mut(&tab)
             && doc.layout.set_spread(spread)
         {
             doc.place.exact_y = None;
         }
-        let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.place.magnification, doc.place.scroll_x));
+        let (magnification, across) = self
+            .docs
+            .views
+            .get(&tab)
+            .map_or((1.0, 0.0), |doc| (doc.place.magnification, doc.place.scroll_x));
         self.host.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
         self.jump_to_anchor(page);
@@ -516,25 +470,25 @@ impl Reader {
     /// Leaves the tab that was showing for `tab`: what it showed and where it was are kept with it, and the screen is cleared.
     fn leave_hot(&mut self, tab: u32) {
         // While what it showed is still on the screen, and so all there.
-        if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
+        if let Some(left) = self.docs.hot.filter(|hot| self.docs.views.contains_key(hot)) {
             let pictures = self.pictures_in_view(left);
-            if let Some(doc) = self.docs.get_mut(&left) {
+            if let Some(doc) = self.docs.views.get_mut(&left) {
                 doc.drawing.left_pictures = Some(pictures);
             }
         }
         let last_page = self.place.last_view_page;
         let (left_x, left_y) = (self.viewport.x, self.viewport.y);
-        if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
+        if let Some(doc) = self.docs.hot.and_then(|hot| self.docs.views.get_mut(&hot)) {
             doc.place.left_at = last_page.map(|page| (page, doc.place.anchor));
             doc.place.scroll_x = left_x;
             doc.place.exact_y = Some((left_y, doc.layout.document_height()));
         }
         // With its place and its pictures noted: what of its place it has no picture of is drawn once the tab coming has what it needs.
-        if let Some(left) = self.hot {
+        if let Some(left) = self.docs.hot {
             sleep_draw::SleepDraws::left(self, left);
         }
         self.clear_screen();
-        self.hot = Some(tab);
+        self.docs.hot = Some(tab);
         self.place.last_view_page = None;
         self.place.moved_page = None;
         // A selection is in what's on screen, and a tab off screen holds none.
@@ -544,16 +498,16 @@ impl Reader {
 
     /// Everything of tabs that have gone cold goes, as a cold tab holds nothing.
     fn keep_only(&mut self, warm: &[u32], hot: u32) {
-        let gone: Vec<u32> = self.docs.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
+        let gone: Vec<u32> = self.docs.views.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
         for tab in gone {
-            self.docs.remove(&tab);
+            self.docs.views.remove(&tab);
             self.cache.drop_tab(tab, &mut self.host);
         }
     }
 
     /// Which tabs are warm now, the hot one staying as it is. A tab that's stopped being warm, closed perhaps, holds nothing from here on, and its renderer goes.
     pub fn set_warm(&mut self, warm: &[u32]) {
-        let Some(hot) = self.hot else { return };
+        let Some(hot) = self.docs.hot else { return };
         self.keep_only(warm, hot);
         self.recount_wanted_files(warm);
         self.cancel_if_unwanted();
@@ -562,12 +516,12 @@ impl Reader {
     /// No PDF is open: the home state.
     pub fn deactivate(&mut self) {
         self.clear_screen();
-        let tabs: Vec<u32> = self.docs.keys().copied().collect();
+        let tabs: Vec<u32> = self.docs.views.keys().copied().collect();
         for tab in tabs {
             self.cache.drop_tab(tab, &mut self.host);
         }
-        self.docs.clear();
-        self.hot = None;
+        self.docs.views.clear();
+        self.docs.hot = None;
         self.work.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
         self.pointer.selecting.reset();
@@ -609,7 +563,7 @@ impl Reader {
         // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
         self.place.note_viewport(was, viewport);
         let mut moved_layout = false;
-        if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
+        if let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
                 moved_layout = true;
             }
@@ -622,7 +576,7 @@ impl Reader {
             self.lay_out();
         } else {
             let viewport = self.viewport;
-            if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
+            if let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) {
                 self.place.track(doc, viewport);
             }
             self.widen_for_view();
@@ -707,7 +661,7 @@ impl Reader {
     pub fn window_closed(&mut self) {
         self.window_open = false;
         self.clear_screen();
-        for doc in self.docs.values_mut() {
+        for doc in self.docs.views.values_mut() {
             doc.drawing.left_pictures = None;
         }
         let ids: Vec<u64> = self.cache.entries.keys().copied().collect();
@@ -728,17 +682,17 @@ impl Reader {
     /// The window is back: everything is asked for again.
     pub fn window_opened(&mut self) {
         self.window_open = true;
-        let hot = self.hot;
-        let warm: Vec<u32> = self.docs.keys().copied().filter(|tab| Some(*tab) != hot).collect();
+        let hot = self.docs.hot;
+        let warm: Vec<u32> = self.docs.views.keys().copied().filter(|tab| Some(*tab) != hot).collect();
         self.recount_wanted_files(&warm);
         // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
-        if let Some(magnification) = self.doc().map(|doc| doc.place.magnification) {
+        if let Some(magnification) = self.docs.shown().map(|doc| doc.place.magnification) {
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
             self.place.jump = Some(u64::MAX);
         }
         self.lay_out();
-        if let Some(across) = self.doc().map(|doc| doc.place.scroll_x) {
+        if let Some(across) = self.docs.shown().map(|doc| doc.place.scroll_x) {
             self.host.ops.push_back(Op::ScrollAcross { x: across });
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -754,11 +708,11 @@ impl Reader {
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
         // What the view is on, and the pages around it whose sizes are asked for, keep theirs past the cap: those are the pages that would be asked for again at once.
-        let near = self.doc().filter(|doc| doc.tab == tab).map(|doc| {
+        let near = self.docs.shown().filter(|doc| doc.tab == tab).map(|doc| {
             let visible = self.visible_pages(doc);
             visible.start().saturating_sub(SIZES_AROUND)..=visible.end().saturating_add(SIZES_AROUND)
         });
-        if let Some(doc) = self.docs.get_mut(&tab) {
+        if let Some(doc) = self.docs.views.get_mut(&tab) {
             if doc.drawing.issues.len() >= MAX_ISSUES_REMEMBERED && !doc.drawing.issues.contains_key(&page) {
                 doc.drawing.issues.retain(|known, _| near.as_ref().is_some_and(|near| near.contains(known)));
             }
@@ -788,7 +742,7 @@ impl Reader {
         if matches!(kind, JobKind::Links) {
             // About the tab showing, as it is, or about nothing.
             match outcome {
-                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) => {
+                Outcome::Links(links) if self.docs.hot == Some(tab) && !self.docs.views.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) => {
                     self.pointer.linking.take(position, links)
                 }
                 _ => self.pointer.linking.cancelled(position),
@@ -796,7 +750,7 @@ impl Reader {
             return;
         }
         // Asked about the pages as they were. An edit has changed what's at this position since.
-        if self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) {
+        if self.docs.views.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) {
             self.counts.cancelled += 1;
             self.refresh(MAX_ATTACH_PER_TURN);
             return;
@@ -807,14 +761,14 @@ impl Reader {
             (JobKind::Text { .. }, Outcome::Cancelled) => self.counts.cancelled += 1,
             (JobKind::Text { .. }, _) => self.take_text(tab, position, None),
             (JobKind::Size, Outcome::Size(size)) => {
-                let Some(doc) = self.docs.get_mut(&tab) else { return };
+                let Some(doc) = self.docs.views.get_mut(&tab) else { return };
                 let moved = doc.layout.set_page_size(position, size);
-                if moved && self.hot == Some(tab) {
+                if moved && self.docs.hot == Some(tab) {
                     self.lay_out();
                 }
             }
             (JobKind::Traits, Outcome::Heavy(heavy)) => {
-                if let Some(doc) = self.docs.get_mut(&tab) {
+                if let Some(doc) = self.docs.views.get_mut(&tab) {
                     if doc.drawing.heavy.len() >= MAX_HEAVY_REMEMBERED {
                         doc.drawing.heavy.clear();
                     }
@@ -832,7 +786,7 @@ impl Reader {
                 Outcome::Drawn { kind, low_res },
             ) => {
                 self.counts.drawn += 1;
-                if self.docs.contains_key(&tab) && self.window_open {
+                if self.docs.views.contains_key(&tab) && self.window_open {
                     let id = self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res);
                     if what == DrawKind::Preview {
                         sleep_draw::SleepDraws::drawn(self, tab, position, id);
@@ -848,7 +802,7 @@ impl Reader {
                 self.note_issue(tab, position, message, may_pass);
             }
             (_, Outcome::DocumentFailed { message, needs_key }) => {
-                if let Some(doc) = self.docs.get_mut(&tab) {
+                if let Some(doc) = self.docs.views.get_mut(&tab) {
                     doc.drawing.problem = Some(message);
                 }
                 if needs_key && !self.work.keyless.contains(&file) && self.work.keyless.len() < MAX_KEYLESS {
@@ -882,7 +836,7 @@ impl Reader {
         if self.work.running.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.host.more_to_attach {
             return false;
         }
-        let Some(doc) = self.doc() else { return true };
+        let Some(doc) = self.docs.shown() else { return true };
         if doc.drawing.problem.is_some() {
             return true;
         }

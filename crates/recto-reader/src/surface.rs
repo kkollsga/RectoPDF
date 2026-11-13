@@ -262,6 +262,13 @@ DocView::pub(crate) fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> 
 DocView::pub(crate) fn point_on_page(&self, x: f64, y: f64) -> Option<PagePoint>
 DocView::pub(crate) fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
 DocView::pub(crate) fn reading_anchor(&self) -> (u32, f64)
+Docs (pub(crate) struct, derives Debug)
+Docs::pub(crate) fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
+Docs::pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf>
+Docs::pub(crate) fn holds(&self, tab: u32) -> bool
+Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
+Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
+Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
@@ -368,6 +375,7 @@ Points::pub fn page_turns(&self, page: u32) -> u8
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 Reader (pub(crate) struct)
 Reader.pub(crate) cache: TileCache
+Reader.pub(crate) docs: Docs
 Reader.pub(crate) host: HostQueue
 Reader.pub(crate) place: Place
 Reader.pub(crate) pointer: Pointer
@@ -380,15 +388,10 @@ Reader::pub fn applied(&mut self)
 Reader::pub fn clear_selection(&mut self)
 Reader::pub fn deactivate(&mut self)
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
-Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
 Reader::pub fn file_changed(&mut self, tab: u32)
-Reader::pub fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
-Reader::pub fn holds(&self, tab: u32) -> bool
-Reader::pub fn hot_tab(&self) -> Option<u32>
 Reader::pub fn is_on_place(&self) -> bool
-Reader::pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Reader::pub fn is_settled(&self) -> bool
 Reader::pub fn is_showable(&self) -> bool
 Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
@@ -419,7 +422,6 @@ Reader::pub fn thread_restarted(&mut self, give_up: bool)
 Reader::pub fn window_closed(&mut self)
 Reader::pub fn window_opened(&mut self)
 Reader::pub fn zoom(&mut self, zoom: Zoom) -> Option<f64>
-Reader::pub(crate) fn doc(&self) -> Option<&DocView>
 ReaderCounts (pub struct, derives Clone, Debug, Default)
 ReaderReport (pub struct)
 Running (pub(super) struct, derives Debug)

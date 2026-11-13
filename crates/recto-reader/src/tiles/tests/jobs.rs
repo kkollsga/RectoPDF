@@ -135,7 +135,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
     assert!(matches!(size.kind, JobKind::Size));
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     reader.finish(size, Outcome::Size(PageBox { width: 100.0, height: 100.0 }));
-    assert!(!reader.doc().unwrap().layout.is_known(0), "that size was the old page's");
+    assert!(!reader.docs.shown().unwrap().layout.is_known(0), "that size was the old page's");
 
     let mut reader = reader_on(3);
     let traits = loop {
@@ -151,7 +151,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
     let position = traits.position;
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     reader.finish(traits, Outcome::Heavy(true));
-    assert!(!reader.doc().unwrap().drawing.heavy.contains_key(&position), "that was the old page's");
+    assert!(!reader.docs.shown().unwrap().drawing.heavy.contains_key(&position), "that was the old page's");
 
     let mut reader = reader_on(3);
     let draw = loop {

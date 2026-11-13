@@ -39,11 +39,11 @@ impl Links<'_> {
 
     /// Where a link's page is now: see [`crate::tiles::DocView::position_in_same_file`].
     pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
-        lock(&self.engine.shared.reader).doc()?.position_in_same_file(from, file_page)
+        lock(&self.engine.shared.reader).docs.shown()?.position_in_same_file(from, file_page)
     }
 
     /// Which page of the tab's own file a page of the view is, if it's one.
     pub fn own_file_page(&self, position: u32) -> Option<u32> {
-        lock(&self.engine.shared.reader).doc()?.own_file_page(position)
+        lock(&self.engine.shared.reader).docs.shown()?.own_file_page(position)
     }
 }

@@ -40,7 +40,7 @@ fn a_view_the_host_rounded_to_its_pixels_is_still_on_the_place() {
     let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
-    let anchor = reader.doc().unwrap().layout.anchor_for(y, 8);
+    let anchor = reader.docs.shown().unwrap().layout.anchor_for(y, 8);
     assert_eq!(anchor, (8, 0.0));
     // On a half-point pixel just above, which is in the gap above the page, and just below.
     for rounded in [(y * 2.0).floor() / 2.0, y + 0.07] {
@@ -87,7 +87,7 @@ fn only_the_readers_own_scroll_leads_a_synced_pane() {
     there.scrolled_to = seq;
     reader.set_viewport(there);
     assert!(!reader.place.take_user_scrolled(), "arriving isn't leading");
-    assert_eq!(reader.doc().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(40));
+    assert_eq!(reader.docs.shown().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(40));
     let mut zoomed = there;
     zoomed.magnification = 1.5;
     zoomed.y += 300.0;
@@ -193,7 +193,7 @@ fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
                     },
                 );
                 assert_eq!(reader.places()[0].1.page, target, "{wide} x {high}, page {target}, {scroll} down");
-                assert_eq!(reader.doc().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(target));
+                assert_eq!(reader.docs.shown().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(target));
                 assert!(
                     reader.place.take_moved_page().is_none_or(|page| page == target),
                     "the session's page left {target}"
@@ -208,7 +208,7 @@ fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
 fn the_host_hears_the_documents_width_for_what_it_shows() {
     let mut reader = reader_on(40);
     settle(&mut reader);
-    let doc = reader.docs.get_mut(&1).unwrap();
+    let doc = reader.docs.views.get_mut(&1).unwrap();
     doc.layout.set_page_size(21, PageBox { width: 3000.0, height: 792.0 });
     let (wide, frame) = (doc.layout.rect(21), doc.layout.document_width_for(0.0, 1.0));
     reader.lay_out();
@@ -233,7 +233,7 @@ fn a_turn_keeps_the_place_in_the_page_and_across() {
     let mut reader = reader_on(10);
     reader.place.scrolled_to = 0;
     settle(&mut reader);
-    let page = reader.doc().unwrap().layout.rect(3);
+    let page = reader.docs.shown().unwrap().layout.rect(3);
     let mut at = view(page.y + page.height * 0.4);
     at.x = 30.0;
     at.magnification = 2.0;
@@ -254,7 +254,7 @@ fn a_turn_keeps_the_place_in_the_page_and_across() {
         before.anchor,
         after.anchor
     );
-    assert_eq!(reader.docs[&1].place.scroll_x, 30.0, "and as far across");
+    assert_eq!(reader.docs.views[&1].place.scroll_x, 30.0, "and as far across");
 }
 
 /// Failure (review of f05c998, B2): side by side, after any scroll, a change of layout moves the reader off the page they were on: the place was kept on the first page of its row, so the right-hand page's reader lands on the left one, or two pages back going to the cover layout. Fed the host's next view, as the app is.
@@ -275,13 +275,13 @@ fn a_change_of_layout_after_a_scroll_keeps_the_page() {
         scrolled.y += 20.0;
         reader.set_viewport(scrolled);
         reader.place.take_moved_page();
-        let was = reader.doc().unwrap().layout.rect(51);
+        let was = reader.docs.shown().unwrap().layout.rect(51);
         let down = (scrolled.y - was.y) / was.height;
         reader.set_spread(to);
         follow_host(&mut reader, scrolled);
         let place = reader.places()[0].1;
         assert_eq!(place.page, 51, "{from:?} to {to:?}");
-        let rect = reader.doc().unwrap().layout.rect(51);
+        let rect = reader.docs.shown().unwrap().layout.rect(51);
         assert!(
             (reader.viewport.y - (rect.y + down * rect.height)).abs() < 1.0,
             "{from:?} to {to:?}: as far down the page: {} against {}",
@@ -296,7 +296,7 @@ fn a_change_of_layout_after_a_scroll_keeps_the_page() {
 fn coming_back_to_a_tab_keeps_the_place_in_the_page() {
     let mut reader = reader_on(100);
     settle(&mut reader);
-    let tops = |reader: &Reader, page| reader.doc().unwrap().layout.top(page);
+    let tops = |reader: &Reader, page| reader.docs.shown().unwrap().layout.top(page);
     let inside = tops(&reader, 40) + 300.0;
     reader.set_viewport(view(inside));
     let page = reader.place.take_moved_page().expect("the reader moved");
@@ -345,7 +345,7 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
         magnification: 2.0,
         ..view(0.0)
     });
-    let inside = reader.doc().unwrap().layout.top(40) + 300.0;
+    let inside = reader.docs.shown().unwrap().layout.top(40) + 300.0;
     reader.set_viewport(Viewport {
         magnification: 2.0,
         ..view(inside)
@@ -372,7 +372,7 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
         ..view(*y)
     });
     assert_eq!(reader.place.take_moved_page(), None, "arriving isn't a move");
-    assert_eq!(reader.doc().unwrap().place.magnification, 2.0);
+    assert_eq!(reader.docs.shown().unwrap().place.magnification, 2.0);
 }
 
 /// Failure: a tab comes back where the document's top is, or at no zoom, or near its place by rounding rather than on it. Or the place is taken from where the view still is on its way there, so the next layout goes somewhere else. What's said comes straight back out, to the pixel, and a place for another page, as a `goto` while cold leaves, isn't used.
@@ -441,7 +441,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
     let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("{ops:?}")
     };
-    assert_eq!(*went, fresh.doc().unwrap().layout.top(7));
+    assert_eq!(*went, fresh.docs.shown().unwrap().layout.top(7));
     // What a record can say that isn't a place doesn't get as far as a host.
     let mut hostile = Reader::new();
     hostile.window_opened();
@@ -477,7 +477,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
 fn a_resize_keeps_the_reader_on_their_page() {
     let mut reader = reader_on(100);
     settle(&mut reader);
-    let y = reader.doc().unwrap().layout.top(40);
+    let y = reader.docs.shown().unwrap().layout.top(40);
     reader.set_viewport(view(y));
     settle(&mut reader);
     let ops = reader.set_viewport(Viewport {
@@ -488,7 +488,7 @@ fn a_resize_keeps_the_reader_on_their_page() {
     let Some(Op::ScrollTo { y: new_y, .. }) = ops.iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("{ops:?}")
     };
-    let top = reader.doc().unwrap().layout.top(40);
+    let top = reader.docs.shown().unwrap().layout.top(40);
     assert!((*new_y - top).abs() < 1.0, "{new_y} against {top}");
 }
 
@@ -572,9 +572,9 @@ fn every_way_the_place_moves_moves_the_place_clock() {
         settle(&mut reader);
         drop(reader.set_viewport(view(1000.0)));
         settle(&mut reader);
-        let (stamp, places, anchor) = (place_stamp(), reader.places(), reader.doc().map(|doc| doc.reading_anchor()));
+        let (stamp, places, anchor) = (place_stamp(), reader.places(), reader.docs.shown().map(|doc| doc.reading_anchor()));
         step(&mut reader);
-        let (now, places_now, anchor_now) = (place_stamp(), reader.places(), reader.doc().map(|doc| doc.reading_anchor()));
+        let (now, places_now, anchor_now) = (place_stamp(), reader.places(), reader.docs.shown().map(|doc| doc.reading_anchor()));
         assert!(places_now != places || anchor_now != anchor, "{name} moved nothing, so it walks nothing");
         if now <= stamp {
             quiet.push(format!("{name}: {places:?} to {places_now:?}"));

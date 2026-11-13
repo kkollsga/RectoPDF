@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn previews_outlive_their_tiles() {
     let mut reader = reader_on(600);
-    let step = reader.doc().map(|doc| doc.layout.top(1)).unwrap();
+    let step = reader.docs.shown().map(|doc| doc.layout.top(1)).unwrap();
     settle(&mut reader);
     // Enough pages at 12 tiles each to pass the tile cap by a long way, and few enough to stay under the preview cap.
     for page in 1..60 {
@@ -16,7 +16,7 @@ fn previews_outlive_their_tiles() {
         report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64,
         "{report}"
     );
-    let doc = reader.doc().unwrap();
+    let doc = reader.docs.shown().unwrap();
     let key = super::super::cache::TileKey::preview(doc.tab, 0, reader.paper);
     assert!(reader.cache.cover.contains_key(&key), "the first page's preview is still here");
     let ops = reader.set_viewport(view(0.0));
@@ -193,7 +193,7 @@ fn a_tab_gone_cold_holds_nothing() {
         Spread::Single,
     );
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
-    assert!(!reader.docs.contains_key(&1));
+    assert!(!reader.docs.views.contains_key(&1));
     assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
     reader.activate(
         3,
@@ -239,7 +239,7 @@ fn a_warm_tab_that_goes_holds_nothing_at_once() {
     assert_eq!(reader.work.wanted_files().len(), 2);
     reader.set_warm(&[]);
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "closed");
-    assert!(!reader.docs.contains_key(&1));
+    assert!(!reader.docs.views.contains_key(&1));
     assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
 }
 

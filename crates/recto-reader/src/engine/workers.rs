@@ -27,7 +27,7 @@ impl Engine {
 impl Workers<'_> {
     /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
     pub fn bytes(&self, tab: u32) -> u64 {
-        let files = lock(&self.engine.shared.reader).files_of(tab);
+        let files = lock(&self.engine.shared.reader).docs.files_of(tab);
         lock(&self.engine.shared.workers_by_file)
             .iter()
             .filter(|(path, _)| files.contains(path))

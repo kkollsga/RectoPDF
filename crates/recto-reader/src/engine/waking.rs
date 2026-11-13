@@ -38,13 +38,13 @@ impl Wake<'_> {
     /// A tab's being woken, as of now.
     pub fn note_wake(&self, tab: u32, began: Instant) {
         let mut reader = lock(&self.engine.shared.reader);
-        let hot = reader.hot_tab();
+        let hot = reader.docs.hot_tab();
         reader.wake.note_wake(hot, tab, began);
     }
 
     /// Whether a view of this tab's held.
     pub fn holds(&self, tab: u32) -> bool {
-        lock(&self.engine.shared.reader).holds(tab)
+        lock(&self.engine.shared.reader).docs.holds(tab)
     }
 
     /// What a tab's sleep file gets from here.

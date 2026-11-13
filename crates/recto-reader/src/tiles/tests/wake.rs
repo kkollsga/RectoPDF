@@ -32,7 +32,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
             pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())],
         },
     );
-    reader.wake.note_wake(reader.hot, 1, Instant::now());
+    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
     reader.wake.give_sleep(
         1,
         SleepView {
@@ -43,7 +43,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         },
     );
     reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
-    let doc = reader.doc().unwrap();
+    let doc = reader.docs.shown().unwrap();
     assert!(doc.layout.is_known(0));
     assert!(doc.layout.is_known(3), "the page table's taken up");
     assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
@@ -68,7 +68,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     let mut bare = Reader::new();
     bare.wake.window_up();
     bare.set_viewport(view(0.0));
-    bare.wake.note_wake(bare.hot, 1, Instant::now());
+    bare.wake.note_wake(bare.docs.hot, 1, Instant::now());
     bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     bare.host.take_ops();
     let scrolled = bare.place.jump.unwrap_or(0);
@@ -99,7 +99,7 @@ fn a_sleep_file_covers_the_view_side_by_side_too() {
     far.height = 2400.0;
     reader.set_viewport(far);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).collect();
     assert!(shown.len() > 6 && shown.len() <= 12, "the view shows {} pages", shown.len());
     let pictures: Vec<u32> = reader.sleep_material(1, &map()).unwrap().pictures.iter().map(|picture| picture.page).collect();
     assert_eq!(pictures, shown, "a picture for each page shown");
@@ -118,7 +118,7 @@ fn a_tab_off_screen_gets_pictures_for_its_own_view() {
     low.height /= 0.4;
     reader.set_viewport(low);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(12).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).take(12).collect();
     assert!(shown.len() > 6, "the low zoom shows {} pages", shown.len());
     // Another tab comes to the screen at its own zoom, and the first is held, off screen.
     reader.activate(
@@ -145,7 +145,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(MAX_SLEEP_SHOTS).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).take(MAX_SLEEP_SHOTS).collect();
     reader.activate(
         2,
         10,
@@ -182,7 +182,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
     // Shown again, it's drawn again, and what was kept for its sleep file goes.
     reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
-    assert!(reader.docs[&1].drawing.left_pictures.is_none());
+    assert!(reader.docs.views[&1].drawing.left_pictures.is_none());
     assert_eq!(reader.report().0["left_picture_bytes"], 0);
 }
 
@@ -211,7 +211,7 @@ fn pictures_kept_of_a_tab_left_go_with_its_version() {
         "kept as it was left, within its limit: {kept}"
     );
     reader.note_version(Path::new("/d/a.pdf"), 2);
-    assert!(reader.docs[&1].drawing.left_pictures.is_none());
+    assert!(reader.docs.views[&1].drawing.left_pictures.is_none());
     assert!(
         reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
         "nothing of version 1 is left to give"
@@ -337,7 +337,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
     let mut reader = Reader::new();
     reader.wake.window_up();
     reader.set_viewport(view(0.0));
-    reader.wake.note_wake(reader.hot, 1, Instant::now());
+    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
     let saved = SavedPlace {
         page: 0,
         anchor: (0, 0.0),

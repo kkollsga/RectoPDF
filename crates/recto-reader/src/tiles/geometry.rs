@@ -1,6 +1,6 @@
 //! **Points, pages, place and zoom of a tab the page view holds:** where a point of the document is on a page as it's shown, and back, which page of which
 //! file a position is, and where the reader is in it and at what zoom. Each reads that one tab's view and nothing else of the page view, so they're
-//! [`DocView`]'s own; the engine reaches the tab showing's through [`super::Reader::doc`].
+//! [`DocView`]'s own; the engine reaches the tab showing's through [`super::Docs::shown`].
 
 use super::doc::DocView;
 use recto_index::select::PagePoint;

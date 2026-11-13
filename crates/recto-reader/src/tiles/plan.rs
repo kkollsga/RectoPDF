@@ -18,11 +18,11 @@ impl Reader {
         }
         if running.text {
             // Only a check goes for what's more wanted: it can take seconds, where reading is quick, and it's what's asked for when there's nothing better to do.
-            return self.hot == Some(running.tab) && self.window_open && !(running.check && self.view_needs_something());
+            return self.docs.hot == Some(running.tab) && self.window_open && !(running.check && self.view_needs_something());
         }
-        self.hot == Some(running.tab)
+        self.docs.hot == Some(running.tab)
             && self.window_open
-            && self.doc().is_some_and(|doc| {
+            && self.docs.shown().is_some_and(|doc| {
                 self.visible_pages(doc).contains(&running.position)
                     && (running.preview
                         || running
@@ -33,7 +33,7 @@ impl Reader {
 
     /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
     pub(super) fn view_needs_something(&self) -> bool {
-        let Some(doc) = self.doc() else { return false };
+        let Some(doc) = self.docs.shown() else { return false };
         let scale = doc.drawing.tile_scale;
         if scale <= 0.0 {
             return false;
@@ -87,7 +87,7 @@ impl Reader {
 
     /// Sizes first: nothing is shown or drawn before them. The first page known sets the fit, so where a reader lands is asked first, and then the pages around it. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on.
     fn size_plan(&mut self, tab: u32, visible: std::ops::RangeInclusive<u32>) -> Option<Option<JobPlan>> {
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         let (first, last) = (*visible.start(), *visible.end());
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
         // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
@@ -119,7 +119,7 @@ impl Reader {
     /// The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
     fn links_plan(&mut self, tab: u32) -> Option<JobPlan> {
         if let Some(page) = self.pointer.linking.next_wanted()
-            && let Some(doc) = self.docs.get(&tab)
+            && let Some(doc) = self.docs.views.get(&tab)
             && page < doc.layout.count()
             && let Some((file, source_page)) = doc.map.source(page)
         {
@@ -138,7 +138,7 @@ impl Reader {
 
     /// A visible page's heaviness, its preview or its next tiles, if it wants any. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on to the next page.
     fn page_plan(&mut self, tab: u32, page: u32, scale: f32, now: Instant) -> Option<Option<JobPlan>> {
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         if let Some(issue) = doc.drawing.issues.get(&page)
             && !issue.try_again_at.is_some_and(|at| now >= at)
         {
@@ -259,7 +259,7 @@ impl Reader {
 
     /// Reading text for a selection, a copy or the pointer, if any is wanted at this urgency.
     pub(super) fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
         let wanted = self.pointer.selecting.wanted(urgency, &visible, doc.layout.count(), |page| {
             doc.drawing.heavy.get(&page).copied().unwrap_or(false)
@@ -292,8 +292,8 @@ impl Reader {
 /// What the tab showing wants next, most wanted first.
 // R3.6: a `Reader` operation the ratchet's method count can't see, as a free function taking the whole page view: it reaches every field `Reader`'s own methods do.
 fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
-    let tab = reader.hot?;
-    let doc = reader.docs.get(&tab)?;
+    let tab = reader.docs.hot?;
+    let doc = reader.docs.views.get(&tab)?;
     if doc.drawing.problem.is_some() || reader.viewport.height <= 0.0 {
         return None;
     }
@@ -306,7 +306,7 @@ fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
         return Some(plan);
     }
     let now = Instant::now();
-    let scale = reader.docs.get(&tab)?.drawing.tile_scale;
+    let scale = reader.docs.views.get(&tab)?.drawing.tile_scale;
     if scale <= 0.0 {
         return None;
     }
@@ -317,7 +317,7 @@ fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
     if let Some(plan) = reader.text_plan(tab, Urgency::Now) {
         return Some(plan);
     }
-    let doc = reader.docs.get(&tab)?;
+    let doc = reader.docs.views.get(&tab)?;
     let pages: Vec<u32> = reader.visible_pages(doc).collect();
     for page in pages {
         if let Some(plan) = reader.page_plan(tab, page, scale, now)? {

@@ -128,7 +128,7 @@ fn run(shared: &Shared) {
         }
         let mut file_changed = false;
         // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-        let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
+        let expected = lock(&shared.reader).docs.expected_stamp(job.tab, &job.file);
         let added_changed =
             expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
         let outcome = if added_changed {
@@ -158,7 +158,7 @@ fn run(shared: &Shared) {
                         && let (Some(pages), Some(version)) = (open.doc.known_page_count(), open.doc.known_version())
                     {
                         open.length_told = true;
-                        if lock(&shared.reader).is_own_file(job.tab, &job.file) {
+                        if lock(&shared.reader).docs.is_own_file(job.tab, &job.file) {
                             shared.events.file_length(job.tab, pages, version);
                         }
                     }

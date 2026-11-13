@@ -267,7 +267,7 @@ impl Reader {
     pub fn memory_pressure(&mut self, critical: bool) {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
         if critical {
-            for doc in self.docs.values_mut() {
+            for doc in self.docs.views.values_mut() {
                 doc.drawing.left_pictures = None;
             }
         }
@@ -291,7 +291,7 @@ impl Reader {
         let clock = self.cache.clock;
         // Of another version of its file than the one there is now: it goes, and its page is drawn again.
         if let Some(entry) = self.cache.entries.get(&id)
-            && !self.is_current(entry)
+            && !self.docs.is_current(entry)
         {
             self.cache.forget(id, &mut self.host);
             return false;
@@ -381,7 +381,7 @@ impl Reader {
             at: Instant::now(),
         });
         self.cache.clock += 1;
-        let version = self.version_of_page(tab, page);
+        let version = self.docs.version_of_page(tab, page);
         let entry = Entry {
             id,
             tab,
@@ -407,7 +407,7 @@ impl Reader {
             }
         }
         self.cache.entries.insert(id, entry);
-        if let Some(doc) = self.docs.get_mut(&tab) {
+        if let Some(doc) = self.docs.views.get_mut(&tab) {
             doc.drawing.note_seen(page);
         }
         id
@@ -419,7 +419,7 @@ impl Reader {
         let page = entry.page;
         let still_used = TileCache::keys_of(entry).iter().any(|key| self.cache.cover.get(key) == Some(&old));
         if !still_used {
-            if entry.attached && self.hot == Some(tab) {
+            if entry.attached && self.docs.hot == Some(tab) {
                 self.detach(old, page);
             }
             if let Some(entry) = self.cache.entries.get(&old)

@@ -1,10 +1,82 @@
-//! **A tab the page view holds,** hot or warm: its pages and where they are, where the reader is in it ([`DocPlace`]), and what's drawn of it and known about drawing it ([`DocDrawing`]). One is held for each hot and warm tab, and none for a cold one.
+//! **The tabs the page view holds,** and which of them is showing ([`Docs`]), and **a tab it holds,** hot or warm: its pages and where they are, where the reader is in it ([`DocPlace`]), and what's drawn of it and known about drawing it ([`DocDrawing`]). One is held for each hot and warm tab, and none for a cold one.
 
+use super::cache::Entry;
 use super::{MAX_SEEN_REMEMBERED, MAX_ZOOM, MIN_ZOOM, PageMap, RawPicture, SavedPlace};
 use crate::layout::{PageLayout, Spread};
+use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
+
+/// The tabs the page view holds, hot and warm, and which is showing. Built only in the tiles module ([`Docs::new`]): the engine reaches it through `Reader`'s field for the lookups below, and can neither build one nor put another in its place.
+#[derive(Debug)]
+pub(crate) struct Docs {
+    pub(super) views: HashMap<u32, DocView>,
+    pub(super) hot: Option<u32>,
+}
+
+impl Docs {
+    pub(super) fn new() -> Self {
+        Self {
+            views: HashMap::new(),
+            hot: None,
+        }
+    }
+
+    /// The tab showing's view, if one is: where the engine reads its points, pages, place and zoom from ([`DocView`]'s own methods, in `tiles/geometry.rs`).
+    pub(crate) fn shown(&self) -> Option<&DocView> {
+        self.hot.and_then(|tab| self.views.get(&tab))
+    }
+
+    pub(crate) fn hot_tab(&self) -> Option<u32> {
+        self.hot
+    }
+
+    /// The files a tab it holds has.
+    pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf> {
+        self.views.get(&tab).map_or_else(Vec::new, |doc| doc.map.files.clone())
+    }
+
+    /// Whether this tab's anything here: a view of it's held, so a sleep file has nothing to add.
+    pub(crate) fn holds(&self, tab: u32) -> bool {
+        self.views.contains_key(&tab)
+    }
+
+    /// The version of the file a page of a tab is from, as a worker last said.
+    pub(super) fn version_of_page(&self, tab: u32, page: u32) -> Option<u64> {
+        let doc = self.views.get(&tab)?;
+        let (file, _) = doc.map.file_of(page)?;
+        doc.drawing.versions.get(file).copied()
+    }
+
+    /// Whether something drawn is of the version of its file there is now. Unknown on either side passes: before a worker's said, what there is is all there is.
+    pub(super) fn is_current(&self, entry: &Entry) -> bool {
+        match (entry.version, self.version_of_page(entry.tab, entry.page)) {
+            (Some(drawn), Some(now)) => drawn == now,
+            _ => true,
+        }
+    }
+
+    /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
+    pub(crate) fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp> {
+        let doc = self.views.get(&tab)?;
+        doc.map
+            .files
+            .iter()
+            .position(|known| known == file)
+            .filter(|at| *at > 0)
+            .and_then(|at| doc.map.expected.get(at).copied().flatten())
+    }
+
+    /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
+    pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
+        self.views.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))
+    }
+}
+
+// size: the page view's map of the tabs it holds and the tab showing, as `Reader` held them before R3.6 gathered them here.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Docs>() <= 56, "the tabs the page view holds grew");
 
 #[derive(Clone, Debug)]
 pub(super) struct Issue {

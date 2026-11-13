@@ -393,7 +393,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    let page = reader.docs.views.get(&1).unwrap().layout.rect(20);
     reader.set_viewport(view(page.y + page.height * 0.92));
     assert_eq!(
         reader.sleep_material(1, &map()).unwrap().in_view,
@@ -425,7 +425,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
         .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
         .expect("sent to its place");
     reader.set_viewport(view(y));
-    let doc = reader.docs.get(&1).unwrap();
+    let doc = reader.docs.views.get(&1).unwrap();
     let visible: Vec<u32> = reader.visible_pages(doc).collect();
     let shown = in_view_of(doc, &visible, y, 900.0);
     previews.sort_unstable();
@@ -448,7 +448,7 @@ fn picture_of_bytes(bytes: usize) -> RawPicture {
 #[test]
 fn a_preview_that_would_not_fit_under_the_cap_is_not_drawn() {
     let mut reader = left_undrawn();
-    let doc = reader.docs.get_mut(&1).unwrap();
+    let doc = reader.docs.views.get_mut(&1).unwrap();
     doc.drawing
         .left_pictures
         .get_or_insert_with(Vec::new)
@@ -474,7 +474,7 @@ fn memory_pressure_stops_a_draw_for_a_tab_left_that_is_running() {
 fn a_tab_left_with_no_room_for_a_picture_takes_no_other_tab_s_place() {
     let mut reader = left_undrawn();
     reader.note_version(Path::new("/d/2.pdf"), 1);
-    reader.docs.get_mut(&2).unwrap().drawing.left_pictures = Some(vec![picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024)]);
+    reader.docs.views.get_mut(&2).unwrap().drawing.left_pictures = Some(vec![picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024)]);
     SleepDraws::left(&mut reader, 2);
     let report = draws(&reader);
     assert_eq!(report["owed_tab"], 1, "{report}");
@@ -609,7 +609,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    let page = reader.docs.views.get(&1).unwrap().layout.rect(20);
     reader.set_viewport(view(page.y + page.height - 450.0));
     reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
     reader.set_viewport(view(0.0));
@@ -641,7 +641,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
 #[test]
 fn a_page_with_no_file_ends_the_asking_with_its_own_reason() {
     let mut reader = left_undrawn();
-    reader.docs.get_mut(&1).unwrap().map.slots = Some(Vec::new());
+    reader.docs.views.get_mut(&1).unwrap().map.slots = Some(Vec::new());
     assert!(run_jobs(&mut reader, &[]).iter().all(|job| job.tab == 2));
     assert_eq!(draws(&reader)["ended"]["no_source"], 1, "{}", draws(&reader));
     assert_eq!(draws(&reader)["ended"]["cold"], 0, "{}", draws(&reader));

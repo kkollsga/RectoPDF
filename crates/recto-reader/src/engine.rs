@@ -192,12 +192,12 @@ impl Engine {
 
     /// The tab showing's magnification.
     pub fn magnification(&self) -> Option<f64> {
-        lock(&self.shared.reader).doc().map(|doc| doc.magnification())
+        lock(&self.shared.reader).docs.shown().map(|doc| doc.magnification())
     }
 
     /// Where the reader is in the tab showing, as a page and how far down it.
     pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        lock(&self.shared.reader).doc().map(|doc| doc.reading_anchor())
+        lock(&self.shared.reader).docs.shown().map(|doc| doc.reading_anchor())
     }
 
     /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
@@ -254,7 +254,7 @@ impl Engine {
 
     /// Which tab this page view shows.
     pub fn hot_tab(&self) -> Option<u32> {
-        lock(&self.shared.reader).hot_tab()
+        lock(&self.shared.reader).docs.hot_tab()
     }
 
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
@@ -309,7 +309,7 @@ impl Engine {
 
     /// The tab showing's fit, document points per PDF point, if a tab is showing: what a zoom level is worked out from.
     pub fn fit(&self) -> Option<f64> {
-        lock(&self.shared.reader).doc().map(|doc| doc.fit())
+        lock(&self.shared.reader).docs.shown().map(|doc| doc.fit())
     }
 
     /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
@@ -379,7 +379,7 @@ impl Engine {
             // The reader's own scroll here is newer than any place synced scroll left for this pane.
             lock(&self.shared.pending).follow = None;
         }
-        let (magnification, anchor) = reader.doc().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
+        let (magnification, anchor) = reader.docs.shown().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
         let moved = reader.place.has_moved_page();
         let more = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
@@ -670,7 +670,7 @@ mod tests {
         assert!(lock(&engine.shared.pending).follow.is_none(), "nothing older left to land after it");
         let mut reader = lock(&engine.shared.reader);
         assert!(!take_pending_follow(&engine.shared, &mut reader));
-        assert_eq!(reader.doc().map(|doc| doc.reading_anchor()), Some((30, 0.5)));
+        assert_eq!(reader.docs.shown().map(|doc| doc.reading_anchor()), Some((30, 0.5)));
     }
 
     /// Failure (review 1): a place left by synced scroll lands after the reader has scrolled this pane themselves, and takes them back.
@@ -738,7 +738,7 @@ mod tests {
         drop(held);
         let mut reader = lock(&engine.shared.reader);
         assert!(take_pending_follow(&engine.shared, &mut reader));
-        assert_eq!(reader.doc().map(|doc| doc.magnification()), Some(2.0));
+        assert_eq!(reader.docs.shown().map(|doc| doc.magnification()), Some(2.0));
         drop(reader);
         assert!(engine.zoom_soon(1.25), "free: now");
         assert_eq!(engine.magnification(), Some(1.25));

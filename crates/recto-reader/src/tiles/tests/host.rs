@@ -58,7 +58,7 @@ fn the_host_gets_each_batch_in_the_order_it_applies_it() {
     };
     // The host's layers, as the ops say: every `Detach` is of a tile on one, and every `Attach` of one that isn't. A page's `HidePage` takes its tiles with it.
     let layers_hold = |what: &str, ops: &[Op]| {
-        let mut on: HashMap<u64, u32> = HashMap::new();
+        let mut on: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
         for op in ops {
             match op {
                 Op::Clear => on.clear(),

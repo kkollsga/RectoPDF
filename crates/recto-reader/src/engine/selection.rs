@@ -40,7 +40,7 @@ impl Selection<'_> {
     /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.
     pub fn can_be_sent(&self) -> bool {
         let reader = lock(&self.engine.shared.reader);
-        reader.doc().is_some_and(|doc| reader.pointer.selection_can_be_sent(doc.page_count()))
+        reader.docs.shown().is_some_and(|doc| reader.pointer.selection_can_be_sent(doc.page_count()))
     }
 
     /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
@@ -72,7 +72,7 @@ impl Selection<'_> {
     /// Which tab is showing, and what's selected on it. A short lock, for the state record.
     pub fn hot(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
         let reader = lock(&self.engine.shared.reader);
-        reader.hot_tab().map(|tab| (tab, reader.pointer.selection_range()))
+        reader.docs.hot_tab().map(|tab| (tab, reader.pointer.selection_range()))
     }
 
     /// Puts back what was selected, from the state record.
@@ -116,7 +116,7 @@ impl Selection<'_> {
 
     pub fn text_now(&self) -> Option<String> {
         let reader = lock(&self.engine.shared.reader);
-        reader.pointer.selection_text_now(reader.doc()?.page_count())
+        reader.pointer.selection_text_now(reader.docs.shown()?.page_count())
     }
 
     pub fn notice(&self) -> Option<Notice> {

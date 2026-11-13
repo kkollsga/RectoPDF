@@ -111,9 +111,12 @@ impl Reader {
 
     /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
     pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
-        let point = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)));
+        let point = self
+            .docs
+            .shown()
+            .and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)));
         self.pointer.linking.press(if shift { None } else { point }, clicks);
-        match self.doc().and_then(|doc| doc.point_on_page(x, y)) {
+        match self.docs.shown().and_then(|doc| doc.point_on_page(x, y)) {
             Some(point) => self.pointer.selecting.press(point, clicks, shift),
             None => self.pointer.selecting.clear(),
         }
@@ -122,8 +125,8 @@ impl Reader {
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {
-        self.pointer.linking.drag(self.doc().and_then(|doc| doc.point_on_page(x, y)));
-        if let Some(point) = self.doc().and_then(|doc| doc.point_on_page(x, y)) {
+        self.pointer.linking.drag(self.docs.shown().and_then(|doc| doc.point_on_page(x, y)));
+        if let Some(point) = self.docs.shown().and_then(|doc| doc.point_on_page(x, y)) {
             self.pointer.selecting.drag(point);
             self.highlight_ops();
             self.cancel_if_unwanted();
@@ -132,14 +135,21 @@ impl Reader {
 
     /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
     pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
-        let point = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)))?;
+        let point = self
+            .docs
+            .shown()
+            .and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)))?;
         self.pointer.linking.at(point)
     }
 
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
     pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool {
         // Only on a page: the margin and the gap between pages are neither.
-        let Some(point) = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point))) else {
+        let Some(point) = self
+            .docs
+            .shown()
+            .and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)))
+        else {
             return false;
         };
         self.pointer.selecting.is_over_text(point)
@@ -147,7 +157,7 @@ impl Reader {
 
     /// The whole document, as a Mac PDF reader takes ⌘A. It reads nothing until something's showing.
     pub fn select_all(&mut self) {
-        let Some(pages) = self.doc().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else {
+        let Some(pages) = self.docs.shown().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else {
             return;
         };
         self.pointer.selecting.set_range(Range::all(pages));
@@ -161,7 +171,7 @@ impl Reader {
 
     /// Puts back what was selected, from the state record. It's held to the document's pages, as a record can say anything.
     pub fn restore_selection(&mut self, range: recto_index::select::Range) {
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        let pages = self.docs.shown().map_or(0, |doc| doc.layout.count());
         if range.start.page < pages && range.end.page < pages && (range.start.page, range.start.at) <= (range.end.page, range.end.at) {
             self.pointer.selecting.set_range(range);
             self.highlight_ops();
@@ -170,14 +180,14 @@ impl Reader {
 
     /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the hit is put a third of the way down the view. A hit already showing, away from the view's edges, stays where it is, so stepping through hits on one screen doesn't move it. Held to the document's pages.
     pub fn reveal_range(&mut self, range: recto_index::select::Range) {
-        let Some(tab) = self.hot else { return };
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        let Some(tab) = self.docs.hot else { return };
+        let pages = self.docs.shown().map_or(0, |doc| doc.layout.count());
         if range.start.page >= pages || range.end.page >= pages || (range.start.page, range.start.at) > (range.end.page, range.end.at) {
             return;
         }
         self.pointer.selecting.set_range(range);
         self.highlight_ops();
-        let shows = self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
+        let shows = self.docs.shown().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
         self.pointer.revealing = Some((tab, range, !shows));
         if !self.try_reveal() && !shows {
             self.follow(range.start.page, 0.0);
@@ -187,7 +197,7 @@ impl Reader {
     /// Moves the view to Find's hit if its place on the page is known now. Says whether it's settled, gone there or not needed.
     pub(super) fn try_reveal(&mut self) -> bool {
         let Some((tab, range, jumped)) = self.pointer.revealing else { return true };
-        if self.hot != Some(tab) {
+        if self.docs.hot != Some(tab) {
             self.pointer.revealing = None;
             return true;
         }
@@ -197,7 +207,7 @@ impl Reader {
         };
         self.pointer.revealing = None;
         let Some(bounds) = bounds else { return true };
-        let Some(doc) = self.doc() else { return true };
+        let Some(doc) = self.docs.shown() else { return true };
         let rect = doc.layout.rect(range.start.page);
         let fit = doc.layout.fit();
         let (top, bottom) = (rect.y + f64::from(bounds.y) * fit, rect.y + f64::from(bounds.y + bounds.height) * fit);
@@ -215,12 +225,14 @@ impl Reader {
     }
 
     pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
-        self.doc().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
+        self.docs.shown().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
     }
 
     /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.
     pub fn start_copy(&mut self, anyway: bool) {
-        let Some(pages) = self.doc().map(|doc| doc.layout.count()) else { return };
+        let Some(pages) = self.docs.shown().map(|doc| doc.layout.count()) else {
+            return;
+        };
         let heavy = self.heavy_pages();
         self.pointer
             .selecting
@@ -229,10 +241,10 @@ impl Reader {
 
     /// Text arrived, or couldn't be read.
     pub(super) fn take_text(&mut self, tab: u32, position: u32, outcome: Option<(Arc<recto_index::select::PageText>, bool)>) {
-        if self.hot != Some(tab) || !self.window_open {
+        if self.docs.hot != Some(tab) || !self.window_open {
             return;
         }
-        let visible: Vec<u32> = self.doc().map(|doc| self.visible_pages(doc).collect()).unwrap_or_default();
+        let visible: Vec<u32> = self.docs.shown().map(|doc| self.visible_pages(doc).collect()).unwrap_or_default();
         match outcome {
             Some((text, checked)) => self.pointer.selecting.page_read(position, text, checked, &visible),
             None => self.pointer.selecting.page_failed(position, &visible),
@@ -244,14 +256,14 @@ impl Reader {
     }
 
     pub(super) fn advance_copy(&mut self) {
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        let pages = self.docs.shown().map_or(0, |doc| doc.layout.count());
         let heavy = self.heavy_pages();
         self.pointer.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
     }
 
     /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
     pub fn file_changed(&mut self, tab: u32) {
-        if self.hot == Some(tab) {
+        if self.docs.hot == Some(tab) {
             self.pointer.linking.clear();
             // Kept aside until the session says what the new version is: a save of what was shown keeps it (see [`Self::activate`]), anything else lets it go.
             self.pointer.selection_before_change = self.pointer.selecting.range().map(|range| (tab, range));

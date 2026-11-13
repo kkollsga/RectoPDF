@@ -279,7 +279,7 @@ impl Waking {
         if report.tab != tab || report.had != WakeStock::NotLooked {
             return;
         }
-        let Some(doc) = reader.docs.get(&tab) else { return };
+        let Some(doc) = reader.docs.views.get(&tab) else { return };
         let y = doc.place_y().max(0.0);
         let height =
             (reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE) / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
@@ -317,7 +317,7 @@ impl Reader {
         if self.place.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
             return false;
         }
-        let Some(doc) = self.doc() else { return false };
+        let Some(doc) = self.docs.shown() else { return false };
         doc.drawing.problem.is_none() && self.pages_all_covered(doc)
     }
 
@@ -334,7 +334,7 @@ impl Reader {
     /// Goes through how a wake's going, each time the host has applied something.
     pub(super) fn track_wake(&mut self) {
         let Some((began, mut report)) = self.wake.waking else { return };
-        if self.hot != Some(report.tab) {
+        if self.docs.hot != Some(report.tab) {
             self.wake.waking = None;
             return;
         }
@@ -343,7 +343,7 @@ impl Reader {
             self.wake.finish_wake();
             return;
         }
-        let Some(doc) = self.doc() else { return };
+        let Some(doc) = self.docs.shown() else { return };
         if self.place.jump.is_none() && self.viewport.height > 0.0 {
             let covered = self.pages_all_covered(doc);
             if covered && report.first_frame_us.is_none() {
@@ -368,7 +368,7 @@ impl Reader {
     ///
     /// `now` is what the session says the tab's pages are now. If its file isn't what this is a view of, what's here is of another file, and nothing goes in its sleep file. **If its pages aren't the pages here** (deleted, moved, added or turned while it was off screen, which a view held warm hears of only when it's shown again), what's here is filed under places that are other pages now, and a picture of the wrong page is worse than bare paper: its facts go, and no picture or size.
     pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial> {
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         if doc.map.own != now.own {
             return None;
         }
@@ -384,7 +384,7 @@ impl Reader {
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
         let version = doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).copied();
-        let (pages, from, height): (Vec<u32>, f64, f64) = if self.hot == Some(tab) {
+        let (pages, from, height): (Vec<u32>, f64, f64) = if self.docs.hot == Some(tab) {
             (self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect(), self.viewport.y, self.viewport.height)
         } else {
             left_place(self, doc)
@@ -414,7 +414,7 @@ impl Reader {
 
     /// A picture of each page of the tab showing that's in view, while it's on the screen. Nothing if no worker's said which version it's of, as there'd be no saying what they're of.
     pub(super) fn pictures_in_view(&mut self, tab: u32) -> Vec<RawPicture> {
-        let Some(doc) = self.docs.get(&tab) else { return Vec::new() };
+        let Some(doc) = self.docs.views.get(&tab) else { return Vec::new() };
         if doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).is_none() {
             return Vec::new();
         }
@@ -434,7 +434,7 @@ impl Reader {
 
     pub(super) fn picture_of(&mut self, tab: u32, page: u32) -> Option<RawPicture> {
         let paper = self.paper;
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         let preview_scale = ((doc.layout.fit() * self.viewport.backing / PREVIEW_DIVISOR) as f32).clamp(MIN_SCALE, MAX_SCALE);
         let size = doc.layout.raw_size(page);
         let paper_rgb = paper.rgb();
@@ -443,7 +443,7 @@ impl Reader {
             self.cache
                 .entries
                 .get(id)
-                .is_some_and(|entry| entry.version.is_some() && self.is_current(entry))
+                .is_some_and(|entry| entry.version.is_some() && self.docs.is_current(entry))
         });
         if let Some(id) = preview
             && let Some(picture) = self.copy_preview(id)
@@ -463,7 +463,7 @@ impl Reader {
                     && entry.surface.is_some()
                     && entry.low_res.is_none()
                     && entry.version.is_some()
-                    && self.is_current(entry)
+                    && self.docs.is_current(entry)
             })
             .map(|entry| entry.id)
             .collect();
@@ -592,7 +592,7 @@ impl Reader {
         if for_tab != tab {
             return;
         }
-        let Some(doc) = self.docs.get_mut(&tab) else { return };
+        let Some(doc) = self.docs.views.get_mut(&tab) else { return };
         if let Some(usual) = view.usual {
             doc.layout.seed_usual(usual);
             doc.drawing.size_on_trust = true;
@@ -608,7 +608,7 @@ impl Reader {
                 continue;
             }
             // Its size is known, or it wouldn't be shown.
-            if let Some(doc) = self.docs.get_mut(&tab) {
+            if let Some(doc) = self.docs.views.get_mut(&tab) {
                 let size = doc.layout.raw_size(shot.page);
                 doc.layout.set_page_size(shot.page, size);
             }

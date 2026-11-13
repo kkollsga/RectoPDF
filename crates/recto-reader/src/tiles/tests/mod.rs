@@ -158,7 +158,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
     let scale = {
         let mut reader = reader_on(2);
         settle(&mut reader);
-        f64::from(reader.doc().unwrap().drawing.tile_scale)
+        f64::from(reader.docs.shown().unwrap().drawing.tile_scale)
     };
     let height = (0..400u16)
         .map(|step| 780.0 + f32::from(step) * 0.1)
@@ -171,7 +171,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
     let mut reader = reader_on(40);
     settle_all_sized(&mut reader, size);
     let (step, bottoms) = {
-        let doc = reader.doc().unwrap();
+        let doc = reader.docs.shown().unwrap();
         let bottoms: Vec<f64> = (0..30).map(|page| doc.layout.rect(page).y + doc.layout.rect(page).height).collect();
         (doc.layout.rect(1).height * 6.0 / 120.0, bottoms)
     };
@@ -205,7 +205,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
         for into in [0.004, 0.2, 1.0, 3.0] {
             reader.set_viewport(view(bottom - into));
             reader.applied();
-            let doc = reader.doc().unwrap();
+            let doc = reader.docs.shown().unwrap();
             for page in reader.visible_pages(doc) {
                 let shows = !matches!(reader.visible_cells(doc, page, doc.drawing.tile_scale), Ok(cells) if cells.is_empty());
                 assert!(
@@ -324,9 +324,9 @@ fn an_added_files_stamp_is_the_tabs_it_was_added_to() {
         None,
         Spread::Single,
     );
-    assert_eq!(reader.expected_stamp(1, Path::new("/d/b.pdf")), stamp, "tab 1 added it");
-    assert_eq!(reader.expected_stamp(2, Path::new("/d/b.pdf")), None, "it's tab 2's own file");
-    assert_eq!(reader.expected_stamp(1, Path::new("/d/a.pdf")), None, "and tab 1's own isn't checked so");
+    assert_eq!(reader.docs.expected_stamp(1, Path::new("/d/b.pdf")), stamp, "tab 1 added it");
+    assert_eq!(reader.docs.expected_stamp(2, Path::new("/d/b.pdf")), None, "it's tab 2's own file");
+    assert_eq!(reader.docs.expected_stamp(1, Path::new("/d/a.pdf")), None, "and tab 1's own isn't checked so");
 }
 
 /// Failure (the owner's bench file, 2026-11-08): a save after turning page 1 changes the view. The saved file's page 1 is landscape, the reopened layout fits that page instead of the portrait ones, and the zoom shown drops from 128% to 97% with every page shrinking; the place within the page and the selection go too. A save writes what was shown, so the fit, zoom, place across and down, layout and selection stay exactly, whichever page the reader's on and whether a renderer saw the file replaced first.
@@ -363,7 +363,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         follow_host(&mut reader, view(0.0));
         settle_sized(&mut reader, letter());
         reader.zoom(Zoom::To(1.28));
-        let page = reader.doc().unwrap().layout.rect(on);
+        let page = reader.docs.shown().unwrap().layout.rect(on);
         let mut at = view(page.y + page.height * 0.4);
         at.x = 25.0;
         at.magnification = 1.28;
@@ -375,7 +375,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         };
         reader.restore_selection(selected);
         let (fit, height, width, zoom) = {
-            let doc = reader.doc().unwrap();
+            let doc = reader.docs.shown().unwrap();
             (
                 doc.layout.fit(),
                 doc.layout.document_height(),
@@ -383,7 +383,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
                 doc.place.magnification,
             )
         };
-        let rects: Vec<crate::layout::PageRect> = (0..10).map(|page| reader.doc().unwrap().layout.rect(page)).collect();
+        let rects: Vec<crate::layout::PageRect> = (0..10).map(|page| reader.docs.shown().unwrap().layout.rect(page)).collect();
         let before = reader.places()[0].1;
         if renderer_saw_it_first {
             reader.file_changed(1);
@@ -400,7 +400,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         reader.activate(1, 10, on, saved, &[], None, spread);
         follow_host(&mut reader, at);
         settle_sized(&mut reader, landscape);
-        let doc = reader.doc().unwrap();
+        let doc = reader.docs.shown().unwrap();
         let label = format!("{spread:?}, renderer first: {renderer_saw_it_first}, on page {on}");
         assert_eq!(doc.layout.fit(), fit, "{label}: the fit, and so the zoom shown");
         assert_eq!(doc.place.magnification, zoom, "{label}: the magnification");
@@ -498,7 +498,7 @@ fn a_change_to_the_page_order_clears_what_was_drawn() {
     };
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     assert!(reader.cache.entries.is_empty());
-    assert_eq!(reader.doc().unwrap().layout.count(), 2);
+    assert_eq!(reader.docs.shown().unwrap().layout.count(), 2);
     assert_eq!(edited.source(0), Some((PathBuf::from("/d/a.pdf"), 1)));
     assert_eq!(edited.source(9), None);
 }
@@ -826,7 +826,7 @@ mod cost {
 #[test]
 fn the_pages_remembered_as_seen_stay_bounded() {
     let mut reader = reader_on(10);
-    let doc = reader.docs.get_mut(&1).unwrap();
+    let doc = reader.docs.views.get_mut(&1).unwrap();
     let cap = u32::try_from(MAX_SEEN_REMEMBERED).unwrap();
     for page in 0..=cap {
         doc.drawing.note_seen(page);
@@ -843,7 +843,7 @@ fn the_pages_remembered_as_failing_stay_bounded() {
     for page in 0..=cap {
         reader.note_issue(1, 1_000 + page, "It failed.".to_string(), false);
     }
-    let issues = &reader.docs[&1].drawing.issues;
+    let issues = &reader.docs.views[&1].drawing.issues;
     assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} remembered", issues.len());
     assert!(issues.contains_key(&(1_000 + cap)), "the last failure is remembered");
 }
@@ -864,9 +864,9 @@ fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
     let mut reader = reader_on(8_000_000);
     reader.activate(1, 8_000_000, 0, map(), &[], None, Spread::TwoUp);
     let tiny = PageBox { width: 0.01, height: 0.01 };
-    reader.docs.get_mut(&1).unwrap().layout.set_page_size(0, tiny);
+    reader.docs.views.get_mut(&1).unwrap().layout.set_page_size(0, tiny);
     reader.set_viewport(least_zoom_view(3_384.0));
-    let tallest_display = reader.visible_pages(reader.doc().unwrap()).count();
+    let tallest_display = reader.visible_pages(reader.docs.shown().unwrap()).count();
     assert!(
         tallest_display < MAX_PAGES_IN_VIEW,
         "{tallest_display} pages in view of the tallest display are cut"
@@ -876,7 +876,7 @@ fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
         "{tallest_display} pages in view: the pages aren't as small as this test needs"
     );
     reader.set_viewport(least_zoom_view(10_000.0));
-    let in_view = reader.visible_pages(reader.doc().unwrap());
+    let in_view = reader.visible_pages(reader.docs.shown().unwrap());
     assert!(in_view.clone().count() <= MAX_PAGES_IN_VIEW, "{} pages in view", in_view.clone().count());
     for page in in_view.clone() {
         reader.note_issue(1, page, "It failed.".to_string(), false);
@@ -884,7 +884,7 @@ fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
     for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
         reader.note_issue(1, in_view.end() + 100 + page, "It failed.".to_string(), false);
     }
-    let issues = &reader.docs[&1].drawing.issues;
+    let issues = &reader.docs.views[&1].drawing.issues;
     assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} problems remembered", issues.len());
     assert!(
         in_view.clone().all(|page| issues.contains_key(&page)),
@@ -929,14 +929,14 @@ fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
     assert_eq!(asked, 0, "its problem is remembered");
     reader.set_viewport(view(15.0 * 1100.0));
     run(&mut reader, &mut asked);
-    let in_view = *reader.visible_pages(reader.doc().unwrap()).start();
+    let in_view = *reader.visible_pages(reader.docs.shown().unwrap()).start();
     reader.note_issue(1, in_view, "It failed.".to_string(), false);
     // Enough other failures to pass the cap, none of them near the view: page 0 is let go.
     for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
         reader.note_issue(1, 100 + page, "It failed.".to_string(), false);
     }
-    assert!(!reader.docs[&1].drawing.issues.contains_key(&0), "let go at the cap");
-    assert!(reader.docs[&1].drawing.issues.contains_key(&in_view), "what's in view keeps its own");
+    assert!(!reader.docs.views[&1].drawing.issues.contains_key(&0), "let go at the cap");
+    assert!(reader.docs.views[&1].drawing.issues.contains_key(&in_view), "what's in view keeps its own");
     reader.set_viewport(view(0.0));
     run(&mut reader, &mut asked);
     for _ in 0..20 {

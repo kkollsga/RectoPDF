@@ -279,8 +279,8 @@ impl Work {
 impl Reader {
     pub(super) fn recount_wanted_files(&mut self, warm: &[u32]) {
         let mut files: Vec<PathBuf> = Vec::new();
-        for tab in warm.iter().copied().chain(self.hot) {
-            if let Some(doc) = self.docs.get(&tab) {
+        for tab in warm.iter().copied().chain(self.docs.hot) {
+            if let Some(doc) = self.docs.views.get(&tab) {
                 files.extend(doc.map.files.iter().cloned());
             }
         }
