@@ -233,6 +233,8 @@ impl Reader {
                 doc.drawing.left_pictures = None;
             }
         }
+        // Nothing's drawn for a tab off screen for a while.
+        self.wake.draws.pressure();
         let ids: Vec<u64> = self
             .cache
             .entries

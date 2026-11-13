@@ -27,6 +27,7 @@ mod pointer;
 mod refresh;
 mod report;
 mod scratch;
+pub(crate) mod sleep_draw;
 mod wake;
 mod zoom;
 
@@ -518,6 +519,10 @@ impl Reader {
             doc.place.scroll_x = left_x;
             doc.place.exact_y = Some((left_y, doc.layout.document_height()));
         }
+        // With its place and its pictures noted: what of its place it has no picture of is drawn once the tab coming has what it needs.
+        if let Some(left) = self.hot {
+            sleep_draw::SleepDraws::left(self, left);
+        }
         self.clear_screen();
         self.hot = Some(tab);
         self.place.last_view_page = None;
@@ -822,7 +827,11 @@ impl Reader {
             ) => {
                 self.counts.drawn += 1;
                 if self.docs.contains_key(&tab) && self.window_open {
-                    kept = Some(self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res));
+                    let id = self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res);
+                    if what == DrawKind::Preview {
+                        sleep_draw::SleepDraws::drawn(self, tab, position, id);
+                    }
+                    kept = Some(id);
                 }
             }
             (JobKind::Draw { .. }, Outcome::Cancelled) => {

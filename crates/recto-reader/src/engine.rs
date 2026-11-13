@@ -3,6 +3,7 @@
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
 use crate::selection::Notice;
+use crate::tiles::sleep_draw::SleepDraws;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, SavedPlace, Viewport, Zoom};
 use recto_index::select::PageText;
 use recto_platform::isolate;
@@ -745,7 +746,8 @@ impl Engine {
         let deadline = Instant::now() + limit;
         let mut reader = lock(&self.shared.reader);
         loop {
-            if reader.is_settled() {
+            // A tab off screen being drawn for its place counts: what it's drawn for is what's looked at next.
+            if reader.is_settled() && !SleepDraws::under_way(&reader) {
                 return true;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -932,7 +934,15 @@ fn run(shared: &Shared) {
         let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
         let added_changed =
             expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
-        let outcome = if added_changed {
+        // **No worker is started for a tab off screen's place** ([`SleepDraws`]): it's drawn by the worker its file has, or not at all.
+        let for_sleep = SleepDraws::is_for(&lock(&shared.reader), job.tab);
+        let no_worker = for_sleep && !renderers.get_mut(&job.file).is_some_and(|open| open.doc.has_worker());
+        if no_worker {
+            SleepDraws::no_worker(&mut lock(&shared.reader));
+        }
+        let outcome = if no_worker {
+            Outcome::Cancelled
+        } else if added_changed {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
                 _ => Outcome::PageFailed {

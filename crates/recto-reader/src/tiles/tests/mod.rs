@@ -13,6 +13,7 @@ mod host;
 mod jobs;
 mod place;
 mod pointer;
+mod sleep_draw;
 mod wake;
 mod zoom;
 
