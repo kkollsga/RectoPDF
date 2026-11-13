@@ -39,22 +39,36 @@ pub fn confine<L: DocLoader>(session: &mut Session<L>, paths: &StatePaths) {
     }
 }
 
-/// `recto`'s own commands that QA's own rules hold, not this: what they name is the app to start, a script to read, or a file the quiet app they start
-/// opens, which that app, confined, checks itself. Their verbs are QA's (`crates/recto-cli/src/qa.rs`).
-pub const HERE_LEFT_TO_QA: &[&str] = &["qa_start", "qa_run", "qa_budget", "qa_compare_budget", "qa_select_budget"];
+/// The one file argument of `recto`'s own commands that isn't a document or an output: the app a QA command starts, an executable, held instead to being a
+/// RectoPDF bundle's (`recto-cli`'s `qa::find_app`).
+pub const THE_APP_TO_START: &str = "app";
 
-/// **`recto`'s own commands, run in its process** (`local`, `budget`, `skill install`): every file one names, by the table, in the folders, if the state
-/// folder is a test one. The same rule and refusal as a session's.
+/// Arguments that hold several files in one value, with commas between: each is held to the rule.
+pub const FILES_WITH_COMMAS: &[(&str, &str)] = &[("qa_compare_budget", "files")];
+
+/// **`recto`'s own commands, run in its process** (`local`, `budget`, `skill install`, and QA's `run`, `budget`, `compare-budget` and `select-budget`):
+/// every file one names, by the table, in the folders, if the state folder is a test one. The same rule and refusal as a session's. A QA script is held
+/// too: it's read here, and a file that isn't the run's own is nobody's script.
 ///
 /// # Errors
 ///
 /// [`recto_agent::quiet_files::outside_the_run`] for the first file outside.
 pub fn check_here(paths: &StatePaths, invocation: &Invocation) -> Result<(), AgentError> {
     let tag = invocation.spec.tag;
-    let Some(folders) = folders_for(paths).filter(|_| !HERE_LEFT_TO_QA.contains(&tag)) else {
+    let Some(folders) = folders_for(paths) else {
         return Ok(());
     };
-    quiet_files::check_paths(&folders, &quiet_files::files_in(tag, &invocation.fields))
+    let mut fields = invocation.fields.clone();
+    fields.remove(THE_APP_TO_START);
+    let mut named = quiet_files::files_in(tag, &fields);
+    for (with_commas, key) in FILES_WITH_COMMAS {
+        if *with_commas == tag
+            && let Some(list) = fields.get(*key).and_then(serde_json::Value::as_str)
+        {
+            named.extend(list.split(',').map(str::trim).filter(|file| !file.is_empty()).map(PathBuf::from));
+        }
+    }
+    quiet_files::check_paths(&folders, &named)
 }
 
 #[cfg(test)]
@@ -145,7 +159,12 @@ mod tests {
                 .filter(|arg| arg.kind == recto_agent::table::Kind::Path)
                 .map(|arg| arg.key)
                 .collect();
-            if keys.is_empty() || HERE_LEFT_TO_QA.contains(&spec.tag) {
+            let keys: Vec<&str> = keys
+                .into_iter()
+                .filter(|key| *key != THE_APP_TO_START)
+                .chain(FILES_WITH_COMMAS.iter().filter(|(tag, _)| *tag == spec.tag).map(|(_, key)| *key))
+                .collect();
+            if keys.is_empty() {
                 continue;
             }
             let mut fields = serde_json::Map::new();
@@ -182,7 +201,19 @@ mod tests {
             tried.push(spec.tag);
         }
         tried.sort_unstable();
-        assert_eq!(tried, ["budget_index", "budget_tabs", "local", "skill_install"]);
+        assert_eq!(
+            tried,
+            [
+                "budget_index",
+                "budget_tabs",
+                "local",
+                "qa_budget",
+                "qa_compare_budget",
+                "qa_run",
+                "qa_select_budget",
+                "skill_install"
+            ]
+        );
         // The user's own state folder: nothing here is held.
         let real = StatePaths {
             overridden: false,

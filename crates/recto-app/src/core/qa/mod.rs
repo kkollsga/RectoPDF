@@ -507,6 +507,13 @@ impl QaBridge {
             "print_to_pdf" => {
                 let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
                 let out = Path::new(out);
+                // A file in a compound value the table can't see as one, so it's put through the session's one rule here (2026-11-13).
+                if let Some(folders) = self
+                    .inner()
+                    .and_then(|inner| inner.host.session.with_session(|session| session.confinement().folders().cloned()))
+                {
+                    recto_agent::quiet_files::check_paths(&folders, &[out.to_path_buf()])?;
+                }
                 recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
                 if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
                     return Err(bad("A print goes to a new file, by its whole path."));
@@ -792,6 +799,52 @@ mod tests {
         app.open(&outside);
         assert_eq!(app.tabs().len(), 1, "a file that isn't a test's opened");
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// **The arguments whose value carries a file the table can't see as one**, each put through the one rule by what reads it: `qa print-to-pdf`'s by
+    /// its verb, `qa compare-budget`'s list by `recto_control::quiet::check_here`. The guard below fails an argument that names a whole path and is neither
+    /// a file to the table nor here.
+    const FILE_IN_A_VALUE: &[(&str, &str)] = &[("qa compare-budget", "files"), ("qa print-to-pdf", "value")];
+
+    /// Failure (2026-11-13): a QA verb's value names a file the table declares as text, so the session's wall never sees it, and a quiet run writes a
+    /// print, or opens a file, outside its folders. Every argument whose help names a whole path is a file to the table or on [`FILE_IN_A_VALUE`], and each
+    /// of those is refused outside, through the verb as a client sends it, writing nothing.
+    #[test]
+    fn every_file_in_a_qa_value_is_held_to_the_run() {
+        use recto_agent::table::{Kind, TABLE};
+        let named: Vec<(&str, &str)> = TABLE
+            .iter()
+            .flat_map(|spec| spec.args.iter().map(move |arg| (spec, arg)))
+            .filter(|(_, arg)| arg.kind != Kind::Path && arg.help.contains("whole path"))
+            .map(|(spec, arg)| (spec.name, arg.key))
+            .collect();
+        assert_eq!(named, FILE_IN_A_VALUE, "a whole path that isn't a file to the table");
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        app.open(&app.disk().pdf("own.pdf", 2));
+        let Some(outside) = outside_the_tests_folders("recto-print.pdf") else {
+            return;
+        };
+        let refused = drive(&qa, "print_to_pdf", &outside.to_string_lossy()).expect_err("a print outside the run's folders");
+        assert_eq!(refused.code, "outside_quiet_run", "{refused:?}");
+        let refused = drive(&qa, "print_to_pdf", &format!("{}|1|1", outside.display())).expect_err("with a range");
+        assert_eq!(refused.code, "outside_quiet_run", "{refused:?}");
+        assert!(!outside.exists(), "a print was written outside");
+        let spec = TABLE.iter().find(|spec| spec.name == "qa compare-budget").unwrap();
+        let mut fields = serde_json::Map::new();
+        let own = app.disk().pdf("other.pdf", 1);
+        fields.insert("files".into(), json!(format!("{},{}", own.display(), outside.display())));
+        let line = recto_agent::table::Invocation {
+            spec,
+            fields,
+            json: true,
+            help: false,
+            rest: Vec::new(),
+        };
+        assert_eq!(
+            recto_control::quiet::check_here(app.disk().paths(), &line).unwrap_err().code,
+            "outside_quiet_run"
+        );
     }
 
     /// Failure (review of R2.4, item 7): `qa password`, sent as a client sends it, types into the sheet for a file that isn't a test's: the check is a
