@@ -14,7 +14,7 @@ pub(super) struct Issue {
 }
 
 #[derive(Debug)]
-pub(super) struct DocView {
+pub(crate) struct DocView {
     pub(super) tab: u32,
     pub(super) layout: PageLayout,
     pub(super) map: PageMap,

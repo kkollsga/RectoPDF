@@ -247,7 +247,21 @@ fn the_listing_reads_what_rust_says() {
 const SURFACE: &str = r#"
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
-DocView (pub(super) struct, derives Debug)
+DocView (pub(crate) struct, derives Debug)
+DocView::pub(crate) fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
+DocView::pub(crate) fn fit(&self) -> f64
+DocView::pub(crate) fn has_document(&self) -> bool
+DocView::pub(crate) fn is_on_its_page(&self, point: PagePoint) -> bool
+DocView::pub(crate) fn magnification(&self) -> f64
+DocView::pub(crate) fn own_file_page(&self, position: u32) -> Option<u32>
+DocView::pub(crate) fn page_count(&self) -> u32
+DocView::pub(crate) fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
+DocView::pub(crate) fn page_turns(&self, page: u32) -> u8
+DocView::pub(crate) fn place_y(&self) -> f64
+DocView::pub(crate) fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<PagePoint>
+DocView::pub(crate) fn point_on_page(&self, x: f64, y: f64) -> Option<PagePoint>
+DocView::pub(crate) fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
+DocView::pub(crate) fn reading_anchor(&self) -> (u32, f64)
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
@@ -367,17 +381,14 @@ Reader::pub fn clear_selection(&mut self)
 Reader::pub fn counts(&self) -> &ReaderCounts
 Reader::pub fn deactivate(&mut self)
 Reader::pub fn dismiss_selection_notice(&mut self)
-Reader::pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
 Reader::pub fn empty_discardable(&mut self) -> usize
 Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
 Reader::pub fn file_changed(&mut self, tab: u32)
 Reader::pub fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
-Reader::pub fn fit(&self) -> Option<f64>
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
 Reader::pub fn give_sleep(&mut self, tab: u32, view: SleepView)
-Reader::pub fn has_document(&self) -> bool
 Reader::pub fn has_ops(&self) -> bool
 Reader::pub fn has_selection(&self) -> bool
 Reader::pub fn hold_drawing(&mut self, on: bool)
@@ -391,7 +402,6 @@ Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
 Reader::pub fn key_given(&mut self, path: &std::path::Path)
 Reader::pub fn last_wake(&self) -> Option<WakeReport>
 Reader::pub fn link_pages_held(&self) -> usize
-Reader::pub fn magnification(&self) -> Option<f64>
 Reader::pub fn memory_pressure(&mut self, critical: bool)
 Reader::pub fn new() -> Self
 Reader::pub fn next_plan(&mut self) -> Option<JobPlan>
@@ -399,17 +409,9 @@ Reader::pub fn note(&self) -> Option<&str>
 Reader::pub fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Reader::pub fn note_version(&mut self, file: &std::path::Path, version: u64)
 Reader::pub fn note_wake(&mut self, tab: u32, began: Instant)
-Reader::pub fn own_file_page(&self, position: u32) -> Option<u32>
-Reader::pub fn page_count(&self) -> u32
-Reader::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
-Reader::pub fn page_turns(&self, page: u32) -> u8
 Reader::pub fn places(&self) -> Vec<(u32, SavedPlace)>
-Reader::pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<PagePoint>
-Reader::pub fn point_on_page(&self, x: f64, y: f64) -> Option<PagePoint>
 Reader::pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool
 Reader::pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit>
-Reader::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
-Reader::pub fn reading_anchor(&self) -> Option<(u32, f64)>
 Reader::pub fn report(&self) -> ReaderReport
 Reader::pub fn restore_selection(&mut self, range: recto_index::select::Range)
 Reader::pub fn reveal_range(&mut self, range: recto_index::select::Range)
@@ -444,6 +446,7 @@ Reader::pub fn window_closed(&mut self)
 Reader::pub fn window_opened(&mut self)
 Reader::pub fn window_up(&mut self)
 Reader::pub fn zoom(&mut self, zoom: Zoom) -> Option<f64>
+Reader::pub(crate) fn doc(&self) -> Option<&DocView>
 Reader::pub(crate) fn has_moved_page(&self) -> bool
 ReaderCounts (pub struct, derives Clone, Debug, Default)
 ReaderReport (pub struct)

@@ -116,9 +116,9 @@ pub struct WakeReport {
 pub const WAKE_REPORT_BYTES: usize = 48;
 const _: () = assert!(std::mem::size_of::<WakeReport>() <= WAKE_REPORT_BYTES);
 
-/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`Reader::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
+/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`DocView::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
 pub(super) fn left_place(reader: &Reader, doc: &DocView) -> (Vec<u32>, f64, f64) {
-    let y = Reader::place_y(doc);
+    let y = doc.place_y();
     let window_height = reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE);
     let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
     let pages = if doc.layout.count() == 0 {
@@ -228,7 +228,7 @@ impl Waking {
             return;
         }
         let Some(doc) = reader.docs.get(&tab) else { return };
-        let y = Reader::place_y(doc).max(0.0);
+        let y = doc.place_y().max(0.0);
         let height =
             (reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE) / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
         let in_view: Vec<u32> = if doc.layout.count() == 0 {

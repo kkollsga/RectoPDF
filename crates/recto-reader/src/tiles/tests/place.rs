@@ -87,7 +87,7 @@ fn only_the_readers_own_scroll_leads_a_synced_pane() {
     there.scrolled_to = seq;
     reader.set_viewport(there);
     assert!(!reader.take_user_scrolled(), "arriving isn't leading");
-    assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(40));
+    assert_eq!(reader.doc().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(40));
     let mut zoomed = there;
     zoomed.magnification = 1.5;
     zoomed.y += 300.0;
@@ -193,7 +193,7 @@ fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
                     },
                 );
                 assert_eq!(reader.places()[0].1.page, target, "{wide} x {high}, page {target}, {scroll} down");
-                assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(target));
+                assert_eq!(reader.doc().map(|doc| doc.reading_anchor()).map(|(page, _)| page), Some(target));
                 assert!(reader.take_moved_page().is_none_or(|page| page == target), "the session's page left {target}");
             }
         }
@@ -569,9 +569,9 @@ fn every_way_the_place_moves_moves_the_place_clock() {
         settle(&mut reader);
         drop(reader.set_viewport(view(1000.0)));
         settle(&mut reader);
-        let (stamp, places, anchor) = (place_stamp(), reader.places(), reader.reading_anchor());
+        let (stamp, places, anchor) = (place_stamp(), reader.places(), reader.doc().map(|doc| doc.reading_anchor()));
         step(&mut reader);
-        let (now, places_now, anchor_now) = (place_stamp(), reader.places(), reader.reading_anchor());
+        let (now, places_now, anchor_now) = (place_stamp(), reader.places(), reader.doc().map(|doc| doc.reading_anchor()));
         assert!(places_now != places || anchor_now != anchor, "{name} moved nothing, so it walks nothing");
         if now <= stamp {
             quiet.push(format!("{name}: {places:?} to {places_now:?}"));

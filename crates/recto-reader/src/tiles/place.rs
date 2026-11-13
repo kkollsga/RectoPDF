@@ -161,11 +161,6 @@ impl Reader {
         }
     }
 
-    /// Where the reader is in the tab showing: a page and how far down it, as a change of layout keeps it.
-    pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        self.doc().map(|doc| doc.place.anchor)
-    }
-
     /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
     pub fn follow(&mut self, page: u32, within: f64) -> Option<u32> {
         self.finish_wake();
@@ -278,19 +273,11 @@ impl Reader {
         true
     }
 
-    /// How far down the tab's place is: to the pixel if the layout's what it was, and otherwise as far down its page.
-    pub(super) fn place_y(doc: &DocView) -> f64 {
-        match doc.place.exact_y {
-            Some((y, height)) if height == doc.layout.document_height() => y,
-            _ => doc.layout.anchor_y(doc.place.anchor),
-        }
-    }
-
     /// Goes where the tab's anchor says, which is on this page, as a jump.
     pub(super) fn jump_to_anchor(&mut self, page: u32) {
         self.pointer.forget_reveal_unless(page);
         let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
-        let y = Self::place_y(doc);
+        let y = doc.place_y();
         let seq = self.place.send();
         self.place.jump = Some(seq);
         self.place.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
@@ -305,7 +292,7 @@ impl Reader {
         doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
         let (top_room, bottom_room) = doc.layout.end_room();
-        let y = Self::place_y(doc);
+        let y = doc.place_y();
         doc.place.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
         self.host.ops.push_back(Op::Document {
             width: doc.place.width_shown,

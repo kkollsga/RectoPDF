@@ -114,14 +114,4 @@ impl Reader {
         self.host.ops.push_back(Op::Magnify { value });
         Some(value)
     }
-
-    /// The tab showing's fit, if one is.
-    pub fn fit(&self) -> Option<f64> {
-        self.doc().map(|doc| doc.layout.fit())
-    }
-
-    /// The tab showing's magnification, if one is.
-    pub fn magnification(&self) -> Option<f64> {
-        self.doc().map(|doc| doc.place.magnification)
-    }
 }

@@ -79,7 +79,11 @@ fn a_jump_the_session_sends_drops_a_hit_waiting_for_its_text() {
         reader.take_moved_page();
         reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
         assert_eq!(last_scroll(&mut reader), None, "{what}: the text of the hit's page moves nothing");
-        assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(1), "{what}: still where the jump put it");
+        assert_eq!(
+            reader.doc().map(|doc| doc.reading_anchor()).map(|(page, _)| page),
+            Some(1),
+            "{what}: still where the jump put it"
+        );
         assert_eq!(reader.take_moved_page(), None, "{what}: and tells of no move");
     }
     // The session's jump to the hit's own page, as the look after ⌘G sends it, leaves the hit to be put a third down once its text is in.
@@ -99,7 +103,7 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     use recto_core::nav::{Link, LinkTarget, PageLinks};
     let mut reader = reader_on(10);
     settle(&mut reader);
-    let (x, y) = reader.document_point(0, 50.0, 20.0).unwrap();
+    let (x, y) = reader.doc().unwrap().document_point(0, 50.0, 20.0).unwrap();
     assert_eq!(reader.pointer_link(x, y), None, "not read yet");
     let job = reader.next_job().expect("its links are asked for first");
     assert!(matches!(job.kind, JobKind::Links) && job.position == 0, "{job:?}");
@@ -113,7 +117,7 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     reader.finish(job, Outcome::Links(Some(Arc::new(links))));
     let hit = reader.pointer_link(x, y).expect("now it's known");
     assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
-    assert_eq!(reader.position_in_same_file(0, 4), Some(4));
+    assert_eq!(reader.doc().unwrap().position_in_same_file(0, 4), Some(4));
     reader.selection_press(x, y, 1, false);
     reader.selection_release();
     assert_eq!(reader.take_clicked_link().map(|hit| hit.page), Some(0));

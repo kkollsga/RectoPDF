@@ -2,7 +2,7 @@
 
 use super::{Op, Reader};
 use crate::selection::{Notice, Selecting};
-use recto_index::select::{PagePoint, Range};
+use recto_index::select::Range;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -49,9 +49,9 @@ impl Reader {
 
     /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
     pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
-        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point));
+        let point = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)));
         self.pointer.linking.press(if shift { None } else { point }, clicks);
-        match self.point_on_page(x, y) {
+        match self.doc().and_then(|doc| doc.point_on_page(x, y)) {
             Some(point) => self.pointer.selecting.press(point, clicks, shift),
             None => self.pointer.selecting.clear(),
         }
@@ -60,8 +60,8 @@ impl Reader {
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {
-        self.pointer.linking.drag(self.point_on_page(x, y));
-        if let Some(point) = self.point_on_page(x, y) {
+        self.pointer.linking.drag(self.doc().and_then(|doc| doc.point_on_page(x, y)));
+        if let Some(point) = self.doc().and_then(|doc| doc.point_on_page(x, y)) {
             self.pointer.selecting.drag(point);
             self.highlight_ops();
             self.cancel_if_unwanted();
@@ -73,16 +73,9 @@ impl Reader {
         self.pointer.selecting.release();
     }
 
-    /// Whether a point is on its page, and not in the margin or the gap between pages.
-    pub(super) fn is_on_its_page(&self, point: PagePoint) -> bool {
-        let Some(doc) = self.doc() else { return false };
-        let size = doc.layout.raw_size(point.page);
-        point.x >= 0.0 && point.y >= 0.0 && point.x <= size.width && point.y <= size.height
-    }
-
     /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
     pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
-        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point))?;
+        let point = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)))?;
         self.pointer.linking.at(point)
     }
 
@@ -99,7 +92,7 @@ impl Reader {
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
     pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool {
         // Only on a page: the margin and the gap between pages are neither.
-        let Some(point) = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point)) else {
+        let Some(point) = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point))) else {
             return false;
         };
         self.pointer.selecting.is_over_text(point)

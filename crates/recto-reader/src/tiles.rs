@@ -32,7 +32,8 @@ mod wake;
 mod zoom;
 
 use cache::{Entry, TileCache};
-use doc::{DocView, Issue};
+pub(crate) use doc::DocView;
+use doc::Issue;
 use host::HostQueue;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind, Work};
@@ -399,7 +400,8 @@ impl Reader {
         self.note.as_deref()
     }
 
-    fn doc(&self) -> Option<&DocView> {
+    /// The tab showing's view, if one is: where the engine reads its points, pages, place and zoom from ([`DocView`]'s own methods, in `tiles/geometry.rs`).
+    pub(crate) fn doc(&self) -> Option<&DocView> {
         self.hot.and_then(|tab| self.docs.get(&tab))
     }
 

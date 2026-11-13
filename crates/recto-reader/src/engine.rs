@@ -257,12 +257,12 @@ impl Engine {
 
     /// The tab showing's magnification.
     pub fn magnification(&self) -> Option<f64> {
-        lock(&self.shared.reader).magnification()
+        lock(&self.shared.reader).doc().map(|doc| doc.magnification())
     }
 
     /// Where the reader is in the tab showing, as a page and how far down it.
     pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        lock(&self.shared.reader).reading_anchor()
+        lock(&self.shared.reader).doc().map(|doc| doc.reading_anchor())
     }
 
     /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
@@ -431,7 +431,7 @@ impl Engine {
 
     /// The tab showing's fit, document points per PDF point, if a tab is showing: what a zoom level is worked out from.
     pub fn fit(&self) -> Option<f64> {
-        lock(&self.shared.reader).fit()
+        lock(&self.shared.reader).doc().map(|doc| doc.fit())
     }
 
     /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
@@ -493,14 +493,14 @@ impl Engine {
         lock(&self.shared.reader).take_clicked_link()
     }
 
-    /// Where a link's page is now: see [`Reader::position_in_same_file`].
+    /// Where a link's page is now: see [`crate::tiles::DocView::position_in_same_file`].
     pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
-        lock(&self.shared.reader).position_in_same_file(from, file_page)
+        lock(&self.shared.reader).doc()?.position_in_same_file(from, file_page)
     }
 
     /// Which page of the tab's own file a page of the view is, if it's one.
     pub fn own_file_page(&self, position: u32) -> Option<u32> {
-        lock(&self.shared.reader).own_file_page(position)
+        lock(&self.shared.reader).doc()?.own_file_page(position)
     }
 
     pub fn set_paper(&self, paper: PaperKind) {
@@ -525,7 +525,7 @@ impl Engine {
             // The reader's own scroll here is newer than any place synced scroll left for this pane.
             lock(&self.shared.pending).follow = None;
         }
-        let (magnification, anchor) = (reader.magnification(), reader.reading_anchor());
+        let (magnification, anchor) = reader.doc().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
         let moved = reader.has_moved_page();
         let more = reader.has_ops();
         let note = reader.note().map(str::to_string);
@@ -626,7 +626,7 @@ impl Engine {
     }
 
     pub fn has_document(&self) -> bool {
-        lock(&self.shared.reader).has_document()
+        lock(&self.shared.reader).doc().is_some_and(|doc| doc.has_document())
     }
 
     /// Starts the selection on its way to the clipboard. It goes page by page on the engine's thread, and `EngineEvents::copy_ready` says when.
@@ -661,33 +661,34 @@ impl Engine {
     /// Where a point in the document is on a page as it's shown, with that page's size, for the snapshot tool. A short lock and some sums.
     pub fn point_on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))> {
         let reader = lock(&self.shared.reader);
-        let point = reader.point_on_page(x, y)?;
-        Some((point, reader.page_size_shown(point.page)?))
+        let doc = reader.doc()?;
+        let point = doc.point_on_page(x, y)?;
+        Some((point, doc.page_size_shown(point.page)?))
     }
 
     /// Where a point in the document is on `page`, whichever page it's over, past its edges if it must: a snapshot's box stays on the page it was pressed on. A short lock and some sums.
     pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint> {
-        lock(&self.shared.reader).point_on_given_page(page, x, y)
+        lock(&self.shared.reader).doc()?.point_on_given_page(page, x, y)
     }
 
     /// How many pages the tab shown has, edits and all. A short lock, for what can't wait, as the print panel can't.
     pub fn page_count(&self) -> u32 {
-        lock(&self.shared.reader).page_count()
+        lock(&self.shared.reader).doc().map_or(0, |doc| doc.page_count())
     }
 
     /// A page's size as it's shown, in its own coordinates. A short lock.
     pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
-        lock(&self.shared.reader).page_size_shown(page)
+        lock(&self.shared.reader).doc()?.page_size_shown(page)
     }
 
     /// How far a page is shown turned, in quarter turns clockwise. A short lock.
     pub fn page_turns(&self, page: u32) -> u8 {
-        lock(&self.shared.reader).page_turns(page)
+        lock(&self.shared.reader).doc().map_or(0, |doc| doc.page_turns(page))
     }
 
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
-        lock(&self.shared.reader).document_point(page, x, y)
+        lock(&self.shared.reader).doc()?.document_point(page, x, y)
     }
 
     pub fn take_moved_page(&self) -> Option<u32> {
@@ -1545,7 +1546,7 @@ mod tests {
         assert!(lock(&engine.shared.pending).follow.is_none(), "nothing older left to land after it");
         let mut reader = lock(&engine.shared.reader);
         assert!(!take_pending_follow(&engine.shared, &mut reader));
-        assert_eq!(reader.reading_anchor(), Some((30, 0.5)));
+        assert_eq!(reader.doc().map(|doc| doc.reading_anchor()), Some((30, 0.5)));
     }
 
     /// Failure (review 1): a place left by synced scroll lands after the reader has scrolled this pane themselves, and takes them back.
@@ -1613,7 +1614,7 @@ mod tests {
         drop(held);
         let mut reader = lock(&engine.shared.reader);
         assert!(take_pending_follow(&engine.shared, &mut reader));
-        assert_eq!(reader.magnification(), Some(2.0));
+        assert_eq!(reader.doc().map(|doc| doc.magnification()), Some(2.0));
         drop(reader);
         assert!(engine.zoom_soon(1.25), "free: now");
         assert_eq!(engine.magnification(), Some(1.25));
