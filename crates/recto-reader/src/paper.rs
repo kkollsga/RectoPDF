@@ -199,17 +199,17 @@ pub struct ImageSample {
 /// A rectangle of a picture in its pixels, `[left, top, right, bottom]`, right and bottom not in it.
 type PixelBox = [usize; 4];
 
-/// Calls `run` with each stretch `[from, to)` of row `y` between `left` and `right` that none of `holes` covers. `holes` are sorted by their left side, so one walk along the row does it, with nothing made.
+/// Calls `run` with each stretch `[from, to)` of row `y` between `left` and `right` that none of `holes` covers. `holes` are sorted by their left side, so one walk along the row does it, with nothing made. The places come from a worker, so a hole inside out covers nothing, and the stretches come in order and never overlap, whatever the holes: what's walked is at most the row.
 fn gaps_in_row(holes: &[PixelBox], y: usize, left: usize, right: usize, mut run: impl FnMut(usize, usize)) {
     let mut at = left;
-    for hole in holes.iter().filter(|hole| (hole[1]..hole[3]).contains(&y)) {
+    for hole in holes.iter().filter(|hole| hole[0] < hole[2] && (hole[1]..hole[3]).contains(&y)) {
+        if at >= right {
+            return;
+        }
         if hole[0] > at {
             run(at, hole[0].min(right));
         }
         at = at.max(hole[2]);
-        if at >= right {
-            return;
-        }
     }
     if at < right {
         run(at, right);
@@ -221,25 +221,28 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
     sample_outside(pixels, stride, [left, top, right, bottom], &[])
 }
 
+/// Calls `look` with each stretch of the BGRA pixels of `within` that none of `holes` covers, row by row. Nothing's kept between calls, so a second pass walks the rows again rather than holding a slice for each stretch, which with 64 holes came to a mebibyte for the largest preview.
+fn for_each_stretch(pixels: &[u8], stride: usize, within: PixelBox, holes: &[PixelBox], mut look: impl FnMut(&[u8])) {
+    let [left, top, right, bottom] = within;
+    if stride == 0 {
+        return;
+    }
+    for (y, row) in pixels.chunks(stride).enumerate().skip(top).take(bottom.saturating_sub(top)) {
+        gaps_in_row(holes, y, left, right, |from, to| {
+            if let Some(stretch) = row.get(from.saturating_mul(4)..to.saturating_mul(4).min(row.len())) {
+                look(stretch);
+            }
+        });
+    }
+}
+
 /// The same, for the pixels of `within` that none of `holes` covers, as a page's paper outside its images is. `holes` must be sorted by their left side.
 fn sample_outside(pixels: &[u8], stride: usize, within: PixelBox, holes: &[PixelBox]) -> ImageSample {
-    let [left, top, right, bottom] = within;
     let (mut paper, mut colour, mut white, mut count) = (0usize, 0usize, 0usize, 0usize);
     let mut sums = [0u64; 3];
     let mut bins = [0u32; COLOUR_BINS];
-    // The stretches looked at, a row's or a few for each row, so a second pass needn't work them out again. At most a picture's height times one more than the holes.
-    let mut inside: Vec<&[u8]> = Vec::new();
-    if stride != 0 {
-        for (y, row) in pixels.chunks(stride).enumerate().skip(top).take(bottom.saturating_sub(top)) {
-            gaps_in_row(holes, y, left, right, |from, to| {
-                if let Some(stretch) = row.get(from.saturating_mul(4)..to.saturating_mul(4).min(row.len())) {
-                    inside.push(stretch);
-                }
-            });
-        }
-    }
-    for row in &inside {
-        for pixel in row.as_chunks::<4>().0 {
+    for_each_stretch(pixels, stride, within, holes, |stretch| {
+        for pixel in stretch.as_chunks::<4>().0 {
             let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
             let (low, high) = (r.min(g).min(b), r.max(g).max(b));
             count += 1;
@@ -256,7 +259,7 @@ fn sample_outside(pixels: &[u8], stride: usize, within: PixelBox, holes: &[Pixel
                 bins[(usize::from(r >> 5) << 6) | (usize::from(g >> 5) << 3) | usize::from(b >> 5)] += 1;
             }
         }
-    }
+    });
     let share = |part: usize| if count == 0 { 0.0 } else { part as f64 / count as f64 };
     let average = |sum: u64| if paper == 0 { 255 } else { u8::try_from(sum / paper as u64).unwrap_or(255) };
     let background = [average(sums[0]), average(sums[1]), average(sums[2])];
@@ -291,16 +294,15 @@ fn sample_outside(pixels: &[u8], stride: usize, within: PixelBox, holes: &[Pixel
         && found.clustered >= FLAT_LEAST_CLUSTERED
     {
         let near = |value: u8, to: u8| value.abs_diff(to) <= PLAIN_NEAR;
-        let plain: usize = inside
-            .iter()
-            .map(|row| {
-                row.as_chunks::<4>()
-                    .0
-                    .iter()
-                    .filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2]))
-                    .count()
-            })
-            .sum();
+        let mut plain = 0usize;
+        for_each_stretch(pixels, stride, within, holes, |stretch| {
+            plain += stretch
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2]))
+                .count();
+        });
         found.plain = share(plain);
     }
     found
@@ -1329,6 +1331,62 @@ mod tests {
         assert_eq!(pixels, vec![9u8; 64], "a stride narrower than the row");
         turn_over(&mut pixels, 8, 100, 0, true, &[], &[]);
         turn_over(&mut pixels, 4, 100, 16, true, &[], &[]);
+    }
+
+    /// The stretches of a row of `[left, right)` that `gaps_in_row` gives for `holes`, sorted as it wants them, checked to be in order, apart, inside the row and clear of every hole.
+    fn gaps(holes: &[PixelBox], left: usize, right: usize) -> Vec<(usize, usize)> {
+        let mut holes = holes.to_vec();
+        holes.sort_unstable_by_key(|hole| hole[0]);
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        gaps_in_row(&holes, 0, left, right, |from, to| runs.push((from, to)));
+        let mut at = left;
+        for &(from, to) in &runs {
+            assert!(from >= at && from < to && to <= right, "{runs:?} for {holes:?} in {left}..{right}");
+            assert!(
+                holes.iter().all(|hole| hole[0] >= hole[2] || to <= hole[0] || from >= hole[2]),
+                "{runs:?} cross a hole of {holes:?}"
+            );
+            at = to;
+        }
+        runs
+    }
+
+    /// Failure (rule 6): boxes from a hostile worker, inside out, overlapping, nested or out of order, make the row's walk give stretches that overlap, so the page's paper is counted more than once, its share comes to more than the page, and a picture of 64 crafted holes is walked tens of times over (review of 2026-11-13). Each stretch comes once, in order, inside the row and outside every real hole, so the walk never looks at more than the row's pixels.
+    #[test]
+    fn the_gaps_in_a_row_never_overlap_whatever_the_holes() {
+        let hole = |left: usize, right: usize| [left, 0, right, 1];
+        assert_eq!(gaps(&[hole(10, 50), hole(20, 30)], 0, 100), [(0, 10), (50, 100)], "nested");
+        assert_eq!(gaps(&[hole(10, 40), hole(30, 60)], 0, 100), [(0, 10), (60, 100)], "overlapping");
+        assert_eq!(gaps(&[hole(70, 80), hole(10, 20)], 0, 100), [(0, 10), (20, 70), (80, 100)], "out of order");
+        assert_eq!(gaps(&[hole(60, 20)], 0, 100), [(0, 100)], "inside out covers nothing");
+        assert_eq!(
+            gaps(&[hole(10, 5), hole(3, 8), hole(12, 4)], 0, 100),
+            [(0, 3), (8, 100)],
+            "inside out among others"
+        );
+        assert_eq!(gaps(&[hole(90, 500)], 0, 100), [(0, 90)], "past the right edge");
+        assert_eq!(gaps(&[hole(150, 200)], 0, 100), [(0, 100)], "beyond it");
+        assert_eq!(gaps(&[hole(10, 20)], 50, 40), [], "a row inside out");
+        assert_eq!(gaps(&[hole(1, 2)], 0, 1), [(0, 1)], "a hole that starts at the row's end");
+        assert_eq!(gaps(&[hole(0, 1)], 0, 1), [], "one that covers the row");
+        // 64 holes, crafted so that each starts where the walk is and ends before it: the review's case.
+        let crafted: Vec<PixelBox> = (0..64).map(|at| hole(at + 1, 0)).collect();
+        assert_eq!(gaps(&crafted, 0, 100), [(0, 100)]);
+        let every_other: Vec<PixelBox> = (0..64).map(|at| hole(at * 2, at * 2 + 1)).collect();
+        assert_eq!(gaps(&every_other, 0, 200).iter().map(|(from, to)| to - from).sum::<usize>(), 200 - 64);
+    }
+
+    /// Failure (rule 6): the same boxes through a page: its paper's share comes to more than the page, or more pixels are looked at than the picture has.
+    #[test]
+    fn crafted_boxes_never_count_a_pixel_twice() {
+        let (width, height) = (100u32, 100u32);
+        let crafted: Vec<PixelBox> = (0..64).map(|at| [at + 1, 0, 0, height as usize]).collect();
+        let mut holes = crafted.clone();
+        holes.sort_unstable_by_key(|hole| hole[0]);
+        assert!(share_outside(&holes, width, height) <= 1.0, "{}", share_outside(&holes, width, height));
+        let page = picture(width, height, |_, _| [255, 255, 255]);
+        let found = sample_outside(&page, width as usize * 4, [0, 0, width as usize, height as usize], &holes);
+        assert!(found.pixels <= (width * height) as usize, "{} pixels looked at", found.pixels);
     }
 
     /// Measures, and isn't a check: `cargo test --release -p recto-reader -- --ignored dark_paper_costs --nocapture`. What a 512 px colour tile costs each way.

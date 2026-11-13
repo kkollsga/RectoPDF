@@ -725,7 +725,9 @@ impl PageImages {
             for side in &mut sides {
                 *side = u16::from(r.u8()?) | (u16::from(r.u8()?) << 8);
             }
-            boxes.push(sides);
+            // A box inside out from a worker is turned the right way round here, so nothing that walks a page's boxes meets one that runs backwards.
+            let [left, top, right, bottom] = sides;
+            boxes.push([left.min(right), top.min(bottom), left.max(right), top.max(bottom)]);
         }
         r.end()?;
         Ok(Self { job_id, boxes })
