@@ -87,7 +87,7 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
     assert!(s.generated().view(id).is_some(), "an answer about this version is shown");
 
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
-    s.go_dormant(id);
+    s.sleeper().go_dormant(id);
     assert!(s.generated().view(id).is_none(), "a dormant tab held its list");
     // Another tab shown: this one's list leaves memory.
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));

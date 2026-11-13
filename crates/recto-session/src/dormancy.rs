@@ -74,11 +74,17 @@ impl Dormancy {
         }
     }
 
+    /// A tab's no longer on its way to a sleep file from the warm ones: it's warm again, so what it left with would be written for a tab on
+    /// screen, or what was read of it has turned out to be of another file, which no sleep file may carry on.
+    pub(crate) fn not_leaving(&mut self, id: TabId) {
+        self.left_warm.retain(|(tab, _)| *tab != id);
+    }
+
     pub(crate) fn take_left(&mut self) -> Vec<(TabId, Arc<Toc>)> {
         std::mem::take(&mut self.left_warm)
     }
 
-    /// A tab's been woken from this sleep file, which is kept for its first frame, and its file's to be looked at. **At the cap the oldest goes, and its file isn't looked at on this way past:** a file changed behind its sleep file is still found when the renderer opens it to draw and says how long it is ([`crate::Session::file_length_is`]), which overrules what the sleep file said.
+    /// A tab's been woken from this sleep file, which is kept for its first frame, and its file's to be looked at. **At the cap the oldest goes, and its file isn't looked at on this way past:** a file changed behind its sleep file is still found when the renderer opens it to draw and says how long it is ([`crate::Sleeper::file_length_is`]), which overrules what the sleep file said.
     pub(crate) fn woke_from_file(&mut self, id: TabId, sleep: SleepFile) {
         self.just_read = Some((id, sleep));
         self.woken_from_file.retain(|tab| *tab != id);
@@ -117,7 +123,7 @@ impl Dormancy {
 /// What a caller outside the crate may change of dormancy: a hold on a tab, whether there are sleep files, and taking what's waiting for whoever writes
 /// and checks them. Letting a hold go stays the session's, as it stamps the tab.
 impl crate::parts::PartMut<'_, Dormancy> {
-    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Session::let_go`].
+    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Sleeper::let_go`].
     pub fn hold(&mut self, id: TabId) {
         self.0.held.push(id);
     }

@@ -197,7 +197,7 @@ impl<L: DocLoader> Session<L> {
         let comparison = compare::Comparison::new(tabs.to_vec())?;
         let was = self.comparison.clone();
         for id in tabs {
-            self.wake_list(*id);
+            self.sleeper().wake_list(*id);
         }
         let reading = reading
             .filter(|id| tabs.contains(id))
@@ -278,7 +278,7 @@ impl<L: DocLoader> Session<L> {
         }
         let page = self.tabs.tab(id).map_or(0, |tab| tab.page);
         comparison.add(id, page)?;
-        self.wake_list(id);
+        self.sleeper().wake_list(id);
         self.comparison = Some(comparison);
         self.activate(id);
         Ok(compare::CompareChange::Added)

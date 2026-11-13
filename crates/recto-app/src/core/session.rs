@@ -110,7 +110,7 @@ pub fn apply_restored(
     }
     if let Some((id, path, stamp)) = holding {
         // With a sleep file, the first frame has what it needs. Nothing waits for the PDF, and it's looked at on the way past.
-        if inner.host.session.with_session(|session| session.wake_from_sleep_file(id)) {
+        if inner.host.session.with_session(|session| session.sleeper().wake_from_sleep_file(id)) {
             inner.host.session.with_session(|session| session.wake_active());
             inner.engine.waking().note_wake(id.0, Instant::now());
         } else {
@@ -490,7 +490,7 @@ impl FileReads {
                 if let Some(status) = read.status {
                     host.session.with_session(|session| session.apply_file_status(tab, status));
                 }
-                host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                host.session.with_session(|session| session.sleeper().give_woken(tab, read.loaded, read.stamp));
                 // The tab it's for may have been left already.
                 if lock(&inner.life.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
@@ -508,7 +508,7 @@ impl FileReads {
                     && self.wanted_tab == Some(tab)
                 {
                     self.wanted_tab = None;
-                    host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                    host.session.with_session(|session| session.sleeper().give_woken(tab, read.loaded, read.stamp));
                     return Some(person::read_in(*command, None));
                 }
             }
