@@ -176,7 +176,8 @@ pub struct Inner {
     pub qa: Option<Arc<QaBridge>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     pub(crate) keys: Arc<recto_reader::engine::Keyring>,
-    pub life: Lifecycle,
+    /// Shared with the control socket's thread, which holds nothing else of the core while it serves, so the session's end goes by the machine too.
+    pub life: Arc<Lifecycle>,
     pub serving: Serving,
     pub window: WindowParts,
     pub tools: Tools,
@@ -336,9 +337,9 @@ impl Lifecycle {
         self.life().due(now)
     }
 
-    /// Whether a hand-off has written and read back the state, so quitting is what's left.
-    pub(crate) fn hand_off_done(&self) -> bool {
-        self.life().hand_off() == crate::lifecycle::HandOff::Done
+    /// Whether the host's been told to quit for a hand-off that's written.
+    pub(crate) fn told_to_quit(&self) -> bool {
+        self.life().hand_off() == crate::lifecycle::HandOff::Quitting
     }
 }
 
@@ -516,13 +517,11 @@ impl Inner {
         self.core.frozen.store(frozen, Ordering::SeqCst);
     }
 
-    /// Quits now, if a hand-off has really got this far. Says whether it did.
+    /// Quits now, if a hand-off has really got this far. Says whether the host's been told to: the first ask tells it, and one after says yes and tells it nothing
+    /// more ([`crate::lifecycle::Event::HandOffQuit`]).
     pub fn hand_off_quit_now(&self) -> bool {
-        if !self.life.hand_off_done() {
-            return false;
-        }
-        self.listener.hand_off_quit();
-        true
+        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffQuit));
+        self.life.told_to_quit()
     }
 
     /// The reader's moved on from what they were told about the session as a whole.
