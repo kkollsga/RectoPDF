@@ -143,6 +143,16 @@ fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
     agent(&app, r#"{"cmd":"back"}"#);
     drop(held);
     app.settle();
+    // What Back marked for Forward, and the place kept, said with a failure: a mark of 0.3 is Back's look at where the reader is, a mark of 0.8 with the
+    // page view at 0.3 is the jump lost on its way to the view.
+    let marked = app.core().host.session.with_session(|s| {
+        let id = s.active().expect("a tab");
+        format!(
+            "forward stops {:?}, place kept {:?}",
+            s.trail_of(id).map(|trail| trail.forward().to_vec()),
+            s.place_to_show(id)
+        )
+    });
     agent(&app, r#"{"cmd":"forward"}"#);
     app.settle();
     let inner = app.core();
@@ -150,7 +160,7 @@ fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
     assert_eq!(page, 4, "page 5");
     assert!(
         (within - 0.8).abs() < 0.01,
-        "Forward lands 0.8 of the way down page 5, where the jump went, not {within}"
+        "Forward lands 0.8 of the way down page 5, where the jump went, not {within}; after Back, {marked}"
     );
 }
 

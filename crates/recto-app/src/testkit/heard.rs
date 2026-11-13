@@ -55,14 +55,26 @@ impl HeadlessApp {
     /// still runs, on the caller's thread, as one on the socket does while the session thread is busy. So a test can say "the agent's next command comes
     /// before the window has done what its last one asked" and get it every time.
     ///
-    /// It holds what every call on the session thread ends with a look at (what's overheard, [`super::heard::Overheard`]), and queues a call of its own
-    /// ahead of anything asked from here, so the thread stops at the end of that call or of one before it, whichever it's on, and takes nothing queued after.
+    /// It holds what every call on the session thread ends with a look at (what's overheard, [`super::heard::Overheard`]), queues a call of its own ahead
+    /// of anything asked from here, and returns once that call's done all but that last look, so the thread is stopped there and takes nothing queued after.
+    /// Before, it returned as soon as the call was queued, and the look at the session that call ends with ran whenever the thread got to it: on a slow
+    /// machine, in the middle of the commands the test made "before the window", which it then sent on as if they'd come after (CI run 43411305187).
     /// Nothing that needs what's overheard ([`Self::heard_events`], [`Self::agent_heard`], [`Self::keep_sent`]) may be asked until it's let go.
+    ///
+    /// # Panics
+    ///
+    /// If the session thread doesn't get to the held call within [`super::headless::WAIT_LIMIT`].
     #[must_use]
     pub fn hold_session_thread(&self) -> SessionThreadHeld<'_> {
         let overheard = crate::lock(&self.core().serving.heard);
-        // A flush ends as every call does, with a look at what's overheard: an idle thread takes it and stops there, a busy one stops sooner.
-        self.core().core.push(crate::queue::CoreCall::Flush(std::sync::Arc::default()));
+        // A flush's marker is let go after its call's look at the session and before its look at what's overheard, where the thread then waits.
+        let parked = std::sync::Arc::new(crate::queue::Flushed::default());
+        self.core().core.push(crate::queue::CoreCall::Flush(std::sync::Arc::clone(&parked)));
+        assert!(
+            parked.wait(super::headless::WAIT_LIMIT),
+            "the session thread didn't get to the held call in {:?}",
+            super::headless::WAIT_LIMIT
+        );
         SessionThreadHeld(overheard)
     }
 
