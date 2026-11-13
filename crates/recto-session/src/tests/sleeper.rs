@@ -181,7 +181,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
     // its way for it any more.
     show(&mut s, a);
     holds(&s, &store, &[], "a shown again before its sleep file was taken");
-    let left: Vec<TabId> = s.sleeper().take_left_warm().iter().map(|facts| facts.id).collect();
+    let left: Vec<TabId> = s.sleeper().take_left_warm().iter().map(|(facts, _)| facts.id).collect();
     assert!(!left.contains(&a), "no sleep file is written for the tab on screen: {left:?}");
     holds(&s, &store, &[], "what's left taken");
 
@@ -290,7 +290,7 @@ fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_
     assert!(s.sleeper().file_length_is(x, 5, 8), "the file's to be read");
     holds(&s, &store, &[], "x found to be another version");
     let title = |facts: &SleepFacts| facts.sleep.toc.entries().first().map(|entry| facts.sleep.toc.title(entry).to_string());
-    for facts in s.sleeper().take_left_warm() {
+    for (facts, _) in s.sleeper().take_left_warm() {
         assert!(
             facts.id != x,
             "a sleep file's on its way for x with what was read of the old version: {:?}",
@@ -418,7 +418,7 @@ fn sleeper_run() -> String {
         writeln!(out, "retired {retired:?}").unwrap();
     };
     let take_left = |s: &mut Session<Titled>, out: &mut String| {
-        for facts in s.sleeper().take_left_warm() {
+        for (facts, _) in s.sleeper().take_left_warm() {
             writeln!(out, "left warm: {}", facts_said(&names, &facts)).unwrap();
             store.write_sleep(&facts);
         }

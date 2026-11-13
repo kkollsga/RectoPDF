@@ -68,6 +68,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
             wrote_bytes: self.store.wrote_bytes(),
             total_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
             timings: None,
+            note: None,
         })
     }
 

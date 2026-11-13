@@ -168,7 +168,7 @@ impl Saver {
             return;
         };
         // Going to the background's hurry of the sleep files' cool-down, carried out here, off the UI thread.
-        inner.hurry_leaving_if_asked();
+        inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer());
         let urgent = self.urgent.swap(false, Ordering::SeqCst);
         let due = app::pass(self.pending(urgent), now);
         let _gate = lock(&self.gate);
@@ -258,8 +258,9 @@ impl Saver {
         self.flush_by(force, limit, None)
     }
 
-    /// **The same, asked for by `asked_by`** (`session save`): an agent's leaves the sleep files' cool-down alone, as a quit's and a hand-off's don't ([`Inner::sleep_at_flush`]).
-    pub fn flush_by(&self, force: bool, limit: Duration, asked_by: Option<recto_agent::Actor>) -> Result<FlushReport, StoreError> {
+    /// **The same, asked for by `asked_by`** (`session save`): an agent's leaves the sleep files' cool-down alone, as a quit's and a hand-off's don't, and what
+    /// came of the tab on screen's sleep file is kept under its ticket ([`Inner::sleep_at_flush`]).
+    pub fn flush_by(&self, force: bool, limit: Duration, asked_by: Option<crate::sleeper::Asked>) -> Result<FlushReport, StoreError> {
         let Some(inner) = self.inner() else {
             return Err(StoreError {
                 code: "not_ready",
@@ -325,7 +326,7 @@ impl Saver {
         let verify_us = micros(verified);
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
         // Then what's waiting in the cool-down, hurried and waited for within what's left of the time ([`Inner::sleep_at_flush`]).
-        inner.hurry_leaving_if_asked();
+        inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer());
         inner.sleep_at_flush(asked_by, began + limit);
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);

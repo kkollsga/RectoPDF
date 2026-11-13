@@ -16,7 +16,23 @@ pub enum Why {
     Budget,
     Pressure,
     /// `session sleep`, by whoever sent it: an agent's writes are held to its share of the hour ([`AGENT_SLEEP_BYTES_PER_HOUR`]).
-    Asked(recto_agent::Actor),
+    Asked(Asked),
+}
+
+/// **Who asked for a sleep file, and where the answer about it goes:** `ticket` is what the asker takes its own write's outcome back by, zero for none, so
+/// what it's told is of its own sleep file and never another asker's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub by: recto_agent::Actor,
+    pub ticket: u64,
+}
+
+impl Asked {
+    /// Asked by `by`, with no answer wanted.
+    #[must_use]
+    pub const fn by(by: recto_agent::Actor) -> Self {
+        Self { by, ticket: 0 }
+    }
 }
 
 /// A tab goes dormant once it hasn't been active or edited for this long. SPEC decision 25's five minutes, its *default*.
@@ -36,10 +52,14 @@ pub const LEAVING_WAIT_MS: u64 = 20_000;
 /// half of all wakes were bare, and wrote 12.2 MB with no cap at all; a sleep file is 65 KB on average, so about 250 files an hour for all tabs, and at worst
 /// 128 MiB written in an eight-hour day. Before: 1 MiB, used by ordinary switching in about 14 writes; then 4 MiB.
 pub const SLEEP_BYTES_PER_HOUR: u64 = 16 * 1024 * 1024;
-/// **What sleep files written at an agent's asking may come to in an hour: 2 MiB** (the cool-down's review, 2026-11-13, and the owner the same evening, "I
-/// agree with ... your other recommendations"): an agent looping a move and `session sleep` used the app's whole hour of sleep files (then 4 MiB, about 57
-/// writes), after which every wake of the person's was bare for the hour. An agent's take at most this, so the person's own routes (tabs pushed out of the warm
-/// ones, going dormant, a quit) always have the rest, 14 MiB. Within it an agent's writes are held to the gap and the place rules like any other.
+/// **What sleep files an agent causes may come to in an hour: 2 MiB** (the cool-down's review, 2026-11-13, and the owner the same evening, "I agree with ...
+/// your other recommendations"): an agent looping a move and `session sleep` used the app's whole hour of sleep files (then 4 MiB, about 57 writes), after
+/// which every wake of the person's was bare for the hour. Counted here: what an agent asks for (`session sleep`, the tab on screen's at its `session save`),
+/// and tabs an agent's command pushes out of the warm ones (a `tap`, an `open`, a `goto` or a `view` that changes the tab showing, by whatever route it
+/// comes; the second review). Each such file is measured before it's written and written only if it fits what's left ([`Hour::agents_fit`]), so agents'
+/// files never pass this, and the person's own routes (tabs the person's own actions push out, going dormant, a quit, a hand-off) always have the rest of the
+/// hour, 14 MiB. Past it an agent-caused write is put off, or its facts alone written for a tab with no file yet if those fit; the tab keeps any file it has.
+/// Within it an agent's writes are held to the gap and the place rules like any other.
 pub const AGENT_SLEEP_BYTES_PER_HOUR: u64 = 2 * 1024 * 1024;
 /// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
 pub const BUDGET_LOOK_EVERY_MS: u64 = 1_000;
@@ -100,6 +120,9 @@ pub struct Hour {
     cap: u64,
     /// [`AGENT_SLEEP_BYTES_PER_HOUR`], set small by a test of the agent's share.
     agent_cap: u64,
+    /// An agent's file didn't fit what's left of the share this hour: the share counts as used till the hour turns, so no file of an agent's is made only to
+    /// find it doesn't fit.
+    agents_full: bool,
 }
 
 impl Hour {
@@ -111,6 +134,7 @@ impl Hour {
             agents: 0,
             cap: SLEEP_BYTES_PER_HOUR,
             agent_cap: AGENT_SLEEP_BYTES_PER_HOUR,
+            agents_full: false,
         }
     }
 
@@ -131,20 +155,40 @@ impl Hour {
             self.began = now;
             self.bytes = 0;
             self.agents = 0;
+            self.agents_full = false;
         }
-        self.bytes < self.cap && (!agent || self.agents < self.agent_cap)
+        self.bytes < self.cap && (!agent || !self.agents_share_gone())
+    }
+
+    fn agents_share_gone(&self) -> bool {
+        self.agents_full || self.agents >= self.agent_cap
     }
 
     /// Whether it's the agents' share that's used, and not the hour: what an agent is told.
     #[must_use]
     pub fn agents_share_used(&self) -> bool {
-        self.agents >= self.agent_cap && self.bytes < self.cap
+        self.agents_share_gone() && self.bytes < self.cap
+    }
+
+    /// **Whether an agent's file of `bytes` fits what's left of the agents' share,** asked before it's written, so the share is never passed: the person's own
+    /// routes always have the rest of the hour. One that doesn't fit uses the share up for pictures till the hour turns ([`Self::has_room`] says no), while a
+    /// smaller file, a tab's facts alone, may still fit.
+    pub fn agents_fit(&mut self, bytes: u64) -> bool {
+        let fits = self.agents.saturating_add(bytes) <= self.agent_cap;
+        self.agents_full |= !fits;
+        fits
     }
 
     /// Minutes until a new hour, rounded up, for what an agent is told.
     #[must_use]
     pub fn minutes_left(&self, now: u64) -> u64 {
         HOUR_MS.saturating_sub(now.saturating_sub(self.began)).div_ceil(60_000)
+    }
+
+    /// What agents' files have come to this hour, as of the last look.
+    #[must_use]
+    pub fn agent_bytes(&self) -> u64 {
+        self.agents
     }
 
     pub fn add(&mut self, bytes: u64, agent: bool) {

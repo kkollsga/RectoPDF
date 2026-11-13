@@ -1,7 +1,7 @@
 //! Going dormant and waking from sleep files: the session's clock, the holds that keep a tab from going dormant, and what's on its way between the warm tabs, the sleep files and whoever writes and checks them.
 
-use crate::TabId;
 use crate::sleep::SleepFile;
+use crate::{Author, TabId};
 use recto_core::Toc;
 use std::sync::Arc;
 
@@ -24,8 +24,13 @@ pub struct Dormancy {
     just_read: Option<(TabId, SleepFile)>,
     /// Tabs woken from sleep files whose files nobody's looked at yet. Each once, at most [`MAX_WOKEN_FROM_FILE`].
     woken_from_file: Vec<TabId>,
-    /// Tabs just pushed out of the warm ones, with their contents, kept long enough for their sleep files to be written. Each once, at most [`MAX_LEFT_WARM`].
-    left_warm: Vec<(TabId, Arc<Toc>)>,
+    /// Tabs just pushed out of the warm ones, with their contents and who pushed them out, kept long enough for their sleep files to be written. Each once,
+    /// at most [`MAX_LEFT_WARM`].
+    left_warm: Vec<(TabId, Arc<Toc>, Author)>,
+    /// **Whose command is changing the session now:** set by the one executor around each look it takes at the session for a command, the owner's otherwise
+    /// (the app's own doings, a restore, a read landing). A tab pushed out of the warm ones is noted as pushed out by this, so a sleep file an agent's command
+    /// causes is counted as the agent's, by whatever route the command came ([`crate::parts::PartMut::act_as`]).
+    acting: Author,
 }
 
 impl Dormancy {
@@ -38,6 +43,7 @@ impl Dormancy {
             just_read: None,
             woken_from_file: Vec::new(),
             left_warm: Vec::new(),
+            acting: Author::Owner,
         }
     }
 }
@@ -64,23 +70,24 @@ impl Dormancy {
     }
 
     /// A tab's gone cold from the warm ones: what its sleep file needs is kept long enough to write that, if there are sleep files here. **At the cap the oldest goes, and its sleep file isn't written this time:** the tab wakes from its PDF instead, a read made with the session free, and nothing of anyone's is lost.
-    pub(crate) fn note_left(&mut self, left: (TabId, Arc<Toc>)) {
+    pub(crate) fn note_left(&mut self, (id, toc): (TabId, Arc<Toc>)) {
         if self.sleep_files {
-            self.left_warm.retain(|(tab, _)| *tab != left.0);
+            self.left_warm.retain(|(tab, _, _)| *tab != id);
             if self.left_warm.len() >= MAX_LEFT_WARM {
                 self.left_warm.remove(0);
             }
-            self.left_warm.push(left);
+            self.left_warm.push((id, toc, self.acting));
         }
     }
 
     /// A tab's no longer on its way to a sleep file from the warm ones: it's warm again, so what it left with would be written for a tab on
     /// screen, or what was read of it has turned out to be of another file, which no sleep file may carry on.
     pub(crate) fn not_leaving(&mut self, id: TabId) {
-        self.left_warm.retain(|(tab, _)| *tab != id);
+        self.left_warm.retain(|(tab, _, _)| *tab != id);
     }
 
-    pub(crate) fn take_left(&mut self) -> Vec<(TabId, Arc<Toc>)> {
+    /// Tabs pushed out of the warm ones, each with its contents and who pushed it out.
+    pub(crate) fn take_left(&mut self) -> Vec<(TabId, Arc<Toc>, Author)> {
         std::mem::take(&mut self.left_warm)
     }
 
@@ -115,7 +122,7 @@ impl Dormancy {
             ("held", self.held.contains(&id)),
             ("just_read", self.just_read.as_ref().is_some_and(|(tab, _)| *tab == id)),
             ("woken_from_file", self.woken_from_file.contains(&id)),
-            ("left_warm", self.left_warm.iter().any(|(tab, _)| *tab == id)),
+            ("left_warm", self.left_warm.iter().any(|(tab, _, _)| *tab == id)),
         ]
     }
 }
@@ -126,6 +133,12 @@ impl crate::parts::PartMut<'_, Dormancy> {
     /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Sleeper::let_go`].
     pub fn hold(&mut self, id: TabId) {
         self.0.held.push(id);
+    }
+
+    /// **Whose command the next changes to the session are:** the one executor says so around each look it takes for a command, and says the owner's again
+    /// after. A tab pushed out of the warm ones meanwhile is noted as pushed out by them.
+    pub fn act_as(&mut self, by: Author) {
+        self.0.acting = by;
     }
 
     /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`crate::Session::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].
@@ -179,11 +192,27 @@ mod tests {
             dormancy.note_left((TabId(n), Arc::new(Toc::default())));
         }
         dormancy.note_left((TabId(5), Arc::new(Toc::default())));
-        let left: Vec<TabId> = dormancy.take_left().into_iter().map(|(id, _)| id).collect();
+        let left: Vec<TabId> = dormancy.take_left().into_iter().map(|(id, _, _)| id).collect();
         assert_eq!(left.len(), MAX_LEFT_WARM);
         assert!(!left.contains(&TabId(0)), "the oldest went");
         assert_eq!(left.last(), Some(&TabId(5)), "a tab gone cold again is held once, as the latest");
         assert!(dormancy.take_left().is_empty());
+    }
+
+    /// Failure (the sleep branch's second review, 2026-11-13): a tab pushed out of the warm ones by an agent's command was written as the person's, so an agent
+    /// switching tabs used the person's share of the hour's sleep files. Each tab pushed out is noted with whose command it was at the time, the owner's
+    /// otherwise.
+    #[test]
+    fn a_tab_pushed_out_is_noted_with_whose_command_pushed_it() {
+        let mut dormancy = Dormancy::new();
+        PartMut(&mut dormancy).set_sleep_files(true);
+        dormancy.note_left((TabId(1), Arc::new(Toc::default())));
+        PartMut(&mut dormancy).act_as(Author::Agent);
+        dormancy.note_left((TabId(2), Arc::new(Toc::default())));
+        PartMut(&mut dormancy).act_as(Author::Owner);
+        dormancy.note_left((TabId(3), Arc::new(Toc::default())));
+        let left: Vec<(TabId, Author)> = dormancy.take_left().into_iter().map(|(id, _, by)| (id, by)).collect();
+        assert_eq!(left, [(TabId(1), Author::Owner), (TabId(2), Author::Agent), (TabId(3), Author::Owner)]);
     }
 
     /// Failure: with the sleeper stopped, tabs woken from sleep files pile up past the cap; or one woken twice is looked at twice.

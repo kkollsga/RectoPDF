@@ -120,6 +120,9 @@ impl Cmd for SessionSave {
             answer["force_us"] = json!(timings.force_us);
             answer["verify_us"] = json!(timings.verify_us);
         }
+        if let Some(note) = saved.note {
+            answer["note"] = json!(note);
+        }
         Ok(answer)
     }
     fn human(data: &Value) -> String {
@@ -309,6 +312,8 @@ pub struct Saved {
     pub total_us: u64,
     /// Where the time went, for a host that measures it.
     pub timings: Option<SaveTimings>,
+    /// What the asker is told of the sleep file of the tab on screen, in the host's words, when it wasn't written for a reason the asker can act on.
+    pub note: Option<String>,
 }
 
 /// Where a save's time went.

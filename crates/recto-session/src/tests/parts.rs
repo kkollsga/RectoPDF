@@ -393,6 +393,7 @@ const LISTED: &[&str] = &[
     "Pages: pub fn place_words",
     "Pages: pub fn position_in_same_file",
     "PartMut<Dormancy>: impl in dormancy.rs",
+    "PartMut<Dormancy>: pub fn act_as",
     "PartMut<Dormancy>: pub fn hold",
     "PartMut<Dormancy>: pub fn set_sleep_files",
     "PartMut<Dormancy>: pub fn take_sleep_read",

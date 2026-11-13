@@ -121,8 +121,26 @@ pub enum By {
     /// Being asked (`recto session sleep`), by whoever sent it: written in place, as it's looked at straight after, and kept to the gap and the hour like any
     /// other; an agent's to its share of the hour too.
     Asked(recto_agent::Actor),
-    /// The queue's one writer: a tab leaving the warm ones, or going dormant by itself. Kept to the gap and the hour.
-    Queue,
+    /// The queue's one writer: a tab leaving the warm ones, or going dormant by itself, with whose command caused it (a tab an agent's command pushed out of
+    /// the warm ones is the agent's, whoever opened it; one the person's own action pushed out, or that went dormant by itself, is the person's). Kept to the gap
+    /// and the hour, and an agent's to its share too.
+    Queue(recto_session::Author),
+}
+
+impl By {
+    /// Whether an agent caused this write, so it counts against agents' share of the hour ([`crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR`]).
+    #[must_use]
+    pub fn agent(self) -> bool {
+        matches!(self, Self::Asked(recto_agent::Actor::Agent(_)) | Self::Queue(recto_session::Author::Agent))
+    }
+}
+
+/// **What came of one sleep file's write,** for whoever asked for it: what it carried, and whether that was cut short by agents' share of the hour (what an
+/// agent is told, from this write's own outcome and no counter's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    pub write: Write,
+    pub cut_for_share: bool,
 }
 
 /// What a sleep file about to be written carries.
@@ -168,6 +186,9 @@ pub enum Event {
         there_for_other_paper: bool,
         there_for_other_place: bool,
     },
+    /// An agent-caused write the machine let through, measured before it's written: its file comes to `bytes`, `pictures` whether it carries any, and `there`
+    /// whether the tab has a file already. Only a file that fits what's left of agents' share goes.
+    AgentSize { bytes: u64, pictures: bool, there: bool },
     /// It was, this many bytes; zero is nothing new, so nothing was.
     Wrote { id: TabId, bytes: u64 },
     /// A write someone's waiting on (a flush's, being asked's) wants the one-at-a-time lock: the queue's writer lets it go first.
@@ -198,6 +219,8 @@ pub enum Out {
     GoDormant { tabs: Vec<TabId>, in_place: bool },
     /// What the sleep file about to be written carries.
     Write(Write),
+    /// The same, cut short by agents' share of the hour: put off, or its facts alone (measured again, as an [`Event::AgentSize`]).
+    ShareCut(Write),
     /// What each document off screen holds is wanted, for [`Event::Costs`].
     CountCosts,
     /// These go dormant, over the budget: queued for the session thread.
@@ -245,9 +268,11 @@ pub struct SleepWriter {
     hour: Hour,
     /// Writes waiting for the one-at-a-time lock that someone's waiting on.
     others_waiting: u32,
-    /// The write just decided is at an agent's asking, so what it comes to counts against agents' share: decided and written under the one-at-a-time lock,
-    /// so nothing comes between.
+    /// The write just decided is an agent's, so what it comes to counts against agents' share: decided and written under the one-at-a-time lock, so nothing
+    /// comes between.
     writing_for_agent: bool,
+    /// The write under way has been cut short by agents' share already, so it's counted once however many cuts it takes.
+    cut_for_share: bool,
     counts: Counts,
 }
 
@@ -263,6 +288,7 @@ impl Default for SleepWriter {
             hour: Hour::starting(1),
             others_waiting: 0,
             writing_for_agent: false,
+            cut_for_share: false,
             counts: Counts::default(),
         }
     }
@@ -324,7 +350,8 @@ impl SleepWriter {
                 there_for_other_paper,
                 there_for_other_place,
             } => {
-                let agent = matches!(by, By::Asked(recto_agent::Actor::Agent(_)));
+                let agent = by.agent();
+                self.cut_for_share = false;
                 let mut may = by == By::Flush || self.may_write_pictures(id, now, agent);
                 // A file whose pictures no page of this paper shows, or no page at this place, is worth one write inside the gap, still within the hour's cap
                 // (and an agent's share): a wake from it would be bare. Once written, the file there is of this paper and place, so the next sleep there is held
@@ -337,15 +364,33 @@ impl SleepWriter {
                         self.counts.writes_for_place += 1;
                     }
                 }
-                // Past an agent's share, what it asks for is its facts at most, and with a file there, nothing: the person's routes keep the rest of the hour.
+                // Past an agent's share, what it causes is its facts at most, and with a file there, nothing: the person's routes keep the rest of the hour.
                 let over_share = agent && !may && self.hour.agents_share_used();
-                self.counts.agent_share_used += u64::from(over_share);
-                if !may && there {
-                    self.counts.writes_put_off += 1;
-                    return Some(Out::Write(Write::PutOff));
+                if over_share {
+                    self.note_share_cut();
                 }
-                self.writing_for_agent = agent;
-                Some(Out::Write(if pictures_allowed && may { Write::WithPictures } else { Write::FactsOnly }))
+                let write = if !may && there {
+                    self.counts.writes_put_off += 1;
+                    Write::PutOff
+                } else {
+                    self.writing_for_agent = agent;
+                    if pictures_allowed && may { Write::WithPictures } else { Write::FactsOnly }
+                };
+                Some(if over_share { Out::ShareCut(write) } else { Out::Write(write) })
+            }
+            // Measured before it's written, so agents' files never pass their share: one that doesn't fit is its facts alone, for a tab with no file yet, or
+            // nothing; and the share counts as used till the hour turns.
+            Event::AgentSize { bytes, pictures, there } => {
+                if self.hour.agents_fit(bytes) {
+                    return None;
+                }
+                self.note_share_cut();
+                if pictures && !there {
+                    return Some(Out::ShareCut(Write::FactsOnly));
+                }
+                self.writing_for_agent = false;
+                self.counts.writes_put_off += 1;
+                Some(Out::ShareCut(Write::PutOff))
             }
             Event::Wrote { id, bytes } => {
                 if bytes > 0 {
@@ -412,16 +457,41 @@ impl SleepWriter {
         !soon && room
     }
 
-    /// **What an agent is told when its share of the hour is used**, in Rust's words, with when it comes back. `None` when it isn't.
+    /// An agent-caused write cut short by its share: counted once for the write.
+    fn note_share_cut(&mut self) {
+        if !self.cut_for_share {
+            self.cut_for_share = true;
+            self.counts.agent_share_used += 1;
+        }
+    }
+
+    /// **What an agent is told of a sleep file of its asking that its share of the hour cut short**, in Rust's words, from that write's own `outcome`: put
+    /// off, or its facts written without pictures, and when the share comes back. `on_screen`: the tab on screen's, at the agent's `session save`, which the
+    /// next launch's first frame would come from. `None` when the write wasn't cut short.
     #[must_use]
-    pub fn agents_share_words(&self, now: u64) -> Option<String> {
-        self.hour.agents_share_used().then(|| {
-            format!(
-                "Its sleep file wasn't written: agents' share of sleep files this hour ({} MiB of {} MiB) is used, and the rest is kept for the person's own switching. The tab is asleep either way; its file is written when the person next leaves it, or ask again in {} minutes.",
-                crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR / (1024 * 1024),
-                crate::sleeper::SLEEP_BYTES_PER_HOUR / (1024 * 1024),
-                self.hour.minutes_left(now)
-            )
+    pub fn share_words(&self, outcome: Outcome, on_screen: bool, now: u64) -> Option<String> {
+        if !outcome.cut_for_share {
+            return None;
+        }
+        let share = format!(
+            "agents' share of sleep files this hour ({} MiB of {} MiB) is used, and the rest is kept for the person's own switching",
+            crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR / (1024 * 1024),
+            crate::sleeper::SLEEP_BYTES_PER_HOUR / (1024 * 1024)
+        );
+        let minutes = self.hour.minutes_left(now);
+        Some(match (outcome.write, on_screen) {
+            (Write::FactsOnly, false) => format!(
+                "Its sleep file was written without pictures: {share}. The tab is asleep either way, and wakes without a picture until the person next leaves it; or ask again in {minutes} minutes."
+            ),
+            (_, false) => format!(
+                "Its sleep file wasn't written: {share}. The tab is asleep either way; its file is written when the person next leaves it, or ask again in {minutes} minutes."
+            ),
+            (Write::FactsOnly, true) => format!(
+                "The state is saved, and the sleep file of the tab on screen was written without pictures: {share}. If the app stopped now, the next launch would show that tab without a picture until it's drawn. Quitting, or the person leaving the tab, writes it; or ask again in {minutes} minutes."
+            ),
+            (_, true) => format!(
+                "The state is saved, but the sleep file of the tab on screen wasn't written: {share}. If the app stopped now, the next launch would show that tab without a picture until it's drawn. Quitting, or the person leaving the tab, writes it; or ask again in {minutes} minutes."
+            ),
         })
     }
 
@@ -444,6 +514,12 @@ impl SleepWriter {
     #[must_use]
     pub fn counts(&self) -> Counts {
         self.counts
+    }
+
+    /// What sleep files agents caused have come to in the hour under way, for `qa state`: never past their share.
+    #[must_use]
+    pub fn agent_bytes_this_hour(&self) -> u64 {
+        self.hour.agent_bytes()
     }
 
     /// Tabs whose last sleep file is within the gap, which are all it remembers.

@@ -615,9 +615,18 @@ fn a_tab_left_inside_the_gap_after_a_page_was_rotated_wakes_with_a_picture() {
     drop(app.quit());
 }
 
+/// The person's own command, as the window sends it for them: through the one executor as theirs, never an agent's.
+fn person(app: &crate::testkit::headless::HeadlessApp, words: &[&str]) {
+    let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+    app.person(&recto_agent::table::parse_cli(&words).expect("a command").wire());
+    app.settle();
+}
+
 /// Failure (the cool-down's review, 2026-11-13, S3): an agent looping a move and `session sleep` used the whole app's hour of sleep files, so every wake of the
-/// person's after was bare for the hour. With agents' share set small: the agent's first sleep is written, the next (at another place, which would otherwise be
-/// written) is put off and the agent is told why and what to do; then the person's own route, the tab pushed out of the warm ones, is still written.
+/// person's after was bare for the hour. With agents' share set at one and a half of the agent's first file: that file is written, the next (at another place,
+/// which would otherwise be written) doesn't fit and is put off, and the agent is told why and what to do from that write's own outcome; then the person's own
+/// route, the tab pushed out of the warm ones by the person's own opens, is still written. (The second review: the person's part was driven by an agent at
+/// Full, which now counts as the agent's; it goes through the person's own commands.)
 #[test]
 fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written() {
     let disk = Disk::new();
@@ -634,7 +643,6 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
         drop(engine.set_viewport(view));
         host_turns(&app, &mut view, true);
     }
-    app.core().sleeper.set_agent_hour_cap(1);
     let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
     let mut turn = |page: &str| {
         full(&app, &["tap", &format!("#{doc}")]);
@@ -649,20 +657,24 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     };
     let first = turn("3");
     assert!(first.get("note").is_none(), "{first}");
-    let written = app.record_json()["sleep"]["sleep_files_written"].as_u64().unwrap();
-    assert_eq!(written, 1, "{}", app.record_json()["sleep"]);
+    let sleep = app.record_json()["sleep"].clone();
+    assert_eq!(sleep["sleep_files_written"], 1, "{sleep}");
+    let file = sleep["agent_bytes_this_hour"].as_u64().expect("agents' bytes");
+    assert_eq!(sleep["sleep_bytes_written"], file, "the agent's file is counted as the agent's: {sleep}");
+    app.core().sleeper.set_agent_hour_cap(file + file / 2);
     let second = turn("5");
     let note = second["note"]
         .as_str()
         .unwrap_or_else(|| panic!("the agent isn't told its share is used: {second}"));
-    assert!(note.contains("agents' share"), "{note}");
+    assert!(note.contains("agents' share") && note.contains("wasn't written"), "{note}");
     let sleep = app.record_json()["sleep"].clone();
-    assert_eq!(sleep["sleep_files_written"], written, "{sleep}");
+    assert_eq!(sleep["sleep_files_written"], 1, "{sleep}");
     assert_eq!(sleep["agent_share_used"], 1, "{sleep}");
-    // The person reads on in doc and leaves it, and opens three more: doc is pushed out of the warm ones, and its file is written.
-    full(&app, &["tap", &format!("#{doc}")]);
+    assert_eq!(sleep["agent_bytes_this_hour"], file, "nothing past the share: {sleep}");
+    // The person reads on in doc and leaves it, and opens three more: doc is pushed out of the warm ones by the person, and its file is written.
+    person(&app, &["tap", &format!("#{doc}")]);
     host_turns(&app, &mut view, true);
-    full(&app, &["goto", "7"]);
+    person(&app, &["goto", "7"]);
     host_turns(&app, &mut view, true);
     for file in &docs[2..] {
         app.open(file);
@@ -673,9 +685,116 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
     let after = app.record_json()["sleep"].clone();
     assert!(
-        after["sleep_files_written"].as_u64().unwrap() > written,
+        after["sleep_files_written"].as_u64().unwrap() > 1,
         "the person's push-out wasn't written past the agents' share: {after}"
     );
+    assert_eq!(after["agent_bytes_this_hour"], file, "the person's push-out counted as the agent's: {after}");
+    drop(app.quit());
+}
+
+/// Failure (the sleep branch's second review, 2026-11-13): an agent's share counted a write of a tab's facts alone, with no file there, as one put off, so
+/// the agent was told its sleep file wasn't written when its facts were; and an agent's `session save` that its share kept from writing the tab on screen's
+/// file said nothing, though a crash after it leaves the next launch's first frame without a picture. With agents' share set small: an agent's sleep of a tab
+/// with no file writes its facts and says so; then, the share used, an agent's save writes the record, not the tab on screen's file, and says that.
+#[test]
+fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 6));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    // Room for a tab's facts, not its pictures (a picture of a synthetic page packs to a few KB).
+    app.core().sleeper.set_agent_hour_cap(1_000);
+    let a = tab_named(&app, "a.pdf");
+    let slept = full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    let note = slept["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("nothing said of a's facts written alone: {slept}"));
+    assert!(note.contains("without pictures"), "{note}");
+    let sleep = app.record_json()["sleep"].clone();
+    assert_eq!(sleep["sleep_files_written"], 1, "its facts: {sleep}");
+    let used = sleep["agent_bytes_this_hour"].as_u64().expect("agents' bytes");
+    assert!(used > 0 && used <= 1_000, "{sleep}");
+    app.core().sleeper.set_agent_hour_cap(used);
+    let saved = full(&app, &["session", "save"]);
+    assert_eq!(saved["saved"], true, "{saved}");
+    let note = saved["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the save says nothing of the tab on screen's file: {saved}"));
+    assert!(note.contains("tab on screen") && note.contains("wasn't written"), "{note}");
+    assert!(!active_has_a_sleep_file(&app), "{}", app.record_json()["sleep"]);
+    drop(app.quit());
+}
+
+/// Failure (the sleep branch's second review, 2026-11-13): tabs an agent's `tap` or `goto` pushed out of the warm ones were written as the person's, so an
+/// agent cycling through tabs, with a move before each push-out to pass the place rule, could use the whole hour of sleep files in a minute or two, and
+/// every wake of the person's after was bare. Six tabs, the gap passed before each step, agents' share set at two and a half files: the agent's tap-and-goto
+/// cycle writes up to its share and then is put off, never past it; and the person's own cycle after is still written, none of it counted as the agent's.
+#[test]
+fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_still_written() {
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..6).map(|at| disk.pdf(&format!("t{at}.pdf"), 6)).collect();
+    let app = disk.start();
+    // Nothing goes dormant by itself here: only tabs pushed out of the warm ones are written.
+    app.core().sleeper.set_after(24 * 60 * 60);
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in &docs {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    let sleep = app.record_json()["sleep"].clone();
+    let (files, bytes) = (sleep["sleep_files_written"].as_u64().unwrap(), sleep["sleep_bytes_written"].as_u64().unwrap());
+    assert!(files >= 3, "the person's opens pushed three out: {sleep}");
+    assert_eq!(sleep["agent_bytes_this_hour"], 0, "{sleep}");
+    let share = bytes / files * 5 / 2;
+    app.core().sleeper.set_agent_hour_cap(share);
+    let tabs: Vec<u64> = (0..6).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
+    let gap = u64::from(crate::sleeper::SLEEP_WRITE_EVERY_SECONDS) * 1000 + 1;
+    let mut cycle = |by_agent: bool| {
+        for (step, tab) in tabs.iter().chain(&tabs).enumerate() {
+            app.advance(gap);
+            let page = format!("{}", 2 + step % 5);
+            if by_agent {
+                full(&app, &["tap", &format!("#{tab}")]);
+                host_turns(&app, &mut view, true);
+                full(&app, &["goto", &page]);
+            } else {
+                person(&app, &["tap", &format!("#{tab}")]);
+                host_turns(&app, &mut view, true);
+                person(&app, &["goto", &page]);
+            }
+            host_turns(&app, &mut view, true);
+            app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+        }
+    };
+    cycle(true);
+    let agents = app.record_json()["sleep"].clone();
+    assert!(
+        agents["agent_share_used"].as_u64().unwrap() >= 1,
+        "the agent's cycle never met its share: {agents}"
+    );
+    let agent_bytes = agents["agent_bytes_this_hour"].as_u64().unwrap();
+    assert!(agent_bytes > 0, "nothing of the agent's was written up to its share: {agents}");
+    assert!(agent_bytes <= share, "past the share, {agent_bytes} of {share}: {agents}");
+    let written = agents["sleep_files_written"].as_u64().unwrap();
+    cycle(false);
+    let persons = app.record_json()["sleep"].clone();
+    assert!(
+        persons["sleep_files_written"].as_u64().unwrap() >= written + 6,
+        "the person's own cycle, after the agent's share was used, wasn't written: {persons}"
+    );
+    assert_eq!(persons["agent_bytes_this_hour"], agent_bytes, "the person's counted as the agent's: {persons}");
     drop(app.quit());
 }
 

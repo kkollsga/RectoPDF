@@ -367,11 +367,11 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     }
     let left = s.sleeper().take_left_warm();
     assert_eq!(
-        left.iter().map(|facts| facts.id).collect::<Vec<_>>(),
+        left.iter().map(|(facts, _)| facts.id).collect::<Vec<_>>(),
         [open],
         "the unprotected one that left: {left:?}"
     );
-    assert_eq!(left[0].sleep.file_pages, 3);
+    assert_eq!(left[0].0.sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
     // A protected file's pages in a plain document: its facts are fine, and no picture is.
     let plain = s.open(&file("plain.pdf")).unwrap();

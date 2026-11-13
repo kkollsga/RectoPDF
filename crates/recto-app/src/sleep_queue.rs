@@ -19,7 +19,7 @@
 
 use crate::lock;
 use recto_reader::SleepMaterial;
-use recto_session::{SleepFacts, TabId};
+use recto_session::{Author, SleepFacts, TabId};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -46,13 +46,15 @@ struct Waiting {
     /// When it may be written, in the app's clock's milliseconds: a tab pushed out of the warm ones waits ([`Leaves::PushedOut`]), and is handed
     /// back if it's shown again meanwhile; zero is now.
     due: u64,
+    /// Whose command caused it: a tab an agent's command pushed out is the agent's, counted against agents' share when it's written.
+    caused_by: Author,
 }
 
 /// What the writer does next.
 #[derive(Debug)]
 pub enum Next {
-    /// Writes this one, counted till [`LeavingQueue::done`]. Boxed, as it's most of the size and the others are a word.
-    Write(Box<(SleepFacts, SleepMaterial)>),
+    /// Writes this one, caused by whose command, counted till [`LeavingQueue::done`]. Boxed, as it's most of the size and the others are a word.
+    Write(Box<(SleepFacts, SleepMaterial, Author)>),
     /// Nothing's due yet: waits this many milliseconds of the clock, or till it's told something changed.
     Wait(u64),
     /// Nothing's queued: the writer ends.
@@ -130,13 +132,13 @@ impl LeavingQueue {
     #[cfg(test)]
     #[must_use]
     pub fn push(&mut self, facts: SleepFacts, material: SleepMaterial) -> bool {
-        self.push_due(facts, material, 0)
+        self.push_due(facts, material, 0, Author::Owner)
     }
 
-    /// **Queues a tab's sleep file,** to be written no sooner than `due` by the clock, by the rules above. Says whether a writer has to be started: only when
-    /// there isn't one.
+    /// **Queues a tab's sleep file,** caused by `caused_by`'s command, to be written no sooner than `due` by the clock, by the rules above. Says whether a
+    /// writer has to be started: only when there isn't one.
     #[must_use]
-    pub fn push_due(&mut self, mut facts: SleepFacts, material: SleepMaterial, due: u64) -> bool {
+    pub fn push_due(&mut self, mut facts: SleepFacts, material: SleepMaterial, due: u64, caused_by: Author) -> bool {
         // Nothing held that its sleep file couldn't carry.
         let material = crate::sleep_writer::allowed_material(&mut facts, material);
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
@@ -144,7 +146,13 @@ impl LeavingQueue {
             self.counts.replaced += 1;
         }
         let bytes = bytes_of(&facts, &material);
-        self.queue.push_back(Waiting { facts, material, bytes, due });
+        self.queue.push_back(Waiting {
+            facts,
+            material,
+            bytes,
+            due,
+            caused_by,
+        });
         self.bytes += bytes;
         // Past the cap on tabs, the oldest still in its cool-down is written now rather than dropped (found 2026-11-13: flicking through thirty tabs, every
         // sleep file past the eighth was dropped while it waited, and those tabs woke bare). Only when none is waiting, so the writer is behind (a slow disk),
@@ -186,7 +194,7 @@ impl LeavingQueue {
     /// The writer's next, oldest first, whatever's due. `None` is the writer's end. See [`Self::take_due`].
     pub fn take_next(&mut self) -> Option<(SleepFacts, SleepMaterial)> {
         match self.take_due(u64::MAX) {
-            Next::Write(leaving) => Some(*leaving),
+            Next::Write(leaving) => Some((leaving.0, leaving.1)),
             Next::Wait(_) | Next::End => None,
         }
     }
@@ -214,7 +222,7 @@ impl LeavingQueue {
             stale: false,
             retired: false,
         });
-        Next::Write(Box::new((leaving.facts, leaving.material)))
+        Next::Write(Box::new((leaving.facts, leaving.material, leaving.caused_by)))
     }
 
     /// **Everything queued is due now:** a quit, a hand-off, the app going to the background, or memory pressure won't wait for the cool-down. Says whether a
@@ -371,8 +379,9 @@ impl Drop for WriterRunning<'_> {
 /// Why a tab's sleep file is queued, which says when it's due: the one place that says a tab going dormant doesn't wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaves {
-    /// Pushed out of the warm ones: it waits its cool-down ([`crate::sleeper::LEAVING_WAIT_MS`]), and is handed back if it's shown again meanwhile.
-    PushedOut,
+    /// Pushed out of the warm ones, by whose command: it waits its cool-down ([`crate::sleeper::LEAVING_WAIT_MS`]), and is handed back if it's shown again
+    /// meanwhile.
+    PushedOut(Author),
     /// Going dormant by itself (left alone, the budget, memory pressure): written as soon as the writer gets to it.
     Dormant,
 }
@@ -425,11 +434,12 @@ impl Leaving {
     #[must_use]
     pub fn push(&self, facts: SleepFacts, material: SleepMaterial, leaves: Leaves, now: u64) -> bool {
         let wait = self.wait_ms.load(Ordering::SeqCst);
-        let due = match leaves {
-            Leaves::PushedOut if wait > 0 => now.saturating_add(wait),
-            Leaves::PushedOut | Leaves::Dormant => 0,
+        let (due, caused_by) = match leaves {
+            Leaves::PushedOut(by) if wait > 0 => (now.saturating_add(wait), by),
+            Leaves::PushedOut(by) => (0, by),
+            Leaves::Dormant => (0, Author::Owner),
         };
-        let start = lock(&self.queue).push_due(facts, material, due);
+        let start = lock(&self.queue).push_due(facts, material, due, caused_by);
         self.moved.notify_all();
         start
     }
@@ -511,19 +521,19 @@ impl Leaving {
     /// **The one writer's loop,** on its thread, till the queue's empty: the next due by `now` (the app's clock), handed to `write`, then let go of. With nothing
     /// due it waits on the queue's condition for the soonest due time, looked at again each time round, so a word missed costs at most that wait, and it never
     /// spins: each wait ends with a word or its timeout (counted as `waits`).
-    pub fn serve(&self, now: impl Fn() -> u64, mut write: impl FnMut(SleepFacts, SleepMaterial)) {
+    pub fn serve(&self, now: impl Fn() -> u64, mut write: impl FnMut(SleepFacts, SleepMaterial, Author)) {
         let _running = WriterRunning::enter(self);
         #[cfg(test)]
         assert!(!self.panic_next.swap(false, Ordering::SeqCst), "a sleep writer panicking, as a test asked");
-        while let Some((facts, material)) = self.next(&now) {
-            write(facts, material);
+        while let Some((facts, material, caused_by)) = self.next(&now) {
+            write(facts, material, caused_by);
             lock(&self.queue).done();
             self.moved.notify_all();
         }
     }
 
     /// The writer's next: waits for one to come due, or says there's none left (the writer's end, said under the lock a tab's queued under).
-    fn next(&self, now: &impl Fn() -> u64) -> Option<(SleepFacts, SleepMaterial)> {
+    fn next(&self, now: &impl Fn() -> u64) -> Option<(SleepFacts, SleepMaterial, Author)> {
         let mut held = lock(&self.queue);
         loop {
             match held.take_due(now()) {
@@ -711,9 +721,9 @@ mod tests {
     fn a_sleep_file_waits_its_cool_down_unless_hurried_or_taken_back() {
         let wait = 5;
         let mut queue = LeavingQueue::default();
-        let _ = queue.push_due(facts(1), material(10, 1), 100 + wait);
+        let _ = queue.push_due(facts(1), material(10, 1), 100 + wait, Author::Owner);
         assert!(matches!(queue.take_due(100 + wait - 1), Next::Wait(1)), "at the wait less one");
-        let _ = queue.push_due(facts(2), material(10, 2), 0);
+        let _ = queue.push_due(facts(2), material(10, 2), 0, Author::Owner);
         assert!(
             matches!(queue.take_due(101), Next::Write(leaving) if leaving.0.id == TabId(2)),
             "going dormant doesn't wait"
@@ -722,8 +732,8 @@ mod tests {
             matches!(queue.take_due(100 + wait), Next::Write(leaving) if leaving.0.id == TabId(1)),
             "at the wait"
         );
-        let _ = queue.push_due(facts(3), material(10, 3), 200 + wait);
-        let _ = queue.push_due(facts(4), material(10, 4), 200 + wait);
+        let _ = queue.push_due(facts(3), material(10, 3), 200 + wait, Author::Owner);
+        let _ = queue.push_due(facts(4), material(10, 4), 200 + wait, Author::Owner);
         let (back, material) = queue.take_back(TabId(3)).expect("handed back");
         assert_eq!((back.id, material.pictures[0].bgra[0]), (TabId(3), 3));
         assert!(!queue.hurry(), "a writer's there");
@@ -739,7 +749,7 @@ mod tests {
     fn past_the_cap_on_tabs_the_oldest_waiting_is_written_now_not_dropped() {
         let mut queue = LeavingQueue::default();
         for id in 1..=(MAX_QUEUED_TABS as u32 + 3) {
-            let _ = queue.push_due(facts(id), material(10, 0), 1_000);
+            let _ = queue.push_due(facts(id), material(10, 0), 1_000, Author::Owner);
             assert!(queue.queue.len() <= MAX_QUEUED_TABS, "{} queued", queue.queue.len());
         }
         let report = queue.report();
@@ -881,7 +891,7 @@ mod tests {
         let mut queue = LeavingQueue::default();
         let mut protected = facts(1);
         protected.pictures_allowed = false;
-        let _ = queue.push_due(protected, material(MIB, 0), 1_000);
+        let _ = queue.push_due(protected, material(MIB, 0), 1_000, Author::Owner);
         assert_eq!(queue.bytes, 0, "held for nothing");
         let (_, back) = queue.take_back(TabId(1)).expect("handed back");
         assert!(back.pictures.is_empty(), "pictures handed back that no sleep file of it may carry");
@@ -924,10 +934,10 @@ mod tests {
     #[test]
     fn a_pushed_out_tab_waits_its_cool_down_and_a_dormant_one_does_not() {
         let line = Leaving::new(5);
-        let _ = line.push(facts(1), material(10, 0), Leaves::PushedOut, 100);
+        let _ = line.push(facts(1), material(10, 0), Leaves::PushedOut(Author::Owner), 100);
         let _ = line.push(facts(2), material(10, 0), Leaves::Dormant, 100);
         line.set_wait(0);
-        let _ = line.push(facts(3), material(10, 0), Leaves::PushedOut, 100);
+        let _ = line.push(facts(3), material(10, 0), Leaves::PushedOut(Author::Owner), 100);
         let dues: Vec<u64> = lock(&line.queue).queue.iter().map(|waiting| waiting.due).collect();
         assert_eq!(dues, [105, 0, 0]);
     }
@@ -944,9 +954,12 @@ mod tests {
         let clock = TestClock::default();
         let written = Mutex::new(Vec::new());
         let waits = || line.report()["waits"].as_u64().unwrap();
-        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0), "the first starts a writer");
+        assert!(
+            line.push(facts(1), material(10, 0), Leaves::PushedOut(Author::Owner), 0),
+            "the first starts a writer"
+        );
         std::thread::scope(|scope| {
-            let writer = scope.spawn(|| line.serve(|| clock.now(), |facts, _| lock(&written).push(facts.id)));
+            let writer = scope.spawn(|| line.serve(|| clock.now(), |facts, _, _| lock(&written).push(facts.id)));
             let _ends = EndsTheWriter(&line);
             until("the writer waiting", || waits() >= 1);
             for _ in 0..3 {
@@ -958,7 +971,7 @@ mod tests {
             assert!(waits() <= 5, "the writer spun: {}", line.report());
             // Due at 1 with the clock at 0: the writer, seen waiting after the push (its waits counted since, each a millisecond's timeout on a clock that
             // stands still), has looked at it at 0 and found it not due. Then the clock moves with no word said: only the wait's own timeout finds it.
-            let _ = line.push(facts(2), material(10, 0), Leaves::PushedOut, clock.now());
+            let _ = line.push(facts(2), material(10, 0), Leaves::PushedOut(Author::Owner), clock.now());
             let after_push = waits();
             until("the writer waiting at 0, after the push", || waits() > after_push);
             clock.set(1);
@@ -978,7 +991,7 @@ mod tests {
     #[test]
     fn a_drain_with_no_writer_returns_at_once_and_a_hurry_starts_one() {
         let line = Leaving::new(1_000);
-        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0));
+        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut(Author::Owner), 0));
         line.writer_gone();
         let began = Instant::now();
         assert!(!line.drain(began + Duration::from_secs(5)), "nothing to wait for");
@@ -994,7 +1007,7 @@ mod tests {
     fn a_hurry_landing_between_the_writers_look_and_its_wait_is_not_lost() {
         let line = Leaving::new(60_000);
         let written = Mutex::new(Vec::new());
-        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0));
+        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut(Author::Owner), 0));
         let (at_wait, writer_at_wait) = std::sync::mpsc::channel();
         let (go, gone) = std::sync::mpsc::channel::<()>();
         line.before_next_wait(move || {
@@ -1002,7 +1015,7 @@ mod tests {
             let _ = gone.recv();
         });
         std::thread::scope(|scope| {
-            let writer = scope.spawn(|| line.serve(|| 0, |facts, _| lock(&written).push(facts.id)));
+            let writer = scope.spawn(|| line.serve(|| 0, |facts, _, _| lock(&written).push(facts.id)));
             let _ends = EndsTheWriter(&line);
             writer_at_wait
                 .recv_timeout(Duration::from_secs(10))
@@ -1033,7 +1046,7 @@ mod tests {
             let writer = scope.spawn(move || {
                 line.serve(
                     || 0,
-                    |_, _| {
+                    |_, _, _| {
                         let _ = gone.recv();
                         panic!("a sleep writer panicking, on purpose");
                     },
