@@ -5,6 +5,7 @@ mod closing;
 mod compare;
 mod contents;
 mod controls;
+mod coverage;
 mod editing;
 mod exits;
 mod files;
