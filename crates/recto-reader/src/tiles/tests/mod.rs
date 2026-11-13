@@ -667,32 +667,112 @@ mod cost {
         ALLOCATIONS.with(Cell::get) - before
     }
 
-    /// Allocations in 50 steps of scrolling over pages already drawn and kept, each step a viewport, a drain and the host's word that it applied them, as the UI thread makes on every scroll, as counted on `main` before `Reader` was cut into components (2026-11-13). That's 22.5 a step, for a step that draws nothing new: a finding against rule 1, pinned as it is here and not fixed in R3.3.
-    const SCROLL_ALLOCATIONS_ON_MAIN: u64 = 1125;
+    /// Allocations in 50 steps of scrolling over pages already drawn and kept, each step a viewport, a drain and the host's word that it applied them, as the UI thread makes on every scroll. On `main` before R3.3 (2026-11-13) it was 1,125, 22.5 a step: the lists each refresh made, twice a step, the path of a page's file copied for each tile put on a layer, a list made for each page coming on, and the list of what went off made again after each applied. Now it's 56: the lists are kept, and what's left is one a batch of ops handed to the host, the `Vec` that becomes the host's (42 of the steps hand one, 7 hand two, one hands none).
+    const SCROLL_ALLOCATIONS: u64 = 56;
 
-    /// Failure: scrolling over pages that are drawn and kept allocates more than it did, so something now allocates per frame or per scroll: a component that copies what it used to borrow, a list built where one was walked. Rule 1: nothing new per frame or per scroll.
-    #[test]
-    fn scrolling_over_drawn_pages_allocates_no_more_than_it_did() {
-        let mut reader = reader_on(6);
-        settle(&mut reader);
+    /// Scrolls `reader` over its six pages and back, so each is drawn and kept.
+    fn drawn_and_kept(reader: &mut Reader) {
+        settle(reader);
         for step in 1..=12 {
             reader.set_viewport(view(f64::from(step) * 600.0));
-            settle(&mut reader);
+            settle(reader);
         }
         reader.set_viewport(view(0.0));
-        settle(&mut reader);
+        settle(reader);
+    }
+
+    /// Failure: scrolling over pages that are drawn and kept allocates more than one `Vec` for each batch of ops it hands the host, so something allocates per frame or per scroll: a list built where one was walked or kept, a path or a key copied where it was borrowed. Rule 1: nothing new per frame or per scroll.
+    #[test]
+    fn scrolling_over_drawn_pages_allocates_only_what_it_hands_the_host() {
+        let mut reader = reader_on(6);
+        drawn_and_kept(&mut reader);
+        let mut batches = 0u64;
         let allocations = allocations_of(|| {
             for step in 0..50u32 {
                 let y = f64::from(step % 25) * 280.0;
-                drop(reader.set_viewport(view(y)));
-                drop(reader.drain(MAX_ATTACH_PER_TURN));
+                let ops = reader.set_viewport(view(y));
+                let more = reader.drain(MAX_ATTACH_PER_TURN);
+                batches += u64::from(!ops.is_empty()) + u64::from(!more.is_empty());
+                drop((ops, more));
                 reader.applied();
             }
         });
-        println!("50 scroll steps over drawn pages: {allocations} allocations");
+        println!("50 scroll steps over drawn pages: {allocations} allocations, {batches} batches of ops handed to the host");
+        assert!(allocations <= batches, "{allocations} allocations for {batches} batches handed to the host");
         assert!(
-            allocations <= SCROLL_ALLOCATIONS_ON_MAIN,
-            "{allocations} allocations in 50 steps, against {SCROLL_ALLOCATIONS_ON_MAIN} on main"
+            allocations <= SCROLL_ALLOCATIONS,
+            "{allocations} allocations in 50 steps, against {SCROLL_ALLOCATIONS}"
+        );
+        // What the lists kept for scroll steps hold now, at rest on a hot tab: their room, within the caps.
+        let held = reader.scratch.held_bytes() + reader.cache.spare_bytes();
+        println!("kept for scroll steps at rest: {held} bytes, at most {}", Scratch::most_held_bytes());
+        assert!(reader.scratch.held_bytes() <= Scratch::most_held_bytes());
+    }
+
+    /// Failure: a scroll step that moves no tile on or off a layer, a reader's slow scroll within the tiles in view, allocates. With nothing to tell the host, there's nothing to make.
+    #[test]
+    fn a_step_that_tells_the_host_nothing_allocates_nothing() {
+        let mut reader = reader_on(6);
+        drawn_and_kept(&mut reader);
+        reader.set_viewport(view(10.0));
+        settle(&mut reader);
+        let mut batches = 0;
+        let allocations = allocations_of(|| {
+            for step in 0..50u32 {
+                let y = 10.0 + f64::from(step % 5);
+                let ops = reader.set_viewport(view(y));
+                let more = reader.drain(MAX_ATTACH_PER_TURN);
+                batches += usize::from(!ops.is_empty()) + usize::from(!more.is_empty());
+                drop((ops, more));
+                reader.applied();
+            }
+        });
+        assert_eq!(batches, 0, "a scroll of a few points moved tiles, so this doesn't test a quiet step");
+        assert_eq!(allocations, 0, "50 steps that told the host nothing");
+    }
+
+    /// Failure: what's kept for scroll steps holds the room of the largest step it ever saw, as a hostile file's thousands of tiny pages in view, for as long as the reader lives; or a reader with nothing to show still holds it.
+    #[test]
+    fn the_room_kept_for_scroll_steps_is_capped_and_goes_with_the_tab() {
+        let mut scratch = Scratch::default();
+        scratch.visible.extend(0..100_000);
+        scratch.going.extend(0..100_000);
+        scratch.keys.reserve(100_000);
+        scratch.reset();
+        assert!(scratch.visible.is_empty() && scratch.going.is_empty());
+        assert!(scratch.held_bytes() <= Scratch::most_held_bytes(), "{} bytes kept", scratch.held_bytes());
+
+        let mut host = super::super::host::HostQueue::default();
+        host.handed_to_host.extend(0..100_000);
+        host.handed_to_host.clear();
+        host.ops.extend((0..10_000).map(|page| Op::HidePage { page }));
+        host.ops.clear();
+        host.trim();
+        assert!(host.handed_to_host.capacity() <= super::super::host::KEEP_GONE);
+        assert!(host.ops.capacity() <= super::super::host::KEEP_OPS);
+
+        let mut reader = reader_on(6);
+        drawn_and_kept(&mut reader);
+        for _ in 0..100 {
+            reader.cache.give_back_list(Vec::with_capacity(4));
+        }
+        reader.cache.give_back_list(Vec::with_capacity(100_000));
+        assert!(reader.cache.spare.len() <= super::super::cache::SPARE_LISTS);
+        assert!(reader.cache.spare.iter().all(|list| list.capacity() <= super::super::cache::SPARE_LIST_ROOM));
+        assert!(reader.scratch.held_bytes() > 0, "the scroll kept no room, so this doesn't test its going");
+        reader.deactivate();
+        assert_eq!(
+            reader.scratch.held_bytes() + reader.cache.spare_bytes(),
+            0,
+            "a reader with no tab holds room for scroll steps"
+        );
+        let mut closed = reader_on(6);
+        drawn_and_kept(&mut closed);
+        closed.window_closed();
+        assert_eq!(
+            closed.scratch.held_bytes() + closed.cache.spare_bytes() + closed.host.held_bytes(),
+            0,
+            "a closed window holds room for scroll steps"
         );
     }
 }
