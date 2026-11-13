@@ -1,7 +1,7 @@
 //! **How pages are shown, as the person changes it** (step R2.3, C5a): the paper, the sidebar, the agent icon and a tab's layout are each `view`, the command
 //! an agent sends, run for the person on the session thread ([`super::person::submit`]); the zoom is [`super::zoom`]'s, on the thread that asked.
 
-use super::{Inner, lock, person};
+use super::{Inner, person};
 use recto_agent::commands::view::View;
 use recto_session::{Paper, record};
 use std::sync::Arc;
@@ -20,11 +20,11 @@ impl Inner {
         });
     }
 
-    /// The sidebar's button, beside the window's controls: `view --sidebar`, shown if it's hidden and hidden if not.
+    /// The sidebar's button, beside the window's controls: `view --sidebar toggle`, shown if it's hidden and hidden if not, as it is when it runs, so a quick
+    /// second press before the first is shown is a second toggle (accident A3).
     pub fn toggle_sidebar(self: &Arc<Self>) {
-        let hidden = lock(&self.published).reader.sidebar_hidden;
         self.view_for_person(View {
-            sidebar: Some((if hidden { "on" } else { "off" }).into()),
+            sidebar: Some("toggle".into()),
             ..View::default()
         });
     }

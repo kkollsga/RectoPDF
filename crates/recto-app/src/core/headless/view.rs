@@ -36,8 +36,8 @@ fn the_windows_view_controls_are_the_agents_view() {
     for (action, line) in [
         (menu("paper.dark"), r#"{"cmd":"view","paper":"dark"}"#),
         (menu("paper.warm"), r#"{"cmd":"view","paper":"warm"}"#),
-        (UiAction::ToggleSidebar, r#"{"cmd":"view","sidebar":"off"}"#),
-        (UiAction::ToggleSidebar, r#"{"cmd":"view","sidebar":"on"}"#),
+        (UiAction::ToggleSidebar, r#"{"cmd":"view","sidebar":"toggle"}"#),
+        (UiAction::ToggleSidebar, r#"{"cmd":"view","sidebar":"toggle"}"#),
         (menu("view.agent_icon"), r#"{"cmd":"view","agent_icon":"toggle"}"#),
         (menu("layout.two_up"), r#"{"cmd":"view","layout":"two-up"}"#),
         (menu("layout.two_up_cover"), r#"{"cmd":"view","layout":"two-up-cover"}"#),
@@ -63,4 +63,43 @@ fn the_windows_view_controls_are_the_agents_view() {
         assert_eq!(person, agent, "{what}: the same said");
         twins.assert_same(&what, &[]);
     }
+}
+
+/// Holds the session on another thread while `presses` runs here, as a command holding it for a moment would, so nothing the presses ask for is done, or
+/// shown, until they've all been made: the person's quick presses, before the window's caught up.
+fn while_the_session_is_busy(app: &crate::testkit::headless::HeadlessApp, presses: impl FnOnce()) {
+    let core = std::sync::Arc::clone(app.core());
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::Builder::new()
+        .name("test-holder".into())
+        .spawn(move || {
+            core.host.session.with_session(|_| {
+                held_tx.send(()).expect("the test is waiting");
+                let _ = done_rx.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
+            });
+        })
+        .expect("a thread");
+    held_rx.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the session held");
+    presses();
+    drop(done_tx);
+    holder.join().expect("the holder");
+    app.settle();
+}
+
+/// Failure (R2.3, accident A3): the sidebar's button works out show or hide from what the window last showed, so a second press before the first is shown
+/// asks for the same again and is lost: two quick presses leave it hidden. Each press toggles it as it is when it's done.
+#[test]
+fn two_quick_presses_of_the_sidebars_button_are_two_toggles() {
+    let app = Disk::new().start();
+    assert!(!app.reader().sidebar_hidden);
+    while_the_session_is_busy(&app, || {
+        app.act(UiAction::ToggleSidebar);
+        app.act(UiAction::ToggleSidebar);
+    });
+    assert!(!app.reader().sidebar_hidden, "hidden and shown again");
+    while_the_session_is_busy(&app, || {
+        app.act(UiAction::ToggleSidebar);
+    });
+    assert!(app.reader().sidebar_hidden, "one press hides it");
 }
