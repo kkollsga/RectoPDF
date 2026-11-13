@@ -5,7 +5,8 @@
 //! file.
 
 use recto_platform::run_folders::RunFolders;
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 /// The refusal's words, the one wording for every route: `recto-agent`'s refusal is made from these.
@@ -29,11 +30,11 @@ impl Confinement {
 
     /// **The path to read a file by, once it's been put to the rule:** for a confined session, where it really leads, so the read goes where the rule
     /// looked and not wherever its name leads a moment later; for a free one, the path as given, with nothing asked of the disk. `None` when it's
-    /// outside. The tab keeps the name it was given: this is only what the read opens.
-    pub fn to_read(&self, path: &Path) -> Option<PathBuf> {
+    /// outside. The tab keeps the name it was given: this is only what the read opens. A free session's costs no allocation, as an open's are counted.
+    pub fn to_read<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
         match self.0.get() {
-            Some(folders) => folders.inside(path),
-            None => Some(path.to_path_buf()),
+            Some(folders) => folders.inside(path).map(Cow::Owned),
+            None => Some(Cow::Borrowed(path)),
         }
     }
 
