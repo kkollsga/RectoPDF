@@ -11,12 +11,13 @@ use crate::paper::PaperKind;
 use recto_platform::FileStamp;
 use recto_proto::{MAX_SCALE, MIN_SCALE, TileRect};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod cache;
+mod doc;
 mod geometry;
 mod host;
 mod jobs;
@@ -30,6 +31,7 @@ mod wake;
 mod zoom;
 
 use cache::{Entry, TileCache};
+use doc::{DocView, Issue};
 use host::HostQueue;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind, Work};
@@ -188,100 +190,6 @@ impl PageMap {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Issue {
-    message: String,
-    /// When it may have passed. `None` holds until the zoom changes or someone asks again.
-    try_again_at: Option<Instant>,
-}
-
-#[derive(Debug)]
-struct DocView {
-    tab: u32,
-    layout: PageLayout,
-    map: PageMap,
-    magnification: f64,
-    anchor: (u32, f64),
-    tile_scale: f32,
-    issues: HashMap<u32, Issue>,
-    heavy: HashMap<u32, bool>,
-    /// The whole file can't be drawn, in words the reader can read.
-    problem: Option<String>,
-    seen: HashSet<u32>,
-    /// Which page the reader was on when this tab was left, and exactly where in it.
-    left_at: Option<(u32, (u32, f64))>,
-    /// How far across the view is, when zoomed in.
-    scroll_x: f64,
-    /// Exactly how far down it was, and the document's height then, so that while nothing about the layout has changed it comes back to the very pixel, where the anchor would come to within rounding.
-    exact_y: Option<(f64, f64)>,
-    /// Jobs of a generation below this were about the pages as they were before the last edit, and what they found is thrown away.
-    floor: u64,
-    /// It came up from a sleep file, so a page shows on what its size is taken to be before it's been asked.
-    size_on_trust: bool,
-    /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown, or goes in a sleep file:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
-    versions: HashMap<PathBuf, u64>,
-    /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
-    left_pictures: Option<Vec<RawPicture>>,
-    /// The document's width as the host was last told it: the window's, or a fold-out's while its row is in view.
-    width_shown: f64,
-}
-
-impl DocView {
-    /// A tab it's never held, or that's gone cold, as the session has it: a saved place, if there is one, held to what a page can be.
-    #[allow(clippy::too_many_arguments)]
-    fn from_saved(tab: u32, pages: u32, page: u32, map: &PageMap, saved: Option<SavedPlace>, spread: Spread, margins: (f64, f64), floor: u64) -> Self {
-        let mut layout = PageLayout::with_spread(pages, spread);
-        layout.set_margins(margins.0, margins.1);
-        layout.set_turns(map.turns.clone());
-        // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
-        let saved = saved.filter(|saved| saved.page < pages.max(1));
-        if let Some(size) = saved.and_then(|saved| saved.page_size) {
-            layout.seed_usual(size);
-        }
-        let magnification = saved.map_or(1.0, |saved| {
-            if saved.magnification.is_finite() {
-                saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM)
-            } else {
-                1.0
-            }
-        });
-        let within = |value: f64| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
-        let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
-        let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
-        let exact_y = saved
-            .filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite())
-            .map(|saved| (saved.y, saved.document_height));
-        DocView {
-            tab,
-            layout,
-            map: map.clone(),
-            magnification,
-            anchor: (page, 0.0),
-            tile_scale: 0.0,
-            issues: HashMap::new(),
-            heavy: HashMap::new(),
-            problem: None,
-            seen: HashSet::new(),
-            left_at,
-            scroll_x,
-            exact_y,
-            floor,
-            size_on_trust: false,
-            versions: HashMap::new(),
-            left_pictures: None,
-            width_shown: 0.0,
-        }
-    }
-
-    /// A page's been drawn, for the QA count of blank steps on pages seen before. Held to [`MAX_SEEN_REMEMBERED`].
-    fn note_seen(&mut self, page: u32) {
-        if self.seen.len() >= MAX_SEEN_REMEMBERED && !self.seen.contains(&page) {
-            self.seen.clear();
-        }
-        self.seen.insert(page);
-    }
-}
-
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SavedPlace {
@@ -389,7 +297,7 @@ impl Reader {
     fn version_of_page(&self, tab: u32, page: u32) -> Option<u64> {
         let doc = self.docs.get(&tab)?;
         let (file, _) = doc.map.file_of(page)?;
-        doc.versions.get(file).copied()
+        doc.drawing.versions.get(file).copied()
     }
 
     /// Whether something drawn is of the version of its file there is now. Unknown on either side passes: before a worker's said, what there is is all there is.
@@ -410,12 +318,12 @@ impl Reader {
             .collect();
         for tab in tabs {
             let Some(doc) = self.docs.get_mut(&tab) else { continue };
-            let was = doc.versions.insert(file.to_path_buf(), version);
+            let was = doc.drawing.versions.insert(file.to_path_buf(), version);
             if was == Some(version) {
                 continue;
             }
             // Of the version it was left with.
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
             let stale: Vec<u64> = self
                 .cache
                 .entries
@@ -454,8 +362,8 @@ impl Reader {
         self.work.reopen_files.push(path.to_path_buf());
         for doc in self.docs.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
-                doc.problem = None;
-                doc.issues.clear();
+                doc.drawing.problem = None;
+                doc.drawing.issues.clear();
             }
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -503,7 +411,7 @@ impl Reader {
         let selected_before_change = self.pointer.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
         if staying && let Some(doc) = self.docs.get_mut(&tab) {
             // Across the page, as the view has it now: what's taken up again goes back there.
-            doc.scroll_x = self.viewport.x;
+            doc.place.scroll_x = self.viewport.x;
         }
         if self.hot != Some(tab) {
             self.leave_hot(tab);
@@ -519,20 +427,24 @@ impl Reader {
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
         let same_pages = (doc.map.same_pages(&map) || carried) && doc.layout.count() == pages;
         let back_at = if staying && same_pages {
-            Some(doc.anchor)
+            Some(doc.place.anchor)
         } else {
-            doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor)
+            doc.place
+                .left_at
+                .take()
+                .filter(|(left, _)| *left == page && same_pages)
+                .map(|(_, anchor)| anchor)
         };
         if back_at.is_none() {
-            doc.scroll_x = 0.0;
-            doc.exact_y = None;
+            doc.place.scroll_x = 0.0;
+            doc.place.exact_y = None;
         }
-        doc.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
+        doc.place.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
         if doc.map.turns != map.turns && doc.map.same_pages(&map) && doc.layout.count() == pages {
             // Turned, and nothing else: what's drawn stays, and the pages sit the new way.
             doc.layout.set_turns(map.turns.clone());
             doc.map.turns = map.turns.clone();
-            doc.exact_y = None;
+            doc.place.exact_y = None;
         }
         let mut carried_selection = None;
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
@@ -549,11 +461,11 @@ impl Reader {
             }
             doc.layout.set_turns(map.turns.clone());
             doc.map = map;
-            doc.issues.clear();
-            doc.heavy.clear();
-            doc.problem = None;
-            doc.seen.clear();
-            doc.floor = floor;
+            doc.drawing.issues.clear();
+            doc.drawing.heavy.clear();
+            doc.drawing.problem = None;
+            doc.drawing.seen.clear();
+            doc.drawing.floor = floor;
             if let Some(running) = &self.work.running
                 && running.tab == tab
                 && let Some(cancel) = &running.cancel
@@ -571,16 +483,16 @@ impl Reader {
         }
         // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
         }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
         if let Some(doc) = self.docs.get_mut(&tab)
             && doc.layout.set_spread(spread)
         {
-            doc.exact_y = None;
+            doc.place.exact_y = None;
         }
-        let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.magnification, doc.scroll_x));
+        let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.place.magnification, doc.place.scroll_x));
         self.host.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
         self.jump_to_anchor(page);
@@ -595,15 +507,15 @@ impl Reader {
         if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
             let pictures = self.pictures_in_view(left);
             if let Some(doc) = self.docs.get_mut(&left) {
-                doc.left_pictures = Some(pictures);
+                doc.drawing.left_pictures = Some(pictures);
             }
         }
         let last_page = self.place.last_view_page;
         let (left_x, left_y) = (self.viewport.x, self.viewport.y);
         if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
-            doc.left_at = last_page.map(|page| (page, doc.anchor));
-            doc.scroll_x = left_x;
-            doc.exact_y = Some((left_y, doc.layout.document_height()));
+            doc.place.left_at = last_page.map(|page| (page, doc.place.anchor));
+            doc.place.scroll_x = left_x;
+            doc.place.exact_y = Some((left_y, doc.layout.document_height()));
         }
         self.clear_screen();
         self.hot = Some(tab);
@@ -686,7 +598,7 @@ impl Reader {
             }
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
             if !viewport.live && self.place.jump.is_none() {
-                doc.magnification = viewport.magnification;
+                doc.place.magnification = viewport.magnification;
             }
         }
         if moved_layout {
@@ -784,7 +696,7 @@ impl Reader {
         self.window_open = false;
         self.clear_screen();
         for doc in self.docs.values_mut() {
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
         }
         let ids: Vec<u64> = self.cache.entries.keys().copied().collect();
         for id in ids {
@@ -808,13 +720,13 @@ impl Reader {
         let warm: Vec<u32> = self.docs.keys().copied().filter(|tab| Some(*tab) != hot).collect();
         self.recount_wanted_files(&warm);
         // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
-        if let Some(magnification) = self.doc().map(|doc| doc.magnification) {
+        if let Some(magnification) = self.doc().map(|doc| doc.place.magnification) {
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
             self.place.jump = Some(u64::MAX);
         }
         self.lay_out();
-        if let Some(across) = self.doc().map(|doc| doc.scroll_x) {
+        if let Some(across) = self.doc().map(|doc| doc.place.scroll_x) {
             self.host.ops.push_back(Op::ScrollAcross { x: across });
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -835,10 +747,10 @@ impl Reader {
             visible.start().saturating_sub(SIZES_AROUND)..=visible.end().saturating_add(SIZES_AROUND)
         });
         if let Some(doc) = self.docs.get_mut(&tab) {
-            if doc.issues.len() >= MAX_ISSUES_REMEMBERED && !doc.issues.contains_key(&page) {
-                doc.issues.retain(|known, _| near.as_ref().is_some_and(|near| near.contains(known)));
+            if doc.drawing.issues.len() >= MAX_ISSUES_REMEMBERED && !doc.drawing.issues.contains_key(&page) {
+                doc.drawing.issues.retain(|known, _| near.as_ref().is_some_and(|near| near.contains(known)));
             }
-            doc.issues.insert(
+            doc.drawing.issues.insert(
                 page,
                 Issue {
                     message,
@@ -864,7 +776,7 @@ impl Reader {
         if matches!(kind, JobKind::Links) {
             // About the tab showing, as it is, or about nothing.
             match outcome {
-                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => {
+                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) => {
                     self.pointer.linking.take(position, links)
                 }
                 _ => self.pointer.linking.cancelled(position),
@@ -872,7 +784,7 @@ impl Reader {
             return;
         }
         // Asked about the pages as they were. An edit has changed what's at this position since.
-        if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
+        if self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) {
             self.counts.cancelled += 1;
             self.refresh(MAX_ATTACH_PER_TURN);
             return;
@@ -891,10 +803,10 @@ impl Reader {
             }
             (JobKind::Traits, Outcome::Heavy(heavy)) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
-                    if doc.heavy.len() >= MAX_HEAVY_REMEMBERED {
-                        doc.heavy.clear();
+                    if doc.drawing.heavy.len() >= MAX_HEAVY_REMEMBERED {
+                        doc.drawing.heavy.clear();
                     }
-                    doc.heavy.insert(position, heavy);
+                    doc.drawing.heavy.insert(position, heavy);
                 }
             }
             (
@@ -920,7 +832,7 @@ impl Reader {
             }
             (_, Outcome::DocumentFailed { message, needs_key }) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
-                    doc.problem = Some(message);
+                    doc.drawing.problem = Some(message);
                 }
                 if needs_key && !self.work.keyless.contains(&file) && self.work.keyless.len() < MAX_KEYLESS {
                     self.work.keyless.push(file);
@@ -954,7 +866,7 @@ impl Reader {
             return false;
         }
         let Some(doc) = self.doc() else { return true };
-        if doc.problem.is_some() {
+        if doc.drawing.problem.is_some() {
             return true;
         }
         if !self.window_open {
@@ -963,7 +875,7 @@ impl Reader {
         if self.viewport.height <= 0.0 {
             return false;
         }
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         if scale <= 0.0 {
             return false;
         }
@@ -971,12 +883,12 @@ impl Reader {
         if !self
             .pointer
             .selecting
-            .is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))
+            .is_settled(&visible, doc.layout.count(), |page| doc.drawing.heavy.get(&page).copied().unwrap_or(false))
         {
             return false;
         }
         for page in self.visible_pages(doc) {
-            if doc.issues.contains_key(&page) {
+            if doc.drawing.issues.contains_key(&page) {
                 continue;
             }
             if !doc.layout.is_known(page) {

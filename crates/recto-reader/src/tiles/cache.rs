@@ -230,7 +230,7 @@ impl Reader {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
         if critical {
             for doc in self.docs.values_mut() {
-                doc.left_pictures = None;
+                doc.drawing.left_pictures = None;
             }
         }
         let ids: Vec<u64> = self
@@ -398,7 +398,7 @@ impl Reader {
         }
         self.cache.entries.insert(id, entry);
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.note_seen(page);
+            doc.drawing.note_seen(page);
         }
         id
     }

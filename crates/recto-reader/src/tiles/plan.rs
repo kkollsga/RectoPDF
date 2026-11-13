@@ -21,14 +21,14 @@ impl Reader {
                     && (running.preview
                         || running
                             .rect
-                            .is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
+                            .is_none_or(|rect| running.scale == doc.drawing.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
             })
     }
 
     /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
     pub(super) fn view_needs_something(&self) -> bool {
         let Some(doc) = self.doc() else { return false };
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         if scale <= 0.0 {
             return false;
         }
@@ -37,14 +37,14 @@ impl Reader {
             .pointer
             .selecting
             .wanted(Urgency::Now, &visible, doc.layout.count(), |page| {
-                doc.heavy.get(&page).copied().unwrap_or(false)
+                doc.drawing.heavy.get(&page).copied().unwrap_or(false)
             })
             .is_some()
         {
             return true;
         }
         visible.iter().any(|&page| {
-            if doc.issues.contains_key(&page) {
+            if doc.drawing.issues.contains_key(&page) {
                 return false;
             }
             if !doc.layout.is_known(page) {
@@ -76,7 +76,7 @@ impl Reader {
         }
         let tab = self.hot?;
         let doc = self.docs.get(&tab)?;
-        if doc.problem.is_some() || self.viewport.height <= 0.0 {
+        if doc.drawing.problem.is_some() || self.viewport.height <= 0.0 {
             return None;
         }
         let visible = self.visible_pages(doc);
@@ -88,7 +88,7 @@ impl Reader {
             return Some(plan);
         }
         let now = Instant::now();
-        let scale = self.docs.get(&tab)?.tile_scale;
+        let scale = self.docs.get(&tab)?.drawing.tile_scale;
         if scale <= 0.0 {
             return None;
         }
@@ -116,7 +116,8 @@ impl Reader {
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
         // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
         let waiting_on_issue = |page: &u32| {
-            doc.issues
+            doc.drawing
+                .issues
                 .get(page)
                 .is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at))
         };
@@ -162,7 +163,7 @@ impl Reader {
     /// A visible page's heaviness, its preview or its next tiles, if it wants any. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on to the next page.
     fn page_plan(&mut self, tab: u32, page: u32, scale: f32, now: Instant) -> Option<Option<JobPlan>> {
         let doc = self.docs.get(&tab)?;
-        if let Some(issue) = doc.issues.get(&page)
+        if let Some(issue) = doc.drawing.issues.get(&page)
             && !issue.try_again_at.is_some_and(|at| now >= at)
         {
             return Some(None);
@@ -201,7 +202,7 @@ impl Reader {
         }
         let (file, source_page) = doc.map.source(page)?;
         // Asked once, and it loads the page, which drawing would do anyway.
-        if !doc.heavy.contains_key(&page) {
+        if !doc.drawing.heavy.contains_key(&page) {
             let generation = self.work.fresh_generation();
             return Some(Some(JobPlan {
                 tab,
@@ -212,7 +213,7 @@ impl Reader {
                 kind: PlanKind::Traits,
             }));
         }
-        let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
+        let heavy = doc.drawing.heavy.get(&page).copied().unwrap_or(false);
         // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
         let preview_wanted = !heavy && !self.cache.cover.contains_key(&self.preview_key(doc, page));
         if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
@@ -284,10 +285,9 @@ impl Reader {
     pub(super) fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
         let doc = self.docs.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        let wanted = self
-            .pointer
-            .selecting
-            .wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
+        let wanted = self.pointer.selecting.wanted(urgency, &visible, doc.layout.count(), |page| {
+            doc.drawing.heavy.get(&page).copied().unwrap_or(false)
+        })?;
         let (file, source_page) = doc.map.source(wanted.page)?;
         let generation = self.work.fresh_generation();
         Some(JobPlan {

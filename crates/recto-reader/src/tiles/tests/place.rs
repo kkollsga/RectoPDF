@@ -251,7 +251,7 @@ fn a_turn_keeps_the_place_in_the_page_and_across() {
         before.anchor,
         after.anchor
     );
-    assert_eq!(reader.docs[&1].scroll_x, 30.0, "and as far across");
+    assert_eq!(reader.docs[&1].place.scroll_x, 30.0, "and as far across");
 }
 
 /// Failure (review of f05c998, B2): side by side, after any scroll, a change of layout moves the reader off the page they were on: the place was kept on the first page of its row, so the right-hand page's reader lands on the left one, or two pages back going to the cover layout. Fed the host's next view, as the app is.
@@ -369,7 +369,7 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
         ..view(*y)
     });
     assert_eq!(reader.take_moved_page(), None, "arriving isn't a move");
-    assert_eq!(reader.doc().unwrap().magnification, 2.0);
+    assert_eq!(reader.doc().unwrap().place.magnification, 2.0);
 }
 
 /// Failure: a tab comes back where the document's top is, or at no zoom, or near its place by rounding rather than on it. Or the place is taken from where the view still is on its way there, so the next layout goes somewhere else. What's said comes straight back out, to the pixel, and a place for another page, as a `goto` while cold leaves, isn't used.

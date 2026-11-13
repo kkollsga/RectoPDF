@@ -171,7 +171,7 @@ impl Reader {
     }
 
     pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
-        self.doc().map(|doc| doc.heavy.clone()).unwrap_or_default()
+        self.doc().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
     }
 
     /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.

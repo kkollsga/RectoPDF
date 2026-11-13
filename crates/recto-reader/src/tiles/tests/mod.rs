@@ -5,6 +5,7 @@ use crate::layout::PageBox;
 use recto_index::select::Range;
 use recto_platform::surface::PixelSurface;
 use recto_render_service::{LowResWhy, TileKind};
+use std::collections::HashSet;
 use std::path::Path;
 
 mod cache;
@@ -156,7 +157,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
     let scale = {
         let mut reader = reader_on(2);
         settle(&mut reader);
-        f64::from(reader.doc().unwrap().tile_scale)
+        f64::from(reader.doc().unwrap().drawing.tile_scale)
     };
     let height = (0..400u16)
         .map(|step| 780.0 + f32::from(step) * 0.1)
@@ -205,7 +206,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
             reader.applied();
             let doc = reader.doc().unwrap();
             for page in reader.visible_pages(doc) {
-                let shows = !matches!(reader.visible_cells(doc, page, doc.tile_scale), Ok(cells) if cells.is_empty());
+                let shows = !matches!(reader.visible_cells(doc, page, doc.drawing.tile_scale), Ok(cells) if cells.is_empty());
                 assert!(
                     !shows || reader.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
                     "page {page} is bare, {into} points in view"
@@ -374,7 +375,12 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         reader.restore_selection(selected);
         let (fit, height, width, zoom) = {
             let doc = reader.doc().unwrap();
-            (doc.layout.fit(), doc.layout.document_height(), doc.layout.document_width(), doc.magnification)
+            (
+                doc.layout.fit(),
+                doc.layout.document_height(),
+                doc.layout.document_width(),
+                doc.place.magnification,
+            )
         };
         let rects: Vec<crate::layout::PageRect> = (0..10).map(|page| reader.doc().unwrap().layout.rect(page)).collect();
         let before = reader.places()[0].1;
@@ -396,7 +402,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         let doc = reader.doc().unwrap();
         let label = format!("{spread:?}, renderer first: {renderer_saw_it_first}, on page {on}");
         assert_eq!(doc.layout.fit(), fit, "{label}: the fit, and so the zoom shown");
-        assert_eq!(doc.magnification, zoom, "{label}: the magnification");
+        assert_eq!(doc.place.magnification, zoom, "{label}: the magnification");
         assert_eq!(
             (doc.layout.document_height(), doc.layout.document_width()),
             (height, width),
@@ -784,10 +790,10 @@ fn the_pages_remembered_as_seen_stay_bounded() {
     let doc = reader.docs.get_mut(&1).unwrap();
     let cap = u32::try_from(MAX_SEEN_REMEMBERED).unwrap();
     for page in 0..=cap {
-        doc.note_seen(page);
+        doc.drawing.note_seen(page);
     }
-    assert!(doc.seen.len() <= MAX_SEEN_REMEMBERED, "{} remembered", doc.seen.len());
-    assert!(doc.seen.contains(&cap), "the last page drawn is remembered");
+    assert!(doc.drawing.seen.len() <= MAX_SEEN_REMEMBERED, "{} remembered", doc.drawing.seen.len());
+    assert!(doc.drawing.seen.contains(&cap), "the last page drawn is remembered");
 }
 
 /// Failure: the page view remembers the problem of every page that failed, so a hostile file whose millions of pages all fail holds memory for each (rules 1 and 6).
@@ -798,7 +804,7 @@ fn the_pages_remembered_as_failing_stay_bounded() {
     for page in 0..=cap {
         reader.note_issue(1, 1_000 + page, "It failed.".to_string(), false);
     }
-    let issues = &reader.docs[&1].issues;
+    let issues = &reader.docs[&1].drawing.issues;
     assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} remembered", issues.len());
     assert!(issues.contains_key(&(1_000 + cap)), "the last failure is remembered");
 }
@@ -839,7 +845,7 @@ fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
     for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
         reader.note_issue(1, in_view.end() + 100 + page, "It failed.".to_string(), false);
     }
-    let issues = &reader.docs[&1].issues;
+    let issues = &reader.docs[&1].drawing.issues;
     assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} problems remembered", issues.len());
     assert!(
         in_view.clone().all(|page| issues.contains_key(&page)),
@@ -890,8 +896,8 @@ fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
     for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
         reader.note_issue(1, 100 + page, "It failed.".to_string(), false);
     }
-    assert!(!reader.docs[&1].issues.contains_key(&0), "let go at the cap");
-    assert!(reader.docs[&1].issues.contains_key(&in_view), "what's in view keeps its own");
+    assert!(!reader.docs[&1].drawing.issues.contains_key(&0), "let go at the cap");
+    assert!(reader.docs[&1].drawing.issues.contains_key(&in_view), "what's in view keeps its own");
     reader.set_viewport(view(0.0));
     run(&mut reader, &mut asked);
     for _ in 0..20 {

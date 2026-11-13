@@ -100,7 +100,6 @@ struct crates/recto-control/src/server.rs::Limits 17
 struct crates/recto-control/src/server.rs::Loop 21
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
-struct crates/recto-reader/src/tiles.rs::DocView 18
 struct crates/recto-render-service/src/budget.rs::BudgetReport 20
 struct crates/recto-render-service/src/host.rs::DocRenderer 26
 struct crates/recto-render-service/src/host.rs::Policy 16

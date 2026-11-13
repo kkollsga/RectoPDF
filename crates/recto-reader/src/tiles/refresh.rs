@@ -79,17 +79,17 @@ impl Reader {
         }
         let Some(doc) = self.docs.get(&tab) else { return };
         let target = self.target_scale(doc);
-        let change = f64::from(target) / f64::from(doc.tile_scale.max(f32::MIN_POSITIVE));
-        let retarget = doc.tile_scale == 0.0 || (!self.viewport.live && (change - 1.0).abs() > SCALE_SLACK);
+        let change = f64::from(target) / f64::from(doc.drawing.tile_scale.max(f32::MIN_POSITIVE));
+        let retarget = doc.drawing.tile_scale == 0.0 || (!self.viewport.live && (change - 1.0).abs() > SCALE_SLACK);
         if retarget && let Some(doc) = self.docs.get_mut(&tab) {
-            doc.tile_scale = target;
-            doc.issues.retain(|_, issue| issue.try_again_at.is_some());
+            doc.drawing.tile_scale = target;
+            doc.drawing.issues.retain(|_, issue| issue.try_again_at.is_some());
         }
         let Some(doc) = self.docs.get(&tab) else { return };
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         scratch.visible.extend(self.visible_pages(doc).filter(|page| doc.layout.is_known(*page)));
         // A tab that's come from a sleep file knows what size its pages are likely to be, so with or without a picture its place is there on the paper from the first frame, and real sizes follow.
-        if doc.size_on_trust {
+        if doc.drawing.size_on_trust {
             scratch.on_paper.extend(self.visible_pages(doc));
         } else {
             scratch.on_paper.extend_from_slice(&scratch.visible);
@@ -153,7 +153,7 @@ impl Reader {
         let now = Instant::now();
         for &page in &scratch.visible {
             let Some(doc) = self.docs.get(&tab) else { return };
-            if doc.issues.contains_key(&page) && !doc.issues[&page].try_again_at.is_some_and(|at| now >= at) {
+            if doc.drawing.issues.contains_key(&page) && !doc.drawing.issues[&page].try_again_at.is_some_and(|at| now >= at) {
                 continue;
             }
             let Ok(()) = self.visible_cells_into(doc, page, scale, &mut scratch.cells) else {
@@ -218,11 +218,11 @@ impl Reader {
 
     pub(super) fn update_note(&mut self) {
         let note = self.doc().and_then(|doc| {
-            if let Some(problem) = &doc.problem {
+            if let Some(problem) = &doc.drawing.problem {
                 return Some(problem.clone());
             }
             for page in self.visible_pages(doc) {
-                if let Some(issue) = doc.issues.get(&page) {
+                if let Some(issue) = doc.drawing.issues.get(&page) {
                     return Some(issue.message.clone());
                 }
                 let low = self
@@ -264,7 +264,7 @@ impl Reader {
     /// [`recto_proto::device_size`] rounds those to whole pixels: then no tile is in view, so [`Self::refresh`] takes what was on the page off it, and nothing of it can be seen. A page whose
     /// size or scale isn't known yet counts as showing.
     pub(super) fn shows_a_pixel(&self, doc: &DocView, page: u32) -> bool {
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         if scale <= 0.0 || !doc.layout.is_known(page) {
             return true;
         }
@@ -277,9 +277,9 @@ impl Reader {
         let (mut blank, mut blank_seen) = (false, false);
         for page in self.visible_pages(doc) {
             let has_something = self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
-            if !has_something && !doc.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
+            if !has_something && !doc.drawing.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
                 blank = true;
-                blank_seen |= doc.seen.contains(&page);
+                blank_seen |= doc.drawing.seen.contains(&page);
             }
         }
         self.counts.blank_steps += u64::from(blank);
