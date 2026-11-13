@@ -126,3 +126,53 @@ fn a_cold_tab_costs_no_more_than_it_did() {
     assert!(opening <= 10, "opening a tab makes {opening} allocations, from 10");
     drop(session);
 }
+
+const SIDEBAR_ALLOCATIONS: usize = 4;
+const RECORD_ALLOCATIONS_A_TAB: usize = 4;
+
+/// Allocations made while `during` runs.
+fn made_by<T>(during: impl FnOnce() -> T) -> (usize, T) {
+    let before = MADE.load(Ordering::Relaxed);
+    let out = during();
+    (MADE.load(Ordering::Relaxed) - before, out)
+}
+
+/// Failure: building the sidebar, which every publish does, allocates for each tab it lists (a notice's words, a name copied, a box per row), so every
+/// action at 1,000 tabs pays a thousand allocations for tabs nobody touched. The rows are one list, whatever the tabs; what else is made is the place's words
+/// for the tab being read. Pinned at what it makes on 2026-11-13, the same at 100 tabs and at 1,000; the record, which the saver makes on each save of the
+/// session's state, is per tab by nature (each tab's path and entry), and is pinned at what it makes a tab.
+#[test]
+fn the_sidebar_allocates_nothing_a_tab_and_the_record_no_more_a_tab_than_it_did() {
+    let _alone = MEASURING.lock().unwrap();
+    let mut sidebar_made = Vec::new();
+    let mut record_made = Vec::new();
+    for tabs in [100, 1000] {
+        let (_, session) = live_with(tabs);
+        let (made, sidebar) = made_by(|| session.sidebar());
+        drop(sidebar);
+        sidebar_made.push(made);
+        let (made, record) = made_by(|| session.to_record());
+        drop(record);
+        record_made.push(made / tabs);
+        println!(
+            "{tabs} tabs: the sidebar made {} allocations, the record {made} ({} a tab)",
+            sidebar_made.last().unwrap(),
+            made / tabs
+        );
+        drop(session);
+    }
+    assert_eq!(
+        sidebar_made[0], sidebar_made[1],
+        "the sidebar makes {sidebar_made:?} allocations at 100 and 1,000 tabs: something's made for each tab"
+    );
+    assert!(
+        sidebar_made[1] <= SIDEBAR_ALLOCATIONS,
+        "the sidebar makes {} allocations, from {SIDEBAR_ALLOCATIONS}",
+        sidebar_made[1]
+    );
+    assert!(
+        record_made[1] <= RECORD_ALLOCATIONS_A_TAB,
+        "the record makes {} allocations a tab, from {RECORD_ALLOCATIONS_A_TAB}",
+        record_made[1]
+    );
+}
