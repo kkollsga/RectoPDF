@@ -432,11 +432,8 @@ fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
         "those at the place, not the one beside"
     );
     assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13])), vec![13]);
-    // One page of the place has none: the file can't cover it.
-    assert_eq!(
-        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13, 14])),
-        Vec::<u32>::new()
-    );
+    // One page of the place has none (a spread whose other page never got a picture): the one it has still stands, as nothing newer is on hand for it.
+    assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13, 14])), vec![13]);
     // A place with no pages (a closed window, no layout) is a place nothing is owed at.
     assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[])), Vec::<u32>::new());
     // Another list, or another version, or no file: as before, nothing from it.
@@ -449,6 +446,39 @@ fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
     assert!(with_older_pictures(file_with(&[]), None, &[12]).pictures.is_empty());
     // New pictures are the file's own, whatever was there.
     assert_eq!(pages_of(&with_older_pictures(file_with(&[19]), Some(there), &[19])), vec![19]);
+}
+
+/// Failure (the sleep branch's second review, 2026-11-13): with nothing on hand, the older pictures stood only if the file had one of every page in view, and
+/// with something on hand none stood at all, so a spread with one page that never got a picture lost the other page's older picture at the next write, and a
+/// page drawn anew threw away its neighbour's: a wake half bare, or bare, for nothing. An older picture of a page in view stands when nothing newer is on hand
+/// for that page and it's of the same list, page count and version, and of the paper of what's on hand when anything is.
+#[test]
+fn an_older_picture_stands_for_a_page_in_view_with_nothing_newer() {
+    let there = file_with(&[4, 5, 30]);
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[4, 6])),
+        vec![4],
+        "nothing on hand"
+    );
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[5]), Some(there.clone()), &[4, 5])),
+        vec![5, 4],
+        "5 drawn anew, 4's older one beside it, and not 5's older one"
+    );
+    let mut dark_now = file_with(&[5]);
+    dark_now.pictures[0].dark = true;
+    assert_eq!(
+        pages_of(&with_older_pictures(dark_now, Some(there.clone()), &[4, 5])),
+        vec![5],
+        "4's older one is of the other paper"
+    );
+    let mut other_pages = there;
+    other_pages.pages = 41;
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[5]), Some(other_pages), &[4, 5])),
+        vec![5],
+        "another page count"
+    );
 }
 
 /// Failure (the first worker's quiet run of 2026-11-13, `02-wake-at-once-dark.png`): a tab slept again inside its gap after the look changed kept a file whose

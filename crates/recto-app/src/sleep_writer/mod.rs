@@ -21,18 +21,20 @@ use recto_session::sleep::SleepFile;
 #[cfg(test)]
 mod tests;
 
-/// **Whether the sleep file there shows the place: the one definition**, used both to keep a file's older pictures ([`with_older_pictures`]) and to let a write
-/// inside the gap go ahead for a place the file doesn't show ([`there_for_other_place`]). It does when it is of the list, page count and version a wake now
-/// would take it for (a wake refuses any other, so its pictures show nothing), and it holds a picture of every page in `wanted`, on that page's paper where it's
-/// known. `wanted` is every page in view that has a picture on hand, so a two-page spread with both pages on hand isn't shown by a file of one; with nothing on
-/// hand, it's every page in view, as the older pictures are then all a wake will have. A page in view with nothing on hand asks nothing: no write would add it.
-/// An empty `wanted` (nothing in view) is a place nothing is owed at, which no file shows.
+/// **Whether the sleep file there is of the list, page count and version a wake now would take it for:** a wake refuses any other, so its pictures show
+/// nothing. The one test both [`shows_the_place`] and [`with_older_pictures`] start from.
+#[must_use]
+pub fn same_list(there: &SleepFile, list_seq: u64, pages: u32, version: Option<u64>) -> bool {
+    there.list_seq == list_seq && there.pages == pages && there.version.is_some() && there.version == version
+}
+
+/// **Whether the sleep file there shows the place**, which lets a write inside the gap go ahead for a place the file doesn't show
+/// ([`there_for_other_place`]). It does when it is of the [`same_list`], and it holds a picture of every page in `wanted`, on that page's paper where it's
+/// known. `wanted` is every page in view that has a picture on hand, so a two-page spread with both pages on hand isn't shown by a file of one. A page in view
+/// with nothing on hand asks nothing: no write would add it. An empty `wanted` (nothing in view) is a place nothing is owed at, which no file shows.
 #[must_use]
 pub fn shows_the_place(there: &SleepFile, list_seq: u64, pages: u32, version: Option<u64>, wanted: &[(u32, Option<bool>)]) -> bool {
-    there.list_seq == list_seq
-        && there.pages == pages
-        && there.version.is_some()
-        && there.version == version
+    same_list(there, list_seq, pages, version)
         && !wanted.is_empty()
         && wanted.iter().all(|(page, dark)| {
             there
@@ -42,17 +44,26 @@ pub fn shows_the_place(there: &SleepFile, list_seq: u64, pages: u32, version: Op
         })
 }
 
-/// **What a sleep file keeps of its older pictures when the new material has none** (found 2026-11-13: a wake from a file whose two pictures were of a place the
-/// tab had left a visit before, so its first frame was bare, and the bytes were written and read for nothing). The older file's pictures stand only if it
-/// [`shows_the_place`] the new file records, every page in view (`in_view`) wanted as nothing is on hand, and then only those of the place are kept; otherwise
-/// the file is its facts only. Pictures that can't be shown are bytes on the disk, and in memory on a wake, for nothing.
+/// **What a sleep file keeps of its older pictures** (found 2026-11-13: a wake from a file whose two pictures were of a place the tab had left a visit before,
+/// so its first frame was bare, and the bytes were written and read for nothing; and in the second review, a spread with one page that never got a picture
+/// lost the other's at the next write). An older picture stands for a page in view (`in_view`) that has nothing newer on hand, when the file there is of the
+/// [`same_list`] the new file records, and it's of the paper of the pictures on hand, when there are any (with none on hand the paper isn't known, and a wake
+/// puts a picture only on a page of its own paper). Every other older picture goes: pictures that can't be shown are bytes on the disk, and in memory on a
+/// wake, for nothing. At most [`recto_session::sleep::MAX_SLEEP_PICTURES`] in all, the new ones first.
 pub fn with_older_pictures(mut sleep: SleepFile, there: Option<SleepFile>, in_view: &[u32]) -> SleepFile {
-    if !sleep.pictures.is_empty() {
+    let Some(there) = there.filter(|there| same_list(there, sleep.list_seq, sleep.pages, sleep.version)) else {
         return sleep;
-    }
-    let wanted: Vec<(u32, Option<bool>)> = in_view.iter().map(|page| (*page, None)).collect();
-    if let Some(there) = there.filter(|there| shows_the_place(there, sleep.list_seq, sleep.pages, sleep.version, &wanted)) {
-        sleep.pictures = there.pictures.into_iter().filter(|picture| in_view.contains(&picture.page)).collect();
+    };
+    let paper = sleep.pictures.first().map(|picture| picture.dark);
+    for picture in there.pictures {
+        if sleep.pictures.len() >= recto_session::sleep::MAX_SLEEP_PICTURES {
+            break;
+        }
+        let stands =
+            in_view.contains(&picture.page) && paper.is_none_or(|dark| picture.dark == dark) && !sleep.pictures.iter().any(|newer| newer.page == picture.page);
+        if stands {
+            sleep.pictures.push(picture);
+        }
     }
     sleep
 }
