@@ -915,7 +915,7 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
 }
 
 /// Tab 1 drawn at its top, moved far down with nothing drawn there and left for tab 2: a `goto` or a quick scroll and a change of tab before the renderer answers. Returns the engine with drawing let go again, and tab 1's pages owed a picture there.
-fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf) -> Vec<u32> {
+fn left_at_a_place_not_drawn(engine: &Engine, second: &TempPdf) -> Vec<u32> {
     let map = |file: &TempPdf| PageMap {
         files: vec![file.0.clone()],
         slots: None,
@@ -945,7 +945,7 @@ fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf)
 fn a_tab_left_at_a_place_not_drawn_sleeps_with_a_picture_of_it() {
     let (first, second) = (document(40), document(3));
     let (engine, _events) = started(&first, 40);
-    let owed = left_at_a_place_not_drawn(&engine, &first, &second);
+    let owed = left_at_a_place_not_drawn(&engine, &second);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let material = engine.sleep_material(1, None).expect("tab 1 is held off screen");
@@ -1012,7 +1012,7 @@ fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
     assert_eq!(engine.workers_footprint().0, 0, "tab 1's worker left by itself");
-    left_at_a_place_not_drawn(&engine, &first, &second);
+    left_at_a_place_not_drawn(&engine, &second);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let draws = engine.report().0["sleep_draws"].clone();
