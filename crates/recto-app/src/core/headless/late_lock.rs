@@ -491,10 +491,13 @@ fn a_write_due_while_the_saved_session_is_read_back_writes_nothing_over_it() {
 /// The agent's `session save` (which only asks, so it isn't refused while trying), on a thread of its own as the socket's server runs it.
 fn agents_save(app: &HeadlessApp) -> std::thread::JoinHandle<Result<serde_json::Value, recto_agent::AgentError>> {
     let core = Arc::clone(app.core());
-    std::thread::spawn(move || {
-        let command = recto_agent::parse(r#"{"cmd":"session_save"}"#).expect("a command");
-        recto_control::host::Host::run(&*core.host, Actor::Agent(Level::Full), &command, &mut Vec::new())
-    })
+    std::thread::Builder::new()
+        .name("test-agents-save".into())
+        .spawn(move || {
+            let command = recto_agent::parse(r#"{"cmd":"session_save"}"#).expect("a command");
+            recto_control::host::Host::run(&*core.host, Actor::Agent(Level::Full), &command, &mut Vec::new())
+        })
+        .expect("a thread")
 }
 
 /// Failure (review, 2026-11-13, route 3): an agent's `session save` gathers the empty window, a try gets the lock under it, and the save's write then goes past

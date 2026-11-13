@@ -61,7 +61,7 @@ pub enum Seam {
     /// The launch, looked at on the restore thread before the state's read: what this copy is, its bundle and version, known late, as on a starved machine where the thread starts late.
     Launch,
     /// A writer of the record with what it writes gathered and the record about to be written (the saver's pass and its flush): the moment between deciding
-    /// what's written and writing it, which a test holds to put something between them. Not slow in the `ci` profile: it's for a test's gate.
+    /// what's written and writing it, which a test holds to put something between them, and a busy disk makes late.
     RecordWrite,
 }
 
@@ -121,7 +121,7 @@ impl Seam {
             Self::SleepWrite => 300,
             Self::Session => 300,
             Self::Launch => 300,
-            Self::RecordWrite => 0,
+            Self::RecordWrite => 50,
         }
     }
 

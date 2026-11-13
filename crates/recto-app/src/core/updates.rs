@@ -405,8 +405,14 @@ impl Inner {
     pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
         match command {
             Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(self.updates.report()),
+            // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
+            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_) | recto_agent::commands::Updates::UpdateInstall(_))
+                if lock(&self.life.update_facts).held =>
+            {
+                Err(refused_words(&InstallRefused::Starting))
+            }
             Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
-                self.updates.check_here(Asked::ByHand).map_err(|refused| refused_words(&refused))?;
+                self.updates.check_here(Asked::ByHand);
                 Ok(self.updates.report())
             }
             Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {

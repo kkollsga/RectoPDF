@@ -994,18 +994,11 @@ impl Updater {
     }
 
     /// A check, here. For a command on its own job thread, which is off the UI thread already.
-    ///
-    /// # Errors
-    ///
-    /// [`InstallRefused::Starting`] before the app has said what it is.
-    pub fn check_here(self: &Arc<Self>, asked: Asked) -> Result<Status, InstallRefused> {
-        if lock(&self.st).facts.is_none() {
-            return Err(InstallRefused::Starting);
-        }
+    pub fn check_here(self: &Arc<Self>, asked: Asked) -> Status {
         if self.begin_check() {
             self.finish_check(asked);
         }
-        Ok(lock(&self.st).status.clone())
+        lock(&self.st).status.clone()
     }
 
     fn begin_check(&self) -> bool {
@@ -1101,9 +1094,6 @@ impl Updater {
         self.stopping.store(false, Ordering::SeqCst);
         let version = {
             let mut st = lock(&self.st);
-            if st.facts.is_none() {
-                return Err(InstallRefused::Starting);
-            }
             if st.status.is_under_way() || st.build.is_some() {
                 return Err(InstallRefused::Underway);
             }
@@ -1506,7 +1496,7 @@ mod tests {
         }
 
         fn found(&self, version: &str) {
-            let status = self.updater.check_here(Asked::ByHand).expect("the app has said what it is");
+            let status = self.updater.check_here(Asked::ByHand);
             assert_eq!(status, Status::Available(version.to_owned()));
         }
     }
@@ -1528,11 +1518,11 @@ mod tests {
                 enabled: true
             }
         );
-        assert_eq!(bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"), Status::NoReleases);
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::NoReleases);
         assert!(bed.updater.notice().unwrap().text.contains("up to date"), "{:?}", bed.updater.notice());
         assert_eq!(bed.updater.menu_item().title, "Check for Updates…");
         bed.publish("0.1.0");
-        assert_eq!(bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"), Status::UpToDate);
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
         assert!(bed.updater.notice().unwrap().text.starts_with("You're up to date"));
         bed.publish("0.2.0");
         bed.found("0.2.0");
@@ -1581,7 +1571,7 @@ mod tests {
         let alert = bed.updater.menu().take_alert().expect("the menu's check leaves its answer");
         assert!(alert.starts_with("You're up to date"), "{alert}");
         assert_eq!(bed.updater.menu().take_alert(), None, "taken once");
-        assert_eq!(bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"), Status::UpToDate);
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
         assert!(bed.updater.notice().is_some(), "an agent's check still says so in the margin");
         assert_eq!(bed.updater.menu().take_alert(), None, "and puts up nothing");
         assert!(bed.updater.check_in_background(Asked::ByItself));
@@ -1614,7 +1604,7 @@ mod tests {
         assert!(next >= bed.updater.now_ms() + 3_500_000, "an hour later, not now");
         // A release older than this one isn't on offer, and isn't a failure.
         bed.publish("0.0.9");
-        assert_eq!(bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"), Status::UpToDate);
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
         assert_eq!(lock(&bed.updater.st).saved.failures, 0);
         assert_eq!(
             bed.updater.install(Asked::ByHand),
@@ -1652,10 +1642,7 @@ mod tests {
         assert_eq!(updater.install(Asked::ByHand), Err(InstallRefused::NotInThisBuild));
         assert_eq!(fake.hand_offs.load(Ordering::SeqCst), 0);
         // A quiet run with no test server reaches no real one.
-        assert!(matches!(
-            updater.check_here(Asked::ByHand).expect("the app has said what it is"),
-            Status::CheckFailed(_)
-        ));
+        assert!(matches!(updater.check_here(Asked::ByHand), Status::CheckFailed(_)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1757,7 +1744,7 @@ mod tests {
     fn an_automatic_install_goes_only_after_thirty_quiet_minutes() {
         let bed = Bed::new("thirty");
         bed.publish("0.2.0");
-        bed.updater.check_here(Asked::ByItself).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByItself);
         assert_eq!(bed.status(), Status::Available("0.2.0".into()));
         assert_eq!(bed.updater.notice(), None);
         // Just touched: it waits as long as it has to, and the timer's set for then, not for every minute.
@@ -1795,7 +1782,7 @@ mod tests {
     fn the_switch_stops_an_automatic_install_and_not_the_check() {
         let bed = Bed::new("switch");
         bed.publish("0.2.0");
-        bed.updater.check_here(Asked::ByItself).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByItself);
         bed.updater.choose_switch(false);
         *lock(&bed.fake.since_input_ms) = rules::IDLE_BEFORE_INSTALL_MS * 2;
         bed.updater.timer_fired();
@@ -1864,7 +1851,7 @@ mod tests {
     fn someone_coming_back_during_the_download_stops_it() {
         let bed = Bed::new("back-download");
         bed.publish("0.2.0");
-        bed.updater.check_here(Asked::ByItself).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByItself);
         *lock(&bed.fake.since_input_ms) = 1_000;
         lock(&bed.fake.looks).extend([rules::IDLE_BEFORE_INSTALL_MS]);
         lock(&bed.updater.st).install_look_at = Some(bed.updater.now_ms());
@@ -1885,7 +1872,7 @@ mod tests {
     fn someone_coming_back_as_it_freezes_unfreezes_it() {
         let bed = Bed::new("back-freeze");
         bed.publish("0.2.0");
-        bed.updater.check_here(Asked::ByItself).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByItself);
         let idle = rules::IDLE_BEFORE_INSTALL_MS;
         *lock(&bed.fake.since_input_ms) = 1_000;
         // The timer, then the look before the hand-off, then the one after it.
@@ -1906,10 +1893,7 @@ mod tests {
         bed.publish("0.2.0");
         bed.found("0.2.0");
         bed.server.set("/releases/latest/download/latest.json", Answer::Status(503));
-        assert_eq!(
-            bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"),
-            Status::Available("0.2.0".into())
-        );
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::Available("0.2.0".into()));
         assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…");
         assert!(bed.updater.notice().unwrap().text.starts_with("Couldn't check"), "it says the check failed");
         assert!(lock(&bed.updater.st).saved.failures == 1, "and backs off");
@@ -2435,7 +2419,7 @@ mod tests {
         bed.publish("0.1.0");
         let threads = || local::process_counters(std::process::id()).unwrap().threads;
         // The server's own connection threads end with each request, so a first request settles those.
-        bed.updater.check_here(Asked::ByHand).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByHand);
         std::thread::sleep(Duration::from_millis(100));
         let before = threads();
         for _ in 0..3 {
@@ -2554,7 +2538,7 @@ mod tests {
         let launched = lock(&bed.updater.st).launched_ms;
         assert_eq!(bed.updater.next_wake(), Some(launched + rules::MIN_GAP_MS), "a minute after launch");
         bed.publish("0.1.0");
-        bed.updater.check_here(Asked::ByItself).expect("the app has said what it is");
+        bed.updater.check_here(Asked::ByItself);
         let next = bed.updater.next_wake().unwrap();
         assert!(next >= bed.updater.now_ms() + rules::CHECK_EVERY_MS - 10_000, "a day on");
         for since in [0, 1_000, 5_000] {
