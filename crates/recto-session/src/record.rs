@@ -1891,9 +1891,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         let body = format!(r#"{{"next_id":99999,"tabs":[{tabs}]}}"#);
+        // Stopped by the reading, not by the check after it, which would have parsed them all first.
         assert!(matches!(
             decode_record(&seal(MAIN_KIND, 1, body.as_bytes()), CURRENT_VERSION),
-            Err(RecordError::Damaged(_))
+            Err(RecordError::Damaged("a body that doesn't read"))
         ));
     }
 
