@@ -159,7 +159,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **What a wake read, against what the tab's list is about** (`pages` and `read` are the file's length and stamp as read). Only history, made on another
     /// version than what was read, doesn't apply to it and goes. Unsaved edits are never let go for it, as a file changing never takes a person's edits: the tab
-    /// knows they don't fit ([`Self::edits_fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
+    /// knows they don't fit ([`fit::Notices::fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
     /// back makes them fit again; where it isn't, the stamp goes, so nothing takes this file as theirs.
     fn compare_read_with_edits(&mut self, id: TabId, pages: Option<u32>, read: Option<FileStamp>) {
         let (Some(pages), Some(read), Some(list)) = (pages, read, self.lists.get(id)) else {
