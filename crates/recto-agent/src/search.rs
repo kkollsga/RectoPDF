@@ -52,14 +52,15 @@ pub type KeyLookup = std::sync::Arc<dyn Fn(&std::path::Path) -> Option<std::sync
 
 struct PlanFile {
     path: PathBuf,
-    /// What it must still be, for page numbers recorded from it to mean anything. `None` if nothing was recorded, as with a tab with no edits.
-    expected: Option<FileStamp>,
+    /// What it must still be, for page numbers recorded from it to mean anything, as [`recto_session::recorded_version_is_current`] reads it. `None` if
+    /// nothing was recorded, as with a tab with no edits.
+    expected: Option<Option<FileStamp>>,
     added: bool,
 }
 
 impl PlanFile {
     fn is_current(&self) -> bool {
-        self.expected.is_none_or(|stamp| recto_platform::file_stamp(&self.path).ok() == Some(stamp))
+        recto_session::recorded_version_is_current(&self.path, self.expected)
     }
 
     fn label(&self) -> String {
@@ -165,7 +166,7 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![PlanFile {
             path,
-            expected: s.lists().get(id).and_then(|_| s.tabs().own_stamp(id)),
+            expected: s.lists().get(id).map(|_| s.tabs().own_stamp(id)),
             added: false,
         }];
         let list = match s.lists().get(id) {
@@ -173,7 +174,7 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
             Some(edits) => {
                 files.extend(edits.added_sources().iter().map(|added| PlanFile {
                     path: added.path.to_path_buf(),
-                    expected: added.stamp,
+                    expected: Some(added.stamp),
                     added: true,
                 }));
                 edits

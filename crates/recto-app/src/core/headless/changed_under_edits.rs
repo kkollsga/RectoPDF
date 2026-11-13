@@ -103,6 +103,80 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     assert!(saved.starts_with(&original), "appended to the version they were made on");
 }
 
+/// The tab with this file name's selector, `#n`.
+fn tab_of(app: &HeadlessApp, name: &str) -> String {
+    let tabs = app.session_json()["tabs"].clone();
+    let tab = tabs
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(name))))
+        .unwrap_or_else(|| panic!("a tab of {name}: {tabs}"));
+    format!("#{}", tab["id"].as_u64().expect("its number"))
+}
+
+/// **The ordering that leaves an edited tab with no stamp** (the branch's own `an_edit_made_before_a_changed_file_is_read_again_is_kept`, on the app): `doc.pdf`,
+/// ten pages, open behind `other.pdf`; another program makes it five pages and the tab hears of it, its stamp moving to the new file, its length still the old
+/// one's as it hasn't been read; an agent turns its page 9 before the read; the read lands at five pages, so the list (ten long) isn't about it and the stamp
+/// goes. Gives the app, the file, the five pages put in, and the tab's selector.
+fn dropped_stamp() -> (HeadlessApp, PathBuf, Vec<u8>, String) {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    app.open(&file);
+    app.open(&app.disk().pdf("other.pdf", 2));
+    let tab = tab_of(&app, "doc.pdf");
+    let id = recto_session::TabId(tab[1..].parse().expect("a number"));
+    let theirs = pdf_bytes("Theirs", 5);
+    replace(&file, &theirs);
+    let now = recto_platform::file_stamp(&file).expect("its stamp");
+    app.send(CoreCall::WokenFileIsOther(id, recto_session::record::FileStatus::Changed(now)));
+    app.settle();
+    app.recto(Level::Control, &["page", "rotate", "9", "--by", "90", "--tab", &tab])
+        .expect("an agent's turn on the tab behind");
+    app.settle();
+    app.recto(Level::Full, &["tap", &tab]).expect("to it");
+    app.settle();
+    assert_eq!(
+        app.core().host.session.with_session(|s| s.tabs().own_stamp(id)),
+        None,
+        "the ordering drops the stamp"
+    );
+    (app, file, theirs, tab)
+}
+
+/// Failure (S1, review round 1): with the stamp dropped, the tab's pages were still taken to be current, so `text`, `render`, `select`, `export` and print to PDF
+/// read the five-page file by the ten-page list's numbers, and print to PDF wrote the edited composition over the other version's pages into a new file (what
+/// Save As is refused for), with no refusal; `search` returned hits on the other version's pages. Each is refused, nothing is written, and no word of the other
+/// version comes back as the edited document's.
+#[test]
+fn with_no_stamp_nothing_reads_the_other_version_as_the_edited_document() {
+    let (app, file, theirs, tab) = dropped_stamp();
+    let out = |name: &str| file.with_file_name(name);
+    let refused = |words: &[&str]| -> recto_agent::AgentError {
+        let mut words = words.to_vec();
+        words.extend(["--tab", &tab]);
+        let error = app.recto(Level::Full, &words).expect_err(&format!("{words:?} refused"));
+        assert!(!format!("{error:?}").contains("Theirs"), "{words:?}: nothing of the other version: {error:?}");
+        error
+    };
+    for page in ["3", "9"] {
+        assert_eq!(refused(&["text", "--page", page]).code, "source_changed", "text of page {page}");
+        assert_eq!(refused(&["select", page]).code, "source_changed", "select on page {page}");
+    }
+    let png = out("p3.png");
+    assert_eq!(refused(&["render", "3", "--out", png.to_str().unwrap()]).code, "source_changed");
+    let svg = out("p3.svg");
+    assert_eq!(refused(&["export", "svg", "3", "--out", svg.to_str().unwrap()]).code, "source_changed");
+    let printed = out("printed.pdf");
+    assert_eq!(refused(&["print", "--to-pdf", printed.to_str().unwrap()]).code, "source_changed");
+    for written in [&png, &svg, &printed] {
+        assert!(!written.exists(), "nothing written: {written:?}");
+    }
+    let searched = app.recto(Level::Full, &["search", "Theirs", "--tab", &tab]);
+    if let Ok(found) = &searched {
+        assert_eq!(found["hits"].as_array().map(Vec::len), Some(0), "no hit on the other version: {found}");
+    }
+    assert_eq!(std::fs::read(&file).expect("the file"), theirs, "and the file is as the other program left it");
+}
+
 /// What Find shows: its rows, its status, and whether it's still looking.
 fn find_shown(app: &HeadlessApp) -> (u32, String, bool) {
     let view = crate::core::find::view(app.core());
