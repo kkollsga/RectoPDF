@@ -1,5 +1,8 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
+mod levers;
+mod values;
+
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_agent::commands::Cmd;
@@ -14,6 +17,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
+use values::{bad, check_drive_value, cleaned, is_a_tests_file, parse_page_place, refuse_shot_path};
 
 /// How long a quiet run lasts at most, if it isn't told.
 pub const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
@@ -696,167 +700,6 @@ fn stuck() -> AgentError {
         .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
-/// Where a QA mouse verb goes: `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press. The page is as `recto` counts them.
-#[derive(Debug, PartialEq)]
-struct PagePlace {
-    page: u32,
-    x: f64,
-    y: f64,
-    clicks: u32,
-    shift: bool,
-}
-
-fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
-    let wrong = || {
-        bad(format!(
-            "`{}` isn't a place. It's `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press, such as `3:120,88:2`.",
-            cleaned(value)
-        ))
-    };
-    let mut parts = value.split(':');
-    let page = parts
-        .next()
-        .and_then(|word| word.parse::<u32>().ok())
-        .and_then(|page| page.checked_sub(1))
-        .ok_or_else(wrong)?;
-    let (x, y) = parts.next().and_then(|word| word.split_once(',')).ok_or_else(wrong)?;
-    let (x, y) = (x.parse::<f64>().map_err(|_| wrong())?, y.parse::<f64>().map_err(|_| wrong())?);
-    if !x.is_finite() || !y.is_finite() {
-        return Err(wrong());
-    }
-    let (mut clicks, mut shift) = (1, false);
-    for part in parts {
-        match part {
-            "shift" => shift = true,
-            count => clicks = count.parse::<u32>().ok().filter(|count| (1..=4).contains(count)).ok_or_else(wrong)?,
-        }
-    }
-    Ok(PagePlace { page, x, y, clicks, shift })
-}
-
-/// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
-/// Whether a file is one a quiet run's test made: in its state folder, or a temp folder. Compared by the folders the paths really are, so a link out of one doesn't count.
-fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
-    let Ok(file) = path.canonicalize() else { return false };
-    let roots = [
-        state.map(std::path::Path::to_path_buf),
-        Some(std::env::temp_dir()),
-        Some(std::path::PathBuf::from("/private/tmp")),
-    ];
-    roots
-        .into_iter()
-        .flatten()
-        .filter_map(|root| root.canonicalize().ok())
-        .any(|root| file.starts_with(root))
-}
-
-fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
-    let one_of = |words: &[&str]| words.contains(&value);
-    let row = || value.parse::<u32>().is_ok();
-    let fits = match verb {
-        "appearance" => one_of(&["light", "dark"]),
-        "window" => one_of(&["open", "close"]),
-        "contents_pointer" => one_of(&["in", "out"]),
-        "corner_pointer" => one_of(&[
-            "top-left:in",
-            "top-left:out",
-            "top-right:in",
-            "top-right:out",
-            "lower-right:in",
-            "lower-right:out",
-        ]),
-        "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => crate::sidebar_access::is_qa_value(value),
-        "scroller_style" => one_of(&["legacy", "overlay"]),
-        "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
-        "focus" => one_of(&["page", "sidebar", "find"]),
-        "sheet" => one_of(&["open", "closed"]),
-        "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
-        // What shows a window is left out: a quiet run shows none.
-        // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
-        "menu" => {
-            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || super::snapshot_tool::is_menu_id(value))
-        }
-        "panel" => {
-            value == "toggle"
-                || value == "edit_mode.done"
-                || value.starts_with("paper.")
-                || value.starts_with("view.")
-                || value.starts_with("rotate.")
-                || value.starts_with("tools.")
-        }
-        "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
-        "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
-        "key_action" => one_of(&["undo", "redo"]),
-        "context_menu" => crate::menus::context_menu(None, Some(false))
-            .iter()
-            .any(|item| !item.id.is_empty() && item.id == value),
-        // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
-        "zoom_type" => value.chars().count() <= 32,
-        // A test's password, typed as a person would: the app takes it once and keeps it only for the open tab.
-        "password" => !value.is_empty() && value.len() <= recto_core::MAX_PASSWORD_BYTES,
-        "page_type" => value.len() <= crate::linking::MAX_TYPED_PAGE,
-        "swipe" => value.parse::<f64>().is_ok_and(|delta| delta.is_finite() && delta.abs() <= 100.0),
-        "hover" | "reveal" => value == "none" || row(),
-        "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
-        "contents_scroll" | "compare_click" | "find_click" => row(),
-        "palette_type" => value.chars().count() <= 256,
-        "palette_key" => one_of(&["up", "down", "return", "escape"]),
-        "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
-        "find_key" => one_of(&["return", "shift_return", "escape"]),
-        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| {
-            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
-                && crate::menus::context_menu(None, Some(false))
-                    .iter()
-                    .any(|entry| !entry.id.is_empty() && entry.id == item)
-        }),
-        "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
-        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| {
-            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
-                && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)
-        }),
-        "resize" => value
-            .split_once('x')
-            .and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?)))
-            .is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
-        _ => false,
-    };
-    if fits {
-        return Ok(());
-    }
-    Err(bad(format!("`{}` isn't something `{}` takes.", cleaned(value), verb.replace('_', "-"))))
-}
-
-/// What a `qa shot` may write: a new `.png`, outside the real home.
-fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool) -> Result<(), AgentError> {
-    if !out.is_absolute() {
-        return Err(bad("That path isn't whole. A session has no folder of its own to start from."));
-    }
-    if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) {
-        return Err(bad("A shot is a new `.png` file."));
-    }
-    if in_real_home(out) {
-        return Err(AgentError::new(
-            "path_refused",
-            "A shot goes outside your home folder, somewhere temporary.",
-            exit::FAILED,
-        ));
-    }
-    // `symlink_metadata`, so a link is something being there, wherever it points or if it points nowhere.
-    if std::fs::symlink_metadata(out).is_ok() {
-        return Err(recto_agent::output_exists());
-    }
-    Ok(())
-}
-
-fn bad(words: impl Into<String>) -> AgentError {
-    AgentError::new("usage", words.into(), exit::USAGE)
-}
-
-fn cleaned(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).take(64).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -937,65 +780,5 @@ mod tests {
         assert!(found["largest_step_points"].as_f64().unwrap() <= 10.0 + 0.001, "{found}");
         assert!(found["peak_points_per_s"]["highest"].as_f64().unwrap() >= 900.0, "{found}");
         assert_eq!(contents_moves(&[(0.0, 5.0), (1.0, 5.0)])["moves"], 0, "still");
-    }
-
-    /// Failure: a shot lands in the real home, by a path or through a link to it, or takes a document's name. Holds the rule, with what counts as the home given.
-    #[test]
-    fn a_shot_goes_only_where_it_may() {
-        let nowhere = |_: &Path| false;
-        let dir = std::env::temp_dir();
-        assert_eq!(refuse_shot_path(Path::new("a.png"), nowhere).unwrap_err().code, "usage", "not whole");
-        assert_eq!(refuse_shot_path(&dir.join("a.pdf"), nowhere).unwrap_err().code, "usage", "a document's name");
-        assert_eq!(refuse_shot_path(&dir.join("a"), nowhere).unwrap_err().code, "usage");
-        assert_eq!(refuse_shot_path(&dir.join("a.png"), |_| true).unwrap_err().code, "path_refused");
-        assert!(refuse_shot_path(&dir.join("recto-no-such-shot.PNG"), nowhere).is_ok());
-    }
-
-    /// Failure: a QA click lands somewhere other than what it says, or a page counted from 0 slips through, or a NaN reaches the host.
-    #[test]
-    fn a_mouse_verb_says_a_place_or_is_refused() {
-        assert_eq!(
-            parse_page_place("3:120.5,88").unwrap(),
-            PagePlace {
-                page: 2,
-                x: 120.5,
-                y: 88.0,
-                clicks: 1,
-                shift: false
-            }
-        );
-        assert_eq!(
-            parse_page_place("1:0,0:2:shift").unwrap(),
-            PagePlace {
-                page: 0,
-                x: 0.0,
-                y: 0.0,
-                clicks: 2,
-                shift: true
-            }
-        );
-        for wrong in ["", "3", "0:1,1", "3:1", "3:x,1", "3:NaN,1", "3:1,inf", "3:1,1:0", "3:1,1:9", "3:1,1:zzz"] {
-            assert_eq!(parse_page_place(wrong).unwrap_err().code, "usage", "{wrong}");
-        }
-    }
-
-    /// Failure: a word the host can't do reports success: `qa appearance zzz` said it was done and went light, since the rule was the host's. They're checked here and every one is refused.
-    #[test]
-    fn a_verb_only_takes_what_it_can_do() {
-        for (verb, good, wrong) in [
-            ("appearance", "dark", "zzz"),
-            ("window", "close", "zzz"),
-            ("contents_pointer", "in", "zzz"),
-            ("reduce_motion", "on", "yes"),
-            ("hover", "none", "-1"),
-            ("reveal", "3", "x"),
-            ("click_row", "0", "none"),
-            ("contents_scroll", "9", "1.5"),
-            ("resize", "800x600", "10x10"),
-        ] {
-            assert!(check_drive_value(verb, good).is_ok(), "{verb} {good}");
-            assert_eq!(check_drive_value(verb, wrong).unwrap_err().code, "usage", "{verb} {wrong}");
-        }
-        assert!(check_drive_value("resize", "800").is_err());
     }
 }

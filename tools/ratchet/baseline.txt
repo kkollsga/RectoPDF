@@ -39,7 +39,7 @@ sleep crates/recto-agent/src/agreement.rs 1
 sleep crates/recto-agent/src/generated.rs 1
 sleep crates/recto-agent/src/index.rs 1
 sleep crates/recto-agent/src/render.rs 1
-sleep crates/recto-app/src/core/qa.rs 5
+sleep crates/recto-app/src/core/qa/mod.rs 5
 sleep crates/recto-app/src/core/session.rs 2
 sleep crates/recto-app/src/core/sleeper.rs 2
 sleep crates/recto-app/src/core/updates.rs 1
