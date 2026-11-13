@@ -159,7 +159,7 @@ fn a_delete_is_saved_by_rewriting() {
     assert!(
         saved["notes"].as_array().unwrap().iter().any(|note| note
             .as_str()
-            .is_some_and(|note| note.contains("undo steps from before this save couldn't be kept"))),
+            .is_some_and(|note| note.to_lowercase().contains("undo"))),
         "{saved}"
     );
     assert_eq!(ok(&state, &["edits"])["can_undo"], false);

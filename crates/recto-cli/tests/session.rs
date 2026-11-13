@@ -1406,7 +1406,8 @@ fn a_refused_close_says_what_would_be_lost() {
     assert_eq!(code, exit::FAILED, "{refused}");
     assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
-    assert!(message.contains("unsaved edits and undone steps"), "{message}");
+    // Both named, however it's worded; the sentence is `recto-agent`'s own test's.
+    assert!(message.contains("edits") && message.contains("undone"), "{message}");
     assert!(next.contains("recto save") && next.contains("recto discard"), "{next}");
     let (tabs, _) = state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 1);
