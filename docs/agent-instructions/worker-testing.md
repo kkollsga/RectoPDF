@@ -60,6 +60,17 @@ A test that fails only sometimes can pass once and then be remembered, so a fail
 
 Never `git stash`, which is shared across worktrees. To compare with old code, use a temporary commit or a second worktree.
 
+## Before you hand back (added 2026-11-13, from `AGENTS.md`)
+
+- **Read each result before the next step:** a check's exit code and its last lines, never a check chained into a merge or a push. Keep a check's whole output in a file until you've handed back; don't filter away the line that names a failure.
+- **Your final check runs everything:** `CHECK_ALL=1 tools/check.sh --full`, committed first, once. A selective pass is for the way there. If `main` has moved and you're told to merge it in, the check comes after that merge.
+- **A test goes or changes only on proof.** Delete: seed its bug on a temporary commit you then drop, and see another, cheaper test fail on it, or see the test pass with the code broken. Rewrite: see it fail on the seeded bug it now names. Can't make the proof: leave the test and list it.
+- **Pin before you move.** If what your move must not change isn't held by a test at today's number (a size, an allocation count, the order of what the host is told, a saved file read back), add that test first, in its own commit.
+- **Report whole-type numbers:** a type's fields, and its methods across every file its `impl` blocks are in. Say what you measured, on which machine and under what load, and call an estimate an estimate.
+- **A bug, a test that couldn't fail, or a leak you find on the way** is its own commit with a test that failed first, and is in your report. A breach of rule 1 (memory) or rule 6 (untrusted input) is fixed with numbers before you go on, or you stop and say so.
+- **Don't settle a behaviour difference yourself** when the settled rules don't cover it (they are in `AGENTS.md`, "One action, one implementation"): stop and ask, and carry on with what doesn't depend on the answer.
+- **Your work will be read by a reviewer who hasn't seen your report.** Write the code and its tests for that reader.
+
 ## Call back at an edge case
 
 Owner, 2026-11-12: "Ask them to call back to you when they are touching edgecases, and you can give clear steer". Send the coordinator a short message as soon as you hit one (what you hit, the options, which you'd pick), and carry on with whatever doesn't depend on the answer. Don't decide these alone, and don't leave them for the hand-back:
