@@ -325,12 +325,15 @@ fn a_rows_refusal_is_its_commands() {
         app.settle();
     }
     let protected = Err("protected".to_string());
-    let layout = format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{tab}"}}"##);
+    // A layout names its tab or goes by the one showing: which tab decides, not how it was named (review, F1).
+    let layout_named = format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{tab}"}}"##);
+    let layout_showing = r#"{"cmd":"view","layout":"two-up"}"#.to_string();
     for (id, line) in [
         ("find.open", r#"{"cmd":"find","open":true}"#),
         ("go.back", r#"{"cmd":"back"}"#),
         ("go.forward", r#"{"cmd":"forward"}"#),
-        ("layout.two_up", layout.as_str()),
+        ("layout.two_up", layout_named.as_str()),
+        ("layout.two_up", layout_showing.as_str()),
     ] {
         let title = title_of(&app, id);
         assert_eq!(refusal(&app, Level::Full, line), protected, "{id}: `{line}` on a protected tab");
@@ -352,6 +355,12 @@ fn a_rows_refusal_is_its_commands() {
         below,
         "Leave Edit Mode by the palette below Control"
     );
+    // What's shown, asked with no tab, says the paper and the sidebar, and nothing of the protected tab's layout.
+    let shown = app.agent(Level::Full, r#"{"cmd":"view"}"#).expect("asking how things are shown");
+    assert!(shown.get("layout").is_none_or(serde_json::Value::is_null), "{shown}");
+    assert!(shown["paper"].is_string(), "{shown}");
+    // The paper touches no tab, and stays the agent's to change.
+    assert_eq!(refusal(&app, Level::Full, r#"{"cmd":"view","paper":"warm"}"#), Ok(()), "the paper");
     // The person's layout on the protected tab applies; the agent's was refused above.
     app.act(UiAction::Menu { id: "layout.two_up".into() });
     app.settle();
