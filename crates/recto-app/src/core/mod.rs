@@ -17,6 +17,7 @@ pub mod snapshot_tool;
 pub mod start;
 pub mod updates;
 
+mod closing;
 mod comparison;
 pub mod controls;
 mod editing;

@@ -1,36 +1,6 @@
-//! **The window's edits and closes, as the session thread does them:** a close answered or after a save, the history cleared, a rotation, Undo and Redo.
+//! **The window's edits, as the session thread does them:** the history cleared, a rotation, Undo and Redo.
 
 use super::*;
-
-/// `CoreCall::CloseAnswered`, on the session thread.
-pub fn close_answered(inner: &Arc<Inner>, id: TabId, choice: crate::saving::CloseChoice, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    match choice {
-        crate::saving::CloseChoice::Save => {
-            if let Some(inner) = inner.saver.inner() {
-                saving::start_save(&inner, id, None, true);
-            }
-        }
-        crate::saving::CloseChoice::DontSave => close_tab(host, id, true, events),
-        crate::saving::CloseChoice::Cancel | crate::saving::CloseChoice::SaveAs => {}
-    }
-}
-
-/// `CoreCall::CloseAfterSave`, on the session thread.
-pub fn close_after_save(inner: &Arc<Inner>, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
-    let closed = host.session.with_session(|session| {
-        session.close_after_save(id).inspect(|closed| {
-            if let Some(closed) = closed {
-                recto_agent::event::closed(session, *closed, events);
-            }
-        })
-    });
-    if let Ok(None) = closed {
-        *lock(&inner.window.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string());
-    }
-}
 
 /// `CoreCall::ClearEditHistory`, on the session thread.
 pub fn clear_edit_history(inner: &Arc<Inner>) {

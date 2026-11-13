@@ -61,12 +61,6 @@ pub enum CoreCall {
     RestorePatienceOver,
     /// What a save off this thread did, for watchers.
     Events(Vec<Event>),
-    /// Closes a tab, by the owner: with its edits thrown away first if they said Don't Save.
-    CloseTab(TabId, bool),
-    /// The close prompt's answer, for the tab it asked about.
-    CloseAnswered(TabId, crate::saving::CloseChoice),
-    /// A save from the close prompt finished: the tab closes, letting go of steps that were undone, as the prompt said.
-    CloseAfterSave(TabId),
     /// The reader tapped the note over a tab's contents.
     ContentsAction(TabId, recto_session::ContentsAction),
     /// Generated contents were made, or failed: tabs waiting for them look.
@@ -127,9 +121,6 @@ impl CoreCall {
             | Self::Rotate(_)
             | Self::UndoOrRedo(_)
             | Self::ClearEditHistory
-            // Closing a tab, by File > Close or the close prompt's answer: a save or a throwing away of edits that the state already written wouldn't know of.
-            | Self::CloseTab(..)
-            | Self::CloseAnswered(..)
             // The note over the contents, and a section's chevron: both kept in the record.
             | Self::ContentsAction(..)
             | Self::ToggleSection(..)
@@ -138,8 +129,6 @@ impl CoreCall {
             Self::Run(run) => run.origin == Origin::Input,
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
             Self::Unlocked(..)
-            // The end of a save the close prompt started, which a hand-off waits for: dropped, a quit that stays would leave the saved tab open.
-            | Self::CloseAfterSave(_)
             | Self::Reconcile
             | Self::LookAtShown
             | Self::SleepTabs(..)
@@ -446,9 +435,6 @@ mod tests {
             CoreCall::Restored(Box::new(Loaded::Nothing)),
             CoreCall::RestorePatienceOver,
             CoreCall::Events(Vec::new()),
-            CoreCall::CloseTab(tab, false),
-            CoreCall::CloseAnswered(tab, crate::saving::CloseChoice::Save),
-            CoreCall::CloseAfterSave(tab),
             CoreCall::ContentsAction(tab, recto_session::ContentsAction::Generate),
             CoreCall::GeneratedFinished,
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
@@ -494,29 +480,26 @@ mod tests {
             CoreCall::Restored(_) => 18,
             CoreCall::RestorePatienceOver => 19,
             CoreCall::Events(_) => 20,
-            CoreCall::CloseTab(..) => 21,
-            CoreCall::CloseAnswered(..) => 22,
-            CoreCall::CloseAfterSave(_) => 23,
-            CoreCall::ContentsAction(..) => 24,
-            CoreCall::GeneratedFinished => 25,
-            CoreCall::GeneratedView(..) => 26,
-            CoreCall::ToggleSection(..) => 27,
+            CoreCall::ContentsAction(..) => 21,
+            CoreCall::GeneratedFinished => 22,
+            CoreCall::GeneratedView(..) => 23,
+            CoreCall::ToggleSection(..) => 24,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 28,
-                crate::find::FindCall::Open => 29,
-                crate::find::FindCall::Close => 30,
-                crate::find::FindCall::Step(..) => 31,
-                crate::find::FindCall::Choose(_) => 32,
-                crate::find::FindCall::News => 33,
-                crate::find::FindCall::Reveal(..) => 34,
+                crate::find::FindCall::Typed(_) => 25,
+                crate::find::FindCall::Open => 26,
+                crate::find::FindCall::Close => 27,
+                crate::find::FindCall::Step(..) => 28,
+                crate::find::FindCall::Choose(_) => 29,
+                crate::find::FindCall::News => 30,
+                crate::find::FindCall::Reveal(..) => 31,
             },
-            CoreCall::SetEditMode(_) => 35,
+            CoreCall::SetEditMode(_) => 32,
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 36,
-                Origin::Finishing => 37,
+                Origin::Input => 33,
+                Origin::Finishing => 34,
             },
         };
-        (place, 38)
+        (place, 35)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -541,8 +524,6 @@ mod tests {
                         | CoreCall::Rotate(_)
                         | CoreCall::UndoOrRedo(_)
                         | CoreCall::ClearEditHistory
-                        | CoreCall::CloseTab(..)
-                        | CoreCall::CloseAnswered(..)
                         | CoreCall::ContentsAction(..)
                         | CoreCall::ToggleSection(..)
                         | CoreCall::SetEditMode(_)

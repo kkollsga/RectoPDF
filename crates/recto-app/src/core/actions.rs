@@ -103,7 +103,7 @@ impl Inner {
                     return HostAction::ConfirmClose;
                 }
                 if reader.shown_tab != 0 {
-                    self.core.push(CoreCall::CloseTab(TabId(reader.shown_tab), false));
+                    self.close_for_person(TabId(reader.shown_tab));
                 }
             }
         }

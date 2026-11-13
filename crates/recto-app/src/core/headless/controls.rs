@@ -88,6 +88,15 @@ fn every_control_returns_while_the_session_is_held() {
             tab,
             choice: CloseChoice::Cancel,
         },
+        // The close prompt's Save is the window's Save, on a thread of its own, and Don't Save `discard` and `close` (C5c).
+        UiAction::CloseAnswered {
+            tab,
+            choice: CloseChoice::Save,
+        },
+        UiAction::CloseAnswered {
+            tab,
+            choice: CloseChoice::DontSave,
+        },
         UiAction::SaveAs {
             tab,
             path: saved_as.display().to_string(),
