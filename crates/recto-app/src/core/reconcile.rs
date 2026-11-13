@@ -222,31 +222,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         lock(&inner.window.action_notice).take();
         snapshot_tool::tab_came_forward(inner);
     }
-    // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
-    // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.
-    let core_queue = Arc::clone(&inner.core);
-    let (reading, save_ui) = (&facts.reading, &inner.tools.save_ui);
-    let signature = if reading.edited {
-        reading
-            .file
-            .as_ref()
-            .and_then(|(id, path, stamp)| save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile)))
-            .unwrap_or_default()
-    } else {
-        recto_core::save::SignatureFacts::default()
-    };
-    let core_queue = Arc::clone(&inner.core);
-    let save = save_ui.save_state(
-        signature,
-        reading.needs_rewrite,
-        reading.protected,
-        reading
-            .file
-            .as_ref()
-            .filter(|_| reading.edited)
-            .map(|(_, path, stamp)| (path.as_path(), *stamp)),
-        move || core_queue.push(CoreCall::Reconcile),
-    );
+    let save = save_state_now(inner, &facts.reading);
     let problem = facts.reading_pane().and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.life.holding_tab);
@@ -382,7 +358,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = save_ui.problem();
+    reader.save_problem = inner.tools.save_ui.problem();
     reader.link_prompt = lock(&inner.tools.prompts.link).clone();
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
@@ -436,4 +412,33 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         inner.saver.view_changed();
     }
+}
+
+/// **What the window's Save is for the tab being read, decided by Rust.** A signed file's (SPEC decision 27): an edit a Save over it would break the signature
+/// with turns Save off, and Save As says its copy won't be signed. Asked only with edits to save, off this thread, and the window's brought up to date again once
+/// it's known. A file nothing can save (opened with its password, or whose readers disagree) has Save and Save As off.
+fn save_state_now(inner: &Inner, reading: &crate::model::ReadingFacts) -> crate::saving::SaveState {
+    let core_queue = Arc::clone(&inner.core);
+    let save_ui = &inner.tools.save_ui;
+    let signature = if reading.edited {
+        reading
+            .file
+            .as_ref()
+            .and_then(|(id, path, stamp)| save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile)))
+            .unwrap_or_default()
+    } else {
+        recto_core::save::SignatureFacts::default()
+    };
+    let core_queue = Arc::clone(&inner.core);
+    save_ui.save_state(
+        signature,
+        reading.needs_rewrite,
+        reading.protected,
+        reading
+            .file
+            .as_ref()
+            .filter(|_| reading.edited)
+            .map(|(_, path, stamp)| (path.as_path(), *stamp)),
+        move || core_queue.push(CoreCall::Reconcile),
+    )
 }
