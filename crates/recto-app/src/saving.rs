@@ -83,6 +83,11 @@ pub fn greys_save(disagreement: &recto_core::agreement::Disagreement) -> bool {
     !disagreement.is_transient()
 }
 
+/// **Why Save and Save As are off for a document opened with its password.** The writer reads the file without the password and refuses it, so nothing
+/// is written, and a copy without the password would take the protection off without asking. Until saving into a protected file is decided (the owner's), a
+/// person is told so in their own words, before they try.
+pub const PROTECTED_SAVE_OFF: &str = "This PDF is protected by a password, and RectoPDF can't save into a protected file yet, so Save and Save As are off.";
+
 /// What the Save icon says when it's off for a signed document.
 const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
 
@@ -180,16 +185,23 @@ impl SaveUi {
     }
 
     /// **What the window's Save is, for the tab showing:** off when a Save over the file would break a signature (Save As then makes an unsigned
-    /// copy, and the sheet says so) or when its two readers disagree (Save As is off too, and the tooltip says why, which comes first). `file` is
-    /// the tab's file with edits to save, or `None`.
+    /// copy, and the sheet says so) or when nothing can save the file: it's protected by its password, or its two readers disagree (Save As is off
+    /// too, and the tooltip says why, which comes first). `file` is the tab's file with edits to save, or `None`.
     pub fn save_state(
         &self,
         facts: recto_core::save::SignatureFacts,
         needs_rewrite: bool,
+        protected: bool,
         file: Option<(&std::path::Path, FileStamp)>,
         done: impl FnOnce() + Send + 'static,
     ) -> SaveState {
-        let disagreement = self.disagreement(file, done);
+        let disagreement = if protected {
+            let why = Some(PROTECTED_SAVE_OFF.to_string());
+            crate::lock(&self.disagreement).clone_from(&why);
+            why
+        } else {
+            self.disagreement(file, done)
+        };
         let signed_off = save_needs_copy(facts, needs_rewrite);
         let tooltip = match (&disagreement, signed_off) {
             (Some(why), _) => why.clone(),
@@ -594,11 +606,11 @@ mod tests {
             signed: true,
             ..Default::default()
         };
-        let off = ui.save_state(signed, true, None, || {});
+        let off = ui.save_state(signed, true, false, None, || {});
         assert!(off.off);
         assert_eq!(off.note.as_deref(), Some(UNSIGNED_COPY), "the sheet says the copy is unsigned");
         assert_ne!(off.tooltip, ui.tooltip(), "the tooltip says why it's off");
-        let plain = ui.save_state(SignatureFacts::default(), true, None, || {});
+        let plain = ui.save_state(SignatureFacts::default(), true, false, None, || {});
         assert!(!plain.off && plain.note.is_none());
         assert_eq!(plain.tooltip, ui.tooltip());
     }

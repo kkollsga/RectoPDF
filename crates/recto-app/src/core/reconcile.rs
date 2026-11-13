@@ -239,6 +239,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let save = save_ui.save_state(
         signature,
         reading.needs_rewrite,
+        reading.protected,
         reading
             .file
             .as_ref()

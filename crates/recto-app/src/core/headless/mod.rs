@@ -9,6 +9,7 @@ mod launch;
 mod levels;
 mod palette;
 mod passwords;
+mod protected_save;
 mod quit;
 mod recent;
 mod selection;
