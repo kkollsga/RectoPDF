@@ -125,9 +125,10 @@ fn file_save_is_heard_once_settled() {
     assert_eq!(names(&said), ["saved", "edits_changed"], "{said:?}");
 }
 
-/// Failure (review of R2.3, S1): an agent's `close` of a tab whose edit list is asleep, with only the owner's undone steps in it and its journal unreadable just now, is refused with the guidance
-/// for a tab with nothing of the owner's: no "Some of them are the user's", no `ask` for Full, no `recto redo`, and a `discard` that's itself refused below
-/// Full. What a close would lose is read wherever the list is, so the refusal says the same of a tab asleep as of one awake.
+/// Failure (review of R2.3, S1, and the coordinator's ruling that unknown is "would lose"): an agent's `close` of a tab whose edit list is asleep, with only
+/// the owner's undone steps in it and its journal unreadable just now, was refused with the guidance for a tab with nothing of the owner's, and would have
+/// gone ahead at Full. With what it would lose not all known, an agent is refused `edits_unreadable` at Control and at Full, in plain words; the person's
+/// File > Close asks first, from the list's summary, as for the owner's undone steps.
 #[test]
 fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
     let disk = Disk::new();
@@ -153,17 +154,20 @@ fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
             std::fs::write(entry.path(), b"not a journal").expect("written over");
         }
     }
-    let error = app
-        .agent(Level::Control, r##"{"cmd":"close","tab":"#1"}"##)
-        .expect_err("the owner's undone steps, below Full");
-    assert_eq!(error.code, "would_clear_redo", "{error:?}");
-    assert!(error.message.contains("Some of them are the user's."), "{error:?}");
-    assert_eq!(error.ask.as_deref(), Some("recto permission request full"), "{error:?}");
-    assert!(error.next.contains("`recto redo`"), "{error:?}");
-    assert!(error.next.contains("needs Full access"), "{error:?}");
+    for level in [Level::Control, Level::Full] {
+        let error = app
+            .agent(level, r##"{"cmd":"close","tab":"#1"}"##)
+            .expect_err("not all of what it would lose is known");
+        assert_eq!(error.code, "edits_unreadable", "{level:?}: {error:?}");
+        assert!(error.message.contains("couldn't be read back"), "{error:?}");
+    }
     assert_eq!(app.tabs().len(), 2, "it stays");
     assert!(
         app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1))),
         "the list was asleep when the close was asked"
     );
+    app.person(r##"{"cmd":"tap","tab":"#1"}"##);
+    app.settle();
+    let acted = app.act(UiAction::Menu { id: "file.close".into() });
+    assert_eq!(acted.host, crate::menus::HostAction::ConfirmClose, "the person is asked first");
 }
