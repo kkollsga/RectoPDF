@@ -190,7 +190,8 @@ impl<L: DocLoader> Session<L> {
                 page: slot.page,
                 quarter_turns: slot.quarter_turns,
                 added: false,
-                expected: Some(tab.file.stamp),
+                // Edits that don't fit the file name no version of it that can be current.
+                expected: Some(tab.file.stamp.filter(|_| self.notices().fit(id).fits())),
             }),
             source => {
                 let added = edits.added_sources().get(usize::from(source) - 1)?;
@@ -203,15 +204,6 @@ impl<L: DocLoader> Session<L> {
                 })
             }
         }
-    }
-
-    /// Whether a tab with edits still has the file those edits are about. A tab with none has no page numbers to get wrong: reading from the file as it is now is what's wanted.
-    pub fn own_file_is_current(&self, id: TabId) -> bool {
-        let Some(tab) = self.tabs.tab(id) else { return true };
-        if !self.lists.has_list(id) {
-            return true;
-        }
-        tab.file.stamp.is_none() || self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.file.stamp
     }
 
     /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
@@ -243,7 +235,7 @@ impl<L: DocLoader> Session<L> {
     pub fn can_edit_pages(&self, id: TabId) -> bool {
         self.tabs
             .tab(id)
-            .is_some_and(|tab| !tab.renderer_only && !matches!(tab.file.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
+            .is_some_and(|tab| !tab.renderer_only && !matches!(tab.file.notice(), Some(FileNotice::EditsUnreadable)))
     }
 
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."

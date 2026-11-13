@@ -540,7 +540,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .iter()
         .take(MAX_TABS_LISTED as usize)
         .map(|tab| {
-            let notice = session.tabs().tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
+            let notice = session.notices().said(tab.id).map(|said| json!({ "code": said.code, "message": said.message }));
             let place = session.tabs().place_to_show(tab.id);
             // A protected document's place and length were read with its password.
             if session.tabs().withheld_from_agents(tab.id) {
@@ -1179,7 +1179,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
         "note": if edited { Some(UNSAVED_NOTE) } else { session.lists().has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
-        "file_notice": session.tabs().tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
+        "file_notice": session.notices().said(id).map(|said| json!({ "code": said.code, "message": said.message })),
         "untrusted": { "name": &*tab.name, "label": session.pages().label_differs(id, tab.page) },
     })
 }

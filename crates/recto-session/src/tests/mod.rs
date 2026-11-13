@@ -191,7 +191,7 @@ fn bare_tab(id: u32, page_count: u32) -> TabRecord {
             dir: 0,
             file_name: OsStr::new("bare.pdf").into(),
             stamp: None,
-            notice: None,
+            news: None,
             encrypted: false,
             password: false,
         },

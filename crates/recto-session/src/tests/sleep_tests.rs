@@ -132,10 +132,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
     assert!(!s.wake_list(a));
     assert!(s.lists().is_asleep(a));
-    assert_eq!(
-        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
-        Some("edits_unreadable")
-    );
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("edits_unreadable"));
     assert!(s.lists().is_edited(a), "what's known of it stands");
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(0, 1, 1)),
@@ -153,14 +150,14 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     files.lock().unwrap().insert(name.clone(), bytes);
     assert!(s.wake_list(a));
     assert!(s.lists().get(a).is_some());
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None, "and it's stopped saying so");
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None, "and it's stopped saying so");
     // Gone for good, and given up on by saying so.
     assert!(s.go_dormant(a));
     files.lock().unwrap().clear();
     assert!(!s.wake_list(a));
     s.discard_edits(a);
     assert!(!s.lists().is_asleep(a) && !s.lists().is_edited(a));
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
     assert!(s.journal_work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
     let mut s = session(5);
@@ -396,9 +393,10 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and its pages are written onto that file. Or
-/// (B1, 2026-11-13) it's deleted with its journal, as one about a file replaced mid-read was, and a person's edits go. A file read at its own stamp and another length than
-/// the list says shows the list isn't about it: the list stays, its stamp goes so no save takes this file as its own, and the tab says the file changed.
+/// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and its pages are written onto that file,
+/// or read from it past its end. Or (B1, 2026-11-13) it's deleted with its journal, as one about a file replaced mid-read was, and a person's edits go. Or (review
+/// round 1) the tab says the file changed on disk, which it didn't. A file read at its own stamp and another length than the list says shows the list isn't about
+/// it: the list stays, its stamp goes so no save takes this file as its own, none of its pages is read from this file, and the tab says the edits don't fit it.
 #[test]
 fn a_list_of_another_length_than_its_file_isnt_believed() {
     let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-forged-list-");
@@ -419,7 +417,11 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     assert_eq!(s.tabs().own_stamp(a), None, "and isn't taken to be about this file");
     assert_eq!(s.begin_save(a, false).unwrap().unwrap().stamp, None, "so a save can't write it onto this file");
     s.end_save(a);
-    assert_eq!(s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"));
+    assert!(!s.page_source(a, 11).unwrap().is_current(), "a page past this file's end isn't read from it");
+    assert!(!s.page_source(a, 0).unwrap().is_current(), "nor one inside it");
+    let said = s.notices().said(a).unwrap();
+    assert_eq!(said.code, "edits_dont_fit", "{said:?}");
+    assert!(!said.message.contains("changed on disk"), "the file didn't change: {said:?}");
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
 }

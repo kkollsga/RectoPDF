@@ -190,6 +190,16 @@ pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(),
     }
 }
 
+/// The tab to save, unless its edits were made on another version of the file than the one there: those are saved nowhere, here or as a copy, as they'd
+/// land on its pages. What's known decides ([`recto_session::Notices::fit`]); a change since the last look is the save's own to find.
+fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &str) -> Result<recto_session::TabId, AgentError> {
+    let id = select(s, tab)?;
+    if !s.notices().fit(id).fits() {
+        return Err(from_save(&SaveError::FileChanged));
+    }
+    Ok(id)
+}
+
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
@@ -235,7 +245,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         return Err(refusal);
     }
     let (id, snapshot) = access.with(|s| {
-        let id = select(s, tab)?;
+        let id = tab_to_save(s, tab)?;
         let snapshot = s.begin_save(id, matches!(to, SaveTo::As { .. }))?;
         Ok::<_, AgentError>((id, snapshot))
     })?;

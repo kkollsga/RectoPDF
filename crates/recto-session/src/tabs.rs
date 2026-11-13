@@ -144,7 +144,7 @@ impl<L: DocLoader> Session<L> {
                 dir,
                 file_name: file_name.into(),
                 stamp,
-                notice: None,
+                news: None,
                 encrypted: false,
                 password: false,
             },
@@ -167,7 +167,7 @@ impl<L: DocLoader> Session<L> {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
-                tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                tab.file.set_notice(Some(FileNotice::HistoryRolledOff));
             }
         }
         Ok(id)

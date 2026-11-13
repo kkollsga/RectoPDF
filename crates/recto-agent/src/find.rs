@@ -50,8 +50,8 @@ pub struct Basis {
     pub pages: u32,
     pub stamp: Option<recto_platform::FileStamp>,
     pub changes: u64,
-    /// Its file changed on disk after its unsaved edits were made, so nothing says which page of it a match is on: see [`changed_under_edits`].
-    pub edits_dont_fit: bool,
+    /// Whether its unsaved edits fit its file: where they don't, nothing says which page of it a match is on, and Find says so ([`changed_under_edits`]).
+    pub fit: recto_session::EditsFit,
 }
 
 /// A tab's basis now, under the session's lock: a few numbers.
@@ -61,7 +61,7 @@ pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
         pages: session.pages().count(id),
         stamp: session.tabs().own_stamp(id),
         changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
-        edits_dont_fit: session.lists().is_edited(id) && session.tabs().tab_notice(id).is_some_and(|notice| notice.code() == "file_changed"),
+        fit: session.notices().fit(id),
     }
 }
 
@@ -100,7 +100,7 @@ impl FindPlan {
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
     let basis = basis(session, id);
-    if basis.edits_dont_fit {
+    if !basis.fit.fits() {
         return Err(changed_under_edits());
     }
     search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis })

@@ -3,24 +3,23 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// Words for what's wrong with a tab's file, if anything is.
-    pub fn tab_notice_message(&self, id: TabId) -> Option<&'static str> {
-        tab_notice_words(self.tabs.tab(id)?, self.lists.has_list(id))
-    }
-
-    /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
+    /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, and the tab knows its edits don't fit it ([`Self::edits_fit`]), so the edits' own checks go on saying so.
     ///
-    /// **Says whether anything was new.** A look that finds what's already known (an edited tab already saying its file changed, finding it changed; one already
-    /// saying it's gone, finding it gone; edits with no stamp, finding a file) changes nothing, and callers forget what's held of the file and read it again only
-    /// on new: every return to the front and every show of such a tab would otherwise read the file's structure again (rule 1).
+    /// **Says whether anything was new.** A look that finds what's already known (edits that don't fit their file, finding it still another version; a file
+    /// already said to be gone, finding it gone) changes nothing, while one back from gone is news, and callers forget what's held of the file and read it again only on new: every return to the
+    /// front and every show of such a tab would otherwise read the file's structure again (rule 1).
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) -> bool {
+        let Some(tab) = self.tabs.tab(id) else { return false };
         let has_edits = self.lists.has_list(id);
-        let notice = self.tabs.tab_notice(id).map(FileNotice::code);
+        let edited = self.lists.is_edited(id);
+        let (stamp, missing) = (tab.file.stamp, matches!(tab.file.notice(), Some(FileNotice::Missing)));
+        let dont_fit = !self.notices().fit(id).fits();
         let known = match &status {
             FileStatus::NotLooked => true,
-            FileStatus::Changed(_) => self.lists.is_edited(id) && notice == Some("file_changed"),
-            FileStatus::Missing => notice == Some("file_missing"),
-            FileStatus::Same(_) => has_edits && self.tabs.own_stamp(id).is_none(),
+            FileStatus::Changed(_) => edited && dont_fit && !missing,
+            FileStatus::Missing => missing,
+            // With no stamp a file found is never taken as the edits' own, and with them already known not to fit it, it's nothing new. Back from gone is.
+            FileStatus::Same(_) => has_edits && stamp.is_none() && !missing && (!edited || dont_fit),
             FileStatus::Moved(..) => false,
         };
         if known {
@@ -38,49 +37,58 @@ impl<L: DocLoader> Session<L> {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
-                    let was = (tab.file.stamp, tab.file.notice.is_some());
-                    tab.file.stamp = Some(now);
-                    // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
-                    if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing))
-                        || (has_edits && matches!(tab.file.notice.as_deref(), Some(FileNotice::Changed)))
-                    {
-                        tab.file.notice = None;
+                    let was = (tab.file.stamp, tab.file.notice().is_some());
+                    if stamp.is_some() || !has_edits {
+                        // The version the edits were made on, or the file as it is for a tab with none: so it fits.
+                        tab.file.take_version(Some(now));
                     }
-                    return was != (tab.file.stamp, tab.file.notice.is_some());
+                    // Back to what edits are about, or back from gone. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
+                    if matches!(tab.file.notice(), Some(FileNotice::Missing))
+                        || (has_edits && stamp.is_some() && matches!(tab.file.notice(), Some(FileNotice::Changed)))
+                    {
+                        tab.file.set_notice(None);
+                    }
+                    return was != (tab.file.stamp, tab.file.notice().is_some());
                 }
             }
             FileStatus::Moved(path, now) => {
                 // Another tab having it means this one isn't a move of that file so much as a second look at it.
                 if self.tab_for_path(&path).is_some_and(|other| other != id) {
                     if let Some(tab) = self.tab_mut(id) {
-                        tab.file.notice = Some(Box::new(FileNotice::Missing));
+                        tab.file.set_notice(Some(FileNotice::Missing));
                     }
                     return true;
                 }
                 let from = self.path_of(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.file.stamp = Some(now);
-                    tab.file.notice = from.map(|from| Box::new(FileNotice::Moved { from }));
+                    tab.file.take_version(Some(now));
+                    tab.file.set_notice(from.map(|from| FileNotice::Moved { from }));
                 }
             }
             FileStatus::Changed(now) => {
                 self.retire_sleep_file(id);
                 // With nothing unsaved there's only history, and its steps don't apply to this. Unsaved edits stay, and say so.
-                if has_edits && !self.is_edited(id) {
+                if has_edits && !edited {
                     self.clear_history(id, ClearReason::FileChanged);
                 }
                 let has_edits = self.lists.has_list(id);
                 if let Some(tab) = self.tab_mut(id) {
-                    if !has_edits {
-                        tab.file.stamp = Some(now);
+                    if has_edits {
+                        // The stamp stays the version the edits were made on, and they don't fit what's there now.
+                        tab.file.set_elsewhere(Some(fit::Elsewhere {
+                            seen: Some(now),
+                            file_changed: true,
+                        }));
+                    } else {
+                        tab.file.take_version(Some(now));
                     }
-                    tab.file.notice = Some(Box::new(FileNotice::Changed));
+                    tab.file.set_notice(Some(FileNotice::Changed));
                 }
             }
             FileStatus::Missing => {
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.file.notice = Some(Box::new(FileNotice::Missing));
+                    tab.file.set_notice(Some(FileNotice::Missing));
                 }
             }
         }

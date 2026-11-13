@@ -138,7 +138,7 @@ impl Tabs {
 
     /// The tab's notice, if there is one.
     pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
-        self.tab(id)?.file.notice.as_deref()
+        self.tab(id)?.file.notice()
     }
 
     /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
@@ -149,7 +149,7 @@ impl Tabs {
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
         self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
+            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
         })
     }
 

@@ -230,11 +230,8 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     };
     assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
     assert!(!s.lists().is_edited(a));
-    assert_eq!(
-        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
-        Some("history_rolled_off")
-    );
-    assert!(s.tab_notice_message(a).is_some_and(|words| words.contains("Undo")));
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("history_rolled_off"));
+    assert!(s.notices().said(a).map(|said| said.message).is_some_and(|words| words.contains("Undo")));
     assert_eq!(s.lists().get(a).unwrap().summary().undo, 1);
     assert!(s.undo_edit(a), "the newer step still works");
     assert!(!s.undo_edit(a), "and undo stops rather than undoing wrongly");
@@ -245,9 +242,9 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     // Going to another tab has said it.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.tap(a).unwrap();
-    assert!(s.tabs().tab(a).unwrap().file.notice.is_some(), "not yet");
+    assert!(s.tabs().tab(a).unwrap().file.notice().is_some(), "not yet");
     s.tap(b).unwrap();
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
     // Only a turn and a move in the history: no pages named, so no copy's needed, and nothing rolls off.
     let mut s = journaled(6);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
@@ -255,7 +252,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(!s.lists().get(a).unwrap().needs_own_pages());
     assert_eq!(s.saved(a, target, 6, None, None), 0);
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
     assert!(s.undo_edit(a) && s.undo_edit(a) && s.lists().is_edited(a));
 }
 
@@ -338,10 +335,7 @@ fn a_save_of_something_else_ends_the_history() {
     assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
     assert!(s.lists().get(a).is_none());
     assert_eq!(s.pages().count(a), 3);
-    assert_eq!(
-        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
-        Some("history_rolled_off")
-    );
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("history_rolled_off"));
     assert_eq!(s.journal_work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
     // A tab with no list has nothing to carry, and a file kept for it goes.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
@@ -436,7 +430,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     s.apply_file_status(a, FileStatus::Changed(now));
     assert!(s.lists().get(a).is_none());
     assert_eq!(s.tabs().own_stamp(a), Some(now));
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("file_changed"));
     // With unsaved edits, they stay and say so, as decision 23 has it.
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.apply_file_status(a, FileStatus::Changed(target));
@@ -462,7 +456,7 @@ fn a_file_changed_under_a_history_clears_it_on_waking() {
     s.warm.clear_contents();
     s.tap(a).unwrap();
     assert!(s.lists().get(a).is_none());
-    assert_eq!(s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("file_changed"));
     assert_eq!(
         s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
         1,

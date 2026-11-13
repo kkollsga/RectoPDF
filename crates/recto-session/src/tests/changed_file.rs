@@ -107,7 +107,7 @@ impl Bed {
             self.files.keys().collect::<Vec<_>>()
         );
         assert_eq!(self.s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"));
-        let words = self.s.tab_notice_message(a).unwrap();
+        let words = self.s.notices().said(a).map(|said| said.message).unwrap();
         assert!(!words.contains("kept in the state folder"), "nothing claims a copy was kept elsewhere: {words}");
         assert_eq!(self.s.close(a), Err(SessionError::UnsavedChanges), "and closing would lose them, so it asks");
     }
@@ -231,4 +231,91 @@ fn a_list_asleep_when_its_file_changes_wakes_whole() {
     assert!(!bed.s.lists().is_asleep(a));
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
     bed.assert_save_cant_take_the_new_file(a);
+}
+
+/// Bed's `an_edit_made_before_a_changed_file_is_read_again_is_kept` ordering, which leaves `a` edited with no stamp: its file is five pages under a list of ten.
+fn dropped_stamp() -> (Bed, TabId, TabId) {
+    let (mut bed, a, b) = Bed::new(10);
+    replace_file(&bed.path(), b"a shorter version, saved by another app");
+    bed.pages.set(5);
+    let now = bed.stamp_now();
+    bed.s.apply_file_status(a, FileStatus::Changed(now));
+    bed.s.edit_pages_as(a, Author::Agent, |e| e.rotate(8, 1, 1)).unwrap();
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_eq!(bed.s.tabs().own_stamp(a), None, "the ordering drops the stamp");
+    (bed, a, b)
+}
+
+/// What has to hold while a tab's edits are about another version than its file: the tab says so, nothing reads the file as its pages, and no sleep file is
+/// made of it.
+fn assert_known_not_to_fit(bed: &Bed, a: TabId, what: &str) {
+    assert_ne!(bed.s.notices().fit(a), EditsFit::Fit, "{what}");
+    assert_eq!(bed.s.notices().said(a).map(|said| said.code), Some("file_changed"), "{what}: the tab says so");
+    assert!(!bed.s.page_source(a, 2).unwrap().is_current(), "{what}: its pages aren't read from this file");
+    assert!(bed.s.sleep_facts(a).is_none(), "{what}: no sleep file of it");
+}
+
+/// Failure (F1, case 1): that a tab's edits didn't fit its file lived only in its notice, which other notices overwrite. With no stamp, the file deleted
+/// (Missing over the notice), put back (nothing new, so Missing stayed) and read again from cold (which clears Missing) left no word of it: no notice, Find no
+/// longer refused, and its pages taken to be this file's but for the stamp.
+#[test]
+fn edits_with_no_stamp_still_dont_fit_after_the_file_goes_and_comes_back() {
+    let (mut bed, a, b) = dropped_stamp();
+    assert_known_not_to_fit(&bed, a, "after the read");
+    let aside = bed.path().with_extension("aside");
+    std::fs::rename(bed.path(), &aside).unwrap();
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+    assert_eq!(bed.s.notices().said(a).map(|said| said.code), Some("file_missing"), "gone is said first");
+    std::fs::rename(&aside, bed.path()).unwrap();
+    assert!(
+        bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))),
+        "back is news"
+    );
+    assert_known_not_to_fit(&bed, a, "back");
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_known_not_to_fit(&bed, a, "read again from cold");
+}
+
+/// Failure (F1, case 2): with the stamp of the version the edits were made on kept and the other version read in (its contents warm), history rolling off put
+/// its notice over "changed", and leaving the tab cleared that, so a sleep file was written named for the edits' version holding the other's contents and
+/// pictures, which would wake as that version once it was put back.
+#[test]
+fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_file() {
+    let (mut bed, a, b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    let made_on = bed.stamp_now();
+    replace_file(&bed.path(), b"another version, saved by another app");
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
+    bed.s.forget_read(a);
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_eq!(bed.s.tabs().own_stamp(a), Some(made_on), "the edits' version is kept");
+    assert_eq!(bed.s.tier(a), Tier::Hot, "the other version's contents are held");
+    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    assert_known_not_to_fit(&bed, a, "under history's notice");
+    bed.s.tap(b).unwrap();
+    assert_eq!(bed.s.tier(a), Tier::Warm);
+    assert_known_not_to_fit(&bed, a, "left");
+    assert!(bed.s.take_left_warm().iter().all(|facts| facts.id != a));
+}
+
+/// Failure (F7): a list with only undo history (nothing unsaved) went through the block for edits that don't fit: the tab then said "Your unsaved edits are
+/// kept" when there were none, and history about another version stayed, so redo could bring back edits numbered by the version that's gone.
+#[test]
+fn only_history_on_a_file_replaced_mid_read_isnt_kept_as_edits() {
+    let (mut bed, a, b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    assert!(bed.s.undo_edit(a));
+    assert!(!bed.s.lists().is_edited(a) && bed.s.lists().get(a).is_some(), "only history");
+    bed.make_cold(a, b);
+    bed.pages.set(5);
+    *bed.replace_with.borrow_mut() = Some(b"a shorter version, saved by another app".to_vec());
+    bed.s.tap(a).unwrap();
+    assert_eq!(bed.s.notices().fit(a), EditsFit::Fit, "nothing unsaved to fit");
+    assert!(!bed.s.lists().undo_and_redo(a).1, "nothing of the other version can be redone");
+    let said = bed.s.notices().said(a).map(|said| said.message).unwrap_or_default();
+    assert!(!said.contains("unsaved edits are kept"), "{said}");
+    assert_eq!(bed.s.pages().count(a), 5, "the tab is the file it read");
 }

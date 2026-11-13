@@ -364,7 +364,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             Ok(plan) => return Some(plan),
             Err(refused) => refused,
         };
-        if basis.edits_dont_fit {
+        if !basis.fit.fits() {
             let finder = self.session.finder();
             finder.clear();
             finder.with_results(&mut |results| results.refused(active.0, query, basis, refused.message.clone()));

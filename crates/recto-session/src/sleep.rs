@@ -390,11 +390,11 @@ impl<L: DocLoader> Session<L> {
                 edits.set_journal_seq(restored.seq);
                 let said_unreadable = self.lists.woken(id, edits);
                 if let Some(tab) = self.tabs.tab_mut(id) {
-                    if said_unreadable && matches!(tab.file.notice.as_deref(), Some(FileNotice::EditsUnreadable)) {
-                        tab.file.notice = None;
+                    if said_unreadable && matches!(tab.file.notice(), Some(FileNotice::EditsUnreadable)) {
+                        tab.file.set_notice(None);
                     }
                     if restored.rolled_off {
-                        tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                        tab.file.set_notice(Some(FileNotice::HistoryRolledOff));
                     }
                 }
                 // Steps have gone that the journal has, so it has to start again from the list, or it wouldn't read back as this.
@@ -406,7 +406,7 @@ impl<L: DocLoader> Session<L> {
             _ => {
                 self.lists.wake_failed(id);
                 if let Some(tab) = self.tabs.tab_mut(id) {
-                    tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
+                    tab.file.set_notice(Some(FileNotice::EditsUnreadable));
                 }
                 false
             }
@@ -438,14 +438,13 @@ impl<L: DocLoader> Session<L> {
     pub(crate) fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<SleepFacts> {
         let tab = self.tabs.tab(id)?;
         let stamp = tab.file.stamp?;
-        // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
+        // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was,
+        // or one its edits don't fit: what's held would be of another version than the one the sleep file is named for.
         if tab.file.encrypted
             || tab.from_sleep.is_some()
             || self.lists.is_asleep(id)
-            || matches!(
-                tab.file.notice.as_deref(),
-                Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)
-            )
+            || matches!(tab.file.notice(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword))
+            || !self.notices().fit(id).fits()
         {
             return None;
         }
@@ -487,7 +486,7 @@ impl<L: DocLoader> Session<L> {
             return None;
         }
         let tab = self.tabs.tab(id)?;
-        if tab.file.encrypted || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword)) {
+        if tab.file.encrypted || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword)) {
             return None;
         }
         Some((tab.file.stamp?, self.tabs.path_of(id)?))
