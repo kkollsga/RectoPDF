@@ -348,7 +348,7 @@ impl Inner {
             let delta = session.take_place_delta(0);
             (session.to_record(), delta)
         });
-        record.app = self.app_record();
+        record.app = self.window.app_record(lock(&self.host.notice).clone());
         (record, delta)
     }
 
@@ -360,7 +360,7 @@ impl Inner {
             let delta = session.take_place_delta(0);
             (work, session.to_record(), delta, session.journal_look().lists_by_journal())
         });
-        record.app = self.app_record();
+        record.app = self.window.app_record(lock(&self.host.notice).clone());
         (work, record, delta, lists)
     }
 

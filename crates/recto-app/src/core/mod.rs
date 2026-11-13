@@ -72,7 +72,7 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::PageMap;
 use recto_reader::{Engine, PaperKind};
 use recto_session::HistorySource;
-use recto_session::record::{self, AppRecord, ContentsScroll, FileStatus, look_at_file};
+use recto_session::record::{self, FileStatus, look_at_file};
 use recto_session::{DocLoader, DrawNote, Paper, TabId, ViewSettings};
 use saver::Saver;
 use serde_json::{Value, json};
@@ -462,28 +462,6 @@ impl Inner {
         if lock(&self.host.notice).take().is_some() {
             self.saver.view_changed();
             self.core.push(CoreCall::Reconcile);
-        }
-    }
-
-    /// The host's own part of the record.
-    pub fn app_record(&self) -> AppRecord {
-        let app = lock(&self.window.app).clone();
-        let following = lock(&self.window.contents_follow).is_following();
-        let notice = lock(&self.host.notice).clone();
-        AppRecord {
-            window: app.window,
-            appearance: app.appearance,
-            sidebar_width: Some(app.sidebar_width),
-            panel_open: self.window.panel_open.load(Ordering::SeqCst),
-            contents_scroll: Some(ContentsScroll {
-                y: app.contents_y.unwrap_or(0.0),
-                following,
-            }),
-            focus: app.focus,
-            notice,
-            settings_window: app.settings_window,
-            window_closed: app.window_closed,
-            app_hidden: app.app_hidden,
         }
     }
 

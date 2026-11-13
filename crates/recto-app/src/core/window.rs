@@ -2,11 +2,12 @@
 //! appearance, the Settings window), the contents' follow, the UI thread's hang watchdog, and the notices that go by themselves. Its opening, replacing and
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
+use crate::lock;
 use crate::watchdog::Watchdog;
-use recto_session::record::{self, Appearance, ContentsScroll, FocusRecord, SettingsWindow, WindowRecord};
+use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, SettingsWindow, WindowRecord};
 use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
 /// notices that go by themselves.
@@ -51,6 +52,27 @@ impl Window {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             notice_tab: AtomicU32::new(0),
+        }
+    }
+
+    /// The host's own part of the record, with the notice the session as a whole has now.
+    pub fn app_record(&self, notice: Option<String>) -> AppRecord {
+        let app = lock(&self.app).clone();
+        let following = lock(&self.contents_follow).is_following();
+        AppRecord {
+            window: app.window,
+            appearance: app.appearance,
+            sidebar_width: Some(app.sidebar_width),
+            panel_open: self.panel_open.load(Ordering::SeqCst),
+            contents_scroll: Some(ContentsScroll {
+                y: app.contents_y.unwrap_or(0.0),
+                following,
+            }),
+            focus: app.focus,
+            notice,
+            settings_window: app.settings_window,
+            window_closed: app.window_closed,
+            app_hidden: app.app_hidden,
         }
     }
 }

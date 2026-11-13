@@ -101,7 +101,6 @@ Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
 Inner.pub(crate) listener: Arc<dyn crate::Listener>
 Inner.pub(crate) sleeper: sleeper::Sleeper
 Inner::pub fn act(self: &Arc<Self>, action: UiAction) -> Acted
-Inner::pub fn app_record(&self) -> AppRecord
 Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
 Inner::pub fn can_save(&self) -> bool
@@ -247,5 +246,6 @@ Window.pub watchdog: Watchdog
 Window.pub(crate) action_notice: Mutex<Option<String>>
 Window.pub(crate) notice_tab: AtomicU32
 Window.pub(crate) open_failure: Mutex<Option<String>>
+Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn new(watchdog: Watchdog) -> Self
 ";

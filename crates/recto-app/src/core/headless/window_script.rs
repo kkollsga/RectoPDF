@@ -1,7 +1,7 @@
 //! **What the window's own state does, step by step, pinned before it moves** (R3.7, S2; AGENTS.md, "guards go in before a move"): a fixed script of what the
 //! host tells Rust of its window (opened, made again, closed, in the Dock, hidden, moved, full screen, the sidebar's width, the contents' scroll, focus,
 //! appearance, the app in front, the Settings window), and after each step what the host was told, in order, what it was answered, and the host's part of
-//! the record as it would be written ([`Inner::app_record`], with what's been decided for a launch). Held against `golden/window.txt`.
+//! the record as it would be written ([`crate::core::Window::app_record`], with what's been decided for a launch). Held against `golden/window.txt`.
 //!
 //! The steps the bridge works out itself today are done here by [`bridge`], a copy of the bridge's bodies at `main` on 2026-11-13; as each moves into Rust
 //! its copy goes and the step calls what the bridge then calls, and the golden doesn't change.
@@ -256,7 +256,11 @@ const STEPS: &[(&str, Step)] = &[
 /// system's appearance as the host said it.
 fn state(inner: &Inner) -> std::collections::BTreeMap<String, String> {
     let mut state = std::collections::BTreeMap::new();
-    flatten("record", &serde_json::to_value(inner.app_record()).expect("the record as JSON"), &mut state);
+    flatten(
+        "record",
+        &serde_json::to_value(inner.window.app_record(lock(&inner.host.notice).clone())).expect("the record as JSON"),
+        &mut state,
+    );
     let app = lock(&inner.window.app);
     for (name, value) in [
         ("decided.hidden", app.hidden_decided),
