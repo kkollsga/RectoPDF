@@ -50,6 +50,8 @@ pub struct Basis {
     pub pages: u32,
     pub stamp: Option<recto_platform::FileStamp>,
     pub changes: u64,
+    /// Its file changed on disk after its unsaved edits were made, so nothing says which page of it a match is on: see [`changed_under_edits`].
+    pub edits_dont_fit: bool,
 }
 
 /// A tab's basis now, under the session's lock: a few numbers.
@@ -59,7 +61,20 @@ pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
         pages: session.pages_in(id),
         stamp: session.own_stamp(id),
         changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes),
+        edits_dont_fit: session.is_edited(id) && session.tab_notice(id).is_some_and(|notice| notice.code() == "file_changed"),
     }
+}
+
+/// **Find's refusal on a tab whose file changed on disk after its unsaved edits were made.** An edit names its page by its number in the version it was made on,
+/// so a match in the file as it is now can't be put on a page of the document as edited until the edits fit it (the page matcher's work, owner 2026-11-13).
+/// The same words for the person and an agent, with the next step the agent's told for its save.
+pub fn changed_under_edits() -> AgentError {
+    AgentError::new(
+        "file_changed",
+        "Find can't search this file: it changed on disk after its unsaved edits were made.",
+        exit::FAILED,
+    )
+    .then(crate::saving::CHANGED_UNDER_EDITS_NEXT)
 }
 
 /// What one query's pages are: an opaque list of which file and page each position is.
@@ -84,10 +99,11 @@ impl FindPlan {
 
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
-    search::plan_of(session, id, None, None).map(|plan| FindPlan {
-        plan,
-        basis: basis(session, id),
-    })
+    let basis = basis(session, id);
+    if basis.edits_dont_fit {
+        return Err(changed_under_edits());
+    }
+    search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis })
 }
 
 impl FindPlan {
@@ -336,6 +352,14 @@ impl Results {
         self.first_hit = None;
         self.took = None;
         self.generation
+    }
+
+    /// This query can't be found in what `basis` is about, for `words`' reason: no hits, and the line under the field says why. Kept against that basis, so
+    /// it's said once and not tried again until the basis moves.
+    pub fn refused(&mut self, tab: u32, query: &str, basis: Basis, words: String) {
+        let generation = self.begin(tab, query, 0);
+        self.basis = Some(basis);
+        self.finish(generation, End::Failed(words), Progress::default());
     }
 
     /// Nothing's being looked for.

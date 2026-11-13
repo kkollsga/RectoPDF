@@ -103,6 +103,42 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     assert!(saved.starts_with(&original), "appended to the version they were made on");
 }
 
+/// What Find shows: its rows, its status, and whether it's still looking.
+fn find_shown(app: &HeadlessApp) -> (u32, String, bool) {
+    let view = crate::core::find::view(app.core());
+    (view.row_count, view.status, view.running)
+}
+
+/// Failure (B5): Find's hits are about a version of the file, but on an edited tab what they were about was the edits' stamp, which never moves, so hits found
+/// on the earlier version stayed listed over the new one, never found again. Find can't say which page of this file a match is on until the edits fit it (the
+/// page matcher's work), so it says so, plainly, for the person and an agent alike: the hits go when the change is taken in, the field says why, and an
+/// agent's `find` is refused in the same words with the same next step as its save.
+#[test]
+fn find_on_an_edited_tab_whose_file_changed_says_it_cant_search() {
+    let (app, file, original, modified) = edited();
+    app.act(crate::core::controls::UiAction::FindTyped { text: "Mine page".into() });
+    app.settle();
+    assert!(find_shown(&app).0 > 0, "hits on the version the edits were made on: {:?}", find_shown(&app));
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    let (rows, status, running) = find_shown(&app);
+    assert_eq!((rows, running), (0, false), "the earlier version's hits are gone: {status}");
+    let words = "Find can't search this file: it changed on disk after its unsaved edits were made.";
+    assert_eq!(status, words);
+    let refused = app.recto(Level::Full, &["find", "Theirs"]).expect_err("refused");
+    assert_eq!((refused.code, refused.message.as_str()), ("file_changed", words), "{refused:?}");
+    assert!(refused.next.contains("earlier version back"), "{refused:?}");
+    // Looking again isn't news, and Find goes on saying the same.
+    look(&app);
+    assert_eq!(find_shown(&app).1, words);
+    // The version the edits were made on, back: Find finds in it again.
+    put_back(&file, &original, modified);
+    look(&app);
+    app.settle();
+    let (rows, status, _) = find_shown(&app);
+    assert!(rows > 0, "found again: {status}");
+}
+
 /// Failure (B5): every return to the front read an edited tab's changed file again and reset its contents' folds, as each look took the change in anew. A look
 /// that finds what's already known does nothing: a fold made after the change is taken in stays across looks.
 #[test]

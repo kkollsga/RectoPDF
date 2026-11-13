@@ -78,15 +78,16 @@ impl<A: SessionAccess> Drop for Ending<'_, A> {
     }
 }
 
+/// What an agent's told to do about edits made on a version of the file that's no longer there: for its save, and for its Find (`find::changed_under_edits`).
+pub(crate) const CHANGED_UNDER_EDITS_NEXT: &str = "Tell the user: the file changed on disk after these edits were made, so they can't be saved, here or as a copy. The edits are kept. The user can put the earlier version back, or discard them.";
+
 fn from_save(error: &SaveError) -> AgentError {
     let exit = match error {
         SaveError::Protected | SaveError::AddedFileProtected { .. } => exit::PROTECTED,
         _ => exit::FAILED,
     };
     let next = match error {
-        SaveError::FileChanged => {
-            "Tell the user: the file changed on disk after these edits were made, so they can't be saved, here or as a copy. The edits are kept. The user can put the earlier version back, or discard them."
-        }
+        SaveError::FileChanged => CHANGED_UNDER_EDITS_NEXT,
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
         SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
             "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."
