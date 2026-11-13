@@ -26,15 +26,15 @@ fn past_the_history_limit_the_document_is_still_exact() {
                 Err(error) => panic!("{error:?}"),
             },
         }
-        seen.push(s.page_edits(a).unwrap().slots().to_vec());
+        seen.push(s.lists().get(a).unwrap().slots().to_vec());
     }
-    assert!(s.page_edits(a).unwrap().history_dropped());
+    assert!(s.lists().get(a).unwrap().history_dropped());
     // Crash here, with the journal as far as it's got, and compare the document exactly.
     let mut files = HashMap::new();
     write_journal(&mut s, &mut files);
     let mut back = journaled(40);
     back.restore(&s.to_record(), back_from(&files)).unwrap();
-    assert_eq!(back.edits_record(a), s.edits_record(a), "the document and the rolled history");
+    assert_eq!(back.lists().edits_record(a), s.lists().edits_record(a), "the document and the rolled history");
     // Undoing goes back exactly the limit's worth, each stop as it was.
     let mut undone = 0;
     let mut at = seen.len() - 1;
@@ -45,10 +45,10 @@ fn past_the_history_limit_the_document_is_still_exact() {
         while seen[at] == seen[at + 1] {
             at -= 1;
         }
-        assert_eq!(back.page_edits(a).unwrap().slots(), seen[at], "after {undone} undone");
+        assert_eq!(back.lists().get(a).unwrap().slots(), seen[at], "after {undone} undone");
     }
     assert_eq!(undone, edit::MAX_UNDO, "exactly the limit");
-    assert!(back.is_edited(a), "what rolled off stays in the document");
+    assert!(back.lists().is_edited(a), "what rolled off stays in the document");
 }
 
 /// Failure: a journal grows without bound through undo and redo with no edit, or a checkpoint moved loses the document or the steps within the limit. A checkpoint is only a tighter way of writing the same thing: what comes back from it is the same list.
@@ -64,15 +64,15 @@ fn moving_a_checkpoint_keeps_everything_within_the_limit() {
     write_journal(&mut s, &mut files);
     let old_bytes = files.values().next().unwrap().len();
     let name = files.keys().next().unwrap().clone();
-    let checkpoint = s.edits_record(a).unwrap();
-    let seq = s.page_edits(a).unwrap().journal_seq();
+    let checkpoint = s.lists().edits_record(a).unwrap();
+    let seq = s.lists().get(a).unwrap().journal_seq();
     let header = JournalHeader::new(a.0, Path::new("/d/a.pdf"), None, 10, seq);
     files.insert(name, record::journal_start(&header, Some(&checkpoint)));
     let mut back = journaled(10);
     back.restore(&s.to_record(), back_from(&files)).unwrap();
-    assert_eq!(back.edits_record(a), s.edits_record(a));
-    assert!(back.page_edits(a).unwrap().can_redo());
-    assert_eq!(back.page_edits(a).unwrap().journal_seq(), seq);
+    assert_eq!(back.lists().edits_record(a), s.lists().edits_record(a));
+    assert!(back.lists().get(a).unwrap().can_redo());
+    assert_eq!(back.lists().get(a).unwrap().journal_seq(), seq);
     assert!(files.values().next().unwrap().len() < old_bytes * 4, "no bigger than a few times what it was");
 }
 
@@ -86,7 +86,7 @@ fn a_journal_goes_when_its_edits_do() {
     write_journal(&mut s, &mut files);
     assert_eq!(files.len(), 1);
     s.discard_edits(a);
-    assert!(s.has_retired_journals());
+    assert!(s.journals().has_pending());
     write_journal(&mut s, &mut files);
     assert!(files.is_empty(), "gone with the discard");
     // An agent's step, undone: closes with no prompt, and its way forward stays for next time.
@@ -99,12 +99,12 @@ fn a_journal_goes_when_its_edits_do() {
     let reopened = s.open(Path::new("/d/a.pdf")).unwrap();
     let (name, restored) = back_from(&files).into_iter().next().unwrap();
     s.take_up_history(reopened, &name, restored.edits, restored.seq);
-    assert!(s.page_edits(reopened).unwrap().can_redo(), "picked up");
+    assert!(s.lists().get(reopened).unwrap().can_redo(), "picked up");
     // A journal has one owner: another tab asking for it gets nothing.
     let other = s.open(Path::new("/d/b.pdf")).unwrap();
     let (name, restored) = back_from(&files).into_iter().next().unwrap();
     s.take_up_history(other, &name, restored.edits, restored.seq);
-    assert!(s.page_edits(other).is_none());
+    assert!(s.lists().get(other).is_none());
     assert!(s.redo_edit(reopened));
 }
 

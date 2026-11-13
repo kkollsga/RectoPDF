@@ -3,14 +3,9 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// The tab's notice, if there is one.
-    pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
-        self.tab(id)?.file.notice.as_deref()
-    }
-
     /// Words for what's wrong with a tab's file, if anything is.
     pub fn tab_notice_message(&self, id: TabId) -> Option<&'static str> {
-        tab_notice_words(self.tab(id)?, self.lists.has_list(id))
+        tab_notice_words(self.tabs.tab(id)?, self.lists.has_list(id))
     }
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
@@ -20,12 +15,12 @@ impl<L: DocLoader> Session<L> {
     /// on new: every return to the front and every show of such a tab would otherwise read the file's structure again (rule 1).
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) -> bool {
         let has_edits = self.lists.has_list(id);
-        let notice = self.tab(id).and_then(|tab| tab.file.notice.as_deref().map(FileNotice::code));
+        let notice = self.tabs.tab_notice(id).map(FileNotice::code);
         let known = match &status {
             FileStatus::NotLooked => true,
-            FileStatus::Changed(_) => self.is_edited(id) && notice == Some("file_changed"),
+            FileStatus::Changed(_) => self.lists.is_edited(id) && notice == Some("file_changed"),
             FileStatus::Missing => notice == Some("file_missing"),
-            FileStatus::Same(_) => has_edits && self.own_stamp(id).is_none(),
+            FileStatus::Same(_) => has_edits && self.tabs.own_stamp(id).is_none(),
             FileStatus::Moved(..) => false,
         };
         if known {
@@ -97,7 +92,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.path_of(tab.id)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.path_of(tab.id)?, tab.file.stamp)))
             .collect()
     }
 }

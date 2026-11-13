@@ -76,7 +76,7 @@ fn only_the_finders_news_gets_through_a_freeze() {
 fn a_change_from_the_record_tells_the_host_once() {
     let rig = Rig::new();
     let listener = FakeListener::default();
-    rig.session.with_session(|session| session.set_find(true, "", "from an agent"));
+    rig.session.with_session(|session| session.viewing_mut().set_find(true, "", "from an agent"));
     rig.with(&listener, |find| find.keep_up());
     assert_eq!(listener.take(), vec![Heard::ModelChanged]);
     let view = rig.with(&listener, |find| find.view());
@@ -96,7 +96,7 @@ fn the_host_is_told_with_the_field_let_go() {
         session.with_session(|_| ());
     });
     let mut events = Vec::new();
-    rig.session.with_session(|session| session.set_find(true, "", "word"));
+    rig.session.with_session(|session| session.viewing_mut().set_find(true, "", "word"));
     rig.with(&listener, |find| {
         find.keep_up();
         find.act(FindCall::News, &mut events);

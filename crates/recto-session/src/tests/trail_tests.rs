@@ -22,24 +22,28 @@ fn back_and_forward_come_back_after_a_restart() {
         1,
     );
     s.jump(id, 9, 0.25).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 9);
-    assert_eq!(s.take_jump(id), Some(trail::Stop::new(9, 0.25)), "the page view's told where to land");
-    assert_eq!(s.take_jump(id), None, "once");
-    assert_eq!(s.can_go_back_and_forward(id), (true, false));
+    assert_eq!(s.tabs().tab(id).unwrap().page, 9);
+    assert_eq!(
+        s.mail_mut().take_jump(id),
+        Some(trail::Stop::new(9, 0.25)),
+        "the page view's told where to land"
+    );
+    assert_eq!(s.mail_mut().take_jump(id), None, "once");
+    assert_eq!(s.tabs().can_go_back_and_forward(id), (true, false));
     let record = s.to_record();
     let mut again = Session::new(Labelled);
     again.restore(&record, HashMap::new()).unwrap();
-    assert_eq!(again.trail_of(id), s.trail_of(id), "the trail comes back as it was");
+    assert_eq!(again.tabs().trail_of(id), s.tabs().trail_of(id), "the trail comes back as it was");
     assert!(again.step_as(id, true, Author::Owner).unwrap());
     assert_eq!(
-        again.take_jump(id),
+        again.mail_mut().take_jump(id),
         Some(trail::Stop::new(2, 0.4)),
         "back to the page and the depth it was left at"
     );
-    assert_eq!(again.tab(id).unwrap().page, 2);
-    assert_eq!(again.can_go_back_and_forward(id), (false, true));
+    assert_eq!(again.tabs().tab(id).unwrap().page, 2);
+    assert_eq!(again.tabs().can_go_back_and_forward(id), (false, true));
     assert!(again.step_as(id, false, Author::Owner).unwrap());
-    assert_eq!(again.tab(id).unwrap().page, 9);
+    assert_eq!(again.tabs().tab(id).unwrap().page, 9);
     assert!(!again.step_as(id, false, Author::Owner).unwrap(), "nowhere further");
     again.close(id).unwrap();
     assert!(again.mail.no_jumps());
@@ -57,7 +61,7 @@ fn a_cold_tab_with_a_full_trail_stays_in_budget() {
     for _ in 0..trail::MAX_TRAIL {
         s.step_as(id, true, Author::Owner).unwrap();
     }
-    let tab = s.tab(id).unwrap();
+    let tab = s.tabs().tab(id).unwrap();
     let cost = std::mem::size_of::<TabRecord>()
         + tab.name.len()
         + tab.file.file_name.len()
@@ -86,7 +90,7 @@ fn the_trail_follows_page_edits() {
     // Page 3 (position 2) moves to the front; page 9 (position 8) is deleted.
     s.edit_pages(id, |edits| edits.move_pages(2, 1, 0)).unwrap();
     s.edit_pages(id, |edits| edits.delete(8, 1)).unwrap();
-    let back: Vec<u32> = s.trail_of(id).unwrap().back().iter().map(|stop| stop.page).collect();
+    let back: Vec<u32> = s.tabs().trail_of(id).unwrap().back().iter().map(|stop| stop.page).collect();
     assert_eq!(back, [0], "the moved page's stop followed it, and the deleted page's went");
 }
 
@@ -98,11 +102,11 @@ fn an_agents_jumps_give_way_to_the_persons() {
     for round in 0..10 {
         s.jump(id, (round % 2) * 5 + 1, 0.0).unwrap();
     }
-    let persons = s.trail_of(id).unwrap().back().len();
+    let persons = s.tabs().trail_of(id).unwrap().back().len();
     for round in 0..200u32 {
         s.jump_as(id, round % 11, 0.0, Author::Agent).unwrap();
     }
-    let trail = s.trail_of(id).unwrap();
+    let trail = s.tabs().trail_of(id).unwrap();
     assert_eq!(trail.back().iter().filter(|stop| !stop.by_agent).count(), persons);
     assert!(trail.back().len() <= trail::MAX_TRAIL);
     let record = s.to_record();
@@ -115,12 +119,12 @@ fn going_to_a_page_clamps_to_the_document() {
     let mut s = session(10);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     s.go_to(id, 500).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 9);
+    assert_eq!(s.tabs().tab(id).unwrap().page, 9);
     assert_eq!(s.sidebar().place, "10 of 10");
     let mut empty = session(0);
     let id = empty.open(Path::new("/d/empty.pdf")).unwrap();
     empty.go_to(id, 3).unwrap();
-    assert_eq!(empty.tab(id).unwrap().page, 0);
+    assert_eq!(empty.tabs().tab(id).unwrap().page, 0);
 }
 
 /// Failure: a place for an old page is used after a `goto` moved a cold tab, so the reader lands on the wrong page. And a place that's the same doesn't count as a change, so nothing's written for it.
@@ -144,9 +148,9 @@ fn a_place_is_only_used_on_its_own_page_and_only_written_when_it_moves() {
     assert_eq!(s.take_place_delta(2).places.len(), 1);
     s.view_told_of(a, place, 2);
     assert!(s.take_place_delta(3).places.is_empty(), "it didn't move");
-    assert_eq!(s.place_to_show(a), Some(place));
+    assert_eq!(s.tabs().place_to_show(a), Some(place));
     s.go_to(a, 4).unwrap();
-    assert_eq!(s.place_to_show(a), None, "it's for page 1, and the reader's on page 5");
+    assert_eq!(s.tabs().place_to_show(a), None, "it's for page 1, and the reader's on page 5");
     assert_eq!(s.take_place_delta(4).places.len(), 1);
 }
 
@@ -157,12 +161,12 @@ fn a_jump_not_yet_taken_is_where_the_reader_is() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.3).unwrap();
-    s.take_jump(id);
+    s.mail_mut().take_jump(id);
     s.jump(id, 4, 0.8).unwrap();
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.8)), "the jump waiting");
     assert!(s.step_as(id, true, Author::Owner).unwrap());
     assert!(s.step_as(id, false, Author::Owner).unwrap());
-    assert_eq!(s.take_jump(id), Some(trail::Stop::new(4, 0.8)), "Forward comes back to it");
+    assert_eq!(s.mail_mut().take_jump(id), Some(trail::Stop::new(4, 0.8)), "Forward comes back to it");
     s.jump(id, 6, 0.5).unwrap();
     s.go_to(id, 7).unwrap();
     assert_eq!(s.here(id), Some(trail::Stop::new(7, 0.0)), "a move since, with no jump of its own");
@@ -187,9 +191,9 @@ fn sent_on_page_5() -> (Session<Labelled>, TabId) {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let jump = s.waiting_jump(id).expect("a jump waiting");
-    s.jump_sent(id, jump, 10);
-    assert_eq!(s.waiting_jump(id), None, "sent, it no longer waits");
+    let jump = s.mail().waiting_jump(id).expect("a jump waiting");
+    s.mail_mut().jump_sent(id, jump, 10);
+    assert_eq!(s.mail().waiting_jump(id), None, "sent, it no longer waits");
     (s, id)
 }
 
@@ -220,9 +224,9 @@ fn a_read_after_the_send_taken_in_before_the_look_says_so_tells_of_it() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let jump = s.waiting_jump(id).unwrap();
+    let jump = s.mail().waiting_jump(id).unwrap();
     assert!(s.view_told_of(id, on_page_5(0.7), 20));
-    s.jump_sent(id, jump, 15);
+    s.mail_mut().jump_sent(id, jump, 15);
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.7)), "the read at 20 came after the send at 15");
 }
 
@@ -233,10 +237,14 @@ fn a_newer_jump_waiting_stays_waiting_when_the_look_says_it_sent_the_old_one() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let peeked = s.waiting_jump(id).unwrap();
+    let peeked = s.mail().waiting_jump(id).unwrap();
     s.jump(id, 4, 0.2).unwrap();
-    s.jump_sent(id, peeked, 10);
-    assert_eq!(s.waiting_jump(id), Some(trail::Stop::new(4, 0.2)), "the newer jump waits for the next look");
+    s.mail_mut().jump_sent(id, peeked, 10);
+    assert_eq!(
+        s.mail().waiting_jump(id),
+        Some(trail::Stop::new(4, 0.2)),
+        "the newer jump waits for the next look"
+    );
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.2)), "and comes first");
 }
 

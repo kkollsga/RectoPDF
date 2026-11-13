@@ -13,8 +13,8 @@ pub fn apply_restored(
 ) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
-        session.set_history_source(source);
-        session.set_sleep_files(true);
+        session.journals_mut().set_history(source);
+        session.dormancy_mut().set_sleep_files(true);
     });
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.panes.iter_mut().any(|pane| pane.tab.take().is_some()) {
@@ -32,7 +32,7 @@ pub fn apply_restored(
     let host = &inner.host;
     let mut holding = None;
     let holds_the_record = inner.saver.store.holds_the_record();
-    host.session.with_session(|session| session.set_journaling(holds_the_record));
+    host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
     match loaded {
         Loaded::Restored(restored) => {
@@ -84,9 +84,12 @@ pub fn apply_restored(
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
-                holding = host
-                    .session
-                    .with_session(|session| session.active().and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                holding = host.session.with_session(|session| {
+                    session
+                        .tabs()
+                        .active()
+                        .and_then(|id| Some((id, session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+                });
             }
         }
         Loaded::Nothing if first_time => migrate_older_settings(inner),
@@ -131,10 +134,11 @@ pub fn migrate_older_settings(inner: &Inner) {
         return;
     }
     inner.host.session.with_session(|session| {
-        session.set_view(ViewSettings {
-            paper: paper.or(session.view().paper),
+        let viewing = session.viewing_mut();
+        viewing.set_view(ViewSettings {
+            paper: paper.or(viewing.view().paper),
             agent_icon_hidden: hidden,
-            ..session.view()
+            ..viewing.view()
         })
     });
     inner.saver.write_soon();
@@ -283,7 +287,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
-                host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
+                host.session
+                    .with_session(|session| session.mail_mut().note_drawn(DrawNote { tab, page, failure }));
                 events.push(match failure {
                     None => Event::PageDrawn { tab, page: page + 1 },
                     Some(code) => Event::PageFailed { tab, page: page + 1, code },
@@ -451,7 +456,7 @@ impl FileReads {
         if read.unlocked
             && let Reading::Restored(tab) | Reading::Tab(tab) = &read.what
         {
-            host.session.with_session(|session| session.note_password_used(*tab));
+            host.session.with_session(|session| session.tabs_mut().note_password_used(*tab));
         }
         match read.what {
             Reading::Restored(tab) => {
@@ -463,7 +468,7 @@ impl FileReads {
                 if lock(&inner.life.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                     host.session.with_session(|session| {
-                        if session.active() == Some(tab) {
+                        if session.tabs().active() == Some(tab) {
                             session.wake_active()
                         }
                     });

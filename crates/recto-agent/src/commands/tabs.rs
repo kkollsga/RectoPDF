@@ -163,7 +163,7 @@ impl Cmd for RecentClear {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let access = cx.access;
         access.with(|s| {
-            let cleared = s.clear_recent();
+            let cleared = s.recent_mut().clear();
             Ok(json!({ "cleared": cleared }))
         })
     }
@@ -221,13 +221,13 @@ impl Cmd for Close {
                 let id = select(s, tab)?;
                 refused(s, id)?;
                 // At Full, what's lost is the holder's call, and the close rule has let it through. The session itself won't lose the owner's undone steps unasked.
-                if level >= Level::Full && s.has_undone_owner_steps(id) {
+                if level >= Level::Full && s.lists().has_undone_owner_steps(id) {
                     s.discard_edits(id);
                 }
                 let closed = s.close(id)?;
                 event::closed(s, closed, events);
                 // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
-                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
+                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.tabs().active().map(|active| where_json(s, active)) }))
             })
         }
     }
@@ -291,7 +291,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     // A host that mustn't wait on a disk has the file looked at and read off its thread, and this runs again once it's in: unless a tab has it by this name, as
     // the window has always gone to that tab without reading the file. Everywhere else it's looked at here.
     let fetched = match access.reads_later() {
-        Some(reads) if access.with(|s| s.tab_for_path(path)).is_none() => Some(reads.load(path).ok_or_else(later::later)?),
+        Some(reads) if access.with(|s| s.tabs().for_path(path)).is_none() => Some(reads.load(path).ok_or_else(later::later)?),
         _ => None,
     };
     // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
@@ -303,15 +303,15 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     // A file already open, in a tab gone cold, is read with the session free too.
     read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)))?;
     // What was in front, so a tab brought there is announced and one that was there already isn't (R2.3, by A2's rule).
-    let active_before = access.with(|s| s.active());
+    let active_before = access.with(|s| s.tabs().active());
     // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_file(path, stamp)?;
         // Whether a page is in a protected document would say how long it is.
-        if page.is_some() && !actor.sees_protected() && s.withheld_from_agents(id) {
+        if page.is_some() && !actor.sees_protected() && s.tabs().withheld_from_agents(id) {
             return Some(Err(protected_refusal()));
         }
-        let pages = s.pages_in(id);
+        let pages = s.pages().count(id);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }
@@ -333,7 +333,13 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
             let before = access.with(|s| s.tabs().len());
             // A closed PDF's history comes back on this route as on any, read with the session free too.
             let history = read_history.unwrap_or_else(|| {
-                let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
+                let source = access.with(|s| {
+                    if s.tab_for_file(path, stamp).is_some() {
+                        None
+                    } else {
+                        s.journals().history().cloned()
+                    }
+                });
                 source.and_then(|source| source.history_of(stamp, path))
             });
             let id = access.with(|s| {

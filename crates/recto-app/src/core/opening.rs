@@ -30,8 +30,8 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
             reads.wanted_tab = None;
             *lock(&inner.window.open_failure) = None;
             let (tab, own) = inner.host.session.with_session(|session| {
-                let tab = session.tab_for_path(path);
-                (tab, tab.and_then(|id| session.path_of(id)))
+                let tab = session.tabs().for_path(path);
+                (tab, tab.and_then(|id| session.tabs().path_of(id)))
             });
             lock(&inner.tools.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
         }
@@ -133,9 +133,10 @@ pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId,
     }
     let reread = host.session.with_session(|session| {
         session
+            .tabs()
             .active()
             .filter(|active| *active == id)
-            .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
+            .and_then(|id| Some((id, session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
     });
     if let Some((id, path, stamp)) = reread {
         reads.wanted_tab = Some(id);
@@ -150,9 +151,10 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
     let wrong = host.session.with_session(|session| session.file_length_is(id, pages, version));
     let reread = host.session.with_session(|session| {
         session
+            .tabs()
             .active()
             .filter(|active| wrong && *active == id)
-            .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
+            .and_then(|id| Some((id, session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
     });
     if let Some((id, path, stamp)) = reread {
         reads.wanted_tab = Some(id);

@@ -507,27 +507,28 @@ impl Facts {
 }
 
 fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot>) -> ReadingFacts {
-    let edit_mode = session.edit_mode();
+    let edit_mode = session.viewing().edit_mode();
     let Some(shown) = shown else { return ReadingFacts::none(edit_mode) };
-    let page = session.tab(shown.id).map_or(0, |tab| tab.page);
-    let (can_undo, can_redo) = session.undo_and_redo(shown.id);
-    let (can_go_back, can_go_forward) = session.can_go_back_and_forward(shown.id);
+    let page = session.tabs().tab(shown.id).map_or(0, |tab| tab.page);
+    let (can_undo, can_redo) = session.lists().undo_and_redo(shown.id);
+    let (can_go_back, can_go_forward) = session.tabs().can_go_back_and_forward(shown.id);
     ReadingFacts {
-        edited: session.is_edited(shown.id),
+        edited: session.lists().is_edited(shown.id),
         can_undo,
         can_redo,
         edit_mode,
         can_rotate: session.can_edit_pages(shown.id),
-        saving: session.is_saving(shown.id),
+        saving: session.saves().is_saving(shown.id),
         file: session
+            .tabs()
             .path_of(shown.id)
-            .zip(session.own_stamp(shown.id))
+            .zip(session.tabs().own_stamp(shown.id))
             .map(|(path, stamp)| (shown.id, path, stamp)),
-        needs_rewrite: session.needs_rewrite(shown.id),
-        protected: session.withheld_from_agents(shown.id),
+        needs_rewrite: session.lists().needs_rewrite(shown.id),
+        protected: session.tabs().withheld_from_agents(shown.id),
         can_go_back,
         can_go_forward,
-        page_text: session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string()),
+        page_text: session.pages().label(shown.id, page).unwrap_or_else(|| (page + 1).to_string()),
     }
 }
 
@@ -548,7 +549,7 @@ fn recent_files<L: DocLoader>(session: &Session<L>) -> Vec<RecentFile> {
 
 /// **Reads everything a pass needs of the session,** in one go. Called under the session's one lock, so what it returns is of one moment. Takes nothing out of the session: the caller takes each pane's jump.
 pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
-    let active = session.active();
+    let active = session.tabs().active();
     let panes = session.panes();
     let snapshots: Vec<PaneSnapshot> = panes
         .iter()
@@ -557,13 +558,13 @@ pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
         .collect();
     let comparison = session.comparison().cloned();
     let compare_synced = comparison.as_ref().is_some_and(|comparison| comparison.synced);
-    let pane_pages = panes.iter().map(|id| session.pages_in(*id)).collect();
+    let pane_pages = panes.iter().map(|id| session.pages().count(*id)).collect();
     let model = session.sidebar();
     let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
     let sidebar = sidebar_parts(&model, compared, held);
-    let recent_key = (session.recent_version(), sidebar.view.tabs_version);
+    let recent_key = (session.recent().version(), sidebar.view.tabs_version);
     let recent = (held.recent_key != Some(recent_key)).then(|| recent_files(session));
-    let view = session.view();
+    let view = session.viewing().view();
     let mut facts = Facts {
         panes: snapshots,
         comparison,
@@ -845,12 +846,12 @@ pub struct PaneSnapshot {
 }
 
 pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
-    let tab = session.tab(id)?;
-    let own = session.path_of(id)?;
-    let same_file = session.own_stamp(id).map(version_of);
+    let tab = session.tabs().tab(id)?;
+    let own = session.tabs().path_of(id)?;
+    let same_file = session.tabs().own_stamp(id).map(version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(version_of);
-    let mut map = match session.page_edits(id) {
+    let mut map = match session.lists().get(id) {
         None => PageMap {
             files: vec![own],
             slots: None,
@@ -889,19 +890,19 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
     let view_turns = tab.view_rotation % 4;
     if view_turns != 0 {
-        let pages = session.pages_in(id) as usize;
+        let pages = session.pages().count(id) as usize;
         let turns: Arc<[u8]> = (0..pages)
             .map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4)
             .collect();
         map.turns = Some(turns);
     }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
-    let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
+    let warm: Vec<u32> = if first { warm_beside_panes(session.warm().ids(), panes) } else { Vec::new() };
     let problem = session
         .tab_notice_message(id)
         .map(str::to_string)
         .or_else(|| tab.problem.map(|problem| problem.message().to_string()));
-    let saved = session.place_to_show(id).map(|place| SavedPlace {
+    let saved = session.tabs().place_to_show(id).map(|place| SavedPlace {
         page: place.page,
         anchor: (place.anchor_page, place.within),
         x: place.x,
@@ -914,7 +915,11 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         }),
     });
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
-    let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
+    let pages = if session.lists().is_asleep(id) {
+        tab.page_count
+    } else {
+        session.pages().count(id)
+    };
     Some(PaneSnapshot {
         id,
         pages,
@@ -926,7 +931,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         spread: tab.spread,
         title: tab.name.to_string(),
         jump: None,
-        toc: session.warm_toc(id),
+        toc: session.warm().toc(id).cloned(),
     })
 }
 
@@ -1344,7 +1349,7 @@ mod tests {
         let mut s = session();
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         s.needs_password_again(id);
-        assert!(s.needs_password(id));
+        assert!(s.tabs().needs_password(id));
         let facts = read(&s, &nothing_held());
         let shown = facts.reading_pane().expect("the tab is a pane");
         assert!(shown.problem.is_some(), "the window can say what is wrong");
@@ -1625,7 +1630,7 @@ mod tests {
     #[test]
     fn the_view_settings_reach_the_reader_view() {
         let mut s = session();
-        s.set_view(recto_session::ViewSettings {
+        s.viewing_mut().set_view(recto_session::ViewSettings {
             paper: Some(Paper::Warm),
             sidebar_hidden: true,
             agent_icon_hidden: true,

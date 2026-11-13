@@ -98,15 +98,15 @@ impl Bed {
     /// What has to hold whichever way the file changed: the edits are all there, their journal stays on disk, the tab says the file changed, and no
     /// words say anything was kept somewhere it wasn't.
     fn assert_edits_kept_and_said(&mut self, a: TabId, as_they_were: &record::EditsRecord, journal: &str) {
-        assert_eq!(self.s.edits_record(a).as_ref(), Some(as_they_were), "the edits are all there");
-        assert!(self.s.is_edited(a));
+        assert_eq!(self.s.lists().edits_record(a).as_ref(), Some(as_they_were), "the edits are all there");
+        assert!(self.s.lists().is_edited(a));
         self.write_journal();
         assert!(
             self.files.contains_key(journal),
             "the journal is still on disk: {:?}",
             self.files.keys().collect::<Vec<_>>()
         );
-        assert_eq!(self.s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
+        assert_eq!(self.s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"));
         let words = self.s.tab_notice_message(a).unwrap();
         assert!(!words.contains("kept in the state folder"), "nothing claims a copy was kept elsewhere: {words}");
         assert_eq!(self.s.close(a), Err(SessionError::UnsavedChanges), "and closing would lose them, so it asks");
@@ -133,7 +133,7 @@ fn a_file_replaced_mid_read_doesnt_take_the_edits_with_it() {
     bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
     bed.write_journal();
     let journal = bed.files.keys().next().unwrap().clone();
-    let as_they_were = bed.s.edits_record(a).unwrap();
+    let as_they_were = bed.s.lists().edits_record(a).unwrap();
     let made_on = bed.stamp_now();
     bed.make_cold(a, b);
     // Going back reads the file, and another app's save lands between the stamp and the read: five pages now.
@@ -143,10 +143,10 @@ fn a_file_replaced_mid_read_doesnt_take_the_edits_with_it() {
     assert!(bed.replace_with.borrow().is_none(), "the file was replaced mid-read");
     assert_ne!(bed.stamp_now(), made_on);
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
-    assert_eq!(bed.s.own_stamp(a), Some(made_on), "the edits still name the version they were made on");
-    bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a)));
+    assert_eq!(bed.s.tabs().own_stamp(a), Some(made_on), "the edits still name the version they were made on");
+    bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a)));
     assert_eq!(
-        bed.s.tab_notice(a).map(FileNotice::code),
+        bed.s.tabs().tab_notice(a).map(FileNotice::code),
         Some("file_changed"),
         "a look says what the notice says"
     );
@@ -163,19 +163,19 @@ fn an_edit_made_before_a_changed_file_is_read_again_is_kept() {
     bed.pages.set(5);
     let now = bed.stamp_now();
     bed.s.apply_file_status(a, FileStatus::Changed(now));
-    assert_eq!(bed.s.pages_in(a), 10, "not read yet");
+    assert_eq!(bed.s.pages().count(a), 10, "not read yet");
     bed.s.edit_pages_as(a, Author::Agent, |e| e.rotate(8, 1, 1)).unwrap();
     bed.write_journal();
     let journal = bed.files.keys().next().unwrap().clone();
-    let as_they_were = bed.s.edits_record(a).unwrap();
+    let as_they_were = bed.s.lists().edits_record(a).unwrap();
     // The read lands.
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
     bed.assert_save_cant_take_the_new_file(a);
     // Looking again doesn't make the edits about the new file, and is nothing new.
-    assert!(!bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a))));
-    assert_eq!(bed.s.tab_notice(a).map(FileNotice::code), Some("file_changed"), "it goes on saying so");
+    assert!(!bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+    assert_eq!(bed.s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"), "it goes on saying so");
     bed.assert_save_cant_take_the_new_file(a);
 }
 
@@ -188,22 +188,22 @@ fn a_look_that_finds_what_is_already_known_is_nothing_new() {
     bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
     let made_on = bed.stamp_now();
     replace_file(&bed.path(), b"a shorter version, saved by another app");
-    let look = |bed: &Bed| record::look_at_file(&bed.path(), bed.s.own_stamp(a));
+    let look = |bed: &Bed| record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a));
     assert!(bed.s.apply_file_status(a, look(&bed)), "the first look is news");
-    assert_eq!(bed.s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
+    assert_eq!(bed.s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"));
     bed.s.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
     for _ in 0..3 {
         assert!(!bed.s.apply_file_status(a, look(&bed)), "the same again isn't");
     }
-    assert!(bed.s.tab(a).unwrap().folds.is_some(), "folds made since are kept");
+    assert!(bed.s.tabs().tab(a).unwrap().folds.is_some(), "folds made since are kept");
     assert!(!bed.s.apply_file_status(a, FileStatus::NotLooked));
-    assert!(bed.s.is_edited(a));
+    assert!(bed.s.lists().is_edited(a));
     // Gone is news, and so is coming back as the other version again.
     assert!(bed.s.apply_file_status(a, FileStatus::Missing));
     assert!(bed.s.apply_file_status(a, look(&bed)));
     // Back at the version the edits were made on is news too, and the notice goes.
     assert!(bed.s.apply_file_status(a, FileStatus::Same(made_on)));
-    assert_eq!(bed.s.tab_notice(a), None);
+    assert_eq!(bed.s.tabs().tab_notice(a), None);
 }
 
 /// Pinned for the page matcher (2026-11-13): a tab's list has gone to disk with the tab dormant, the file changes while it sleeps, and the tab is looked at,
@@ -212,21 +212,23 @@ fn a_look_that_finds_what_is_already_known_is_nothing_new() {
 fn a_list_asleep_when_its_file_changes_wakes_whole() {
     let (mut bed, a, b) = Bed::new(10);
     let journals = Arc::new(std::sync::Mutex::new(HashMap::new()));
-    bed.s.set_history_source(Arc::new(super::sleep_tests::MemorySource(Arc::clone(&journals))));
+    bed.s
+        .journals_mut()
+        .set_history(Arc::new(super::sleep_tests::MemorySource(Arc::clone(&journals))));
     bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
     bed.s.tap(b).unwrap();
     bed.write_journal();
     journals.lock().unwrap().clone_from(&bed.files);
     let journal = bed.files.keys().next().unwrap().clone();
-    let as_they_were = bed.s.edits_record(a).unwrap();
+    let as_they_were = bed.s.lists().edits_record(a).unwrap();
     assert!(bed.s.go_dormant(a));
-    assert!(bed.s.list_is_asleep(a));
+    assert!(bed.s.lists().is_asleep(a));
     replace_file(&bed.path(), b"a shorter version, saved by another app");
     bed.pages.set(5);
-    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a))));
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
     bed.s.warm.clear_contents();
     bed.s.tap(a).unwrap();
-    assert!(!bed.s.list_is_asleep(a));
+    assert!(!bed.s.lists().is_asleep(a));
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
     bed.assert_save_cant_take_the_new_file(a);
 }

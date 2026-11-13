@@ -85,7 +85,7 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>)
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     let sources = access.with(|s| {
         let id = select(s, tab)?;
-        let total = s.pages_in(id);
+        let total = s.pages().count(id);
         let (start, len) = range.unwrap_or((0, total));
         if start >= total {
             return Err(no_such_page());

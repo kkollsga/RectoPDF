@@ -15,6 +15,7 @@ pub mod trail;
 mod contents;
 mod dirs;
 mod dormancy;
+mod dormant;
 mod editing;
 mod files;
 mod follow;
@@ -25,6 +26,7 @@ mod lists;
 mod mail;
 mod pages;
 mod paper;
+mod parts;
 mod recent;
 mod registry;
 mod restore;
@@ -37,21 +39,25 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
+pub use dormant::Dormant;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
+pub use pages::Pages;
 pub use paper::{Paper, WARM_PAPER, contrast_ratio};
 use record::{
-    EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection,
-    SessionRecord, TabEntry,
+    EditsSummary, FileNotice, FileStatus, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord,
+    TabEntry,
 };
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
+pub use registry::Tabs;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+pub use viewing::Viewing;
 
 /// Tabs that may keep their contents in memory: the active one plus two recent ones.
 pub const MAX_WARM: usize = 3;

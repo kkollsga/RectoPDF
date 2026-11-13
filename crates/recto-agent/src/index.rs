@@ -187,15 +187,16 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
     access.with(|s| {
         let id = select(s, tab)?;
         let path = s
+            .tabs()
             .path_of(id)
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![TabFile {
             path,
-            expected: s.page_edits(id).and_then(|_| s.own_stamp(id)),
+            expected: s.lists().get(id).and_then(|_| s.tabs().own_stamp(id)),
             added: false,
-            pages_used: s.pages_in(id),
+            pages_used: s.pages().count(id),
         }];
-        if let Some(edits) = s.page_edits(id) {
+        if let Some(edits) = s.lists().get(id) {
             files[0].pages_used = 0;
             files.extend(edits.added_sources().iter().map(|added| TabFile {
                 path: added.path.to_path_buf(),

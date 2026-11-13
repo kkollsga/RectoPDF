@@ -18,7 +18,7 @@ impl<P: Fn(TabId, GeneratedView, Option<FileStamp>) + Clone + Send + 'static> Pu
 
 /// Generated contents were made somewhere, or failed: each tab waiting for some looks at where its own stand.
 pub fn look_again(session: &SessionHost<DrawableLoader>, push: &impl Push) {
-    let waiting = session.with_session(|session| session.generated_making());
+    let waiting = session.with_session(|session| session.generated().making());
     for id in waiting {
         look(session, push, id, false);
     }
@@ -27,8 +27,8 @@ pub fn look_again(session: &SessionHost<DrawableLoader>, push: &impl Push) {
 /// A tab that's shown generated contents before, across a restart or after they'd left memory, finds them again. Only the active tab, once: what it finds is noted, so this costs a comparison at every other turn.
 pub fn look_if_chosen(session: &SessionHost<DrawableLoader>, push: &impl Push) {
     let wanted = session.with_session(|session| {
-        let id = session.active()?;
-        let chosen = session.tab(id)?.generated_contents && session.generated_view(id).is_none() && session.contents_verdict(id).is_some();
+        let id = session.tabs().active()?;
+        let chosen = session.tabs().tab(id)?.generated_contents && session.generated().view(id).is_none() && session.contents_verdict(id).is_some();
         if chosen {
             session.set_generated_view(id, GeneratedView::NotKept);
         }
@@ -46,7 +46,9 @@ fn look(session: &SessionHost<DrawableLoader>, push: &impl Push, id: TabId, ask:
         return;
     };
     // Which version of the file this look is about: an answer that comes back after the file changed is about the old one, and is dropped.
-    let Some((path, pages, version)) = session.with_session(|session| Some((session.path_of(id)?, session.tab(id)?.page_count, session.own_stamp(id)))) else {
+    let Some((path, pages, version)) =
+        session.with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().tab(id)?.page_count, session.tabs().own_stamp(id))))
+    else {
         return;
     };
     let answer = push.clone();
