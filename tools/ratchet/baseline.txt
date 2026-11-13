@@ -5,7 +5,7 @@ file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2175
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-session/src/record.rs 1561
-file crates/recto-update/src/updater.rs 2572
+file crates/recto-update/src/updater.rs 2525
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
@@ -27,7 +27,7 @@ impl crates/recto-reader/src/selection.rs::Selecting 41
 impl crates/recto-render-service/src/host.rs::DocRenderer 59
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
-impl crates/recto-update/src/updater.rs::Updater 45
+impl crates/recto-update/src/updater.rs::Updater 44
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
 sleep app/qa/save-shots.sh 1
@@ -113,4 +113,4 @@ type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 69
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
-whole crates/recto-app/src::Inner 108
+whole crates/recto-app/src::Inner 127

@@ -15,21 +15,10 @@ impl Inner {
     /// Reads the state, on a thread of its own, and hears `restore_ready` when it's applied. It's what the window waits for, up to `restore_patience_seconds`: its frame and the place on it come from what's read.
     pub fn begin_restore(self: &Arc<Self>) {
         let inner = Arc::clone(self);
-        let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
-            // Before the record: a version that keeps failing goes back here, and not by reading on.
-            let facts = lock(&inner.life.update_facts).take();
-            let misreads = updates::misreads_the_record(facts.as_ref());
-            if let Some(facts) = facts
-                && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
-            {
-                std::process::exit(0);
-            }
-            recto_platform::slow::pause(recto_platform::slow::Seam::State);
-            let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
-            let loaded = updates::fall_back_if_unreadable(&inner, loaded);
-            updates::note_tabs_read(&loaded);
-            inner.core.push(CoreCall::Restored(Box::new(loaded)));
-        });
+        let spawned = std::thread::Builder::new()
+            .name("recto-restore".into())
+            .stack_size(1024 * 1024)
+            .spawn(move || read_state(&inner));
         if spawned.is_err() {
             self.core.push(CoreCall::Restored(Box::new(Loaded::Nothing)));
         }
@@ -121,6 +110,8 @@ impl Inner {
 
     /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
     pub fn window_replaced(&self) {
+        // The host's word that it made the window again: what `record.remade` says.
+        let _ = self.life.step(crate::lifecycle::Event::WindowRemade);
         let engines = self.panes.engines(&self.engine);
         // What's selected goes with the window's layers, and comes back on the new one (a selection and Find's hit, under a late state).
         let held: Vec<(usize, recto_index::select::Range)> = engines
@@ -184,6 +175,39 @@ impl Inner {
             Some(out @ (crate::lifecycle::Out::QuitAnswer { .. } | crate::lifecycle::Out::QuitStayed)) => self.carry_out_quit_answer(out),
             Some(crate::lifecycle::Out::HandOffQuit) => self.listener.hand_off_quit(),
             Some(crate::lifecycle::Out::SessionEnded) => self.listener.session_ended(),
+            // Carried out on the session thread, which made the step: see `keeping`.
+            Some(crate::lifecycle::Out::Keeping(_)) => {}
         }
     }
+}
+
+/// **The state read and handed to the session thread,** on a thread that can wait: at the launch ([`Inner::begin_restore`]), and once a late try has got the
+/// record's lock ([`super::keeping`]), the one way the state is read for a launch. **The lock is asked for once:** one wait of the store's patience, whose
+/// answer the updater is told ([`updates::hold_or_tell`]) and the read goes by, so a lock that comes after the wait can't be got by the read with the updater
+/// still held back (the review's blocker of 2026-11-13); it's the late try's to take. The updater's told of a copy that keeps the record before anything's read,
+/// so a version that keeps failing goes back here and not by reading on.
+pub(super) fn read_state(inner: &Arc<Inner>) {
+    let loaded = read(inner);
+    inner.core.push(CoreCall::Restored(Box::new(loaded)));
+}
+
+/// The launch's state, read as [`read_state`] says. A late try's read is its own ([`super::keeping`]): it tells the updater after it reads, once it has claimed
+/// the record, so a read that runs past its patience is a second copy's.
+pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
+    let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
+    let keeps = inner.saver.store.wait_for_lock();
+    if updates::hold_or_tell(inner, keeps) == recto_update::updater::AtLaunch::Exit {
+        std::process::exit(0);
+    }
+    recto_platform::slow::pause(recto_platform::slow::Seam::State);
+    let loaded = if !keeps {
+        Loaded::OtherInstance
+    } else if misreads {
+        Loaded::Nothing
+    } else {
+        inner.saver.store.load()
+    };
+    let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
+    updates::note_tabs_read(&loaded);
+    loaded
 }
