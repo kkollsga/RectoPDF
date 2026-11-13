@@ -423,3 +423,25 @@ fn edits_fit_again_when_their_version_is_written_back_over_the_file_in_place() {
         "appended to the version they were made on"
     );
 }
+
+/// Failure (the first worker's quiet run of 2026-11-13, `06-*-c-find-typed`): Find typed by the person after the file changed under the edits showed no hits
+/// and no words, while an agent's `find` was told why. The person's refused query left nothing for the line under the field: only a query typed before the
+/// change had its refusal kept against the change (the test above). Typed after: the window's Find says what the agent is told, and finds again once the
+/// version the edits were made on is back.
+#[test]
+fn find_typed_after_the_file_changed_under_the_edits_says_why_it_cant_search() {
+    let (app, file, original, modified) = edited();
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    app.act(crate::core::controls::UiAction::FindTyped { text: "page".into() });
+    app.settle();
+    let (rows, words, running) = find_shown(&app);
+    let refused = app.recto(Level::Full, &["find", "page"]).expect_err("refused");
+    assert_eq!((rows, running), (0, false), "{words}");
+    assert_eq!(words, refused.message, "the person's Find says what an agent's is told");
+    put_back(&file, &original, modified);
+    look(&app);
+    app.settle();
+    let (rows, status, _) = find_shown(&app);
+    assert!(rows > 0, "found again: {status}");
+}
