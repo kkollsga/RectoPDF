@@ -128,13 +128,21 @@ fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
     outcome == "ok" && matches!(cmd, "select" | "copy" | "image" | "snapshot" | "render" | "export_svg" | "print") && details["anyway"] == true
 }
 
-/// What an agent can repeat for nothing, so it's counted rather than written each time.
+/// The refusals an agent can repeat for nothing: a level too low, a terminal it hasn't, the owner's edits, signing, a busy session.
+const REPEATED_FOR_NOTHING: [Code; 6] = [
+    Code::PERMISSION_DENIED,
+    Code::NEEDS_TERMINAL,
+    Code::WOULD_CLEAR_REDO,
+    Code::WOULD_DISCARD_USER_EDITS,
+    Code::SIGN_REFUSED,
+    Code::BUSY,
+];
+
+/// What an agent can repeat for nothing, so it's counted rather than written each time. Each record asks, so it looks at those six codes' words, not every
+/// code in the table (review of R2.5).
 fn collapses(cmd: &str, outcome: &str) -> bool {
     matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request")
-        || matches!(
-            Code::listed(outcome),
-            Some(Code::PERMISSION_DENIED | Code::NEEDS_TERMINAL | Code::WOULD_CLEAR_REDO | Code::WOULD_DISCARD_USER_EDITS | Code::SIGN_REFUSED | Code::BUSY)
-        )
+        || REPEATED_FOR_NOTHING.iter().any(|code| code.as_str() == outcome)
 }
 
 impl ActivityLog {
