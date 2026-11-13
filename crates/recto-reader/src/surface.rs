@@ -253,7 +253,6 @@ Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
 Engine::pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread)
 Engine::pub fn applied(&self)
-Engine::pub fn clear_selection(&self)
 Engine::pub fn clear_selection_soon(&self) -> bool
 Engine::pub fn copy_selection(&self, anyway: bool)
 Engine::pub fn deactivate(&self)
@@ -277,7 +276,6 @@ Engine::pub fn is_showable(&self) -> bool
 Engine::pub fn jump_to(&self, page: u32)
 Engine::pub fn jump_within(&self, page: u32, within: f64) -> Option<u64>
 Engine::pub fn key_given(&self, path: &Path)
-Engine::pub fn link_pages_held(&self) -> usize
 Engine::pub fn magnification(&self) -> Option<f64>
 Engine::pub fn memory_pressure(&self, critical: bool)
 Engine::pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self
@@ -372,7 +370,6 @@ Reader::pub fn dismiss_selection_notice(&mut self)
 Reader::pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
 Reader::pub fn empty_discardable(&mut self) -> usize
-Reader::pub fn entry_count(&self) -> usize
 Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
 Reader::pub fn file_changed(&mut self, tab: u32)
 Reader::pub fn files_of(&self, tab: u32) -> Vec<PathBuf>
@@ -390,7 +387,6 @@ Reader::pub fn is_on_place(&self) -> bool
 Reader::pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Reader::pub fn is_settled(&self) -> bool
 Reader::pub fn is_showable(&self) -> bool
-Reader::pub fn is_window_open(&self) -> bool
 Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
 Reader::pub fn key_given(&mut self, path: &std::path::Path)
 Reader::pub fn last_wake(&self) -> Option<WakeReport>
@@ -434,7 +430,6 @@ Reader::pub fn set_spread(&mut self, spread: Spread)
 Reader::pub fn set_viewport(&mut self, viewport: Viewport) -> Vec<Op>
 Reader::pub fn set_warm(&mut self, warm: &[u32])
 Reader::pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial>
-Reader::pub fn spread(&self) -> Option<Spread>
 Reader::pub fn start_copy(&mut self, anyway: bool)
 Reader::pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit>
 Reader::pub fn take_copied(&mut self) -> Option<recto_index::select::CopiedText>

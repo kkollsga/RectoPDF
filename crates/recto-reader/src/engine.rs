@@ -503,11 +503,6 @@ impl Engine {
         lock(&self.shared.reader).own_file_page(position)
     }
 
-    /// Pages whose links are held, for QA.
-    pub fn link_pages_held(&self) -> usize {
-        lock(&self.shared.reader).link_pages_held()
-    }
-
     pub fn set_paper(&self, paper: PaperKind) {
         let mut reader = lock(&self.shared.reader);
         reader.set_paper(paper);
@@ -597,12 +592,6 @@ impl Engine {
     pub fn select_all(&self) {
         let mut reader = lock(&self.shared.reader);
         reader.select_all();
-        self.after(reader);
-    }
-
-    pub fn clear_selection(&self) {
-        let mut reader = lock(&self.shared.reader);
-        reader.clear_selection();
         self.after(reader);
     }
 

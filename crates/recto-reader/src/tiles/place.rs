@@ -254,11 +254,6 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
-    /// The tab showing's layout.
-    pub fn spread(&self) -> Option<Spread> {
-        self.doc().map(|doc| doc.layout.spread())
-    }
-
     /// **A jump the session sends,** as an agent's `goto`, a contents row, a link or Back does: to the page's top, the margin above the first page
     /// included, or `within` the way down it as [`Self::follow`] goes. Says whether it went to the host: not with no tab showing.
     pub fn jump_to(&mut self, page: u32, within: f64) -> bool {

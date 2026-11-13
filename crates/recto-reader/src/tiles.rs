@@ -399,10 +399,6 @@ impl Reader {
         self.note.as_deref()
     }
 
-    pub fn is_window_open(&self) -> bool {
-        self.window_open
-    }
-
     fn doc(&self) -> Option<&DocView> {
         self.hot.and_then(|tab| self.docs.get(&tab))
     }

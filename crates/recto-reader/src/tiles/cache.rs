@@ -224,11 +224,6 @@ impl Reader {
         emptied
     }
 
-    /// How many surfaces are held, for QA.
-    pub fn entry_count(&self) -> usize {
-        self.cache.entries.len()
-    }
-
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
     pub fn memory_pressure(&mut self, critical: bool) {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
