@@ -1620,5 +1620,13 @@ null
     ok close Close { tab: "report" }
 {"cmd":"sidebar","x":null}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"view","layout":"three-up","tab":"no such tab"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`three-up` isn't a layout. It's one of single, two-up, two-up-cover.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"settings","auto_update":"maybe"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"It's `on` or `off`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"find","limit":0}
+    refused {"error":{"candidates":[],"code":"bad_limit","exit":1,"message":"A limit has to be at least 1.","next":"Leave it out to get the default, or ask for 1 or more."},"ok":false,"v":1}
+{"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}
+    refused {"error":{"candidates":[],"code":"too_many_panes","exit":1,"message":"At most three PDFs can be side by side.","next":"`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried."},"ok":false,"v":1}
 <65561 bytes>
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That command is too long.","next":"`recto help` lists every command."},"ok":false,"v":1}
