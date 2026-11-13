@@ -7,6 +7,13 @@
 //! # The wire and the types
 //!
 //! A command whose choices are words or a combination of flags (`view`, `compare`, `find`, `edit mode`…) holds them as types, so what it can't mean can't be built (step R2.5). Its wire form is a `line` struct in its module, the fields as the socket has always read them, and serde's reading of it is unchanged: the same nulls, unknown fields and positional arrays. The typed payload is `TryFrom` its line, which refuses what can't be with the words the run gave before, and prints as it (`Serialize` and `Debug`), so a command made in code is a line an agent could send. A command with no `line` is its own.
+//!
+//! **A malformed request is refused as malformed first** (decided on the review of R2.5, F2). What a typed payload refuses as it's read is refused before
+//! anything else is looked at: before the agent's level, before the tab it names, and before whether there's an app to answer it. So a request with two
+//! faults is refused for its form: `view` with no such layout and no such tab is `usage`, not `no_such_tab`; `settings --auto-update maybe` with no app is
+//! `usage` (exit 2), not `needs_app`; `find --limit 0` is `bad_limit` and nine tabs to compare `too_many_panes` at any level, `off` included. None of these
+//! refusals reads the session, so none tells anything of it: each says only constant words and the agent's own, cleaned. Its reply and its log line name
+//! its command ([`crate::Refused`]), as a run's refusal does.
 
 pub mod access;
 pub mod compare;

@@ -149,37 +149,21 @@ fn a_rows_words_are_its_types_words() {
     );
 }
 
-/// Requests whose words no type takes, sent as JSON, with the word that's wrong in each.
-const MALFORMED: &[(&str, &str)] = &[
-    (r#"{"cmd":"edit_mode","set":"sideways"}"#, "sideways"),
-    (r##"{"cmd":"contents_show","which":"theirs","tab":"#1"}"##, "theirs"),
-    (r#"{"cmd":"update_dev_builds","set":"maybe"}"#, ""),
-    (r#"{"cmd":"settings","auto_update":"later"}"#, ""),
-    (r#"{"cmd":"view","paper":"purple"}"#, "purple"),
-    (r#"{"cmd":"view","sidebar":"sideways"}"#, "sideways"),
-    (r#"{"cmd":"view","agent_icon":"blink"}"#, "blink"),
-    (r##"{"cmd":"view","layout":"three-up","tab":"#1"}"##, "three-up"),
-    // A good layout with a bad paper: refused whole, so nothing can be laid out first.
-    (r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#, "purple"),
-    (r#"{"cmd":"compare","sync":"maybe"}"#, "maybe"),
-    (r##"{"cmd":"compare","off":true,"toggle":"#2"}"##, "--off"),
-    (r##"{"cmd":"compare","tabs":"#1,#2","reading":"#2"}"##, "--reading"),
-    (r##"{"cmd":"compare","toggle":"#2","sync":"on"}"##, "--toggle"),
-    (r#"{"cmd":"find","query":"q","next":true}"#, "more than one thing"),
-    (r#"{"cmd":"find","next":true,"previous":true}"#, "more than one thing"),
-    (r#"{"cmd":"find","open":true,"close":true}"#, "more than one thing"),
-    (r#"{"cmd":"find","hit":2,"close":true}"#, "more than one thing"),
-    (r#"{"cmd":"find","jump":true}"#, "--jump"),
-    (r#"{"cmd":"find","jump":true,"hit":1}"#, "--jump"),
-];
+/// Requests whose words no type takes, sent as JSON, each with the word that's wrong in it after a tab. One file, which the fuzz crate's walk of refusals
+/// made as a line is read starts from too.
+const MALFORMED: &str = include_str!("golden/malformed.txt");
 
-/// Failure (owner's decision on R2.5, D2 b): a malformed request is refused one way at one level and another at the next, or for the person and an agent,
-/// or by the CLI and the socket; or its refusal tells something of the session, a tab, a file, a page count or a state. It's `usage` before anything is
-/// looked at, so it's the same whoever sends it at whatever level (parsing knows no actor), and says only its own words. That a well-formed command is still
-/// checked for its level before anything else is held by the executor's own tests, unchanged.
+fn malformed() -> impl Iterator<Item = (&'static str, &'static str)> {
+    MALFORMED.lines().map(|entry| entry.split_once('\t').unwrap_or((entry, "")))
+}
+
+/// Failure (owner's decision on R2.5, D2 b): a malformed request is refused by the socket one way and by the CLI another, or isn't refused until it runs,
+/// or its refusal tells something of the session, a tab, a file, a page count or a state. It's refused as `usage` as its line is read, before any actor or
+/// level is known (parsing knows neither, so it's the same at every level and for the person and an agent alike), and says only its own words; the CLI
+/// refuses the same words as `usage`. That a well-formed command is still checked for its level before anything else is held by the executor's own tests.
 #[test]
-fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
-    for (line, word) in MALFORMED {
+fn a_malformed_request_is_refused_as_usage_as_its_read_saying_only_its_own_words() {
+    for (line, word) in malformed() {
         let refused = parse(line).expect_err(line);
         assert_eq!((refused.code.as_str(), refused.exit), ("usage", exit::USAGE), "{line}");
         assert!(

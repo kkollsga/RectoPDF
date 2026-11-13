@@ -809,3 +809,7 @@ null
 {"cmd":"text","page":4294967296}
 {"cmd":"close","tab":"report"}
 {"cmd":"sidebar","x":null}
+{"cmd":"view","layout":"three-up","tab":"no such tab"}
+{"cmd":"settings","auto_update":"maybe"}
+{"cmd":"find","limit":0}
+{"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}

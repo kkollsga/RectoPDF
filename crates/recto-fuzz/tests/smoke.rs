@@ -138,3 +138,85 @@ fn the_update_seed_is_a_zip_the_reader_takes() {
     let entries = recto_update::zip::read_directory(&mut std::io::Cursor::new(&seeds[1]), "RectoPDF.app").unwrap_or_else(|error| panic!("{error:?}"));
     assert_eq!(entries.len(), 1);
 }
+
+/// Every `.rs` file under a crate's `src`, as one text: what's written in the code, constant.
+fn source_of(krate: &str) -> String {
+    let mut text = String::new();
+    let mut folders = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(krate).join("src")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).expect("a source folder").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|ending| ending == "rs") {
+                text.push_str(&std::fs::read_to_string(&path).expect("a source file"));
+            }
+        }
+    }
+    text
+}
+
+/// What a request holds that an agent typed, as a refusal may echo it: each string cleaned, and each number.
+fn agents_words(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => out.push(recto_core::clean_line(text)),
+        serde_json::Value::Number(number) => out.push(number.to_string()),
+        serde_json::Value::Array(items) => items.iter().for_each(|item| agents_words(item, out)),
+        serde_json::Value::Object(fields) => fields.values().for_each(|item| agents_words(item, out)),
+        _ => {}
+    }
+}
+
+/// Failure (review of R2.5, F2): a refusal made as a request is read, before any level or tab is looked at, says something that's neither constant words
+/// nor the agent's own words cleaned: raw text an agent typed (a control character, a bidi override), or anything else. Walks every refusal by a command's
+/// type that the malformed requests, the registry's golden requests and the agent target's seeds reach, and mutations of them as the fuzz target makes:
+/// with the agent's cleaned words taken out, every word left is written in the code of `recto-agent` or `recto-session`, and nothing else rides along.
+#[test]
+fn a_refusal_as_a_request_is_read_says_only_constant_words_and_the_agents_own() {
+    let code = [source_of("recto-agent"), source_of("recto-session")].concat();
+    let mut lines: Vec<String> = include_str!("../../recto-agent/tests/golden/malformed.txt")
+        .lines()
+        .map(|entry| entry.split('\t').next().unwrap_or(entry).to_string())
+        .chain(include_str!("../../recto-agent/tests/golden/requests.txt").lines().map(str::to_string))
+        .chain(recto_fuzz::seeds::json_lines())
+        .collect();
+    let mut rng = recto_fuzz::input::Rng::new(seed());
+    for _ in 0..rounds(3000) {
+        let mut bytes = lines[rng.below(lines.len())].clone().into_bytes();
+        recto_fuzz::mutate::bytes(&mut bytes, &mut rng, 16 * 1024);
+        lines.push(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let mut walked = 0;
+    for line in &lines {
+        let Err(refused) = recto_agent::read(line) else { continue };
+        if refused.tag == recto_agent::UNKNOWN {
+            continue;
+        }
+        walked += 1;
+        let error = &refused.error;
+        assert!(
+            error.candidates.is_empty() && error.untrusted.is_none() && error.ask.is_none(),
+            "{line}: {error:?}"
+        );
+        let mut words = Vec::new();
+        agents_words(&serde_json::from_str(line).expect("a line read as a command is JSON"), &mut words);
+        words.sort_by_key(|word| std::cmp::Reverse(word.len()));
+        let mut said = error.message.clone();
+        for word in words.iter().filter(|word| !word.is_empty()) {
+            said = said.replace(word.as_str(), " ");
+        }
+        // A list the code joins (`single, two-up, two-up-cover`) has its commas between words, not in them.
+        for piece in said
+            .split_whitespace()
+            .map(|piece| piece.trim_end_matches([',', '.']))
+            .filter(|piece| !piece.is_empty())
+        {
+            assert!(
+                code.contains(piece),
+                "{line}: `{piece}` in {:?} is neither constant nor the agent's own words",
+                error.message
+            );
+        }
+    }
+    assert!(walked >= 25, "the walk reached the types' refusals: {walked}");
+}

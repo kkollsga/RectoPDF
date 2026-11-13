@@ -1946,3 +1946,11 @@ null
   words ""
 {"cmd":"sidebar","x":null}
   refused cmd=unknown code=bad_command
+{"cmd":"view","layout":"three-up","tab":"no such tab"}
+  refused cmd=view code=usage
+{"cmd":"settings","auto_update":"maybe"}
+  refused cmd=settings code=usage
+{"cmd":"find","limit":0}
+  refused cmd=find code=bad_limit
+{"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}
+  refused cmd=compare code=too_many_panes
