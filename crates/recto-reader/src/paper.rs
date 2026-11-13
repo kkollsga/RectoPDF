@@ -122,12 +122,17 @@ pub fn dark_rgb(rgb: u32) -> u32 {
     (u32::from(pixel[2]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[0])
 }
 
+/// **A colour's lightness, once:** Rec. 601's weights in 256ths, 0 black and 255 white, at most 255 as the weights add up to 256. What [`turn_pixel`] turns over, and what [`sample_lightness`] calls dark under [`DARK_MOST_LUMA`].
+#[inline]
+fn luma(r: u8, g: u8, b: u8) -> i32 {
+    (77 * i32::from(r) + 150 * i32::from(g) + 29 * i32::from(b)) >> 8
+}
+
 #[inline]
 fn turn_pixel(pixel: &mut [u8; 4], lightness: &[u8; 256]) {
     let [paper_r, paper_g, paper_b] = paper_channels();
     let (b, g, r) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
-    // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink. At most 255, as the weights add up to 256.
-    let luma = (77 * r + 150 * g + 29 * b) >> 8;
+    let luma = luma(pixel[2], pixel[1], pixel[0]);
     // Text and lines are near grey and take the curve; colour, as a chart's fills, turns straight, with the curve fading out between.
     let spread = r.max(g).max(b) - r.min(g).min(b);
     let paperness = if spread >= CURVE_COLOUR_SPREAD {
@@ -427,7 +432,7 @@ pub fn sample_lightness(pixels: &[u8], stride: usize, width: u32, height: u32, h
             while x < to {
                 let Some(&[b, g, r]) = row.get(x * 4..x * 4 + 3) else { return };
                 points += 1;
-                if (77 * i32::from(r) + 150 * i32::from(g) + 29 * i32::from(b)) >> 8 < DARK_MOST_LUMA {
+                if luma(r, g, b) < DARK_MOST_LUMA {
                     dark += 1;
                 }
                 x += step;
@@ -795,8 +800,9 @@ mod tests {
         }
     }
 
+    /// The lightness of a colour `0xRRGGBB`, by the one definition.
     fn luma(rgb: u32) -> u32 {
-        (((rgb >> 16) & 0xFF) * 77 + ((rgb >> 8) & 0xFF) * 150 + (rgb & 0xFF) * 29) >> 8
+        super::luma((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8) as u32
     }
 
     /// Failure: dark paper isn't dark, or text on it isn't readable. Asserts the property, which is contrast, and not the exact colours.
