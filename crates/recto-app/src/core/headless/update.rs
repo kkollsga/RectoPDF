@@ -3,9 +3,11 @@
 //! app-launching test in `recto-cli`'s `restore::update` it stands in for. What only the real thing has (the zip, codesign, the installer process and the swap on a
 //! real volume, Launch Services, the window) stays there.
 
+use crate::testkit::Heard;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use crate::testkit::update_bed::{DEV, Installed, NEW, OLD, UpdateBed};
 use recto_agent::Level;
+use recto_platform::slow::Seam;
 use serde_json::Value;
 
 /// An installed copy of [`OLD`] on a fresh disk, with one document open at a page, and the bed it updates from.
@@ -361,6 +363,50 @@ fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
         "told once, with the state: {:?}",
         app.heard()
     );
+}
+
+/// Failure (CI, 2026-11-11: an update's launch under slow conditions): a launch an update opened goes up without its state when what it is and the state are
+/// both known late, on a slow machine, so it shows a window that isn't the one left, and what comes in later is made into a window again or lost. A launch an
+/// update may have opened waits for its state (`UPDATE_RESTORE_PATIENCE`), whatever the host's second of patience says. The new version's look at what it is
+/// held, then its state's read held: through both, past the host's second, the host is told nothing; the state let in, it's told once, with the state, no window
+/// is made again, and the session is the one handed off, whole, its edits too. (What `update::slow::an_update_changes_nothing_when_every_wait_is_late` held for the slow stage;
+/// the real swap and its first frame stay in that test's normal run, `an_update_in_the_middle_of_things_changes_nothing`.)
+#[test]
+fn a_launch_an_update_opened_waits_for_its_state_however_late() {
+    let (app, bed) = running_with_a_document(9);
+    let second = app.disk().pdf("beta.pdf", 6);
+    app.open(&second);
+    app.agent(Level::Control, r#"{"cmd":"page_rotate","pages":"2","degrees":90}"#).expect("an edit");
+    app.send(crate::queue::CoreCall::Find(crate::find::FindCall::Typed("beta page".into())));
+    app.settle();
+    let before = app.session_json();
+    bed.releases.offer(NEW);
+    full(&app, r#"{"cmd":"update_check"}"#);
+    full(&app, r#"{"cmd":"update_install"}"#);
+    let (plan, disk) = app.handed_off(&bed);
+    disk.install(&plan, Installed::Swapped);
+    let app = disk.builder().update(&bed).hold(&[Seam::Launch, Seam::State]).start();
+    let told = || app.listener().count(&Heard::RestoreReady);
+    assert_eq!(told(), 0, "past the host's second, with what it is not yet known: told nothing: {:?}", app.heard());
+    app.let_through(Seam::Launch, 1);
+    app.wait_until("the state's read to wait at its seam", || app.waiting(Seam::State) > 0);
+    app.settle();
+    assert_eq!(told(), 0, "known to be an update's launch, the state not in: told nothing: {:?}", app.heard());
+    app.let_state_in();
+    assert_eq!(told(), 1, "told once, with the state: {:?}", app.heard());
+    assert!(app.core().life.shown_with_state(), "the window made from the state");
+    assert_eq!(app.record_json()["remade"], false, "and not made again: {}", app.record_json());
+    assert_eq!(app.disk().app_version().as_deref(), Some(NEW));
+    assert_eq!(unjournalled(app.session_json()), unjournalled(before), "the session handed off, whole");
+}
+
+/// A session's `qa state` without the name of each tab's journal file: the edits are in `edits_full` either way, and a launch writes its journal again on its
+/// own clock.
+fn unjournalled(mut session: Value) -> Value {
+    for tab in session["tabs"].as_array_mut().into_iter().flatten() {
+        tab.as_object_mut().map(|tab| tab.remove("journal"));
+    }
+    session
 }
 
 /// Failure (review 1): going back from a version that kept ending deleted the record from before the update, the only good copy when what that version left
