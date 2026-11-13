@@ -82,21 +82,12 @@ impl Inner {
         for engine in &engines {
             engine.window_opened();
         }
-        let held = std::mem::take(&mut lock(&self.window.app).selections_held);
-        for (pane, range) in held {
+        for (pane, range) in self.window.take_selections_held() {
             if let Some(engine) = engines.get(pane) {
                 engine.selection().restore((range.start.page, range.start.at), (range.end.page, range.end.at));
             }
         }
-        // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
-        let contents_y = lock(&self.window.app).contents_y;
-        if let Some(y) = contents_y {
-            let mut follow = lock(&self.window.contents_follow);
-            let following = follow.is_following();
-            follow.new_contents();
-            follow.resume_at(y, following);
-        }
-        lock(&self.window.app).window_closed = false;
+        self.window.opened();
         self.saver.view_changed();
     }
 
@@ -114,21 +105,7 @@ impl Inner {
         for engine in &engines {
             engine.window_closed();
         }
-        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
-        let mut app = lock(&self.window.app);
-        if let Some(state) = app.from_state.take() {
-            let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
-            let (hidden, closed) = (app.app_hidden, app.window_closed);
-            let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
-            *app = *state;
-            app.app_hidden = hidden;
-            app.window_closed = closed;
-            (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
-            if let Some(window) = app.window.as_mut() {
-                window.minimised = minimised;
-            }
-        }
-        app.selections_held = held;
+        self.window.replaced(held);
     }
 
     /// The window closed, by the person or QA: what it showed goes, and the record says it's closed.
@@ -136,13 +113,7 @@ impl Inner {
         for engine in self.panes.engines(&self.engine) {
             engine.window_closed();
         }
-        let mut app = lock(&self.window.app);
-        app.window_closed = true;
-        // A window opened again isn't in the Dock.
-        if let Some(window) = app.window.as_mut() {
-            window.minimised = false;
-        }
-        drop(app);
+        self.window.closed();
         self.saver.view_changed();
     }
 

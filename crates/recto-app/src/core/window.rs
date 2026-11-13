@@ -302,6 +302,54 @@ impl Window {
         self.panel_open.load(Ordering::SeqCst)
     }
 
+    /// What each pane had selected as the window went for another made from the state, taken for the new one to select again.
+    pub(super) fn take_selections_held(&self) -> Vec<(usize, recto_index::select::Range)> {
+        std::mem::take(&mut lock(&self.app).selections_held)
+    }
+
+    /// The window opened: the contents go back to where they were, and the record says it's open.
+    pub(super) fn opened(&self) {
+        // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
+        let contents_y = lock(&self.app).contents_y;
+        if let Some(y) = contents_y {
+            let mut follow = lock(&self.contents_follow);
+            let following = follow.is_following();
+            follow.new_contents();
+            follow.resume_at(y, following);
+        }
+        lock(&self.app).window_closed = false;
+    }
+
+    /// The window's going for another made from the state that came in late: what it said about itself since isn't kept, and what each pane had selected,
+    /// `held`, is kept for the new one.
+    pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>) {
+        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
+        let mut app = lock(&self.app);
+        if let Some(state) = app.from_state.take() {
+            let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
+            let (hidden, closed) = (app.app_hidden, app.window_closed);
+            let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
+            *app = *state;
+            app.app_hidden = hidden;
+            app.window_closed = closed;
+            (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
+            if let Some(window) = app.window.as_mut() {
+                window.minimised = minimised;
+            }
+        }
+        app.selections_held = held;
+    }
+
+    /// The window closed: the record says so, and a window opened again isn't in the Dock.
+    pub(super) fn closed(&self) {
+        let mut app = lock(&self.app);
+        app.window_closed = true;
+        // A window opened again isn't in the Dock.
+        if let Some(window) = app.window.as_mut() {
+            window.minimised = false;
+        }
+    }
+
     /// Whether the window's closed, as the record has it.
     pub fn is_closed(&self) -> bool {
         lock(&self.app).window_closed
