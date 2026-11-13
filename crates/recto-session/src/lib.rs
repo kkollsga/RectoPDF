@@ -20,6 +20,7 @@ mod files;
 mod generated;
 mod journal;
 mod journals;
+mod lists;
 mod mail;
 mod pages;
 mod recent;
@@ -784,20 +785,14 @@ pub struct Session<L = DiskLoader> {
     warm: warm::Warm,
     /// The folders tabs' files are in.
     dirs: dirs::Dirs,
-    /// Only for tabs with page edits. A tab with none costs nothing here.
-    edits: HashMap<TabId, PageEdits>,
-    /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
-    wake_failed: Vec<TabId>,
-    /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`Self::wake_list`] from their journal.
-    asleep: HashMap<TabId, EditsSummary>,
+    /// Every tab's list of edits, in memory or gone to disk, those that couldn't be read back, and whether an agent's at Full.
+    lists: lists::Lists,
     /// The session's clock, holds on tabs, and what's on its way to and from the sleep files.
     dormancy: dormancy::Dormancy,
     /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
     mail: mail::PageViewMail,
     /// Each edited tab's journal, what's waiting to go out to the journals, and where a PDF's history is read from.
     journals: journals::Journals,
-    /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
-    agent_at_full: bool,
     /// Tabs being saved, and what saves lately moved their tabs on from.
     saves: saves::Saves,
     /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.

@@ -9,9 +9,6 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("active", s.active == Some(id)),
         ("warm", s.warm.contains(id)),
         ("woken", s.warm.holds_read_of(id)),
-        ("edits", s.edits.contains_key(&id)),
-        ("asleep", s.asleep.contains_key(&id)),
-        ("wake_failed", s.wake_failed.contains(&id)),
         ("draws", s.mail.holds_draw_of(id)),
         ("saving", s.saves.is_saving(id)),
         ("abandoned_saves", s.saves.abandoned_has(id)),
@@ -24,6 +21,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         .into_iter()
         .chain(s.dormancy.holding(id))
         .chain(s.journals.holding(id))
+        .chain(s.lists.holding(id))
         .filter(|(_, holds)| *holds)
         .map(|(name, _)| name)
         .collect();

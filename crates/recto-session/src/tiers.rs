@@ -129,7 +129,7 @@ impl<L: DocLoader> Session<L> {
             }
         };
         // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
-        if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.edits.get(&id))
+        if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
             && self.tab(id).is_some_and(|tab| tab.stamp == Some(known))
             && list.file_pages() != facts.page_count
         {
@@ -139,7 +139,7 @@ impl<L: DocLoader> Session<L> {
             }
         }
         // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
-        if let (Some(now), Some(list)) = (stamp, self.edits.get(&id))
+        if let (Some(now), Some(list)) = (stamp, self.lists.get(id))
             && !list.is_edited()
             && self.tab(id).and_then(|tab| tab.stamp).is_some_and(|known| !known.same_contents(now))
         {
@@ -149,7 +149,7 @@ impl<L: DocLoader> Session<L> {
             }
         }
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
-        let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
+        let pages_with_edits = self.lists.get(id).map(PageEdits::len);
         let mut replaced = None;
         let tab = self.tab_mut(id);
         match loaded {

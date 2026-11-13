@@ -54,7 +54,7 @@ impl<L: DocLoader> Session<L> {
                     _ => toc,
                 };
                 // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
-                rail_filled = contents_rows(shown, tab, self.edits.get(&tab.id), &mut rows);
+                rail_filled = contents_rows(shown, tab, self.lists.get(tab.id), &mut rows);
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
@@ -115,7 +115,7 @@ impl<L: DocLoader> Session<L> {
     pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) -> Option<bool> {
         let toc = self.shown_contents(id)?;
         let tab = self.tab(id)?;
-        let chain = following_chain(&toc, tab, self.edits.get(&id));
+        let chain = following_chain(&toc, tab, self.lists.get(id));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;

@@ -13,13 +13,10 @@ impl<L: DocLoader> Session<L> {
             next_id,
             warm: _,
             dirs: _,
-            edits,
-            wake_failed: _,
-            asleep,
+            lists,
             dormancy: _,
             mail: _,
             journals,
-            agent_at_full: _,
             generated: _,
             comparison,
             saves: _,
@@ -68,7 +65,7 @@ impl<L: DocLoader> Session<L> {
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
                     journal: journals.name_of(*id).map(ToString::to_string),
-                    edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
+                    edits: lists.summary(*id),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
                     password: *password,
@@ -99,7 +96,7 @@ impl<L: DocLoader> Session<L> {
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
     pub fn edits_record(&self, id: TabId) -> Option<record::EditsRecord> {
-        self.edits.get(&id).map(PageEdits::to_record)
+        self.lists.get(id).map(PageEdits::to_record)
     }
 
     /// **Puts the session back as a record has it.** No file is opened: every tab comes back cold, and its name and place are all it costs. Replaces what's here. The caller reads journals, and gets the active tab's file read, and checks what's become of the rest, each off this lock.
@@ -113,9 +110,7 @@ impl<L: DocLoader> Session<L> {
         // Every tab's going, and with them every folder's number.
         self.dirs = dirs::Dirs::default();
         self.warm = warm::Warm::default();
-        self.edits.clear();
-        self.asleep.clear();
-        self.wake_failed.clear();
+        self.lists.restored();
         self.mail = mail::PageViewMail::default();
         self.journals.restored();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
@@ -149,13 +144,13 @@ impl<L: DocLoader> Session<L> {
                         } else {
                             edits.no_journal();
                         }
-                        self.edits.insert(id, edits);
+                        self.lists.insert(id, edits);
                         self.journals.set_name(id, name);
                     }
                     None => notice = Some(FileNotice::EditsUnreadable),
                 }
             }
-            let pages = self.edits.get(&id).map_or(entry.page_count, PageEdits::len);
+            let pages = self.lists.get(id).map_or(entry.page_count, PageEdits::len);
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {
                 from_sleep: None,
@@ -207,7 +202,7 @@ impl<L: DocLoader> Session<L> {
         }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
         if self.journals.kept_and_readable() {
-            let others: Vec<TabId> = self.edits.keys().copied().filter(|id| !self.on_screen(*id)).collect();
+            let others: Vec<TabId> = self.lists.ids().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
                 self.put_list_to_sleep(id);
             }

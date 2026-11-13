@@ -30,17 +30,14 @@ impl<L: DocLoader> Session<L> {
             })
         });
         self.retire_sleep_file(id);
-        let rebased = self.edits.get_mut(&id).map(|list| list.rebase_on_saved(pages, kept.clone()));
+        let rebased = self.lists.get_mut(id).map(|list| list.rebase_on_saved(pages, kept.clone()));
         let mut rolled_off = 0;
         match rebased {
             // There's no list, so no history. A file kept for it isn't needed.
             None => self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect()),
             // Something else was written, so nothing in the history's about that file.
             Some(None) => {
-                rolled_off = self
-                    .edits
-                    .get(&id)
-                    .map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
+                rolled_off = self.lists.get(id).map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
                 self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect());
                 self.let_go_of_list(id);
             }
@@ -64,14 +61,14 @@ impl<L: DocLoader> Session<L> {
             tab.place_dirty = true;
         }
         self.mail.forget_draws(id);
-        if self.edits.get(&id).is_some_and(|list| !list.has_history()) {
+        if self.lists.get(id).is_some_and(|list| !list.has_history()) {
             self.let_go_of_list(id);
-        } else if self.edits.contains_key(&id) {
+        } else if self.lists.contains(id) {
             // A journal goes by its file's identity, which this has changed. The old one goes only once the new one's there, so a crash in between has one of them.
             let replaces = self.journals.forget_name(id).map(String::from);
             self.journals.drop_fresh(id);
             if self.journals.journaling() {
-                let seq = self.edits.get(&id).map_or(0, PageEdits::journal_seq);
+                let seq = self.lists.get(id).map_or(0, PageEdits::journal_seq);
                 self.journal_name_for(id);
                 self.journals.start_fresh(id, seq, replaces);
             } else if let Some(old) = replaces {
@@ -95,7 +92,7 @@ impl<L: DocLoader> Session<L> {
         }
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         let path = self.path_of(id).ok_or(SessionError::NoSuchTab)?;
-        let snapshot = match self.edits.get(&id).filter(|list| list.is_edited()) {
+        let snapshot = match self.lists.get(id).filter(|list| list.is_edited()) {
             Some(list) => SaveSnapshot {
                 path,
                 stamp: tab.stamp,
@@ -138,7 +135,7 @@ impl<L: DocLoader> Session<L> {
         }
         if self.saves.end(id) {
             self.let_go(id);
-            if let Some(list) = self.edits.get_mut(&id)
+            if let Some(list) = self.lists.get_mut(id)
                 && list.saving().is_some()
             {
                 let kept = list.save_abandoned();
@@ -174,7 +171,7 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         self.wake_list(id);
-        if let Some(edits) = self.edits.get_mut(&id) {
+        if let Some(edits) = self.lists.get_mut(id) {
             edits.note_saving(target, keeping);
         }
     }
@@ -196,7 +193,7 @@ impl<L: DocLoader> Session<L> {
         if matches!(reason, ClearReason::Redaction | ClearReason::HiddenDataRemoval) {
             self.retire_sleep_file(id);
         }
-        let Some(list) = self.edits.get_mut(&id) else { return false };
+        let Some(list) = self.lists.get_mut(id) else { return false };
         if reason != ClearReason::Discard && list.is_edited() {
             let unconfirmed = list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone());
             let let_go: Vec<Box<Path>> = list.drop_history().into_iter().chain(unconfirmed).collect();

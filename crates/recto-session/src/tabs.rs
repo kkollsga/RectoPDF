@@ -12,13 +12,10 @@ impl<L: DocLoader> Session<L> {
             next_id: 1,
             warm: warm::Warm::default(),
             dirs: dirs::Dirs::default(),
-            edits: HashMap::new(),
-            wake_failed: Vec::new(),
-            asleep: HashMap::new(),
+            lists: lists::Lists::default(),
             dormancy: dormancy::Dormancy::default(),
             mail: mail::PageViewMail::default(),
             journals: journals::Journals::default(),
-            agent_at_full: false,
             generated: generated::Generated::default(),
             comparison: None,
             saves: saves::Saves::default(),
@@ -316,11 +313,10 @@ impl<L: DocLoader> Session<L> {
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
         // A list that won't read: nothing unsaved is at stake, or this wouldn't have got here. Its journal's left for a launch to look at.
         if !self.wake_list(id) {
-            self.asleep.remove(&id);
-            self.wake_failed.retain(|failed| *failed != id);
+            self.lists.forget_asleep(id);
             self.journals.forget_name(id);
         }
-        let keeps_history = self.journals.journaling() && self.edits.get(&id).is_some_and(PageEdits::has_history);
+        let keeps_history = self.journals.journaling() && self.lists.get(id).is_some_and(PageEdits::has_history);
         if keeps_history {
             if let Some(append) = self.append_for(id) {
                 self.journals.depart(JournalAppend { closing: true, ..append });
@@ -330,7 +326,7 @@ impl<L: DocLoader> Session<L> {
             self.let_go_of_list(id);
         }
         self.journals.drop_fresh(id);
-        self.edits.remove(&id);
+        self.lists.remove(id);
         self.retire_sleep_file(id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
         let closed = self.tabs.remove(index);
