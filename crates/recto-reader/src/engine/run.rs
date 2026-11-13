@@ -71,6 +71,19 @@ pub(super) fn run_guarded(shared: &Shared) {
     }
 }
 
+/// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
+/// (`SurfaceRetry`, in `tiles/jobs.rs`).
+fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+    if planned {
+        let wait = lock(&shared.reader).work.surfaces.refused();
+        shared.settled.notify_all();
+        std::thread::park_timeout(wait);
+    } else {
+        lock(&shared.reader).work.surfaces.clear();
+        rest(shared, renderers, policy, resting_since);
+    }
+}
+
 fn run(shared: &Shared) {
     let mut renderers: HashMap<PathBuf, OpenDoc> = HashMap::new();
     let mut wanted = lock(&shared.reader).work.wanted_files();
@@ -111,15 +124,7 @@ fn run(shared: &Shared) {
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            if planned {
-                // The system had no surface for it: waited out and asked again, only while it's planned (`SurfaceRetry`, in `tiles/jobs.rs`).
-                let wait = lock(&shared.reader).work.surfaces.refused();
-                shared.settled.notify_all();
-                std::thread::park_timeout(wait);
-            } else {
-                lock(&shared.reader).work.surfaces.clear();
-                rest(shared, &mut renderers, &policy, &mut resting_since);
-            }
+            rest_or_wait_for_a_surface(planned, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
         // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
@@ -132,11 +137,7 @@ fn run(shared: &Shared) {
             resting_since = None;
             Workers::MayStart
         };
-        {
-            let mut reader = lock(&shared.reader);
-            reader.work.surfaces.clear();
-            reader.work.note_started(&job, None);
-        }
+        lock(&shared.reader).work.note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
             continue;

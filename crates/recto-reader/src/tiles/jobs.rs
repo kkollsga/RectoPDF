@@ -150,8 +150,8 @@ impl JobPlan {
 /// it finds nothing to do and rests as ever, with no timer. Meanwhile the view isn't settled, and `qa state`'s `reader.surfaces` says why.
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceRetry {
-    /// Surfaces refused in this page view's life, to its cap.
-    refused: u32,
+    /// Surfaces refused in this page view's life, held at 65,535: two bytes, in room `Work` already had.
+    refused: u16,
     /// Refused in a row, since a surface was last made or nothing was wanted: held at [`Self::DOUBLINGS`] and one, where the wait is at its longest.
     in_a_row: u8,
 }
@@ -305,9 +305,8 @@ pub(crate) struct Work {
 }
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
-// Raised by 8 bytes the same day for `surfaces` ([`SurfaceRetry`], a u32 and a u8): one a page view, not a tab.
 #[cfg(target_os = "macos")]
-const _: () = assert!(size_of::<Work>() <= 136, "what's asked of the renderer grew");
+const _: () = assert!(size_of::<Work>() <= 128, "what's asked of the renderer grew");
 
 impl Work {
     pub(super) fn new() -> Self {
@@ -361,6 +360,8 @@ impl Work {
             JobKind::Text { check } => (true, check),
             _ => (false, false),
         };
+        // Started, so its surface, if it needed one, was made: no retry is pending.
+        self.surfaces.clear();
         self.running = Some(Running {
             tab: job.tab,
             position: job.position,
