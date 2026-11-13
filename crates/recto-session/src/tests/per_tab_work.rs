@@ -26,11 +26,11 @@ fn opened(tabs: usize) -> Session<FakeLoader> {
     s
 }
 
-/// Failure: the sidebar or the record looks a tab up by its number for each tab it walks, so building either at 1,000 tabs searches about a million
+/// Failure: the sidebar, the record or the list of files to look at after a restore looks a tab up by its number for each tab it walks, so building either at 1,000 tabs searches about a million
 /// records (what 5cb4acb3 did, through each tab's notice and, in the record, each tab's path too). What's left is at most one search over the tabs, for the
 /// tab being read: the counts are pinned at what they are, as a multiple of the tabs open, so any search per tab, even one that finds its tab at once, fails.
 #[test]
-fn the_sidebar_and_the_record_search_the_tabs_at_most_once() {
+fn the_walks_over_every_tab_search_the_tabs_at_most_once() {
     for tabs in [100_u64, 1000] {
         let s = opened(tabs as usize);
         let sidebar = searched(|| {
@@ -39,7 +39,10 @@ fn the_sidebar_and_the_record_search_the_tabs_at_most_once() {
         let record = searched(|| {
             black_box(s.to_record());
         });
-        println!("{tabs} tabs: the sidebar searched {sidebar} records, the record {record}");
+        let looks = searched(|| {
+            black_box(s.files_to_look_at());
+        });
+        println!("{tabs} tabs: the sidebar searched {sidebar} records, the record {record}, the files to look at after a restore {looks}");
         assert!(
             sidebar <= tabs,
             "the sidebar at {tabs} tabs searched {sidebar} records: a tab is looked up again for each tab walked"
@@ -47,6 +50,10 @@ fn the_sidebar_and_the_record_search_the_tabs_at_most_once() {
         assert!(
             record <= tabs,
             "the record at {tabs} tabs searched {record} records: a tab is looked up again for each tab walked"
+        );
+        assert!(
+            looks <= tabs,
+            "the files to look at at {tabs} tabs searched {looks} records: a tab is looked up again for each tab walked"
         );
     }
 }

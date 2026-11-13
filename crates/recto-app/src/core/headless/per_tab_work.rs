@@ -26,7 +26,8 @@ fn searched_for(app: &HeadlessApp, action: UiAction) -> (u64, u64) {
 const SEARCHED_PER_TAB: u64 = 55;
 
 /// Failure: an action, or the look that publishes after it, looks a tab up by its number for each tab it walks (the sidebar's notices did, until
-/// 2026-11-13), so its cost grows with the square of the tabs open: at 1,000 tabs about a million records more for every action. Held two ways: no action
+/// 2026-11-13; and, with a password kept, the look's walk that keeps only the passwords of the files open did too), so its cost grows with the square of
+/// the tabs open: at 1,000 tabs about a million records more for every action. Held two ways: no action
 /// searches more than [`SEARCHED_PER_TAB`] records a tab a look, and none searches more a tab at 1,000 tabs than at 100, give or take a few lookups.
 #[test]
 #[cfg(debug_assertions)]
@@ -34,8 +35,14 @@ fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
     let mut per_tab_at_100 = Vec::new();
     for tabs in [100_u64, 1000] {
         let disk = Disk::new();
-        let files: Vec<_> = (0..tabs).map(|at| disk.pdf(&format!("f{at:04}.pdf"), 3)).collect();
+        let files: Vec<_> = (1..tabs).map(|at| disk.pdf(&format!("f{at:04}.pdf"), 3)).collect();
         let app = disk.start();
+        // One protected file, opened with its password: what makes each look keep the passwords of the files open (a walk of its own).
+        let locked = app.disk().file("locked.pdf", &super::files::locked_with("right", 1));
+        app.core().open_file(locked);
+        app.settle();
+        let asked = app.reader().password_prompt.expect("the protected file asks for its password");
+        app.core().password_answered(asked.id, Some("right".into()));
         for file in &files {
             app.open(file);
         }
