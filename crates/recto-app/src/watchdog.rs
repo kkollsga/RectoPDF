@@ -26,7 +26,12 @@ pub struct Stall {
     pub wall_ms: u64,
     pub cpu_ms: u64,
     pub window_ms: u64,
+    /// What most of the watcher's looks at the stretch saw the thread doing: see `waiting_looks`.
     pub state: &'static str,
+    /// Of the watcher's looks at this stretch past a second, how many saw the thread waiting, and how many saw it running or ready to run. One look says
+    /// little: a thread that slept two seconds and then waited for a core on a starved machine is `running_or_runnable` at its last look (CI, 2026-11-13).
+    pub waiting_looks: u32,
+    pub running_looks: u32,
     /// The QA verb that was running when the stretch was first seen past a second, or empty.
     pub verb: String,
     /// Whether the stretch had ended when this was written.
@@ -224,9 +229,21 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
     };
     let mut worst = shared.worst.lock().unwrap_or_else(PoisonError::into_inner);
     let before = worst.as_ref().filter(|stall| stall.began == began);
-    let state = match (ended, before) {
-        (true, Some(before)) => before.state,
-        _ => sample.map_or(RunState::Other.name(), |sample| sample.state.name()),
+    let (mut waiting_looks, mut running_looks) = before.map_or((0, 0), |before| (before.waiting_looks, before.running_looks));
+    // The end is the thread seeing itself, always running: only the watcher's looks are counted.
+    if let (false, Some(sample)) = (ended, sample) {
+        match sample.state {
+            RunState::Waiting | RunState::Uninterruptible => waiting_looks += 1,
+            RunState::Running => running_looks += 1,
+            RunState::Stopped | RunState::Other => {}
+        }
+    }
+    let state = if waiting_looks > 0 && waiting_looks >= running_looks {
+        RunState::Waiting.name()
+    } else if running_looks > 0 {
+        RunState::Running.name()
+    } else {
+        before.map_or(RunState::Other.name(), |before| before.state)
     };
     // The verb the stretch passed a second in is the one that stalled it, and it's kept: a stretch can run on into the next verb without the thread sleeping
     // between them (a 2.3 s stall read as `state`'s, 2026-11-13, at load 12), and the channel clears the slot as each answers.
@@ -240,6 +257,8 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
         cpu_ms: sample.map_or(0, |sample| sample.cpu_ms.saturating_sub(first_cpu)),
         window_ms: now_ms.saturating_sub(first_at),
         state,
+        waiting_looks,
+        running_looks,
         verb,
         ended,
     };
@@ -421,5 +440,29 @@ mod tests {
         dog.note_verb(None);
         dog.look_at(2_300);
         assert_eq!(dog.worst_stall().unwrap().verb, "stall");
+    }
+
+    /// Failure (CI run 43382166812, 2026-11-13): a 2.3 s sleep read as `running_or_runnable`, as the record kept only its last look, taken after the sleep
+    /// had ended and while the thread waited for a core. Every look past a second is counted, and the state is what most of them saw.
+    #[test]
+    fn a_stretch_is_what_most_looks_saw_not_the_last_one() {
+        let dog = Watchdog::new();
+        dog.0.busy_since.store(1, Ordering::Release);
+        let waiting = sample(10, RunState::Waiting);
+        let runnable = sample(10, RunState::Running);
+        for now in [1_250, 1_500, 1_750, 2_000, 2_250] {
+            dog.look_sampled(now, waiting);
+        }
+        dog.look_sampled(2_600, runnable);
+        let worst = dog.worst_stall().unwrap();
+        assert_eq!((worst.waiting_looks, worst.running_looks), (5, 1));
+        assert_eq!(worst.state, "waiting", "five looks saw it wait and the last saw it ready to run");
+        // A thread that never waited is running, however long.
+        let busy = Watchdog::new();
+        busy.0.busy_since.store(1, Ordering::Release);
+        for now in [1_250, 1_500, 4_000] {
+            busy.look_sampled(now, runnable);
+        }
+        assert_eq!(busy.worst_stall().unwrap().state, "running_or_runnable");
     }
 }

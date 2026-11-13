@@ -395,7 +395,9 @@ fn the_watchdog_catches_a_stall_and_it_fails_the_script() {
     // Failure (CI, 2026-11-13: a 2.3 s stall nothing could explain): the record says what the thread did. A sleep is waiting, with next to no CPU time, in the verb that asked for it.
     let worst = &hangs["worst"];
     assert!(worst["wall_ms"].as_u64().unwrap() >= 2000, "{hangs}");
+    // What most looks saw, not the last: on a starved machine the last look can come after the sleep, with the thread waiting for a core (CI run 43382166812).
     assert_eq!(worst["state"], "waiting", "{hangs}");
+    assert!(worst["waiting_looks"].as_u64().unwrap() > worst["running_looks"].as_u64().unwrap(), "{hangs}");
     assert_eq!(worst["verb"], "stall", "{hangs}");
     assert!(
         worst["cpu_ms"].as_u64().unwrap() < worst["window_ms"].as_u64().unwrap() / 2,
