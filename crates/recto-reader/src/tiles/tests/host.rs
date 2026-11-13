@@ -36,7 +36,7 @@ fn settle_recording(reader: &mut Reader, seen: &mut Vec<Op>) {
         reader.applied();
     }
     for _ in 0..100 {
-        if !reader.has_ops() {
+        if !reader.host.has_ops() {
             break;
         }
         seen.extend(reader.drain(MAX_ATTACH_PER_TURN));
@@ -180,9 +180,9 @@ fn at_most_eight_tiles_are_attached_in_a_turn_and_the_rest_follow() {
     reader.applied();
     let attaches = |ops: &[Op]| ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
     assert_eq!(attaches(&ops), MAX_ATTACH_PER_TURN, "a full turn, or this tests nothing");
-    assert!(reader.has_ops(), "and it says there's more");
+    assert!(reader.host.has_ops(), "and it says there's more");
     let mut turns = 0;
-    while reader.has_ops() {
+    while reader.host.has_ops() {
         let more = reader.drain(MAX_ATTACH_PER_TURN);
         reader.applied();
         assert!(attaches(&more) <= MAX_ATTACH_PER_TURN);

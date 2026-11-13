@@ -107,7 +107,7 @@ fn settle_all_sized(reader: &mut Reader, size: PageBox) -> Vec<Job> {
         reader.applied();
     }
     for _ in 0..100 {
-        if !reader.has_ops() {
+        if !reader.host.has_ops() {
             break;
         }
         reader.drain(MAX_ATTACH_PER_TURN);
@@ -787,7 +787,7 @@ mod cost {
         assert!(scratch.visible.is_empty() && scratch.going.is_empty());
         assert!(scratch.held_bytes() <= Scratch::most_held_bytes(), "{} bytes kept", scratch.held_bytes());
 
-        let mut host = super::super::host::HostQueue::default();
+        let mut host = super::super::host::HostQueue::new();
         host.handed_to_host.extend(0..100_000);
         host.handed_to_host.clear();
         host.ops.extend((0..10_000).map(|page| Op::HidePage { page }));

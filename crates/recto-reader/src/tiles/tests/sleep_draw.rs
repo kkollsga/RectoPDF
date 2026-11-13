@@ -98,7 +98,7 @@ fn a_tab_left_at_an_undrawn_place_has_it_drawn_after_the_tab_showing() {
     let preview_scale = did.iter().find(|job| job.tab == 2 && job.kind == "preview").unwrap().scale;
     assert!(for_left.iter().filter(|job| job.kind == "preview").all(|job| job.scale == preview_scale));
     // What a tab off screen has drawn is discardable, and the system takes it back whenever it likes: its sleep file has its place all the same.
-    assert!(reader.empty_discardable() > 0);
+    assert!(reader.cache.empty_discardable() > 0);
     let material = reader.sleep_material(1, &map()).unwrap();
     let pictured: Vec<u32> = material
         .pictures
@@ -486,7 +486,7 @@ fn a_tab_left_with_no_room_for_a_picture_takes_no_other_tab_s_place() {
 #[test]
 fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
     let mut reader = Reader::new();
-    reader.set_share(8);
+    reader.cache.set_share(8, &mut reader.host);
     let previews_of = |reader: &Reader, tab: u32| reader.cache.entries.values().filter(|entry| entry.tab == tab && entry.preview).count();
     reader.set_viewport(view(0.0));
     reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
@@ -518,7 +518,7 @@ fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
 
 /// Tab 2 shown with its fill of previews in a cache at an eighth's share, then tab 1 drawn at its top and left far down for tab 2: the start of a test of what tab 1's previews push out. Says how many previews tab 2 has.
 fn tab_showing_full_of_previews_and_tab_left(reader: &mut Reader) -> usize {
-    reader.set_share(8);
+    reader.cache.set_share(8, &mut reader.host);
     reader.set_viewport(view(0.0));
     reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
     reader.note_version(Path::new("/d/2.pdf"), 1);

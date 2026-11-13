@@ -213,7 +213,7 @@ impl Engine {
     }
 
     fn after(&self, mut reader: MutexGuard<'_, Reader>) {
-        let has_ops = reader.has_ops();
+        let has_ops = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
         drop(reader);
@@ -245,7 +245,9 @@ impl Engine {
 
     /// Shares what's kept off screen with this many page views in all.
     pub fn set_share(&self, views: usize) {
-        lock(&self.shared.reader).set_share(views);
+        let mut reader = lock(&self.shared.reader);
+        let reader = &mut *reader;
+        reader.cache.set_share(views, &mut reader.host);
     }
 
     /// The least room either side of the pages, as a comparison's pane has it.
@@ -397,7 +399,7 @@ impl Engine {
 
     /// For QA: the system taking back what's marked discardable, without a word. Says how many surfaces went.
     pub fn empty_discardable(&self) -> usize {
-        lock(&self.shared.reader).empty_discardable()
+        lock(&self.shared.reader).cache.empty_discardable()
     }
 
     /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
@@ -529,7 +531,7 @@ impl Engine {
         }
         let (magnification, anchor) = reader.doc().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
         let moved = reader.place.has_moved_page();
-        let more = reader.has_ops();
+        let more = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
         drop(reader);
         note_change(&self.shared, note);
@@ -554,7 +556,7 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         did(&mut reader);
         let ops = reader.drain(0);
-        let more = reader.has_ops();
+        let more = reader.host.has_ops();
         let selecting = selecting_news(&mut reader);
         drop(reader);
         tell_selecting(&self.shared, selecting);
@@ -704,7 +706,7 @@ impl Engine {
         self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.drain(MAX_ATTACH_PER_TURN);
-        let more = reader.has_ops();
+        let more = reader.host.has_ops();
         drop(reader);
         if more {
             signal_ops(&self.shared);
@@ -863,7 +865,7 @@ fn run_guarded(shared: &Shared) {
         let give_up = panics_in_a_row >= MAX_PANICS_IN_A_ROW;
         let mut reader = lock(&shared.reader);
         reader.thread_restarted(give_up);
-        let has_ops = reader.has_ops();
+        let has_ops = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
         drop(reader);
@@ -906,7 +908,7 @@ fn run(shared: &Shared) {
                 renderers.remove(&file);
                 openings.remove(&file);
             }
-            if take_pending_follow(shared, &mut reader) && reader.has_ops() {
+            if take_pending_follow(shared, &mut reader) && reader.host.has_ops() {
                 signal_ops(shared);
             }
             reader.next_plan()
@@ -1007,7 +1009,7 @@ fn run(shared: &Shared) {
         };
         reader.finish(job, outcome);
         take_pending_follow(shared, &mut reader);
-        let has_ops = reader.has_ops();
+        let has_ops = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
         drop(reader);

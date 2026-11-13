@@ -1,6 +1,7 @@
 //! **Waking and sleep pictures:** what a tab's first frame shows from its sleep file, how its wake goes until it's sharp, and the pictures of its pages that go into the sleep file, from its previews or put together from its tiles.
 
 use super::PageMap;
+use super::cache::TileKey;
 use super::{DocView, DrawKind, MAX_PREVIEW_BYTES, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
@@ -435,7 +436,7 @@ impl Reader {
         let size = doc.layout.raw_size(page);
         let paper_rgb = paper.rgb();
         // A preview as it is, if there's one.
-        let preview = self.cache.cover.get(&self.preview_key(doc, page)).copied().filter(|id| {
+        let preview = self.cache.cover.get(&TileKey::preview(doc.tab, page, self.paper)).copied().filter(|id| {
             self.cache
                 .entries
                 .get(id)

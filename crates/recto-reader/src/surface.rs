@@ -342,7 +342,8 @@ Engine::pub fn zoom(&self, zoom: Zoom) -> Option<f64>
 Engine::pub fn zoom_soon(&self, value: f64) -> bool
 EngineConfig (pub struct, derives Clone, Debug, Default)
 Entry (pub(super) struct, derives Debug)
-HostQueue (pub(super) struct, derives Debug, Default)
+HostQueue (pub(crate) struct, derives Debug)
+HostQueue::pub(crate) fn has_ops(&self) -> bool
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
 JobKind (pub enum, derives Debug)
@@ -386,6 +387,8 @@ Pointer::pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::Cop
 Pointer::pub(crate) fn take_copy_signal(&mut self) -> bool
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 Reader (pub struct)
+Reader.pub(crate) cache: TileCache
+Reader.pub(crate) host: HostQueue
 Reader.pub(crate) place: Place
 Reader.pub(crate) pointer: Pointer
 Reader.pub(crate) wake: Waking
@@ -398,13 +401,11 @@ Reader::pub fn clear_selection(&mut self)
 Reader::pub fn counts(&self) -> &ReaderCounts
 Reader::pub fn deactivate(&mut self)
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
-Reader::pub fn empty_discardable(&mut self) -> usize
 Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
 Reader::pub fn file_changed(&mut self, tab: u32)
 Reader::pub fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
-Reader::pub fn has_ops(&self) -> bool
 Reader::pub fn holds(&self, tab: u32) -> bool
 Reader::pub fn hot_tab(&self) -> Option<u32>
 Reader::pub fn is_on_place(&self) -> bool
@@ -430,7 +431,6 @@ Reader::pub fn selection_drag(&mut self, x: f64, y: f64)
 Reader::pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool)
 Reader::pub fn set_margins(&mut self, left: f64, right: f64)
 Reader::pub fn set_paper(&mut self, paper: PaperKind)
-Reader::pub fn set_share(&mut self, views: usize)
 Reader::pub fn set_spread(&mut self, spread: Spread)
 Reader::pub fn set_viewport(&mut self, viewport: Viewport) -> Vec<Op>
 Reader::pub fn set_warm(&mut self, warm: &[u32])
@@ -457,7 +457,9 @@ SleepMaterial (pub struct, derives Clone, Debug, Default, PartialEq)
 SleepShot (pub struct, derives Debug)
 SleepView (pub struct, derives Debug, Default)
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
-TileCache (pub(super) struct, derives Debug)
+TileCache (pub(crate) struct, derives Debug)
+TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
+TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue)
 TileKey (pub(super) struct, derives Clone, Copy, Debug, PartialEq, Eq, Hash)
 Unopened (private enum)
 Viewport (pub struct, derives Clone, Copy, Debug, Default, PartialEq)

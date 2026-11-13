@@ -168,7 +168,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
         "what the tab left showed is discardable now"
     );
     // What the kernel does to discardable memory when it needs pages.
-    assert!(reader.empty_discardable() > 0);
+    assert!(reader.cache.empty_discardable() > 0);
     assert!(
         reader
             .cache

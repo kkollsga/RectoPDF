@@ -1,5 +1,6 @@
 //! **The screen brought into line with what's wanted,** on every scroll and whenever something's drawn: the pages' layers placed or taken off, the tiles in view put on them from what's kept, at most a turn's worth, and those scrolled out of view taken off; with what the reader is told about the pages in view, and the count of steps that left one blank.
 
+use super::cache::TileKey;
 use super::host::Placement;
 use super::scratch::Scratch;
 use super::{CANT_DRAW, DocView, Op, Reader, SCALE_SLACK};
@@ -141,7 +142,7 @@ impl Reader {
         // Every visible page shows something before any page gets more: a preview is one attachment and fills a page. Without this, a tall page's first eight tiles leave the next page blank for a turn.
         for &page in &scratch.visible {
             let Some(doc) = self.docs.get(&tab) else { return };
-            let preview = self.preview_key(doc, page);
+            let preview = TileKey::preview(doc.tab, page, self.paper);
             let bare = !self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
             if bare
                 && let Some(&id) = self.cache.cover.get(&preview)
@@ -160,8 +161,10 @@ impl Reader {
                 continue;
             };
             scratch.keys.clear();
-            scratch.keys.extend(scratch.cells.iter().map(|cell| self.key(doc, page, scale, *cell)));
-            let preview = self.preview_key(doc, page);
+            scratch
+                .keys
+                .extend(scratch.cells.iter().map(|cell| TileKey::tile(doc.tab, page, scale, *cell, self.paper)));
+            let preview = TileKey::preview(doc.tab, page, self.paper);
             let mut missing = false;
             scratch.wanted.clear();
             for key in &scratch.keys {

@@ -17,7 +17,7 @@ fn previews_outlive_their_tiles() {
         "{report}"
     );
     let doc = reader.doc().unwrap();
-    let key = reader.preview_key(doc, 0);
+    let key = super::super::cache::TileKey::preview(doc.tab, 0, reader.paper);
     assert!(reader.cache.cover.contains_key(&key), "the first page's preview is still here");
     let ops = reader.set_viewport(view(0.0));
     assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })), "and shows at once: {ops:?}");
@@ -35,9 +35,9 @@ fn panes_share_the_caps_on_what_is_kept() {
     }
     let previews = |reader: &Reader| reader.cache.entries.values().filter(|entry| entry.preview && !entry.attached).count();
     assert!(previews(&reader) > MAX_KEPT_PREVIEWS / 3, "enough kept to see the share: {}", previews(&reader));
-    reader.set_share(3);
+    reader.cache.set_share(3, &mut reader.host);
     assert!(previews(&reader) <= MAX_KEPT_PREVIEWS / 3, "{}", previews(&reader));
-    reader.set_share(0);
+    reader.cache.set_share(0, &mut reader.host);
     assert_eq!(reader.cache.share, 1, "never none");
 }
 

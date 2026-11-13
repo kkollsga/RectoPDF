@@ -21,8 +21,9 @@ pub(super) struct Placement {
     pub(super) turns: u8,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct HostQueue {
+/// Built only in the tiles module ([`HostQueue::new`]), with no `Default`: the engine reaches it through `Reader`'s field to ask whether there are ops, and to hand it to the cache, and can neither build one nor put another in its place.
+#[derive(Debug)]
+pub(crate) struct HostQueue {
     pub(super) shown: HashMap<u32, Placement>,
     pub(super) ops: VecDeque<Op>,
     /// The host has been given ops it hasn't said it's applied.
@@ -39,6 +40,17 @@ pub(super) struct HostQueue {
 const _: () = assert!(size_of::<HostQueue>() <= 136, "what the host's told grew");
 
 impl HostQueue {
+    pub(super) fn new() -> Self {
+        Self {
+            shown: HashMap::new(),
+            ops: VecDeque::new(),
+            unapplied: false,
+            to_discard: Vec::new(),
+            handed_to_host: Vec::new(),
+            more_to_attach: false,
+        }
+    }
+
     pub(super) fn take_ops(&mut self) -> Vec<Op> {
         if !self.ops.is_empty() {
             self.unapplied = true;
@@ -66,7 +78,7 @@ impl HostQueue {
     }
 
     /// Whether the host should come back for more.
-    pub(super) fn has_ops(&self) -> bool {
+    pub(crate) fn has_ops(&self) -> bool {
         !self.ops.is_empty() || self.more_to_attach
     }
 

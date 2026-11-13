@@ -31,7 +31,7 @@ pub(crate) mod sleep_draw;
 mod wake;
 mod zoom;
 
-use cache::{Entry, TileCache};
+use cache::{Entry, TileCache, TileKey};
 pub(crate) use doc::DocView;
 use doc::Issue;
 use host::HostQueue;
@@ -233,8 +233,10 @@ pub struct Reader {
     viewport: Viewport,
     paper: PaperKind,
     window_open: bool,
-    cache: TileCache,
-    host: HostQueue,
+    /// What's drawn and kept: the engine sets the share and QA's discard through this field's own methods.
+    pub(crate) cache: TileCache,
+    /// What the host's been told: the engine asks whether there are ops through this field's own method, and hands it to the cache.
+    pub(crate) host: HostQueue,
     /// What's asked of the renderer: the engine notes what it starts and takes what it must open again through this field's own methods.
     pub(crate) work: Work,
     /// Where the reader is: the engine takes the reader's own scroll and the page moved to through this field's own methods.
@@ -277,7 +279,7 @@ impl Reader {
             paper: PaperKind::White,
             window_open: true,
             cache: TileCache::new(),
-            host: HostQueue::default(),
+            host: HostQueue::new(),
             work: Work::new(),
             place: Place::new(),
             counts: ReaderCounts::default(),
@@ -481,7 +483,7 @@ impl Reader {
             {
                 cancel.cancel_before(running.generation + 1);
             }
-            self.drop_tab_entries(tab);
+            self.cache.drop_tab(tab, &mut self.host);
             self.clear_screen();
             // Its pages are other pages now, so what was selected on them isn't there. After a save they're the same pages, so it is, and its text is read again from the new file.
             self.pointer.selecting.reset();
@@ -545,7 +547,7 @@ impl Reader {
         let gone: Vec<u32> = self.docs.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
         for tab in gone {
             self.docs.remove(&tab);
-            self.drop_tab_entries(tab);
+            self.cache.drop_tab(tab, &mut self.host);
         }
     }
 
@@ -562,7 +564,7 @@ impl Reader {
         self.clear_screen();
         let tabs: Vec<u32> = self.docs.keys().copied().collect();
         for tab in tabs {
-            self.drop_tab_entries(tab);
+            self.cache.drop_tab(tab, &mut self.host);
         }
         self.docs.clear();
         self.hot = None;
@@ -670,11 +672,6 @@ impl Reader {
     pub fn drain(&mut self, budget: usize) -> Vec<Op> {
         self.refresh(budget);
         self.host.take_ops()
-    }
-
-    /// Whether the host should come back for more.
-    pub fn has_ops(&self) -> bool {
-        self.host.has_ops()
     }
 
     /// The host has applied what it was given. What's now off every layer can be marked discardable, and it leaves the footprint.
@@ -916,7 +913,7 @@ impl Reader {
             }
             let Ok(cells) = self.visible_cells(doc, page, scale) else { continue };
             for cell in cells {
-                let key = self.key(doc, page, scale, cell);
+                let key = TileKey::tile(doc.tab, page, scale, cell, self.paper);
                 if !self
                     .cache
                     .cover

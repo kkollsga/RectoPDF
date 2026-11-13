@@ -1,7 +1,7 @@
 //! **The tile cache:** what's drawn and kept, by key, which of it is on a layer, and what's let go, least recently used first, within the byte and count budgets every view of a window shares.
 
 use super::host::HostQueue;
-use super::{DocView, DrawKind, Op, Reader};
+use super::{DrawKind, Op, Reader};
 use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{TILE_EDGE, TileRect};
@@ -30,6 +30,36 @@ pub(super) struct TileKey {
 
 // size: one per tile in `cover`, up to `MAX_ENTRIES` of them and more for a region's tiles. Held at what it is today, so a field added to it is a deliberate change.
 const _: () = assert!(size_of::<TileKey>() <= 20, "a tile's key in the cache grew");
+
+impl TileKey {
+    /// The key of a page's tile at a scale, on this paper. On the scroll path: a few stores, inlined.
+    #[inline]
+    pub(super) fn tile(tab: u32, page: u32, scale: f32, (column, row): (u16, u16), paper: PaperKind) -> Self {
+        Self {
+            tab,
+            page,
+            scale_bits: scale.to_bits(),
+            column,
+            row,
+            paper,
+            preview: false,
+        }
+    }
+
+    /// The key of a page's preview, on this paper, whatever its scale.
+    #[inline]
+    pub(super) fn preview(tab: u32, page: u32, paper: PaperKind) -> Self {
+        Self {
+            tab,
+            page,
+            scale_bits: 0,
+            column: 0,
+            row: 0,
+            paper,
+            preview: true,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct LowResNote {
@@ -60,8 +90,9 @@ pub(super) struct Entry {
     pub(super) last_used: u64,
 }
 
+/// Built only in the tiles module ([`TileCache::new`]): the engine reaches it through `Reader`'s field for its share and QA's discard, and can neither build one nor put another in its place.
 #[derive(Debug)]
-pub(super) struct TileCache {
+pub(crate) struct TileCache {
     pub(super) entries: HashMap<u64, Entry>,
     pub(super) cover: HashMap<TileKey, u64>,
     pub(super) next_id: u64,
@@ -170,6 +201,35 @@ impl TileCache {
         keys
     }
 
+    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now, told to `host`.
+    pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue) {
+        let views = views.clamp(1, 8);
+        if views != self.share {
+            self.share = views;
+            self.evict(host);
+        }
+    }
+
+    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
+    pub(crate) fn empty_discardable(&mut self) -> usize {
+        let mut emptied = 0;
+        for entry in self.entries.values().filter(|entry| entry.discardable) {
+            if let Some(surface) = &entry.surface {
+                surface.empty_now();
+                emptied += 1;
+            }
+        }
+        emptied
+    }
+
+    /// Everything drawn of a tab goes, told to `host`.
+    pub(super) fn drop_tab(&mut self, tab: u32, host: &mut HostQueue) {
+        let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
+        for id in ids {
+            self.forget(id, host);
+        }
+    }
+
     /// Least recently used first, with a page's preview outliving its tiles: it's a fraction of their size, and it's what keeps a page seen a while ago from coming back blank. Bounded, as the entries are, and a look along them only when something has just gone off a layer.
     pub(super) fn evict(&mut self, host: &mut HostQueue) {
         loop {
@@ -203,27 +263,6 @@ impl TileCache {
 }
 
 impl Reader {
-    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now.
-    pub fn set_share(&mut self, views: usize) {
-        let views = views.clamp(1, 8);
-        if views != self.cache.share {
-            self.cache.share = views;
-            self.cache.evict(&mut self.host);
-        }
-    }
-
-    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
-    pub fn empty_discardable(&mut self) -> usize {
-        let mut emptied = 0;
-        for entry in self.cache.entries.values().filter(|entry| entry.discardable) {
-            if let Some(surface) = &entry.surface {
-                surface.empty_now();
-                emptied += 1;
-            }
-        }
-        emptied
-    }
-
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
     pub fn memory_pressure(&mut self, critical: bool) {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
@@ -244,37 +283,6 @@ impl Reader {
             .collect();
         for id in ids {
             self.cache.forget(id, &mut self.host);
-        }
-    }
-
-    pub(super) fn drop_tab_entries(&mut self, tab: u32) {
-        let ids: Vec<u64> = self.cache.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
-        for id in ids {
-            self.cache.forget(id, &mut self.host);
-        }
-    }
-
-    pub(super) fn key(&self, doc: &DocView, page: u32, scale: f32, (column, row): (u16, u16)) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: scale.to_bits(),
-            column,
-            row,
-            paper: self.paper,
-            preview: false,
-        }
-    }
-
-    pub(super) fn preview_key(&self, doc: &DocView, page: u32) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: 0,
-            column: 0,
-            row: 0,
-            paper: self.paper,
-            preview: true,
         }
     }
 

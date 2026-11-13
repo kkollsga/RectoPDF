@@ -1,5 +1,6 @@
 //! **What's drawn next,** most wanted first: sizes, the links under the pointer, the text a selection is waiting on, then each visible page's preview and tiles, and text when there's nothing else; and whether what's running is still wanted.
 
+use super::cache::TileKey;
 use super::sleep_draw::SleepDraws;
 use super::{DocView, DrawKind, JobPlan, MAX_PREVIEW_BYTES, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER};
 use crate::selection::Urgency;
@@ -56,7 +57,9 @@ impl Reader {
                 return true;
             }
             let Ok(cells) = self.visible_cells(doc, page, scale) else { return false };
-            cells.into_iter().any(|cell| !self.cache.cover.contains_key(&self.key(doc, page, scale, cell)))
+            cells
+                .into_iter()
+                .any(|cell| !self.cache.cover.contains_key(&TileKey::tile(doc.tab, page, scale, cell, self.paper)))
         })
     }
 
@@ -160,7 +163,7 @@ impl Reader {
             .iter()
             .copied()
             .filter(|cell| {
-                let key = self.key(doc, page, scale, *cell);
+                let key = TileKey::tile(doc.tab, page, scale, *cell, self.paper);
                 match self.cache.cover.get(&key).and_then(|id| self.cache.entries.get(id)) {
                     None => true,
                     Some(entry) => entry
@@ -188,7 +191,7 @@ impl Reader {
         }
         let heavy = doc.drawing.heavy.get(&page).copied().unwrap_or(false);
         // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
-        let preview_wanted = !heavy && !self.cache.cover.contains_key(&self.preview_key(doc, page));
+        let preview_wanted = !heavy && !self.cache.cover.contains_key(&TileKey::preview(doc.tab, page, self.paper));
         if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
             let paper = self.paper;
             let generation = self.work.fresh_generation();
