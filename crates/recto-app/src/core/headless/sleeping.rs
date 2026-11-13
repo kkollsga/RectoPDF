@@ -647,7 +647,10 @@ fn a_quit_writes_the_tab_on_screens_sleep_file_before_what_waits() {
     assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 3, "{}", app.record_json()["sleep"]);
     assert_eq!(app.waiting(Seam::SleepWrite), 0, "nothing written while they wait");
     std::thread::scope(|scope| {
-        let flushed = scope.spawn(|| app.core().saver.flush(false, std::time::Duration::from_millis(1_500)));
+        let flushed = std::thread::Builder::new()
+            .name("test-quit-flush".into())
+            .spawn_scoped(scope, || app.core().saver.flush(false, std::time::Duration::from_millis(1_500)))
+            .expect("a thread for the quit's flush");
         app.wait_until("the first sleep file of the quit held", || app.waiting(Seam::SleepWrite) > 0);
         recto_platform::slow::gate::let_through(Seam::SleepWrite, 1);
         flushed.join().expect("the flush returns").expect("the state written");
