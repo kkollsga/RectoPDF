@@ -160,27 +160,11 @@ pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun
     }
 }
 
-/// **What an agent's palette run of these ids did before the one table,** kept until the commits that make each the agent's command: a toggle worked out
-/// from what the window last showed, edit mode's Rotate refused, and the rows the person's menu ran as a command refused.
+/// **What an agent's palette run of these ids did before the one table,** kept until the commits that make each the agent's command: edit mode's Rotate
+/// refused, and the rows the person's menu ran as a command refused.
 fn as_before(inner: &Arc<Inner>, id: &str) -> Option<ForAgent> {
-    use recto_agent::commands::view::View;
     let reader = super::lock(&inner.published).reader.clone();
-    let on_off = |hidden: bool| Some(if hidden { "on" } else { "off" }.to_string());
     Some(match id {
-        "view.sidebar" => ForAgent::Command(
-            View {
-                sidebar: on_off(reader.sidebar_hidden),
-                ..View::default()
-            }
-            .into(),
-        ),
-        "view.agent_icon" => ForAgent::Command(
-            View {
-                agent_icon: on_off(reader.agent_icon_hidden),
-                ..View::default()
-            }
-            .into(),
-        ),
         "rotate.left" | "rotate.right" if reader.edit_mode => ForAgent::Refused,
         "app.update" | "file.close" | "find.open" | "go.back" | "go.forward" | "edit_mode.done" => ForAgent::Refused,
         _ => return None,
