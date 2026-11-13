@@ -39,6 +39,28 @@ impl Tabs {
     }
 }
 
+/// **How many tabs' records the searches for a tab looked at, on this thread,** in a debug build only: a release build has none of it. A walk over every tab
+/// that looks each one up again by its number is quadratic in the tabs open, and costs nothing anyone would see until hundreds are (2026-11-13: the
+/// sidebar did it for each tab's notice, and every action at 1,000 tabs took about 0.5 ms more). Per thread, as whatever reads the session reads it on the
+/// thread that holds it. What the guards against that read: `tests/per_tab_work.rs` here, and the headless app's `per_tab_work`.
+#[cfg(debug_assertions)]
+pub mod searched {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RECORDS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The records looked at so far on this thread.
+    pub fn records() -> u64 {
+        RECORDS.with(Cell::get)
+    }
+
+    pub(crate) fn add(records: usize) {
+        RECORDS.with(|count| count.set(count.get() + records as u64));
+    }
+}
+
 /// The tabs in the sidebar's order, to read. There's no `DerefMut`: a tab's record isn't changed from outside the crate.
 impl std::ops::Deref for Tabs {
     type Target = [TabRecord];
@@ -59,16 +81,20 @@ impl Tabs {
     }
 
     pub fn tab(&self, id: TabId) -> Option<&TabRecord> {
-        self.tabs.iter().find(|t| t.id == id)
+        self.position(id).map(|at| &self.tabs[at])
     }
 
     pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
-        self.tabs.iter_mut().find(|t| t.id == id)
+        self.position(id).map(|at| &mut self.tabs[at])
     }
 
-    /// Where a tab is in the sidebar's order.
+    /// Where a tab is in the sidebar's order: a search, each record looked at counted in a debug build ([`searched`]). Every lookup of a tab by its number
+    /// comes here.
     pub(crate) fn position(&self, id: TabId) -> Option<usize> {
-        self.tabs.iter().position(|t| t.id == id)
+        let at = self.tabs.iter().position(|t| t.id == id);
+        #[cfg(debug_assertions)]
+        searched::add(at.map_or(self.tabs.len(), |at| at + 1));
+        at
     }
 
     /// The tab at this place in the sidebar's order.
@@ -147,7 +173,10 @@ impl Tabs {
     pub fn for_path(&self, path: &Path) -> Option<TabId> {
         let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
-        self.tabs.iter().find(|t| t.file.dir == dir && &*t.file.file_name == file_name).map(|t| t.id)
+        let at = self.tabs.iter().position(|t| t.file.dir == dir && &*t.file.file_name == file_name);
+        #[cfg(debug_assertions)]
+        searched::add(at.map_or(self.tabs.len(), |at| at + 1));
+        at.map(|at| self.tabs[at].id)
     }
 
     /// A folder no tab is in any more is let go of, so the folders kept are only those in use.

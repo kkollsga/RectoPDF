@@ -15,6 +15,7 @@ mod journal;
 mod pages;
 mod paper;
 mod parts;
+mod per_tab_work;
 mod recent;
 mod restore;
 mod saving;
