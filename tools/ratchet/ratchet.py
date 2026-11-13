@@ -38,6 +38,9 @@ APPTEST_BINARIES = ("app", "restore", "compare", "evidence", "long_session")
 TEST_ATTR = re.compile(r'^\s*#\[\s*test\s*\]', re.M)
 # The hub types whose size is more than their methods: every function in their crate's src/ that takes the whole thing is counted too, as a method moved
 # out to a free function that still takes all of it is the same hub by another name (R3.7: `Inner`'s 113 methods and about 84 such functions). Only down.
+# What it sees: a function (free, or a method of any impl) with the type's name in a parameter, by any path, behind any reference or `Arc`. What it
+# doesn't: the name only in a generic bound or a `where` clause, a type alias for it, `self` of a trait impl on it, a closure that captures it, and a
+# method of a struct that holds it; those are not counted here.
 WHOLE = {"crates/recto-app/src": "Inner"}
 FN_HEAD = re.compile(r'\bfn\s+\w+')
 
@@ -232,7 +235,8 @@ def in_test_folder(rel, test_mods):
     return False
 
 def whole_fns(t, name):
-    """How many functions in masked, test-stripped text take `name` in a parameter: `fn f(inner: &Inner)`, `fn g<'a>(_: &'a Arc<super::Inner>)`."""
+    """How many functions in masked, test-stripped text take `name` in a parameter: `fn f(inner: &Inner)`, `fn g<'a>(_: &'a Arc<super::Inner>)`,
+    `fn h<F: Fn() -> u8>(inner: &Inner, f: F)` (a `->` in the generics closes no bracket). Not the name in generics or a `where` clause: see WHOLE."""
     word = re.compile(r'\b' + re.escape(name) + r'\b')
     n = 0
     for m in FN_HEAD.finditer(t):
@@ -240,7 +244,7 @@ def whole_fns(t, name):
         while i < len(t) and (depth or t[i] != '('):      # past the generics, to the parameters
             if t[i] == '<':
                 depth += 1
-            elif t[i] == '>':
+            elif t[i] == '>' and t[i - 1] != '-':      # `->` of a closure's bound closes nothing
                 depth -= 1
             elif t[i] in '{;':
                 break
