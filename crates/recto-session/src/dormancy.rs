@@ -5,6 +5,11 @@ use crate::sleep::SleepFile;
 use recto_core::Toc;
 use std::sync::Arc;
 
+/// Tabs gone cold whose sleep files wait to be written, held at once. The app's sleeper takes them as they come, so this is only ever reached if it's stopped. Each holds a document's contents, which is why it's small.
+pub(crate) const MAX_LEFT_WARM: usize = 8;
+/// Tabs woken from sleep files whose files wait to be looked at, held at once. The same: the sleeper takes them as they come.
+pub(crate) const MAX_WOKEN_FROM_FILE: usize = 64;
+
 /// What going dormant and sleep files need of the session.
 #[derive(Debug)]
 pub(crate) struct Dormancy {
@@ -16,9 +21,9 @@ pub(crate) struct Dormancy {
     sleep_files: bool,
     /// The sleep file a tab was just woken from, for its first frame.
     just_read: Option<(TabId, SleepFile)>,
-    /// Tabs woken from sleep files whose files nobody's looked at yet.
+    /// Tabs woken from sleep files whose files nobody's looked at yet. Each once, at most [`MAX_WOKEN_FROM_FILE`].
     woken_from_file: Vec<TabId>,
-    /// Tabs just pushed out of the warm ones, with their contents, kept long enough for their sleep files to be written.
+    /// Tabs just pushed out of the warm ones, with their contents, kept long enough for their sleep files to be written. Each once, at most [`MAX_LEFT_WARM`].
     left_warm: Vec<(TabId, Arc<Toc>)>,
 }
 
@@ -64,9 +69,13 @@ impl Dormancy {
         self.sleep_files = on;
     }
 
-    /// A tab's gone cold from the warm ones: what its sleep file needs is kept long enough to write that, if there are sleep files here.
+    /// A tab's gone cold from the warm ones: what its sleep file needs is kept long enough to write that, if there are sleep files here. **At the cap the oldest goes, and its sleep file isn't written this time:** the tab wakes from its PDF instead, a read made with the session free, and nothing of anyone's is lost.
     pub(crate) fn note_left(&mut self, left: (TabId, Arc<Toc>)) {
         if self.sleep_files {
+            self.left_warm.retain(|(tab, _)| *tab != left.0);
+            if self.left_warm.len() >= MAX_LEFT_WARM {
+                self.left_warm.remove(0);
+            }
             self.left_warm.push(left);
         }
     }
@@ -75,9 +84,13 @@ impl Dormancy {
         std::mem::take(&mut self.left_warm)
     }
 
-    /// A tab's been woken from this sleep file, which is kept for its first frame, and its file's to be looked at.
+    /// A tab's been woken from this sleep file, which is kept for its first frame, and its file's to be looked at. **At the cap the oldest goes, and its file isn't looked at on this way past:** a file changed behind its sleep file is still found when the renderer opens it to draw and says how long it is ([`crate::Session::file_length_is`]), which overrules what the sleep file said.
     pub(crate) fn woke_from_file(&mut self, id: TabId, sleep: SleepFile) {
         self.just_read = Some((id, sleep));
+        self.woken_from_file.retain(|tab| *tab != id);
+        if self.woken_from_file.len() >= MAX_WOKEN_FROM_FILE {
+            self.woken_from_file.remove(0);
+        }
         self.woken_from_file.push(id);
     }
 
@@ -112,5 +125,66 @@ impl Dormancy {
             ("woken_from_file", self.woken_from_file.contains(&id)),
             ("left_warm", self.left_warm.iter().any(|(tab, _)| *tab == id)),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recto_platform::FileStamp;
+
+    fn sleep_file() -> SleepFile {
+        SleepFile {
+            file: FileStamp {
+                size: 1,
+                mtime_ns: 1,
+                device: 1,
+                inode: 1,
+            },
+            file_pages: 1,
+            pages: 1,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc: Toc::default(),
+            usual: None,
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        }
+    }
+
+    /// Failure: with the sleeper stopped, tabs going cold pile up here past the cap, each holding its document's contents; or one tab going cold twice is held twice.
+    #[test]
+    fn tabs_gone_cold_wait_for_their_sleep_files_within_the_cap() {
+        let mut dormancy = Dormancy::default();
+        dormancy.set_sleep_files(true);
+        for n in 0..=MAX_LEFT_WARM as u32 {
+            dormancy.note_left((TabId(n), Arc::new(Toc::default())));
+        }
+        dormancy.note_left((TabId(5), Arc::new(Toc::default())));
+        let left: Vec<TabId> = dormancy.take_left().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(left.len(), MAX_LEFT_WARM);
+        assert!(!left.contains(&TabId(0)), "the oldest went");
+        assert_eq!(left.last(), Some(&TabId(5)), "a tab gone cold again is held once, as the latest");
+        assert!(dormancy.take_left().is_empty());
+    }
+
+    /// Failure: with the sleeper stopped, tabs woken from sleep files pile up past the cap; or one woken twice is looked at twice.
+    #[test]
+    fn tabs_woken_from_sleep_files_wait_for_a_look_within_the_cap() {
+        let mut dormancy = Dormancy::default();
+        for n in 0..=MAX_WOKEN_FROM_FILE as u32 {
+            dormancy.woke_from_file(TabId(n), sleep_file());
+        }
+        dormancy.woke_from_file(TabId(9), sleep_file());
+        let woken = dormancy.take_woken_from_file();
+        assert_eq!(woken.len(), MAX_WOKEN_FROM_FILE);
+        assert!(!woken.contains(&TabId(0)), "the oldest went");
+        assert_eq!(woken.last(), Some(&TabId(9)));
+        assert_eq!(woken.iter().filter(|id| **id == TabId(9)).count(), 1);
+        assert!(
+            dormancy.take_sleep_read(TabId(9)).is_some(),
+            "the latest one's sleep file is kept for its first frame"
+        );
     }
 }
