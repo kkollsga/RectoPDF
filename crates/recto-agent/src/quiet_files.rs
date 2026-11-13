@@ -261,6 +261,95 @@ mod tests {
         );
     }
 
+    /// Failure (review of the branch, S1's sweep beyond QA): a command's argument is text to the table but a file to the command, so no wall sees it, and a
+    /// confined session reads, writes or learns of a file outside its folders through it. Every session command in the table, from its first example,
+    /// with every value that isn't a file to the table, a number or a time set to an outside file (each file it does name kept in the run): the outside
+    /// file is left unread, unmoved and unwritten, nothing of it comes back, and every answer is the same with it gone.
+    #[test]
+    fn no_text_argument_reaches_a_file_outside_the_run() {
+        use std::os::unix::fs::MetadataExt;
+        let outside = outside();
+        let secret = outside.path().join("secret.pdf");
+        let gone = outside.path().join("aside.pdf");
+        let looks = |file: &Path| {
+            let meta = std::fs::metadata(file).expect("the outside file is still there");
+            (meta.len(), meta.ino(), meta.accessed().unwrap(), meta.modified().unwrap())
+        };
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&secret)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_accessed(long_ago))
+            .unwrap();
+        let before = looks(&secret);
+        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
+        std::fs::write(run.join("mine.pdf"), pdf("the run's own")).unwrap();
+        // Numbers blanked, as a time taken differs run to run.
+        fn blanked(value: &Value) -> Value {
+            match value {
+                Value::Number(_) => json!(0),
+                Value::Array(items) => Value::Array(items.iter().map(blanked).collect()),
+                Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), blanked(value))).collect()),
+                other => other.clone(),
+            }
+        }
+        let said = |answer: Result<Value, AgentError>| match answer {
+            Ok(value) => blanked(&value).to_string(),
+            Err(error) => format!("{}: {}", error.code, error.message),
+        };
+        let mut swept = 0;
+        for spec in table::TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.tag.starts_with("qa_")) {
+            let takes_text = spec.args.iter().any(|arg| matches!(arg.kind, Kind::Text | Kind::Tab | Kind::Rest));
+            let Some(example) = spec.examples.first() else {
+                assert!(!takes_text, "{} takes text and has no example to try", spec.name);
+                continue;
+            };
+            let words = crate::skill::shell_words(example);
+            let line = table::parse_cli(&words[1..]).unwrap_or_else(|error| panic!("{}: {}", spec.name, error.message));
+            let example: Value = serde_json::from_str(&line.wire()).unwrap();
+            // Every value that can hold text set to the outside file; and if the wire won't take a file for a choice, the text alone.
+            let with_file = |choices_too: bool| {
+                let mut wire = example.clone();
+                let mut set = false;
+                for arg in spec.args {
+                    match arg.kind {
+                        Kind::Path => wire[arg.key] = json!(run.join(format!("{}-{}.out", spec.tag, arg.key))),
+                        Kind::Text | Kind::Tab | Kind::Rest => {
+                            wire[arg.key] = json!(secret);
+                            set = true;
+                        }
+                        Kind::Choice(_) | Kind::List(_) if choices_too => {
+                            wire[arg.key] = json!(secret);
+                            set = true;
+                        }
+                        _ => {}
+                    }
+                }
+                set.then(|| parse(&wire.to_string()).ok()).flatten()
+            };
+            let Some(command) = with_file(true).or_else(|| with_file(false)) else {
+                assert!(!takes_text, "{}: no line with a file in its text could be made", spec.name);
+                continue;
+            };
+            let run_it = || {
+                let mut session = Session::new(crate::DrawableLoader);
+                session.confinement().confine(RunFolders::quiet_run());
+                session.open(&run.join("mine.pdf")).unwrap();
+                said(execute(&Mutex::new(session), Actor::Agent(Level::Full), &command, &mut Vec::new()))
+            };
+            let there = run_it();
+            std::fs::rename(&secret, &gone).unwrap();
+            let missing = run_it();
+            std::fs::rename(&gone, &secret).unwrap();
+            assert_eq!(there, missing, "{}: the answer says whether the outside file is there", spec.name);
+            assert!(!there.contains("user's own"), "{}: the outside file was read", spec.name);
+            assert_eq!(looks(&secret), before, "{}: the outside file was read, moved or written", spec.name);
+            swept += 1;
+        }
+        assert!(swept >= 15, "the sweep found the commands with text: {swept}");
+    }
+
     /// Failure: the wall is on a session that isn't confined (the user's own app), so the user can't open their own documents; or it's a quiet run's
     /// file and is refused. A free session's `open` of the same outside PDF opens it.
     #[test]
