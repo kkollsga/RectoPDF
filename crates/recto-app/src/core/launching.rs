@@ -109,6 +109,8 @@ impl Inner {
 
     /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
     pub fn window_replaced(&self) {
+        // The host's word that it made the window again: what `record.remade` says.
+        let _ = self.life.step(crate::lifecycle::Event::WindowRemade);
         let engines = self.panes.engines(&self.engine);
         // What's selected goes with the window's layers, and comes back on the new one (a selection and Find's hit, under a late state).
         let held: Vec<(usize, recto_index::select::Range)> = engines

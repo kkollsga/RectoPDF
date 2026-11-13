@@ -54,7 +54,11 @@ impl Launch {
             );
         }
         self.heard.push((self.now, out));
-        if let Out::RestoreReady { with_state: true, .. } = out {
+        // As `App.swift` does: made again if Rust's rule says so now, and said.
+        if let Out::RestoreReady { with_state: true, late } = out {
+            if late && self.life.may_remake_window(self.now, false) {
+                assert_eq!(self.life.step(Event::WindowRemade, self.now), None);
+            }
             assert_eq!(self.life.step(Event::ShownWithState, self.now), None);
         }
     }
@@ -617,4 +621,25 @@ fn a_quit_or_a_hand_off_stops_trying_for_the_lock() {
         assert_eq!(life.keeping(), keeping::Keeping::NotKept, "{event:?}");
         assert_eq!(life.keeping_due(1_000), None, "{event:?}: no more tries");
     }
+}
+
+/// Failure (review, 2026-11-13: `record.remade`, which explains a failing launch test, must say what happened): the window went up without the state, and the
+/// state came in without the record's lock while it's trying, so the host doesn't make the window again (nothing to make it from, and one may come) and says
+/// only that it's shown with the state; and the record says it was made again anyway, as it was inferred from the window having gone up without the state.
+/// Made again is what the host says it did: a window replaced.
+#[test]
+fn a_window_not_made_again_is_never_said_to_have_been() {
+    let mut life = Life::default();
+    let late = host_patience() + 200;
+    let _ = life.step(
+        Event::PatienceOver {
+            may_be_reopened_by_update: false,
+        },
+        host_patience(),
+    );
+    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: false, as_read: 7 }), late), None);
+    assert_eq!(life.step(Event::StateRead, late), Some(Out::RestoreReady { with_state: true, late: true }));
+    assert!(!life.may_remake_window(late, false), "not made again while it tries");
+    let _ = life.step(Event::ShownWithState, late);
+    assert!(!life.remade(), "and not said to have been");
 }

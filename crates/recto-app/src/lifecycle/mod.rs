@@ -67,7 +67,8 @@ pub struct Life {
     patience_due_ms: Option<u64>,
     hand_off: HandOff,
     quit: Quit,
-    /// The window went up without the state and was made again from it when it came in: what a test of a late state asks, so it can't pass on the on-time path.
+    /// The window was made again from the state, as the host says ([`Event::WindowRemade`]), not inferred: what a test of a late state asks, so it can't pass
+    /// on the on-time path.
     remade: bool,
     /// The host's been told the control socket's session has ended ([`Out::SessionEnded`]): once in the app's life, as only this being false tells it.
     ended: bool,
@@ -86,6 +87,8 @@ pub enum Event {
     StateRead,
     /// What the host shows has been made from the state.
     ShownWithState,
+    /// The host made the window again from the state, replacing the one that went up without it (`AppCore::window_replaced`): what it says, not inferred.
+    WindowRemade,
     /// A hand-off begins: nothing was in flight, and from here what's done wouldn't come back.
     HandOffWriting,
     /// The state's written, forced to the drive and read back, with still nothing in flight.
@@ -168,8 +171,11 @@ impl Life {
                 })
             }
             // Made again from the state only while the window may still be: the rule the host asks (`may_remake_window`) before it makes it again.
+            Event::WindowRemade => {
+                self.remade = true;
+                None
+            }
             Event::ShownWithState => {
-                self.remade |= self.shown == Shown::WithoutState && !self.takes_input(now_ms);
                 self.shown = Shown::WithState;
                 self.late_kept = false;
                 None
