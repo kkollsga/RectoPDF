@@ -167,10 +167,11 @@ fn agents_words(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// Failure (review of R2.5, F2): a refusal made as a request is read, before any level or tab is looked at, says something that's neither constant words
-/// nor the agent's own words cleaned: raw text an agent typed (a control character, a bidi override), or anything else. Walks every refusal by a command's
-/// type that the malformed requests, the registry's golden requests and the agent target's seeds reach, and mutations of them as the fuzz target makes:
-/// with the agent's cleaned words taken out, every word left is written in the code of `recto-agent` or `recto-session`, and nothing else rides along.
+/// Failure (review of R2.5, F2, and its second review, S2): a refusal made as a request is read, before any level or tab is looked at, says something,
+/// in its message or in what to do next, that's neither constant words nor the agent's own words cleaned: raw text an agent typed (a control character, a
+/// bidi override), or anything else. Walks every refusal by a command's type that the malformed requests, the registry's golden requests and the agent
+/// target's seeds reach, and mutations of them as the fuzz target makes: with the agent's cleaned words taken out, every word left in either is written in
+/// the code of `recto-agent` or `recto-session`, and nothing else rides along.
 #[test]
 fn a_refusal_as_a_request_is_read_says_only_constant_words_and_the_agents_own() {
     let code = [source_of("recto-agent"), source_of("recto-session")].concat();
@@ -201,21 +202,22 @@ fn a_refusal_as_a_request_is_read_says_only_constant_words_and_the_agents_own() 
         let mut words = Vec::new();
         agents_words(&serde_json::from_str(line).expect("a line read as a command is JSON"), &mut words);
         words.sort_by_key(|word| std::cmp::Reverse(word.len()));
-        let mut said = error.message.clone();
-        for word in words.iter().filter(|word| !word.is_empty()) {
-            said = said.replace(word.as_str(), " ");
-        }
-        // A list the code joins (`single, two-up, two-up-cover`) has its commas between words, not in them.
-        for piece in said
-            .split_whitespace()
-            .map(|piece| piece.trim_end_matches([',', '.']))
-            .filter(|piece| !piece.is_empty())
-        {
-            assert!(
-                code.contains(piece),
-                "{line}: `{piece}` in {:?} is neither constant nor the agent's own words",
-                error.message
-            );
+        for told in [&error.message, &error.next] {
+            let mut said = told.clone();
+            for word in words.iter().filter(|word| !word.is_empty()) {
+                said = said.replace(word.as_str(), " ");
+            }
+            // A list the code joins (`single, two-up, two-up-cover`) has its commas between words, not in them.
+            for piece in said
+                .split_whitespace()
+                .map(|piece| piece.trim_end_matches([',', '.']))
+                .filter(|piece| !piece.is_empty())
+            {
+                assert!(
+                    code.contains(piece),
+                    "{line}: `{piece}` in {told:?} is neither constant nor the agent's own words"
+                );
+            }
         }
     }
     assert!(walked >= 25, "the walk reached the types' refusals: {walked}");
