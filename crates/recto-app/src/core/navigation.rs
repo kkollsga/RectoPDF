@@ -16,7 +16,7 @@ pub fn contents_page(page: u32, shown: u32) -> u32 {
 
 /// What a person's `goto` that didn't go is said as: a typed page that's no page, in the go-to field's words. Any other way it can't go said nothing before,
 /// and says nothing now.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if let (Some(_), Command::Move(Move::Goto(Goto { label: Some(typed), .. }))) = (ran.refused(), ran.command) {
         person::say(inner, linking::no_such_page(typed));
     }

@@ -16,8 +16,8 @@ extension QAChannel {
         case "find_key":
             guard let find = controller?.sidebar.find, find.model.open else { return fail(id, "Find isn't open.") }
             switch value {
-            case "return": delegate.core.findReturn(forward: true)
-            case "shift_return": delegate.core.findReturn(forward: false)
+            case "return": _ = delegate.core.act(action: .findReturn(forward: true))
+            case "shift_return": _ = delegate.core.act(action: .findReturn(forward: false))
             case "escape": find.closeClicked()
             default: return fail(id, "It's `return`, `shift_return` or `escape`.")
             }

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Tabs side by side: which, the one being read, and separate or synced scroll. With nothing, only says.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Compare {
     /// Tabs by selector, with commas between: `#1,#3`.

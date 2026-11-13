@@ -86,7 +86,7 @@ impl Inner {
                 self.listener.model_changed();
             }
             // Off this thread by itself, and it says how it went.
-            menus::Action::Update => self.updates.menu_chosen(),
+            menus::Action::Update => self.update_chosen_for_person(),
             menus::Action::Save => {
                 let reader = lock(&self.published).reader.clone();
                 if self.can_save() && reader.shown_tab != 0 {

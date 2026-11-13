@@ -51,15 +51,30 @@ pub enum SaveTo {
     As { out: PathBuf, replace: bool },
 }
 
-/// Lets the tab go however the save ends, a panic included.
+/// Lets the tab go however the save ends, a panic included, **once**: unless the save's own end has run (`ended`), in the same hold of the session as
+/// what it saved. Ending again, under a hold of its own, would end a save of the same tab begun in between, and let edits through while its file is
+/// written (review, 2026-11-13).
 struct Ending<'a, A: SessionAccess> {
     access: &'a A,
     id: TabId,
+    ended: std::cell::Cell<bool>,
+}
+
+impl<'a, A: SessionAccess> Ending<'a, A> {
+    fn new(access: &'a A, id: TabId) -> Self {
+        Self {
+            access,
+            id,
+            ended: std::cell::Cell::new(false),
+        }
+    }
 }
 
 impl<A: SessionAccess> Drop for Ending<'_, A> {
     fn drop(&mut self) {
-        self.access.with(|s| s.end_save(self.id));
+        if !self.ended.get() {
+            self.access.with(|s| s.end_save(self.id));
+        }
     }
 }
 
@@ -224,7 +239,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let Some(snapshot) = snapshot else {
         return Ok(access.with(|s| nothing_to_save(s, id)));
     };
-    let ending = Ending { access, id };
+    let ending = Ending::new(access, id);
     if let Some(support) = access.saving() {
         support.before_writing(id);
     }
@@ -315,10 +330,10 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
             None => 0,
         };
         s.end_save(id);
+        ending.ended.set(true);
         events.extend(crate::event::saved(s, id, outcome.writer.name()));
         answer(s, id, &outcome, rolled_off, saved_as.as_deref(), level)
     });
-    drop(ending);
     if let Some(support) = support {
         support.after_save(id);
     }
@@ -472,4 +487,46 @@ fn answer<L: recto_session::DocLoader>(
     }
     data["untrusted"] = json!({ "file": name });
     data
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+    use recto_core::{DocFacts, OpenError, Toc};
+    use recto_session::{DocLoader, Session};
+
+    #[derive(Clone)]
+    struct Fake;
+
+    impl DocLoader for Fake {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
+        }
+    }
+
+    /// Failure (review of 2026-11-13): a save ended twice, once with what it saved and again as its guard drops, each under its own hold of the session, so
+    /// a second save of the same tab begun in between was ended by the first's guard, and edits were let through while its file was being written. A save
+    /// that has ended, a second begun, then the first's guard dropped: the second is still saving.
+    #[test]
+    fn a_saves_guard_never_ends_the_next_save() {
+        let session = std::sync::Mutex::new(Session::new(Fake));
+        let id = session.with(|s| s.open(Path::new("/d/a.pdf"))).expect("open");
+        session.with(|s| s.begin_save(id, true)).expect("the first save").expect("something to save");
+        let ending = Ending::new(&session, id);
+        session.with(|s| {
+            s.end_save(id);
+            ending.ended.set(true);
+        });
+        session.with(|s| s.begin_save(id, true)).expect("the second save").expect("something to save");
+        drop(ending);
+        assert!(session.with(|s| s.is_saving(id)), "the second save is still under way");
+    }
 }

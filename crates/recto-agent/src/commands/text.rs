@@ -11,7 +11,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 /// Finds words across a document, from its index if that's finished, and otherwise by reading its pages.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Search {
     #[serde(default = "crate::active_tab")]
@@ -92,7 +92,7 @@ impl Cmd for Search {
 }
 
 /// Asks for a document's search index to be built if it isn't, and says where it stands. Never waits.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Index {
     #[serde(default = "crate::active_tab")]
@@ -133,7 +133,7 @@ impl Cmd for Index {
 }
 
 /// Where a document's search index stands. Starts nothing.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexStatus {
     #[serde(default = "crate::active_tab")]
@@ -171,7 +171,7 @@ impl Cmd for IndexStatus {
 }
 
 /// Throws away a document's search index, or all of them. It's extracted text, so someone may want it gone.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexClear {
     #[serde(default = "crate::active_tab")]
@@ -231,7 +231,7 @@ impl Cmd for IndexClear {
 }
 
 /// A page's text, normalised for search, with the hidden-text flag.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Text {
     #[serde(default = "crate::active_tab")]
@@ -280,7 +280,7 @@ impl Cmd for Text {
 }
 
 /// What a click, a drag or a range of characters takes: the text, and where it shows on each page.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Select {
     #[serde(default = "crate::active_tab")]
@@ -365,7 +365,7 @@ impl Cmd for Select {
 }
 
 /// The text ⌘C would put on the clipboard for the same pick. It comes back here, and no clipboard is touched.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Copy {
     #[serde(default = "crate::active_tab")]

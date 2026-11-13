@@ -32,7 +32,7 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, command: C
 
 /// **What the window says of a person's Rotate:** why it couldn't, by the page, in the session's words; and once it has, any line that was there goes, as
 /// the panel's Rotate always had it. An Undo or Redo with nothing to do says nothing, as before.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if !matches!(ran.command, Command::Edit(Edit::PageRotate(_))) {
         return;
     }

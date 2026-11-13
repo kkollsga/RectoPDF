@@ -182,7 +182,7 @@ final class FindRowCell: NSView {
     /// What typing does, and what `recto qa find-type` calls.
     func typed(_ text: String) {
         if hasFocus { typedSinceFocus = true }
-        core.findTyped(text: text)
+        _ = core.act(action: .findTyped(text: text))
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -200,7 +200,7 @@ final class FindRowCell: NSView {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            core.findReturn(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+            _ = core.act(action: .findReturn(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false)))
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             closeClicked()
@@ -211,7 +211,7 @@ final class FindRowCell: NSView {
     }
 
     @objc func closeClicked() {
-        core.findClose()
+        _ = core.act(action: .findClose)
         view.window?.makeFirstResponder(view.window?.contentView)
     }
 
@@ -223,7 +223,7 @@ final class FindRowCell: NSView {
 
     /// What a click on a row does, and what `recto qa find-click` calls.
     func clickRow(_ row: Int) {
-        core.findChoose(row: UInt32(row))
+        _ = core.act(action: .findChoose(row: UInt32(row)))
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { Int(model.open ? model.rowCount : 0) }
