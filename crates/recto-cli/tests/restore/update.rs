@@ -836,18 +836,38 @@ fn the_launch_guard_goes_back_by_itself() {
     run.quit();
 }
 
-/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run; or (owner, 2026-11-13: it tries again quietly for about ten seconds) one let go after the launch's wait keeps the record late but stays a second copy to the updater, so an install it arrived by would be sent back (review, 2026-11-13). Held by someone else for 300 ms, inside the wait, and then until the app answers, past it: each time it keeps the record, isn't a second copy, has its timer, and says nothing.
+/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run; or (owner, 2026-11-13: it tries again quietly for about ten seconds) one let go after the launch's wait keeps the record late but stays a second copy to the updater, so an install it arrived by would be sent back (review, 2026-11-13); or it keeps the record late and its window isn't made again from the saved session (review, 2026-11-13: only the real app shows that). Held by someone else for 300 ms, inside the wait, and then until the app answers, past it: each time it keeps the record, isn't a second copy, has its timer, and says nothing; and the second time, on the session the first left, the window is made again at the saved size, with the shots before and after.
 #[test]
 fn a_quick_reopen_isnt_a_second_copy() {
-    a_quick_reopen_let_go(false);
-    a_quick_reopen_let_go(true);
-}
-
-/// The record's lock held by someone else at the launch, and let go of: after 300 ms, inside the launch's wait; or (`after_its_wait`) once the app answers,
-/// which it does only once it has read the state without the lock, so it's trying again by then, whatever the machine's speed.
-fn a_quick_reopen_let_go(after_its_wait: bool) {
     let Some(bed) = Bed::new() else { return };
     bed.state.paths.prepare().unwrap();
+    // Kept for both launches: the second shows it from the saved session.
+    let file = long_document("alpha", 6);
+    let saved = a_quick_reopen_let_go(&bed, &file.0, None);
+    a_quick_reopen_let_go(&bed, &file.0, Some(saved));
+}
+
+/// The window's size as the host has it.
+fn window_size(run: &Run<'_>) -> (f64, f64) {
+    let report = run.report();
+    let window = &report["app"]["window"];
+    (window["width"].as_f64().unwrap_or_default(), window["height"].as_f64().unwrap_or_default())
+}
+
+/// A QA shot of the window, kept where `RECTO_KEEP_SHOTS` says as well if it's set, to be looked at after the run.
+fn shot(run: &Run<'_>, name: &str) {
+    let out = run.state.root.join(name);
+    run.ok(&["qa", "shot", "--out", out.to_str().unwrap()]);
+    if let Some(keep) = std::env::var_os("RECTO_KEEP_SHOTS") {
+        let _ = std::fs::copy(&out, std::path::Path::new(&keep).join(name));
+    }
+}
+
+/// The record's lock held by someone else at the launch, and let go of: after 300 ms, inside the launch's wait, and a session left for the next launch (a
+/// document open and the window at a size of its own, which is said); or, with the size that session left (`saved`), once the app answers, which it does only
+/// once it has read the state without the lock, so it's trying again by then, whatever the machine's speed.
+fn a_quick_reopen_let_go(bed: &Bed, file: &std::path::Path, saved: Option<(f64, f64)>) -> (f64, f64) {
+    let after_its_wait = saved.is_some();
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -857,7 +877,21 @@ fn a_quick_reopen_let_go(after_its_wait: bool) {
     lock.try_lock().unwrap();
     let run = if after_its_wait {
         let run = bed.start();
-        assert_eq!(bed.status(&run)["second_copy"], false, "not told it's a second copy while it tries");
+        let status = bed.status(&run);
+        assert!(
+            status["version"].is_null(),
+            "the updater not told of the launch at all while it tries: {status}"
+        );
+        assert!(
+            run.report()["session"]["tabs"].as_array().is_some_and(Vec::is_empty),
+            "the empty window, while it tries"
+        );
+        assert_ne!(
+            Some(window_size(&run)),
+            saved,
+            "the window that went up without the saved session isn't at its size"
+        );
+        shot(&run, "lock-retry-before.png");
         drop(lock);
         run
     } else {
@@ -878,7 +912,29 @@ fn a_quick_reopen_let_go(after_its_wait: bool) {
         "let go after its wait {after_its_wait}: nothing said: {}",
         run.report()["session"]["app"]
     );
+    if after_its_wait {
+        run.settled();
+        let report = run.report();
+        assert_eq!(
+            report["record"]["remade"], true,
+            "the window made again from the saved session: {}",
+            report["record"]
+        );
+        assert_eq!(report["session"]["tabs"][0]["page"], 3, "with the saved session in it: {}", report["session"]);
+        let size = window_size(&run);
+        assert_eq!(Some(size), saved, "at the saved size");
+        shot(&run, "lock-retry-after.png");
+    } else {
+        // What the next launch is to bring back: a document at a page, and the window at a size that isn't the one a window starts at.
+        run.ok(&["open", file.to_str().unwrap()]);
+        run.settled();
+        run.ok(&["goto", "4"]);
+        run.ok(&["qa", "resize", "900x620"]);
+        run.settled();
+    }
+    let size = window_size(&run);
     run.quit();
+    size
 }
 
 /// Failure: an app left running with its window closed gets a window put up behind whatever the user's doing, by an update they didn't ask to see. It stays closed across an update, comes back when it's asked for, and with everything in it, and any other launch opens one.
