@@ -22,6 +22,7 @@ mod reading_later;
 mod recent;
 mod selection;
 mod sidebar;
+mod sleeping;
 mod tabs;
 mod twins;
 mod update;
