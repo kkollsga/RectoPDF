@@ -241,6 +241,21 @@ mod tests {
         let _ = std::fs::remove_file(&elsewhere);
     }
 
+    /// **Failure (R3.5b, untested since R3.5a): `qa as-person` in a confined run opens a relative path** from a folder the rule never looked at. A path
+    /// is made whole as `recto` makes it, from the process's folder (`table::parse_cli`), before anything else sees it, so what the rule is put to is
+    /// that whole path: outside the run's folders here, as a test's folder is, it's refused as every route refuses a file outside, and nothing opens.
+    #[test]
+    fn a_relative_path_is_held_to_the_rule_from_the_processs_folder() {
+        let app = HeadlessApp::start();
+        let folders = app.core().host.session.confinement().expect("a test's session is confined");
+        let whole = std::path::absolute("a.pdf").unwrap();
+        assert!(!folders.admits(&whole), "the test runs in a folder outside the run's: {}", whole.display());
+        let refused = run(app.core(), "open a.pdf").expect_err("a relative path, outside once whole");
+        assert_eq!(refused.code, "outside_quiet_run", "{}", refused.message);
+        app.settle();
+        assert!(app.tabs().is_empty(), "nothing opened");
+    }
+
     /// **Failure (R3.5a): a refusal says whether a file outside the run exists.** The named file was resolved before the rule ran, so a link in a test's
     /// folder to a file outside was refused under the outside file's own name when that file was there, and under the link's when it wasn't. The rule
     /// goes first, on the files as named, so the refusal is the same either way.

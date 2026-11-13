@@ -283,14 +283,14 @@ impl QaBridge {
 
     /// Live workers that said their walls were up.
     fn walled_workers(&self) -> u32 {
-        self.engines().iter().map(|engine| engine.walled_workers()).sum()
+        self.engines().iter().map(|engine| engine.workers().walled()).sum()
     }
 
     /// The workers of every page view, now and at their peaks.
     fn workers_footprint(&self) -> (u64, u64, usize) {
         self.engines().iter().fold((0, 0, 0), |(now, peak, count), engine| {
-            let (one, top) = engine.workers_footprint();
-            (now + one, peak + top, count + engine.worker_pids().len())
+            let (one, top) = engine.workers().footprint();
+            (now + one, peak + top, count + engine.workers().pids().len())
         })
     }
 
@@ -544,6 +544,7 @@ impl QaBridge {
                 let place = parse_page_place(value)?;
                 let (x, y) = self
                     .reading_engine()
+                    .points()
                     .document_point(place.page, place.x, place.y)
                     .ok_or_else(|| bad("That page isn't in this document."))?;
                 self.ask(verb, &format!("{x},{y},{},{}", place.clicks, u8::from(place.shift)))?;

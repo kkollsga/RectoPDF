@@ -20,7 +20,7 @@ fn every_way_of_zooming_is_one_path_with_one_set_of_limits() {
     assert_eq!(reader.zoom(Zoom::Fit), Some(1.0));
     let actual = reader.zoom(Zoom::Actual).unwrap();
     assert!(
-        (actual * reader.doc().unwrap().layout.fit() - 1.0).abs() < 1e-9 || actual == MIN_ZOOM || actual == MAX_ZOOM,
+        (actual * reader.docs.shown().unwrap().layout.fit() - 1.0).abs() < 1e-9 || actual == MIN_ZOOM || actual == MAX_ZOOM,
         "{actual}"
     );
     assert!(zoom_after_scroll(1.0, 100.0) > 1.0 && zoom_after_scroll(1.0, -100.0) < 1.0, "upwards is in");
@@ -34,7 +34,7 @@ fn every_way_of_zooming_is_one_path_with_one_set_of_limits() {
 fn a_zoom_level_is_a_share_of_the_real_size() {
     let mut reader = reader_on(10);
     settle(&mut reader);
-    let fit = reader.doc().unwrap().layout.fit();
+    let fit = reader.docs.shown().unwrap().layout.fit();
     let actual = reader.zoom(Zoom::Percent(100.0)).unwrap();
     assert!((actual - reader.zoom(Zoom::Actual).unwrap()).abs() < 1e-9);
     assert!((zoom_percent(actual, fit) - 100.0).abs() < 1e-9);

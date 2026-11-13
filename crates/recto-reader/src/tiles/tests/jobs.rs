@@ -5,7 +5,7 @@ use super::*;
 fn a_job_nobody_wants_any_more_is_cancelled() {
     let mut reader = reader_on(100);
     let job = a_draw_job(&mut reader, DrawKind::Tile);
-    reader.note_started(&job, None);
+    reader.work.note_started(&job, None);
     reader.set_viewport(view(0.0));
     assert_eq!(reader.counts().cancels_asked, 0, "still in view");
     reader.set_viewport(view(40_000.0));
@@ -20,7 +20,7 @@ fn a_job_nobody_wants_any_more_is_cancelled() {
 fn a_job_for_an_old_zoom_is_cancelled_and_a_preview_is_not() {
     let mut reader = reader_on(100);
     let job = a_draw_job(&mut reader, DrawKind::Tile);
-    reader.note_started(&job, None);
+    reader.work.note_started(&job, None);
     reader.set_viewport(Viewport {
         magnification: 1.5,
         ..view(0.0)
@@ -30,7 +30,7 @@ fn a_job_for_an_old_zoom_is_cancelled_and_a_preview_is_not() {
 
     let mut reader = reader_on(100);
     let job = a_draw_job(&mut reader, DrawKind::Preview);
-    reader.note_started(&job, None);
+    reader.work.note_started(&job, None);
     reader.set_viewport(Viewport {
         magnification: 1.5,
         ..view(0.0)
@@ -135,7 +135,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
     assert!(matches!(size.kind, JobKind::Size));
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     reader.finish(size, Outcome::Size(PageBox { width: 100.0, height: 100.0 }));
-    assert!(!reader.doc().unwrap().layout.is_known(0), "that size was the old page's");
+    assert!(!reader.docs.shown().unwrap().layout.is_known(0), "that size was the old page's");
 
     let mut reader = reader_on(3);
     let traits = loop {
@@ -151,7 +151,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
     let position = traits.position;
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     reader.finish(traits, Outcome::Heavy(true));
-    assert!(!reader.doc().unwrap().drawing.heavy.contains_key(&position), "that was the old page's");
+    assert!(!reader.docs.shown().unwrap().drawing.heavy.contains_key(&position), "that was the old page's");
 
     let mut reader = reader_on(3);
     let draw = loop {
@@ -164,7 +164,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
             JobKind::Draw { .. } => break job,
         }
     };
-    reader.note_started(&draw, None);
+    reader.work.note_started(&draw, None);
     reader.activate(1, 2, 0, edited, &[], None, Spread::Single);
     reader.finish(
         draw,
@@ -233,8 +233,8 @@ fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
             needs_key: true,
         },
     );
-    assert_eq!(reader.take_keyless(), [PathBuf::from("/d/a.pdf")]);
-    assert!(reader.take_keyless().is_empty(), "told once");
+    assert_eq!(reader.work.take_keyless(), [PathBuf::from("/d/a.pdf")]);
+    assert!(reader.work.take_keyless().is_empty(), "told once");
     let mut other = reader_on(3);
     let job = other.next_job().expect("a job");
     other.finish(
@@ -244,7 +244,7 @@ fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
             needs_key: false,
         },
     );
-    assert!(other.take_keyless().is_empty(), "only for want of a password");
+    assert!(other.work.take_keyless().is_empty(), "only for want of a password");
     let job = reader.next_job();
     if let Some(job) = job {
         reader.finish(
@@ -256,7 +256,7 @@ fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
         );
     }
     reader.key_given(Path::new("/d/a.pdf"));
-    assert!(reader.take_keyless().is_empty(), "a password given takes it off the list");
+    assert!(reader.work.take_keyless().is_empty(), "a password given takes it off the list");
 }
 
 /// Failure: a page that couldn't be drawn is asked for on every scroll, or holds up the rest, or shows no reason.

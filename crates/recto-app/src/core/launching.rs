@@ -52,8 +52,8 @@ impl Inner {
             holding_tab: lock(&self.life.holding_tab).is_some(),
             session_free: active.is_some(),
             has_tab: active.unwrap_or(false),
-            on_place: self.engine.is_on_place(),
-            showable: self.engine.is_showable(),
+            on_place: self.engine.waking().is_on_place(),
+            showable: self.engine.waking().is_showable(),
         }
     }
 
@@ -103,7 +103,7 @@ impl Inner {
         let held = std::mem::take(&mut lock(&self.window.app).selections_held);
         for (pane, range) in held {
             if let Some(engine) = engines.get(pane) {
-                engine.restore_selection((range.start.page, range.start.at), (range.end.page, range.end.at));
+                engine.selection().restore((range.start.page, range.start.at), (range.end.page, range.end.at));
             }
         }
         // A new window's contents start at the top: they go back to where they were, following or not, as at a launch. A window made again from a state read late is one (CI, 2026-11-11).
@@ -125,7 +125,7 @@ impl Inner {
         let held: Vec<(usize, recto_index::select::Range)> = engines
             .iter()
             .enumerate()
-            .filter_map(|(pane, engine)| Some((pane, engine.hot_selection()?.1?)))
+            .filter_map(|(pane, engine)| Some((pane, engine.selection().hot()?.1?)))
             .collect();
         for engine in &engines {
             engine.window_closed();

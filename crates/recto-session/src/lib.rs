@@ -8,6 +8,7 @@ pub mod change;
 pub mod compare;
 pub mod confined;
 pub mod edit;
+pub mod held;
 pub mod palette;
 pub mod record;
 pub mod sleep;

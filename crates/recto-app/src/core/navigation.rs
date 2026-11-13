@@ -56,7 +56,7 @@ impl Inner {
     pub fn contents_tapped(self: &Arc<Self>, tab: TabId, page: u32) {
         let showing = (0..self.panes.count()).any(|pane| self.panes.tab_of(pane) == Some(tab));
         let shown = if showing {
-            self.panes.engine_for_tab(&self.engine, tab).page_count()
+            self.panes.engine_for_tab(&self.engine, tab).points().page_count()
         } else {
             0
         };

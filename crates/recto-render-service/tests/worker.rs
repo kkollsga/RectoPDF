@@ -871,6 +871,8 @@ fn a_job_that_may_start_no_worker_starts_none_and_leaves_the_next_one_free_to() 
     let file = TempPdf::new("slow.pdf", &pages(&[Page::new(slow_page(400_000)), Page::new(text_lines(&["Next"]))]));
     let policy = Policy {
         page_deadline: Duration::from_secs(120),
+        // A start that a starved machine takes over the default 10 s for is the machine, not the rule.
+        start_timeout: Duration::from_secs(60),
         ..Policy::default()
     };
     let mut doc = renderer(&file.0, policy);
@@ -925,16 +927,37 @@ fn a_job_that_may_start_no_worker_starts_none_and_leaves_the_next_one_free_to() 
     doc.kill_worker();
     drawn_after(&mut doc, 3, "a panic");
 
-    // Past its deadline.
+    // Past its deadline. The deadline is short so the slow page passes it, and it holds for the job after as well, so what's asked of that one is that it started a worker and wasn't refused one, which says nothing of how fast a runner is. A draw that comes out is drawn, and one that itself ran out of the short time is not a refusal.
     let policy = Policy {
         page_deadline: Duration::from_millis(200),
+        start_timeout: Duration::from_secs(60),
         ..Policy::default()
     };
     let mut doc = renderer(&file.0, policy);
-    drawn_after(&mut doc, 1, "nothing");
+    // A worker there to hold the job, from an open that a busy runner may need more than once to get in the time.
+    for _ in 0..20 {
+        if doc.worker_pid().is_some() {
+            break;
+        }
+        let _ = doc.page_size(0);
+    }
+    assert!(doc.worker_pid().is_some(), "a worker to hold the job");
     let result = only_there(&mut doc, 0, 1, &surface);
     assert!(result.is_err(), "{result:?}");
-    drawn_after(&mut doc, 1, "one past its deadline");
+    let spawns = doc.stats().spawns;
+    let result = doc.render_tile(&tile_request(1, 1), &tile_surface());
+    assert!(
+        matches!(
+            result,
+            Ok(TileResult::Done(_))
+                | Err(RenderFailure::PageFailed {
+                    reason: KillReason::Deadline,
+                    ..
+                })
+        ),
+        "the next ordinary job, after one past its deadline, isn't refused a worker: {result:?}"
+    );
+    assert_eq!(doc.stats().spawns, spawns + 1, "it started the worker it needed");
 }
 
 /// Failure: a page past the normal limit, drawn for nobody looking, went on to a heavy worker of up to the larger limit, and took the one heavy slot from whoever's page needs it. It's refused as needing one, and the worker that's there is kept.

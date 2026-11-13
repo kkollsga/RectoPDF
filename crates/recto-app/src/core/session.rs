@@ -102,7 +102,7 @@ pub fn apply_restored(
         // With a sleep file, the first frame has what it needs. Nothing waits for the PDF, and it's looked at on the way past.
         if inner.host.session.with_session(|session| session.wake_from_sleep_file(id)) {
             inner.host.session.with_session(|session| session.wake_active());
-            inner.engine.note_wake(id.0, Instant::now());
+            inner.engine.waking().note_wake(id.0, Instant::now());
         } else {
             *lock(&inner.life.holding_tab) = Some(id);
             reads.wanted_tab = Some(id);

@@ -67,3 +67,35 @@ fn pages_are_a_look_over_the_tab_its_list_and_its_labels() {
     lists.insert(TabId(1), moved);
     assert_eq!(look(&lists), ("iv (1 of 11)".to_string(), 11, None, 7, Some(0)));
 }
+
+/// **Failure (R3.5b): a tab whose list is asleep, its wake having failed (the journal couldn't be read just now), is read as having no edits**, so the
+/// corner, the go-to field and a link go by the file's own page numbers at positions the edits have moved: `iv` shown on a page that isn't it, `iv` or
+/// `4` typed going to the file's page and not the one it is now, a link landing on whatever page holds that position. While the order isn't known no
+/// label or position comes from the file: the corner shows the number, a typed label finds nothing and a typed number is the position, and a link goes
+/// nowhere.
+#[test]
+fn a_list_asleep_lends_no_label_or_position_from_the_file() {
+    let mut tabs = registry::Tabs::new();
+    tabs.push(bare_tab(1, 12));
+    let mut warm = warm::Warm::new();
+    warm.push(TabId(1), Arc::new(Labelled.load(Path::new("/d/book.pdf")).unwrap().toc), |_| {});
+    let mut lists = lists::Lists::new();
+    let mut moved = PageEdits::new(12);
+    moved.move_pages(3, 1, 0).unwrap();
+    lists.insert(TabId(1), moved);
+    assert!(lists.put_to_sleep(TabId(1)));
+    let pages = Pages {
+        tabs: &tabs,
+        lists: &lists,
+        warm: &warm,
+    };
+    assert_eq!(
+        pages.label(TabId(1), 1),
+        None,
+        "position 1 is the file's page i now, which isn't known while the list is asleep"
+    );
+    assert_eq!(pages.place_words(TabId(1), 1), "2 of 12");
+    assert_eq!(pages.for_typed(TabId(1), "iv"), None);
+    assert_eq!(pages.for_typed(TabId(1), "4"), Some(3), "a number is the position");
+    assert_eq!(pages.position_in_same_file(TabId(1), 0, 5), None);
+}

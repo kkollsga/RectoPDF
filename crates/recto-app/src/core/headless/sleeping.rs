@@ -304,7 +304,7 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3));
     let app = disk.start();
     let engine = app.core().engine.clone();
-    engine.window_up();
+    engine.waking().window_up();
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);

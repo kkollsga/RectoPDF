@@ -67,7 +67,7 @@ impl Said {
                 }
             })
             .collect();
-        let selection = inner.panes.reading_engine(&inner.engine).hot_selection();
+        let selection = inner.panes.reading_engine(&inner.engine).selection().hot();
         Self { panes, selection }
     }
 

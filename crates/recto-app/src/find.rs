@@ -352,7 +352,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     fn reveal(&self, tab: u32, hit: &find::Hit) {
         let engine = self.panes.reading_engine(self.engine);
         if engine.hot_tab() == Some(tab) {
-            engine.reveal(hit.page, hit.start, hit.end);
+            engine.selection().reveal(hit.page, hit.start, hit.end);
         }
     }
 

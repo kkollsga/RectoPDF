@@ -850,7 +850,7 @@ fn edit<A: SessionAccess>(
     tab: &str,
     events: &mut Vec<Event>,
     did: String,
-    change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>,
+    change: impl FnOnce(&mut recto_session::PartMut<'_, recto_session::edit::PageEdits>) -> Result<(), recto_session::edit::EditError>,
 ) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;

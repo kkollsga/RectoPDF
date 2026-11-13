@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn previews_outlive_their_tiles() {
     let mut reader = reader_on(600);
-    let step = reader.doc().map(|doc| doc.layout.top(1)).unwrap();
+    let step = reader.docs.shown().map(|doc| doc.layout.top(1)).unwrap();
     settle(&mut reader);
     // Enough pages at 12 tiles each to pass the tile cap by a long way, and few enough to stay under the preview cap.
     for page in 1..60 {
@@ -16,8 +16,8 @@ fn previews_outlive_their_tiles() {
         report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64,
         "{report}"
     );
-    let doc = reader.doc().unwrap();
-    let key = reader.preview_key(doc, 0);
+    let doc = reader.docs.shown().unwrap();
+    let key = super::super::cache::TileKey::preview(doc.tab, 0, reader.paper);
     assert!(reader.cache.cover.contains_key(&key), "the first page's preview is still here");
     let ops = reader.set_viewport(view(0.0));
     assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })), "and shows at once: {ops:?}");
@@ -35,9 +35,9 @@ fn panes_share_the_caps_on_what_is_kept() {
     }
     let previews = |reader: &Reader| reader.cache.entries.values().filter(|entry| entry.preview && !entry.attached).count();
     assert!(previews(&reader) > MAX_KEPT_PREVIEWS / 3, "enough kept to see the share: {}", previews(&reader));
-    reader.set_share(3);
+    reader.cache.set_share(3, &mut reader.host);
     assert!(previews(&reader) <= MAX_KEPT_PREVIEWS / 3, "{}", previews(&reader));
-    reader.set_share(0);
+    reader.cache.set_share(0, &mut reader.host);
     assert_eq!(reader.cache.share, 1, "never none");
 }
 
@@ -193,8 +193,8 @@ fn a_tab_gone_cold_holds_nothing() {
         Spread::Single,
     );
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
-    assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
+    assert!(!reader.docs.views.contains_key(&1));
+    assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
     reader.activate(
         3,
         10,
@@ -211,7 +211,7 @@ fn a_tab_gone_cold_holds_nothing() {
         None,
         Spread::Single,
     );
-    assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
+    assert_eq!(reader.work.wanted_files().len(), 2, "a warm tab's file is kept");
 }
 
 /// Failure: closing a warm tab leaves its layout, tiles, worker and open file until the next switch of tab, which may never come.
@@ -236,11 +236,11 @@ fn a_warm_tab_that_goes_holds_nothing_at_once() {
         Spread::Single,
     );
     assert!(reader.cache.entries.values().any(|entry| entry.tab == 1), "still warm");
-    assert_eq!(reader.wanted_files().len(), 2);
+    assert_eq!(reader.work.wanted_files().len(), 2);
     reader.set_warm(&[]);
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "closed");
-    assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
+    assert!(!reader.docs.views.contains_key(&1));
+    assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
 }
 
 /// Failure: the window closed still holds tiles, so a closed window stays over budget.
@@ -251,7 +251,7 @@ fn a_closed_window_holds_no_tiles_and_comes_back() {
     reader.window_closed();
     assert!(reader.cache.entries.is_empty());
     assert!(reader.next_job().is_none(), "nothing draws for a closed window");
-    assert!(reader.wanted_files().is_empty(), "the renderer goes too");
+    assert!(reader.work.wanted_files().is_empty(), "the renderer goes too");
     reader.window_opened();
     reader.set_viewport(view(0.0));
     settle(&mut reader);

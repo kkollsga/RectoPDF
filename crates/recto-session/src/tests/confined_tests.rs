@@ -61,7 +61,7 @@ fn a_restored_record_naming_an_outside_file_doesnt_bring_it_back() {
     back.restore(&saved, HashMap::new()).unwrap();
     let names: Vec<_> = back.tabs().iter().map(|tab| tab.name.to_string()).collect();
     assert_eq!(names, ["a", "b"]);
-    assert!(back.tab_for_path(&dir.join("outside.pdf")).is_none());
+    assert!(back.tabs.for_path(&dir.join("outside.pdf")).is_none());
 }
 
 /// Failure: a confined session's tab follows its file when it's found moved out of the run's folders, so the tab then reads and saves a file outside
@@ -132,7 +132,7 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     s.apply_file_status(tab, FileStatus::Same(now));
     assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // The tab is still the tab it was, by its name.
-    assert!(s.tab_for_path(&dir.join("run/docs/a.pdf")).is_some());
+    assert!(s.tabs.for_path(&dir.join("run/docs/a.pdf")).is_some());
     std::fs::remove_file(dir.join("run/docs")).unwrap();
     std::fs::rename(dir.join("run/docs-real"), dir.join("run/docs")).unwrap();
     assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
@@ -239,16 +239,16 @@ fn a_restore_keeps_the_confinement_cell_the_host_shares() {
     assert_eq!(back.tabs().path_of(tab), None);
 }
 
-/// **Failure (R3.5a): putting the host's cell back is a way to widen a session**, as `keep_confinement` is public and takes any cell: a confined session
-/// handed a free one (a `Confinement::default()` made for the purpose) comes out free, or one handed a cell confined to wider folders comes out with
-/// those. A free cell takes the session's folders before it's taken; a wider one isn't taken; the same or narrower is.
+/// **Failure (R3.5a): putting the host's cell back is a way to widen a session**: a confined session handed a free cell comes out free, or one handed a
+/// cell confined to wider folders comes out with those. A free cell takes the session's folders before it's taken; a wider one isn't taken; the same or
+/// narrower is, as the only cell ever handed it is its host's (`Held`'s guard, R3.5b), the authority.
 #[test]
 fn keeping_the_hosts_cell_never_widens_a_session() {
     let (mut s, dir) = confined();
     let run = s.confinement().folders().cloned().unwrap();
 
     let free = confined::Confinement::default();
-    assert!(!s.tabs_mut().keep_confinement(&free), "it wasn't the session's");
+    assert!(!s.tabs.keep_confinement(&free), "it wasn't the session's");
     assert_eq!(
         free.folders().map(|f| f.roots().to_vec()),
         Some(run.roots().to_vec()),
@@ -259,14 +259,90 @@ fn keeping_the_hosts_cell_never_widens_a_session() {
 
     let wider = confined::Confinement::default();
     wider.confine(RunFolders::of(&[dir.path()]));
-    assert!(!s.tabs_mut().keep_confinement(&wider));
+    assert!(!s.tabs.keep_confinement(&wider));
     assert!(s.confinement().is(&free), "a wider cell isn't taken");
     assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
 
     let narrower = confined::Confinement::default();
     std::fs::create_dir(dir.join("run/deeper")).unwrap();
     narrower.confine(RunFolders::of(&[&dir.join("run/deeper")]));
-    assert!(!s.tabs_mut().keep_confinement(&narrower));
+    assert!(!s.tabs.keep_confinement(&narrower));
     assert!(s.confinement().is(&narrower), "a narrower one is");
-    assert!(s.tabs_mut().keep_confinement(&narrower.shared()), "the same cell again is the session's");
+    assert!(s.tabs.keep_confinement(&narrower.shared()), "the same cell again is the session's");
+}
+
+/// A host's hold on a session confined to `run`, and the tree it's in.
+fn held_confined() -> (crate::held::Held<FakeLoader>, recto_testpdf::TempDir) {
+    let (s, dir) = confined();
+    (crate::held::Held::new(s), dir)
+}
+
+/// A session of its own confined to these folders, to swap in.
+fn confined_to(folders: &[&Path]) -> Session<FakeLoader> {
+    let s = session(3);
+    s.confinement().confine(RunFolders::of(folders));
+    s
+}
+
+/// A step under the host's lock that puts `other` in its session's place, and whether it was loud (a debug build's failure, as no code should).
+fn swap_in(held: &crate::held::Held<FakeLoader>, other: Session<FakeLoader>) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| *held.lock() = other)).is_err()
+}
+
+/// **Failure (R3.5b): a session swapped in under its host's lock, confined to wider folders than the host's, keeps them**: the host reads itself confined
+/// to `run` with no lock while its session opens anything in the wider folder, the two checks that must agree don't, and the session is outside the wall
+/// the host was made with. The guard's drop puts the host's own cell back, narrower being the safe direction, so the session is pulled back inside.
+#[test]
+fn a_session_swapped_in_on_wider_folders_ends_on_its_hosts_cell() {
+    let (held, dir) = held_confined();
+    std::fs::write(dir.join("outside/a.pdf"), b"x").unwrap();
+    assert_eq!(
+        swap_in(&held, confined_to(&[dir.path()])),
+        cfg!(debug_assertions),
+        "loud in a debug build, quiet in a release one"
+    );
+    let mut s = held.lock();
+    assert!(s.confinement().is(held.confinement()), "the session goes by its host's cell");
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun), "and by its folders");
+}
+
+/// **Failure (R3.5b): a free session swapped in under a confined host's lock stays free**, reading the user's files while the host reads itself
+/// confined. It ends on the host's cell.
+#[test]
+fn a_free_session_swapped_in_ends_on_its_hosts_cell() {
+    let (held, dir) = held_confined();
+    std::fs::write(dir.join("outside/a.pdf"), b"x").unwrap();
+    assert_eq!(swap_in(&held, session(3)), cfg!(debug_assertions));
+    let mut s = held.lock();
+    assert!(s.confinement().is(held.confinement()));
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
+}
+
+/// **Failure (R3.5b): a free host given a confined session under its lock comes out reading itself free** while the session refuses files, or the
+/// session comes out free. The safe direction: the host's cell takes the session's folders, and the session goes by it, so both refuse what's outside
+/// them. (No shipping code swaps sessions; it's a loud failure in a debug build.)
+#[test]
+fn a_free_host_given_a_confined_session_is_confined_with_it() {
+    let held = crate::held::Held::new(session(3));
+    let dir = recto_testpdf::TempDir::new("recto-confined-");
+    std::fs::create_dir(dir.join("run")).unwrap();
+    assert!(held.confinement().folders().is_none());
+    assert_eq!(swap_in(&held, confined_to(&[&dir.join("run")])), cfg!(debug_assertions));
+    let roots = held.confinement().folders().map(|f| f.roots().to_vec());
+    assert_eq!(
+        roots,
+        Some(RunFolders::of(&[&dir.join("run")]).roots().to_vec()),
+        "the host took the session's folders"
+    );
+    assert!(held.lock().confinement().is(held.confinement()), "and the session goes by the host's cell");
+}
+
+/// **Failure (R3.5b): a step that only uses the session, as every shipping one does, is taken for a replacement** (a debug build's panic on every
+/// command) or changes the session's cell. Nothing's mended and nothing's loud.
+#[test]
+fn a_step_that_replaces_nothing_leaves_the_cell_alone() {
+    let (held, dir) = held_confined();
+    std::fs::write(dir.join("run/a.pdf"), b"x").unwrap();
+    held.lock().open(&dir.join("run/a.pdf")).unwrap();
+    assert!(held.try_lock().is_some_and(|s| s.confinement().is(held.confinement())));
 }

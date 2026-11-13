@@ -1,6 +1,7 @@
 //! **Waking and sleep pictures:** what a tab's first frame shows from its sleep file, how its wake goes until it's sharp, and the pictures of its pages that go into the sleep file, from its previews or put together from its tiles.
 
 use super::PageMap;
+use super::cache::TileKey;
 use super::{DocView, DrawKind, MAX_PREVIEW_BYTES, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
@@ -57,7 +58,7 @@ pub(super) const MIN_SHARE_OF_VIEW: f64 = 0.05;
 /// How long a wake's followed, for how long it took.
 pub(super) const WAKE_FOLLOWED_FOR: Duration = Duration::from_secs(5);
 
-/// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
+/// Pictures that go in a sleep file: as many as `recto_session::sleep::MAX_SLEEP_PICTURES` says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
 pub(super) const MAX_SLEEP_SHOTS: usize = 12;
 
 /// What a tab held off screen keeps of the pictures it was left with, in all. A letter page at a Retina window's fit is 730 KiB, so a page to a row has its view kept, and a view of many small pages keeps the first few: the rest come from what's here when it goes to sleep, as before.
@@ -116,9 +117,10 @@ pub struct WakeReport {
 pub const WAKE_REPORT_BYTES: usize = 48;
 const _: () = assert!(std::mem::size_of::<WakeReport>() <= WAKE_REPORT_BYTES);
 
-/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`Reader::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
+/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`DocView::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
+// R3.6: a `Reader` operation the ratchet's method count can't see, as a free function taking the whole page view (it reads the viewport and the tab's view).
 pub(super) fn left_place(reader: &Reader, doc: &DocView) -> (Vec<u32>, f64, f64) {
-    let y = Reader::place_y(doc);
+    let y = doc.place_y();
     let window_height = reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE);
     let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
     let pages = if doc.layout.count() == 0 {
@@ -186,8 +188,9 @@ pub(super) fn shrink_into(
     }
 }
 
-#[derive(Debug, Default)]
-pub(super) struct Waking {
+/// Built only in the tiles module ([`Waking::new`]), with no `Default`: the engine reaches it through `Reader`'s field for what a wake is given and told below, and can neither build one nor put another in its place.
+#[derive(Debug)]
+pub(crate) struct Waking {
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     pub(super) sleep_view: Option<(u32, SleepView)>,
     /// When the wake under way was asked for, and how it's gone.
@@ -199,8 +202,60 @@ pub(super) struct Waking {
     pub(super) draws: super::sleep_draw::SleepDraws,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Waking>() <= 440, "the wake's state grew");
+
 impl Waking {
+    pub(super) fn new() -> Self {
+        Self {
+            sleep_view: None,
+            waking: None,
+            last_wake: None,
+            window_up: false,
+            draws: super::sleep_draw::SleepDraws::default(),
+        }
+    }
+
+    /// **What a tab's first frame shows, from its sleep file, ahead of [`Reader::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
+    pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView) {
+        self.sleep_view = Some((tab, view));
+    }
+
+    /// A tab's being woken, as of now, with `hot` the tab showing. For how long it takes.
+    pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
+        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
+        if hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
+            self.waking = Some((
+                began,
+                WakeReport {
+                    tab,
+                    from_sleep: false,
+                    ..WakeReport::default()
+                },
+            ));
+        }
+    }
+
+    /// The window's gone up. From here, a bare page is one that's seen.
+    pub(crate) fn window_up(&mut self) {
+        self.window_up = true;
+    }
+
+    /// How the last wake went.
+    pub(crate) fn last_wake(&self) -> Option<WakeReport> {
+        self.waking.map(|(_, report)| report).or(self.last_wake)
+    }
+
+    /// The wake under way is over: someone's gone somewhere else, or it's sharp.
+    pub(super) fn finish_wake(&mut self) {
+        if let Some((_, report)) = self.waking.take() {
+            self.last_wake = Some(report);
+        }
+    }
+
     /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
+    // R3.6: a `Reader` operation the ratchet's method count can't see: an associated function of `Waking` taking the whole page view, which reaches every field `Reader`'s own methods do.
     pub(super) fn pictures_exist_for(reader: &Reader, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {
         let (top, bottom) = (reader.viewport.y, reader.viewport.y + reader.viewport.height);
         let have: std::collections::HashSet<u32> = reader
@@ -218,13 +273,14 @@ impl Waking {
     }
 
     /// **What the wake under way had to show,** once, as its tab is made the hot one and has been sent to its place: the pages in view there, as a sleep file would have taken them, and whether a picture of each is here and where from.
+    // R3.6: a `Reader` operation the ratchet's method count can't see, as `pictures_exist_for` above.
     pub(super) fn note_stock(reader: &mut Reader, tab: u32) {
         let Some((_, report)) = reader.wake.waking else { return };
         if report.tab != tab || report.had != WakeStock::NotLooked {
             return;
         }
-        let Some(doc) = reader.docs.get(&tab) else { return };
-        let y = Reader::place_y(doc).max(0.0);
+        let Some(doc) = reader.docs.views.get(&tab) else { return };
+        let y = doc.place_y().max(0.0);
         let height =
             (reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE) / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
         let in_view: Vec<u32> = if doc.layout.count() == 0 {
@@ -256,42 +312,12 @@ impl Waking {
 }
 
 impl Reader {
-    /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
-    pub fn give_sleep(&mut self, tab: u32, view: SleepView) {
-        self.wake.sleep_view = Some((tab, view));
-    }
-
-    /// A tab's being woken, as of now. For how long it takes.
-    pub fn note_wake(&mut self, tab: u32, began: Instant) {
-        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
-        if self.hot != Some(tab) && !self.wake.waking.is_some_and(|(_, report)| report.tab == tab) {
-            self.wake.waking = Some((
-                began,
-                WakeReport {
-                    tab,
-                    from_sleep: false,
-                    ..WakeReport::default()
-                },
-            ));
-        }
-    }
-
-    /// The window's gone up. From here, a bare page is one that's seen.
-    pub fn window_up(&mut self) {
-        self.wake.window_up = true;
-    }
-
-    /// How the last wake went.
-    pub fn last_wake(&self) -> Option<WakeReport> {
-        self.wake.waking.map(|(_, report)| report).or(self.wake.last_wake)
-    }
-
     /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
     pub fn is_showable(&self) -> bool {
         if self.place.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
             return false;
         }
-        let Some(doc) = self.doc() else { return false };
+        let Some(doc) = self.docs.shown() else { return false };
         doc.drawing.problem.is_none() && self.pages_all_covered(doc)
     }
 
@@ -305,25 +331,19 @@ impl Reader {
         })
     }
 
-    pub(super) fn finish_wake(&mut self) {
-        if let Some((_, report)) = self.wake.waking.take() {
-            self.wake.last_wake = Some(report);
-        }
-    }
-
     /// Goes through how a wake's going, each time the host has applied something.
     pub(super) fn track_wake(&mut self) {
         let Some((began, mut report)) = self.wake.waking else { return };
-        if self.hot != Some(report.tab) {
+        if self.docs.hot != Some(report.tab) {
             self.wake.waking = None;
             return;
         }
         // Past this, it's not the wake that's being looked at any more.
         if began.elapsed() > WAKE_FOLLOWED_FOR {
-            self.finish_wake();
+            self.wake.finish_wake();
             return;
         }
-        let Some(doc) = self.doc() else { return };
+        let Some(doc) = self.docs.shown() else { return };
         if self.place.jump.is_none() && self.viewport.height > 0.0 {
             let covered = self.pages_all_covered(doc);
             if covered && report.first_frame_us.is_none() {
@@ -348,7 +368,7 @@ impl Reader {
     ///
     /// `now` is what the session says the tab's pages are now. If its file isn't what this is a view of, what's here is of another file, and nothing goes in its sleep file. **If its pages aren't the pages here** (deleted, moved, added or turned while it was off screen, which a view held warm hears of only when it's shown again), what's here is filed under places that are other pages now, and a picture of the wrong page is worse than bare paper: its facts go, and no picture or size.
     pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial> {
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         if doc.map.own != now.own {
             return None;
         }
@@ -364,7 +384,7 @@ impl Reader {
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
         let version = doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).copied();
-        let (pages, from, height): (Vec<u32>, f64, f64) = if self.hot == Some(tab) {
+        let (pages, from, height): (Vec<u32>, f64, f64) = if self.docs.hot == Some(tab) {
             (self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect(), self.viewport.y, self.viewport.height)
         } else {
             left_place(self, doc)
@@ -394,7 +414,7 @@ impl Reader {
 
     /// A picture of each page of the tab showing that's in view, while it's on the screen. Nothing if no worker's said which version it's of, as there'd be no saying what they're of.
     pub(super) fn pictures_in_view(&mut self, tab: u32) -> Vec<RawPicture> {
-        let Some(doc) = self.docs.get(&tab) else { return Vec::new() };
+        let Some(doc) = self.docs.views.get(&tab) else { return Vec::new() };
         if doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).is_none() {
             return Vec::new();
         }
@@ -414,16 +434,16 @@ impl Reader {
 
     pub(super) fn picture_of(&mut self, tab: u32, page: u32) -> Option<RawPicture> {
         let paper = self.paper;
-        let doc = self.docs.get(&tab)?;
+        let doc = self.docs.views.get(&tab)?;
         let preview_scale = ((doc.layout.fit() * self.viewport.backing / PREVIEW_DIVISOR) as f32).clamp(MIN_SCALE, MAX_SCALE);
         let size = doc.layout.raw_size(page);
         let paper_rgb = paper.rgb();
         // A preview as it is, if there's one.
-        let preview = self.cache.cover.get(&self.preview_key(doc, page)).copied().filter(|id| {
+        let preview = self.cache.cover.get(&TileKey::preview(doc.tab, page, self.paper)).copied().filter(|id| {
             self.cache
                 .entries
                 .get(id)
-                .is_some_and(|entry| entry.version.is_some() && self.is_current(entry))
+                .is_some_and(|entry| entry.version.is_some() && self.docs.is_current(entry))
         });
         if let Some(id) = preview
             && let Some(picture) = self.copy_preview(id)
@@ -443,7 +463,7 @@ impl Reader {
                     && entry.surface.is_some()
                     && entry.low_res.is_none()
                     && entry.version.is_some()
-                    && self.is_current(entry)
+                    && self.docs.is_current(entry)
             })
             .map(|entry| entry.id)
             .collect();
@@ -572,7 +592,7 @@ impl Reader {
         if for_tab != tab {
             return;
         }
-        let Some(doc) = self.docs.get_mut(&tab) else { return };
+        let Some(doc) = self.docs.views.get_mut(&tab) else { return };
         if let Some(usual) = view.usual {
             doc.layout.seed_usual(usual);
             doc.drawing.size_on_trust = true;
@@ -588,7 +608,7 @@ impl Reader {
                 continue;
             }
             // Its size is known, or it wouldn't be shown.
-            if let Some(doc) = self.docs.get_mut(&tab) {
+            if let Some(doc) = self.docs.views.get_mut(&tab) {
                 let size = doc.layout.raw_size(shot.page);
                 doc.layout.set_page_size(shot.page, size);
             }

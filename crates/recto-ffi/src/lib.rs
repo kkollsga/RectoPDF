@@ -936,7 +936,7 @@ impl AppCore {
             // Never a wait on another pane: a busy one lets go of its selection from its own thread.
             for other in self.inner.panes.engines(&self.inner.engine) {
                 if !other.same_as(&engine) {
-                    other.clear_selection_soon();
+                    other.selection().clear_soon();
                 }
             }
             self.focus_moved(tab);
@@ -945,7 +945,7 @@ impl AppCore {
         if self.inner.tools.tool.is_on() {
             return self.inner.tools.tool.press(&engine, pane as usize, x, y);
         }
-        engine.selection_press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
+        engine.selection().press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
     }
 
     pub fn selection_drag(&self, pane: u32, x: f64, y: f64) -> Vec<ReaderOp> {
@@ -955,7 +955,7 @@ impl AppCore {
         if self.inner.tools.tool.is_drawing() {
             return self.inner.tools.tool.drag(&engine, pane as usize, x, y);
         }
-        engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()
+        engine.selection().drag(x, y).into_iter().map(ReaderOp::from).collect()
     }
 
     /// The mouse went up. A still single click on a link follows it, by Rust's rule: within the document at once, a web or email address only once the sheet's been answered, and anything else never, with a notice saying why.
@@ -966,8 +966,8 @@ impl AppCore {
         if self.inner.tools.tool.is_drawing() {
             return self.inner.tools.tool.release(&self.inner, &engine, pane as usize);
         }
-        let ops = engine.selection_release().into_iter().map(ReaderOp::from).collect();
-        if let Some(hit) = engine.take_clicked_link() {
+        let ops = engine.selection().release().into_iter().map(ReaderOp::from).collect();
+        if let Some(hit) = engine.links().take_clicked() {
             follow_link(&self.inner, pane as usize, &engine, hit);
         }
         ops
@@ -988,12 +988,12 @@ impl AppCore {
                 hint: None,
             };
         }
-        if let Some(hit) = engine.pointer_link(x, y) {
+        if let Some(hit) = engine.links().at(x, y) {
             let hint = match &hit.target {
-                recto_core::nav::LinkTarget::Page { page, .. } => match engine.position_in_same_file(hit.page, *page) {
+                recto_core::nav::LinkTarget::Page { page, .. } => match engine.links().position_in_same_file(hit.page, *page) {
                     Some(position) => {
                         let toc = lock(&self.inner.published).pane_tocs.get(pane as usize).cloned().flatten();
-                        Some(linking::page_words(position, engine.own_file_page(position), toc.as_deref()))
+                        Some(linking::page_words(position, engine.links().own_file_page(position), toc.as_deref()))
                     }
                     None => Some("The page this link goes to isn't in the document as it's been edited".to_string()),
                 },
@@ -1002,7 +1002,7 @@ impl AppCore {
             return linking::PointerLook { cursor: "link".into(), hint };
         }
         linking::PointerLook {
-            cursor: if engine.pointer_is_over_text(x, y) { "ibeam" } else { "arrow" }.into(),
+            cursor: if engine.selection().is_over_text(x, y) { "ibeam" } else { "arrow" }.into(),
             hint: None,
         }
     }
@@ -1030,7 +1030,7 @@ impl AppCore {
         self.inner
             .panes
             .engine(&self.inner.engine, pane as usize)
-            .is_some_and(|engine| engine.pointer_is_over_text(x, y))
+            .is_some_and(|engine| engine.selection().is_over_text(x, y))
     }
 
     /// How far to scroll per step of a drag this far past the view's edge.
@@ -1040,12 +1040,12 @@ impl AppCore {
 
     /// The selection's text if it's all here, for what can't wait, as the Services menu can't. Nothing if not.
     pub fn selection_text_now(&self) -> Option<String> {
-        self.inner.panes.reading_engine(&self.inner.engine).selection_text_now()
+        self.inner.panes.reading_engine(&self.inner.engine).selection().text_now()
     }
 
     /// Whether there's text the Services menu can be offered, which it asks often, on the UI thread. Builds nothing.
     pub fn selection_can_be_sent(&self) -> bool {
-        self.inner.panes.reading_engine(&self.inner.engine).selection_can_be_sent()
+        self.inner.panes.reading_engine(&self.inner.engine).selection().can_be_sent()
     }
 
     /// The reader has dismissed the notice, or its time's up.
@@ -1055,11 +1055,8 @@ impl AppCore {
 
     /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
     pub fn document_point(&self, pane: u32, page: u32, x: f64, y: f64) -> Option<DocumentPoint> {
-        self.inner
-            .panes
-            .engine(&self.inner.engine, pane as usize)?
-            .document_point(page, x, y)
-            .map(|(x, y)| DocumentPoint { x, y })
+        let (x, y) = self.inner.panes.document_point(&self.inner.engine, pane as usize, page, x, y)?;
+        Some(DocumentPoint { x, y })
     }
 
     /// The pane being read, for QA and the host.
@@ -1198,7 +1195,7 @@ impl AppCore {
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
     pub fn window_shown(&self, home: bool, tile_layers: u32, why: String) {
         for engine in self.inner.panes.engines(&self.inner.engine) {
-            engine.window_up();
+            engine.waking().window_up();
         }
         self.inner.record_window_shown(home, tile_layers, &why);
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
