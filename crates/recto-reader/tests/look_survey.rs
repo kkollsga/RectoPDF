@@ -169,14 +169,35 @@ fn pages() {
             let look = PageLook::decide(boxes.as_deref(), &picture, w as usize * 4, w, h);
             let (shares, background) = dark_shares(&picture, w as usize * 4, w, h, boxes.as_deref().unwrap_or_default(), &under);
             let shares: Vec<String> = under.iter().zip(&shares).map(|(line, share)| format!("{line}:{share:.2}")).collect();
+            // The background the dark test reads since review round 1 (2026-11-14): everything but the kept pictures, white-backed ones being light background, by every pixel, and the dark part of it as a share of the whole page.
+            let place = |part: u16, whole: u32| (u64::from(part) * u64::from(whole) / 65_535) as usize;
+            let kept: Vec<[u16; 4]> = boxes
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|sides| {
+                    let found = sample_pixels(
+                        &picture,
+                        w as usize * 4,
+                        place(sides[0], w),
+                        place(sides[1], h),
+                        place(sides[2], w).min(w as usize),
+                        place(sides[3], h).min(h as usize),
+                    );
+                    !found.has_white_background() && found.pixels >= 64
+                })
+                .collect();
+            let (own, own_background) = dark_shares(&picture, w as usize * 4, w, h, &kept, &[128]);
             println!(
-                "PAGE {name} p{} images={} dim={} keep={} whiten={} background={background:.2} dark {}",
+                "PAGE {name} p{} images={} dim={} keep={} whiten={} background={background:.2} dark {} own_background={own_background:.2} dark_of_it={:.2} dark_of_page={:.3}",
                 page + 1,
                 boxes.as_ref().map_or_else(|| "whole".to_string(), |boxes| boxes.len().to_string()),
                 look.dim,
                 look.keep.len(),
                 look.whiten.len(),
-                shares.join(" ")
+                shares.join(" "),
+                own[0],
+                own[0] * own_background
             );
         }
     }
