@@ -5,6 +5,27 @@ use crate::table::Access;
 use serde_json::Value;
 
 impl Command {
+    /// **The line an agent sends for this command,** which [`crate::parse`] reads back as the same command: so a person's command, made by the window, is
+    /// literally a line an agent could send (R2.3, C6).
+    #[must_use]
+    pub fn wire(&self) -> String {
+        let line = match self {
+            Self::Measure(command) => serde_json::to_string(command),
+            Self::Edit(command) => serde_json::to_string(command),
+            Self::Move(command) => serde_json::to_string(command),
+            Self::Read(command) => serde_json::to_string(command),
+            Self::Start(command) => serde_json::to_string(command),
+            Self::Waits(command) => serde_json::to_string(command),
+            Self::Rights(command) => serde_json::to_string(command),
+            Self::Session(command) => serde_json::to_string(command),
+            Self::Qa(command) => serde_json::to_string(command),
+            Self::Record(command) => serde_json::to_string(command),
+            Self::Updates(command) => serde_json::to_string(command),
+        };
+        // Every payload is plain fields of strings, numbers, switches and paths, which always make JSON.
+        line.unwrap_or_default()
+    }
+
     /// The name on the wire, which is the first column of the command table with spaces as underscores.
     pub fn tag(&self) -> &'static str {
         match self {

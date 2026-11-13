@@ -76,8 +76,12 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, actor: Actor, asked: 
         deadline: Instant::now() + COMMAND_WAIT,
     };
     let went = if asked.close {
+        // Announced when Find changed, and only then: closing it closed already changes nothing.
+        let before = access.with(|s| s.find().clone());
         close(access);
-        events.push(Event::FindClosed);
+        if access.with(|s| *s.find() != before) {
+            events.push(Event::FindClosed);
+        }
         None
     } else if asked.open {
         run.open(events)?;

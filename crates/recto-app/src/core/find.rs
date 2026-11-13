@@ -42,7 +42,7 @@ fn carry_out(inner: &Inner, effect: Effect) {
 
 /// **What the window does with how the person's Find went:** why what they typed can't be found, on the line under the field, as a query too long; and a
 /// step kept for its hit forgotten when Find closes. Then the host's told, as Find's view isn't in what `reconcile` compares.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     let Command::Move(Move::Find(asked)) = ran.command else {
         return;
     };

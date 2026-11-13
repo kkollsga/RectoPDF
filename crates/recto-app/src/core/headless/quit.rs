@@ -142,3 +142,18 @@ fn a_quit_during_a_stuck_read_still_writes() {
     assert_eq!(again.reader().place, "12 of 20", "the place the quit wrote, with a read stuck");
     drop(again.quit());
 }
+
+/// Failure (review of 2026-11-13): the quit's own thread couldn't be started, as on a system out of threads, and the quit never answered, so the app stayed
+/// frozen for the hand-off with no way out. It answers as a write that didn't finish: with an unsaved edit, it asks.
+#[test]
+fn a_quit_whose_thread_wont_start_still_answers() {
+    let app = crate::testkit::headless::HeadlessApp::start();
+    let file = app.disk().pdf("a.pdf", 3);
+    app.open(&file);
+    app.act(crate::core::controls::UiAction::Menu { id: "rotate.right".into() });
+    app.settle();
+    crate::core::quitting::QUIT_THREAD_REFUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let answer = app.ask_to_quit();
+    crate::core::quitting::QUIT_THREAD_REFUSED.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(!answer.go, "the unsaved edit isn't known to be kept, so it asks: {answer:?}");
+}

@@ -73,7 +73,7 @@ pub mod exit {
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Off,
@@ -147,7 +147,7 @@ pub const MAX_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
 pub const DEFAULT_WATCH_MS: u64 = 10 * 60 * 1000;
 
 /// What `wait` can wait for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
     /// A tab matching the selector is open.

@@ -400,7 +400,7 @@ final class Bridge: AppListener, @unchecked Sendable {
     func application(_ application: NSApplication, open urls: [URL]) {
         // A quiet run opens what its QA channel says, and nothing the system sends it.
         guard !isQuiet else { return }
-        for url in urls where url.isFileURL { core.openFile(path: url.path) }
+        for url in urls where url.isFileURL { _ = core.act(action: .open(path: url.path)) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -524,7 +524,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// What every menu item, panel button and zoom key comes to.
     func perform(_ id: String) {
-        handle(core.perform(id: id))
+        handle(core.act(action: .menu(id: id)).host)
     }
 
     /// What's left for the host after a menu item, a panel button, a key or a palette row.
@@ -577,7 +577,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             self?.sheetShowing = nil
             guard response == .OK, let url = panel.url else { return }
             // For the tab it opened for. Whether a file's there to replace, which the sheet has asked, is Rust's to look at, off this thread.
-            core.saveAs(tab: model.tab, path: url.path)
+            _ = core.act(action: .saveAs(tab: model.tab, path: url.path))
         }
     }
 
@@ -615,7 +615,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             self?.sheetShowing = nil
             let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
             let choice = prompt.buttons.indices.contains(index) ? prompt.buttons[index].choice : .cancel
-            if core.closeAnswered(tab: prompt.tab, choice: choice) == .showSavePanel { self?.showSavePanel() }
+            if core.act(action: .closeAnswered(tab: prompt.tab, choice: choice)).host == .showSavePanel { self?.showSavePanel() }
         }
     }
 
@@ -632,7 +632,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
             guard response == .OK else { return }
-            for url in panel.urls { core.openFile(path: url.path) }
+            for url in panel.urls { _ = core.act(action: .open(path: url.path)) }
         }
     }
 }

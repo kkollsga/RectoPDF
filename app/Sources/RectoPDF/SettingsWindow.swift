@@ -110,7 +110,7 @@ import AppKit
 
     @objc private func updateNow(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
-        delegate.core.settingChosen(id: id, on: true)
+        _ = delegate.core.act(action: .settingChosen(id: id, on: true))
     }
 
     private func view(for row: SettingRow) -> NSView {
@@ -145,7 +145,7 @@ import AppKit
 
     @objc private func flipped(_ sender: NSSwitch) {
         guard let id = sender.identifier?.rawValue else { return }
-        delegate.core.settingChosen(id: id, on: sender.state == .on)
+        _ = delegate.core.act(action: .settingChosen(id: id, on: sender.state == .on))
     }
 
     private func noteWindow() {

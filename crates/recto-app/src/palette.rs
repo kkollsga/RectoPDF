@@ -254,6 +254,30 @@ pub struct Showing {
     pub edit_mode: bool,
 }
 
+/// **The rows that are the window's alone,** which send no command: a system panel or sheet, the keyboard's focus, the pasteboard, the window's own
+/// panel and pointer mode. Only these may an agent's `palette --run` do as the menu does; any other row with no command of its own of [`as_command`]'s is
+/// refused, as the menu's way would run it as the person (review, 2026-11-13). `core::headless::coverage` holds that each of these sends no command.
+pub const THE_WINDOWS_ALONE: &[&str] = &[
+    "app.about",
+    "app.quit",
+    "app.services",
+    "app.settings",
+    "edit.copy",
+    "edit.copy_anyway",
+    "edit.select_all",
+    "file.close_window",
+    "file.open",
+    "file.open_recent",
+    "file.print",
+    "file.save_as",
+    "file.settings",
+    "go.page",
+    "palette.open",
+    "panel.toggle",
+    "tools.snapshot",
+    "view.paper",
+];
+
 /// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
 pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<recto_agent::Command> {
     use recto_agent::Command;

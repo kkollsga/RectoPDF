@@ -716,7 +716,9 @@ mod tests {
         bed.updater.install_build(&zip, false).unwrap();
         bed.idle_for(1000);
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "the 5 minutes aren't up");
-        bed.updater.menu_chosen();
+        // The person's `update install --now` from the menu: the mark, then the one call the button makes.
+        assert!(bed.updater.menu().mark());
+        bed.updater.update_now().expect("it goes");
         bed.wait_for("the hand-off at once", |bed| bed.handed_off().is_some());
     }
 

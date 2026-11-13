@@ -18,7 +18,7 @@ extension QAChannel {
             controller.copyNotice.button.performClick(nil)
             return true
         case "open_file":
-            delegate.core.openFile(path: value)
+            _ = delegate.core.act(action: .open(path: value))
             return true
         case "sheet":
             delegate.core.sheetChanged(open: value == "open")

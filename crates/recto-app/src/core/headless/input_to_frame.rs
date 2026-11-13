@@ -83,7 +83,7 @@ fn measure(tabs: usize) {
     let (file_a, file_b) = (files[files.len() - 1].clone(), files[files.len().saturating_sub(2)].clone());
     case(&app, "open its tab", tabs, nothing, |app, first| {
         app.act(UiAction::Open {
-            path: if first { file_b.clone() } else { file_a.clone() },
+            path: if first { file_b.display().to_string() } else { file_a.display().to_string() },
         });
     });
     app.act(UiAction::Row { row: a.clone(), adding: false });
@@ -173,7 +173,9 @@ fn measure(tabs: usize) {
         app.settle();
     };
     case(&app, "open new file", tabs, close_it, |app, _| {
-        app.act(UiAction::Open { path: new.clone() });
+        app.act(UiAction::Open {
+            path: new.display().to_string(),
+        });
     });
     drop(app.quit());
 }

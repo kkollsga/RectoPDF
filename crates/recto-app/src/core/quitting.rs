@@ -64,17 +64,39 @@ impl Inner {
     /// what that came to, stepped.
     fn write_for_quit(self: &Arc<Self>) {
         let inner = Arc::clone(self);
-        let _ = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024).spawn(move || {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let flushing = Arc::clone(&inner);
-            let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {
-                let _ = sender.send(flushing.saver.flush(false, Duration::from_secs(2)));
-            });
-            let outcome = receiver.recv_timeout(QUIT_PATIENCE);
-            let written = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
-            let unsaved_tabs = inner.host.session.unsaved_tabs().len();
-            let out = inner.life.step(Event::QuitWritten { written, unsaved_tabs });
-            inner.carry_out(out);
+        let refused = cfg!(any(test, feature = "testkit")) && QUIT_THREAD_REFUSED.load(std::sync::atomic::Ordering::SeqCst);
+        let builder = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024);
+        let spawned = if refused {
+            Err(std::io::Error::other("refused for a test"))
+        } else {
+            Ok(builder)
+        }
+        .and_then(|builder| {
+            builder.spawn(move || {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let flushing = Arc::clone(&inner);
+                let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {
+                    let _ = sender.send(flushing.saver.flush(false, Duration::from_secs(2)));
+                });
+                let outcome = receiver.recv_timeout(QUIT_PATIENCE);
+                let written = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
+                let unsaved_tabs = inner.host.session.unsaved_tabs().len();
+                let out = inner.life.step(Event::QuitWritten { written, unsaved_tabs });
+                inner.carry_out(out);
+            })
         });
+        // No thread to write on: answered as a write that didn't finish, here and now, so the quit's question still comes and nothing waits for a thread
+        // that isn't there (review, 2026-11-13: the app stayed frozen). What's unsaved isn't asked of the session here, as this may be the UI
+        // thread, which never waits on it; so it asks, as losing edits is worse than one question too many.
+        if spawned.is_err() {
+            let out = self.life.step(Event::QuitWritten {
+                written: false,
+                unsaved_tabs: 1,
+            });
+            self.carry_out(out);
+        }
     }
 }
+
+/// A test's way to have the quit's thread not start, as a system out of threads would refuse it. Read only in a test's build.
+pub(crate) static QUIT_THREAD_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

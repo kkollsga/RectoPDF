@@ -308,7 +308,7 @@ pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads
         }
     }
     #[cfg(any(test, feature = "testkit"))]
-    if let Some(heard) = lock(&inner.serving.heard).as_mut() {
+    if let Some(heard) = lock(&inner.serving.heard).events.as_mut() {
         heard.extend(events.iter().cloned());
     }
     if !events.is_empty()
