@@ -127,8 +127,10 @@ impl SignatureFacts {
 /// Why a save didn't happen. Every message is RectoPDF's own, never the system's: what's from outside goes only in `detail`, which is for logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveError {
-    /// The file isn't the one the tab has open any more.
+    /// The file isn't the version these edits were made on.
     FileChanged,
+    /// The file, or a target being replaced, changed under the save while it ran; or, with no edits to speak of, it isn't what was opened (the caller's to say).
+    ChangedSinceOpened,
     /// The edits claim pages the file doesn't have: a journal that's been tampered with, or one about another version.
     EditsDontMatch { file_pages: u32 },
     /// A PDF whose pages were added has changed, gone, or can't be told apart from another version of itself.
@@ -176,6 +178,7 @@ impl SaveError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::FileChanged => "file_changed",
+            Self::ChangedSinceOpened => "changed_since_opened",
             Self::EditsDontMatch { .. } => "edits_dont_match",
             Self::AddedFileChanged { .. } => "added_file_changed",
             Self::AddedFileProtected { .. } => "added_file_protected",
@@ -203,6 +206,7 @@ impl SaveError {
     pub fn message(&self) -> String {
         match self {
             Self::FileChanged => "This file changed on disk after these edits were made, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept.".into(),
+            Self::ChangedSinceOpened => "This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.".into(),
             Self::EditsDontMatch { file_pages } => format!("These edits don't fit the file as it is on disk, which has {file_pages} pages. Nothing was written."),
             Self::AddedFileChanged { name } => format!("“{name}”, whose pages were added, has changed or moved since, so its pages can't be saved from it. Nothing was written."),
             Self::AddedFileProtected { name } => format!("“{name}” is password-protected, and its pages can't be saved into another file yet. Nothing was written."),
@@ -241,7 +245,7 @@ fn from_append(error: AppendError) -> SaveError {
         | AppendError::ChainFull { .. }
         | AppendError::OffsetTooLarge { .. } => SaveError::Damaged,
         AppendError::Encrypted => SaveError::Protected,
-        AppendError::TargetChanged { .. } | AppendError::TargetIdentityUnknown => SaveError::FileChanged,
+        AppendError::TargetChanged { .. } | AppendError::TargetIdentityUnknown => SaveError::ChangedSinceOpened,
         AppendError::TargetExists { .. } => SaveError::TargetExists,
         AppendError::TargetNotAFile { .. } => SaveError::NotAFile,
         AppendError::TargetReadOnly { .. } => SaveError::ReadOnly,
@@ -257,7 +261,7 @@ fn from_append(error: AppendError) -> SaveError {
         },
         AppendError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
         // The original read differently from what was opened, or ran short: it's been changed under the save.
-        AppendError::Source(_) | AppendError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::FileChanged,
+        AppendError::Source(_) | AppendError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::ChangedSinceOpened,
         _ => SaveError::Failed,
     }
 }
@@ -287,14 +291,14 @@ fn from_rewrite(error: RewriteError) -> SaveError {
         },
         RewriteError::Destination(error) => from_append(error),
         RewriteError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
-        RewriteError::Source(_) | RewriteError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::FileChanged,
+        RewriteError::Source(_) | RewriteError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::ChangedSinceOpened,
         _ => SaveError::Failed,
     }
 }
 
 /// Opens a file the way a save reads it: with the 1 MiB limit on an object.
 pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
-    let source = FileSource::open(path).map_err(|_| SaveError::FileChanged)?;
+    let source = FileSource::open(path).map_err(|_| SaveError::ChangedSinceOpened)?;
     let options = IndexedReaderOptions {
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
@@ -517,15 +521,11 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     let known = request.stamp.ok_or(SaveError::FileChanged)?;
     let unchanged =
         || recto_platform::file_stamp(request.path).is_ok_and(|now| now.same_contents(known) && now.inode == known.inode && now.device == known.device);
-    if !unchanged() {
-        return Err(SaveError::FileChanged);
-    }
+    unchanged().then_some(()).ok_or(SaveError::FileChanged)?;
     let reader = open_for_save(request.path)?;
     // Looked at again once it's open: a file swapped in between the look and the open would be read as this one. The writer then checks that what it opened is
     // what's at the path, so what it writes from is the file the tab knows.
-    if !unchanged() {
-        return Err(SaveError::FileChanged);
-    }
+    unchanged().then_some(()).ok_or(SaveError::FileChanged)?;
     let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
     let real_pages = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
     if real_pages != request.file_pages {

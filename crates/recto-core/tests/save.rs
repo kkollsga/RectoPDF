@@ -379,7 +379,8 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
     }
     let path = dir.write("during.pdf", &marked(&["A"]));
     let result = save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut Replacer(path.clone()));
-    assert_eq!(result, Err(SaveError::FileChanged), "changed during");
+    // Changed under the save while it ran: the caller, who knows whether there were edits and whose file it is, says which (recto-agent's `as_said`).
+    assert_eq!(result, Err(SaveError::ChangedSinceOpened), "changed during");
     assert_eq!(read_pages(&path), [("SOMEONE ELSE'S".into(), 0)], "and the other version stays");
 }
 
