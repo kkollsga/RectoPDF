@@ -5589,4 +5589,118 @@ mod tests {
         reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
         assert_eq!(reader.link_pages_held(), 0);
     }
+
+    fn kind_of(op: &Op) -> &'static str {
+        match op {
+            Op::Clear => "Clear",
+            Op::Document { .. } => "Document",
+            Op::Magnify { .. } => "Magnify",
+            Op::ScrollTo { .. } => "ScrollTo",
+            Op::ScrollAcross { .. } => "ScrollAcross",
+            Op::ShowPage { .. } => "ShowPage",
+            Op::HidePage { .. } => "HidePage",
+            Op::Attach { .. } => "Attach",
+            Op::Detach { .. } => "Detach",
+            Op::Highlight { .. } => "Highlight",
+        }
+    }
+
+    /// [`settle`], keeping every op the host is given, in order.
+    fn settle_recording(reader: &mut Reader, seen: &mut Vec<Op>) {
+        for _ in 0..10_000 {
+            seen.extend(reader.take_ops());
+            reader.applied();
+            let Some(job) = reader.next_job() else { break };
+            let outcome = match &job.kind {
+                JobKind::Size => Outcome::Size(letter()),
+                JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
+                JobKind::Traits => Outcome::Heavy(false),
+                JobKind::Draw { .. } => Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
+            };
+            reader.finish(job, outcome);
+            seen.extend(reader.drain(MAX_ATTACH_PER_TURN));
+            reader.applied();
+        }
+        for _ in 0..100 {
+            if !reader.has_ops() {
+                break;
+            }
+            seen.extend(reader.drain(MAX_ATTACH_PER_TURN));
+            reader.applied();
+        }
+    }
+
+    /// Failure: the host applies a batch in the order it's given, so a batch out of order shows wrongly: a `Clear` after a tile's `Attach` leaves the page bare, a `Magnify` after the `ScrollTo` scrolls at the old zoom, a `ShowPage` before the `Document` places a page in a document of the old size, and a `Detach` of a tile that isn't on a layer, or an `Attach` of one that is, leaves a layer the host can't take off. Checked on a first activation, a tab switch and back, a scroll down and up, and a window closed and opened again.
+    #[test]
+    fn the_host_gets_each_batch_in_the_order_it_applies_it() {
+        const ORDER: [&str; 7] = ["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross", "ShowPage", "Attach"];
+        let in_order = |what: &str, ops: &[Op], needed: &[&str]| {
+            let kinds: Vec<&str> = ops.iter().map(kind_of).collect();
+            for kind in needed {
+                assert!(kinds.contains(kind), "{what}: no {kind} in {kinds:?}");
+            }
+            let firsts: Vec<usize> = ORDER.iter().filter_map(|kind| kinds.iter().position(|seen| seen == kind)).collect();
+            assert!(firsts.windows(2).all(|pair| pair[0] < pair[1]), "{what}: {kinds:?}");
+        };
+        // The host's layers, as the ops say: every `Detach` is of a tile on one, and every `Attach` of one that isn't. A page's `HidePage` takes its tiles with it.
+        let layers_hold = |what: &str, ops: &[Op]| {
+            let mut on: HashMap<u64, u32> = HashMap::new();
+            for op in ops {
+                match op {
+                    Op::Clear => on.clear(),
+                    // A page's layer goes with its tiles.
+                    Op::HidePage { page } => on.retain(|_, on_page| on_page != page),
+                    Op::Attach { id, page, .. } => assert!(on.insert(*id, *page).is_none(), "{what}: {id} attached twice"),
+                    Op::Detach { id } => assert!(on.remove(id).is_some(), "{what}: {id} detached while not attached"),
+                    _ => {}
+                }
+            }
+        };
+        let mut reader = Reader::new();
+        let mut all = reader.set_viewport(view(0.0));
+        reader.activate(1, 12, 0, map(), &[], None, Spread::Single);
+        let first = reader.take_ops();
+        in_order("a first activation", &first, &["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross"]);
+        all.extend(first);
+        all.extend(reader.set_viewport(view(0.0)));
+        settle_recording(&mut reader, &mut all);
+        for step in (1..=10).chain((0..10).rev()) {
+            all.extend(reader.set_viewport(view(f64::from(step) * 700.0)));
+            settle_recording(&mut reader, &mut all);
+        }
+        reader.activate(2, 12, 0, map(), &[1], None, Spread::Single);
+        let switch = reader.take_ops();
+        in_order("a switch to a new tab", &switch, &["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross"]);
+        all.extend(switch);
+        all.extend(reader.set_viewport(view(0.0)));
+        settle_recording(&mut reader, &mut all);
+        reader.activate(1, 12, 0, map(), &[2], None, Spread::Single);
+        let back = reader.take_ops();
+        in_order("a switch back to a tab that's drawn", &back, &ORDER);
+        all.extend(back);
+        all.extend(reader.set_viewport(view(0.0)));
+        settle_recording(&mut reader, &mut all);
+        layers_hold("before the window closed", &all);
+        reader.window_closed();
+        reader.window_opened();
+        let reopened = reader.take_ops();
+        in_order(
+            "a window opened again",
+            &reopened,
+            &["Magnify", "Document", "ScrollTo", "ScrollAcross", "ShowPage"],
+        );
+        let mut after = reopened;
+        after.extend(reader.set_viewport(view(0.0)));
+        settle_recording(&mut reader, &mut after);
+        for step in 1..=6 {
+            after.extend(reader.set_viewport(view(f64::from(step) * 700.0)));
+            settle_recording(&mut reader, &mut after);
+        }
+        assert!(after.iter().any(|op| matches!(op, Op::Detach { .. })), "the scroll took tiles off");
+        layers_hold("after the window opened again", &after);
+    }
 }
