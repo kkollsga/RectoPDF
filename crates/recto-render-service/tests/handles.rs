@@ -127,12 +127,12 @@ fn fake_worker() {
                     _ => send_all(&channel, &reply.encode(), &[]).unwrap(),
                 }
             }
-            // Refused once, and answered after that, to see which of them holds.
+            // Refused once, as a page with more images than an answer holds is, and answered after that, to see which of them holds.
             Kind::ImagesRequest => {
                 static ASKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let job_id = u32::from_le_bytes(frame.payload[..4].try_into().unwrap());
                 if ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    send_all(&channel, &proto::encode_failed(job_id, proto::FailCode::BadPage), &[]).unwrap();
+                    send_all(&channel, &proto::encode_failed(job_id, proto::FailCode::TooLarge), &[]).unwrap();
                 } else {
                     send_all(
                         &channel,
@@ -190,7 +190,7 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-/// Failure: a page's images are asked about once for each tile while they're not known, and an answer that failed then one that didn't leave some of its tiles dimmed and some turned over. A page gets one decision, a failed answer included.
+/// Failure: a page's images are asked about once for each tile while they're not known, and an answer that failed then one that didn't leave some of its tiles dimmed and some turned over. A page gets one decision, a failed answer included: a refusal for too many images, as here, is remembered as not known, so the page is judged whole and its walk isn't run again.
 #[test]
 fn a_page_gets_one_decision_about_its_images() {
     let _turn = turn();

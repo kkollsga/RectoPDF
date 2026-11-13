@@ -689,7 +689,7 @@ pub fn encode_images_request(job_id: u32, page: u32) -> Vec<u8> {
     frame(Kind::ImagesRequest, &p)
 }
 
-/// The most image rectangles a page reports. Past this they're given as one, around them all: many small images in a row are a picture cut in strips.
+/// The most image rectangles a page reports. Up to this many distinct places, each is reported as it is; past it, images whose boxes overlap or share an edge are reported as one, the box round them, and if more than this many are still apart, a worker refuses with [`FailCode::TooLarge`]: too many to tell apart, and the page is judged whole by its pixels. One box round every image made a catalogue page of photos on white one bright picture kept on a page that turned over.
 pub const MAX_IMAGE_BOXES: usize = 64;
 const IMAGE_BOX_LEN: usize = 8;
 
@@ -725,7 +725,9 @@ impl PageImages {
             for side in &mut sides {
                 *side = u16::from(r.u8()?) | (u16::from(r.u8()?) << 8);
             }
-            boxes.push(sides);
+            // A box inside out from a worker is turned the right way round here, so nothing that walks a page's boxes meets one that runs backwards.
+            let [left, top, right, bottom] = sides;
+            boxes.push([left.min(right), top.min(bottom), left.max(right), top.max(bottom)]);
         }
         r.end()?;
         Ok(Self { job_id, boxes })
@@ -1021,7 +1023,7 @@ pub enum FailCode {
     BadPage = 1,
     /// A rectangle or scale the page can't honour.
     BadRequest = 2,
-    /// The page is larger at this scale than the wire allows.
+    /// The page is larger at this scale than the wire allows, or has more pictures apart than [`MAX_IMAGE_BOXES`].
     TooLarge = 3,
     NeedsPassword = 4,
     /// Not a PDF, or too damaged to open.

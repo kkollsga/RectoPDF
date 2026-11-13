@@ -226,6 +226,10 @@ pub struct ReaderCounts {
 /// What QA reads.
 pub struct ReaderReport(pub Value);
 
+/// **The page view's state, a composition of parts** (`tiles/<part>.rs`). **Each part is built only in `tiles`, by its own `new`, and the one
+/// [`Reader::new`] makes is the only one there is:** the engine reaches a part through its `pub(crate)` field here and calls only that part's
+/// `pub(crate)` methods; outside `tiles` nothing builds a `Reader` but the engine's one, and nothing assigns, swaps or replaces a part, which no visibility
+/// stops (the fields are `pub(crate)`) and so `surface.rs` scans for (`nothing_outside_tiles_builds_a_reader_or_replaces_a_part`).
 pub(crate) struct Reader {
     /// The tabs held, hot and warm, and which is showing: the engine asks which tab shows, whether one's held and what it holds through this field's own methods.
     pub(crate) docs: Docs,
@@ -258,12 +262,6 @@ const _: () = assert!(size_of::<Reader>() <= 2096, "the page view grew");
 
 /// What a page says once the thread that draws has given up.
 const CANT_DRAW: &str = "RectoPDF can't draw pages right now, because something went wrong too many times. Quit and open it again.";
-
-impl Default for Reader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl Reader {
     pub fn new() -> Self {
@@ -677,6 +675,12 @@ impl Reader {
         self.work.wanted_files = Arc::new(Vec::new());
         self.pointer.selecting.drop_texts();
         self.let_lists_go();
+    }
+
+    /// **A tab's being woken, as of now.** "A tab already showing isn't being woken" is decided here, where the tab showing is held, not by the caller.
+    pub fn note_wake(&mut self, tab: u32, began: std::time::Instant) {
+        let hot = self.docs.hot;
+        self.wake.note_wake(hot, tab, began);
     }
 
     /// The window is back: everything is asked for again.

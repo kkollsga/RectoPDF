@@ -138,6 +138,12 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
             largest_image_pixels: 1 << 30,
         }
         .encode(),
+        // One the right way round and one inside out, as a hostile worker can send.
+        PageImages {
+            job_id: 1,
+            boxes: vec![[0, 0, 65_535, 30_000], [50_000, 100, 1_000, 40_000]],
+        }
+        .encode(),
         TextJob {
             job_id: 1,
             page: 2,

@@ -582,6 +582,17 @@ fn image_boxes_round_trip_and_refuse_a_bad_count() {
     );
 }
 
+/// Failure (rule 6): a worker sends a box inside out, its left past its right or its top below its bottom, and the host takes it as it is, so whatever walks a page's boxes meets one that runs backwards (review of 2026-11-13: dark paper's walk along a row counted pixels more than once for such boxes). It's turned the right way round as it's decoded, so nothing after can see one.
+#[test]
+fn an_image_box_inside_out_is_turned_the_right_way_round() {
+    let sent = PageImages {
+        job_id: 3,
+        boxes: vec![[60_000, 100, 1_000, 50], [5, 9_000, 7, 8_000], [1, 2, 3, 4]],
+    };
+    let got = PageImages::decode(&sent.encode()[HEADER_LEN..]).unwrap();
+    assert_eq!(got.boxes, [[1_000, 50, 60_000, 100], [5, 8_000, 7, 9_000], [1, 2, 3, 4]]);
+}
+
 /// Failure: a job far off any page passes its check, and walking its region's tiles adds past the end of a `u32`: a panic with overflow checks on, and rectangles that wrap round to the top of the page without them. Found by the `proto` fuzz target, whose input this is, cut down.
 #[test]
 fn a_job_off_every_page_is_refused() {
