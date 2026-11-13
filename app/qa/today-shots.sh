@@ -437,6 +437,20 @@ PY3
         r qa appearance "$look"; r view --paper dark; settle
         for p in $(seq 1 "$count"); do r goto "$p"; settle; shot "04c-dark-page-p$(printf %02d "$p")"; done
     done
+    # The black slide with no picture, woken from its sleep picture: first with drawing held, the sleep picture alone, then settled, its first sharp tiles decided from a small picture, as nothing drawn covers the page.
+    r open "$bashp"
+    for look in light dark; do
+        r qa appearance "$look"; r view --paper dark
+        r tap "#1"; r goto 1; settle
+        r tap "#2"; settle
+        sleep_tab "#1"
+        r qa hold-drawing on
+        r tap "#1"
+        shot "04c-dark-page-p01-woken-at-once"; pst "dark-page-p01-woken-at-once(drawing held) $look"
+        r qa hold-drawing off; settle
+        shot "04c-dark-page-p01-woken"; pst "dark-page-p01-woken $look"
+    done
+    r tap "#1"
     # The same pages on white paper, for what they are.
     look=light; r qa appearance light; r view --paper white; settle
     for p in $(seq 1 "$count"); do r goto "$p"; settle; shot "04c-dark-page-p$(printf %02d "$p")-white-paper"; done

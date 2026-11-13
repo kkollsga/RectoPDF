@@ -530,3 +530,167 @@ fn the_real_black_cover_is_never_turned_over() {
         );
     }
 }
+
+/// A document of `count` pages of text, no pictures.
+fn text_document(count: usize) -> TempPdf {
+    let lines: Vec<String> = (0..48)
+        .map(|at| format!("Line {at} of a page of text, long enough to fill most of the line across."))
+        .collect();
+    let text = text_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>());
+    let list: Vec<Page> = (0..count).map(|_| Page::new(text.clone())).collect();
+    TempPdf::new("text-document.pdf", &pages_with(&list, "", Vec::new()))
+}
+
+/// Drives `engine` until it's settled, applying what it asks, each surface it hands over let go of, for at most `limit`. How long that took.
+#[allow(unsafe_code)]
+fn settle(engine: &Engine, viewport: Viewport, limit: Duration) -> Duration {
+    let started = Instant::now();
+    loop {
+        let mut ops = engine.set_viewport(viewport);
+        ops.extend(engine.drain());
+        engine.applied();
+        for op in ops {
+            if let Op::Attach { surface, .. } = op {
+                // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+                drop(unsafe { PixelSurface::from_host_reference(surface) });
+            }
+        }
+        if engine.wait_settled(Duration::from_millis(5)) || started.elapsed() > limit {
+            return started.elapsed();
+        }
+    }
+}
+
+/// Measures, and isn't a check: what a page view on dark paper takes over a text document, the time to open it, scroll through it page by page, zoom out to the least zoom two pages across, where no previews are drawn, and in again, and wake onto a sleep picture to the first sharp tile. Run on `main` and on a branch, release, the load written down:
+///
+///     RECTO_LOOK_PAGES=500 cargo test --release -p recto-reader --test looks_on_real_files -- --ignored dark_paper_view_costs --nocapture
+#[test]
+#[ignore = "a measurement"]
+#[allow(unsafe_code)]
+fn dark_paper_view_costs() {
+    let count: usize = std::env::var("RECTO_LOOK_PAGES").ok().and_then(|pages| pages.parse().ok()).unwrap_or(500);
+    let file = text_document(count);
+    let map = || PageMap {
+        files: vec![file.0.clone()],
+        slots: None,
+        own: None,
+        turns: None,
+        expected: Vec::new(),
+        follows: None,
+    };
+    let new_engine = || {
+        let engine = Engine::new(
+            EngineConfig {
+                service: None,
+                policy: Some(Policy::default()),
+                keys: None,
+            },
+            Arc::new(Quiet),
+        );
+        engine.set_viewport(view(0.0));
+        engine.set_paper(PaperKind::Dark);
+        engine
+    };
+    let engine = new_engine();
+    let started = Instant::now();
+    engine.activate(1, count as u32, 0, map(), &[], None, recto_reader::layout::Spread::Single);
+    let opened = settle(&engine, view(0.0), Duration::from_secs(60));
+    let height = engine.report().0["document_height"].as_f64().unwrap();
+    let mut steps = Vec::new();
+    for page in 1..count {
+        steps.push(settle(&engine, view(height * page as f64 / count as f64), Duration::from_secs(60)));
+    }
+    let scrolled = started.elapsed();
+    let zoomed_in = settle(
+        &engine,
+        Viewport {
+            magnification: 2.0,
+            ..view(0.0)
+        },
+        Duration::from_secs(60),
+    );
+    engine.shut_down();
+    // Opened zoomed out as far as a person can, two pages across, by a page view that's decided nothing: no previews are drawn at this zoom, so each page's first job is a tile.
+    let engine = new_engine();
+    engine.set_spread(recto_reader::layout::Spread::TwoUp);
+    let overview = Viewport {
+        magnification: recto_reader::tiles::MIN_ZOOM,
+        ..view(0.0)
+    };
+    engine.set_viewport(overview);
+    let started = Instant::now();
+    engine.activate(1, count as u32, 0, map(), &[], None, recto_reader::layout::Spread::TwoUp);
+    settle(&engine, overview, Duration::from_secs(60));
+    let overview_took = started.elapsed();
+    let pages_in_overview = engine.report().0["visible_pages"].as_array().map_or(0, Vec::len);
+    assert_eq!(engine.report().0["tiles"]["previews_attached"], 0);
+    engine.shut_down();
+    steps.sort_unstable();
+    let at = |share: f64| steps[((steps.len() - 1) as f64 * share) as usize].as_secs_f64() * 1000.0;
+    println!(
+        "{count} pages of text: opened in {:.1} ms, scrolled through in {:.1} ms all told, {:.2} ms a page; a step to the next page p50 {:.2} ms, p99 {:.2}; zoomed in to 2 {:.1} ms; opened zoomed out to {pages_in_overview} pages with no previews {:.1} ms",
+        opened.as_secs_f64() * 1000.0,
+        scrolled.as_secs_f64() * 1000.0,
+        scrolled.as_secs_f64() * 1000.0 / count as f64,
+        at(0.5),
+        at(0.99),
+        zoomed_in.as_secs_f64() * 1000.0,
+        overview_took.as_secs_f64() * 1000.0
+    );
+    // A wake onto a sleep picture of page 1, to the first tile sharper than it, ten times.
+    let version = {
+        let mut doc = renderer(&file.0);
+        doc.page_size(0).unwrap();
+        doc.known_version()
+    };
+    let mut wakes = Vec::new();
+    for _ in 0..10 {
+        let engine = new_engine();
+        let picture = PixelSurface::create(306, 396).unwrap();
+        engine.waking().note_wake(1, Instant::now());
+        engine.waking().give_sleep(
+            1,
+            SleepView {
+                version,
+                usual: Some(PageBox { width: 612.0, height: 792.0 }),
+                sizes: Vec::new(),
+                pictures: vec![SleepShot {
+                    page: 0,
+                    scale: 0.5,
+                    paper: PaperKind::Dark,
+                    surface: picture,
+                }],
+            },
+        );
+        let started = Instant::now();
+        engine.activate(1, count as u32, 0, map(), &[], None, recto_reader::layout::Spread::Single);
+        let mut sharp = None;
+        while sharp.is_none() && started.elapsed() < Duration::from_secs(30) {
+            let mut ops = engine.set_viewport(view(0.0));
+            ops.extend(engine.drain());
+            engine.applied();
+            for op in ops {
+                if let Op::Attach {
+                    surface, crop_width, width, ..
+                } = op
+                {
+                    // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+                    let surface = unsafe { PixelSurface::from_host_reference(surface) };
+                    let density = surface.map_or(0.0, |surface| crop_width * f64::from(surface.width()) / width);
+                    if density > 1.5 && sharp.is_none() {
+                        sharp = Some(started.elapsed());
+                    }
+                }
+            }
+            engine.wait_settled(Duration::from_millis(1));
+        }
+        engine.shut_down();
+        wakes.push(sharp.expect("a sharp tile"));
+    }
+    wakes.sort_unstable();
+    println!(
+        "a wake onto a sleep picture to the first sharp tile: p50 {:.1} ms, most {:.1}",
+        wakes[wakes.len() / 2].as_secs_f64() * 1000.0,
+        wakes[wakes.len() - 1].as_secs_f64() * 1000.0
+    );
+}

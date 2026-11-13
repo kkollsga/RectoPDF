@@ -251,3 +251,62 @@ fn survey() {
         }
     }
 }
+
+/// `small_pictures`: for each page of the list with no images, the time to draw the picture a page with no images is decided from when nothing drawn covers it, 128 pixels on its longest side, against the look picture's 512, and the worker's footprint after each. Same list:
+///
+///     RECTO_LOOK_LIST=list.txt cargo test --release -p recto-reader --test look_survey -- --ignored --exact small_pictures --nocapture
+#[test]
+#[ignore = "a measurement"]
+fn small_pictures() {
+    let list = std::fs::read_to_string(std::env::var("RECTO_LOOK_LIST").unwrap()).unwrap();
+    let (mut small, mut large, mut warm, mut footprint) = (Vec::new(), Vec::new(), Vec::new(), 0u64);
+    for line in list.lines() {
+        let Some((path, list)) = line.rsplit_once(' ') else { continue };
+        let Ok(mut doc) = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()) else {
+            continue;
+        };
+        let name = Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        let mut file_small = Vec::new();
+        for page in list.split(',').filter_map(|page| page.parse::<u32>().ok()).map(|page| page - 1) {
+            if doc.page_size(page).is_err() || !doc.image_boxes(page, 1).ok().flatten().is_some_and(|boxes| boxes.is_empty()) {
+                continue;
+            }
+            // The page is loaded by the size and the walk, as it would be by then in the app, and its first picture is drawn cold, as the small one is after a wake; then the look picture and the small one again, warm.
+            let Some((_, _, _, ms)) = picture_of(&mut doc, page, 128.0) else { continue };
+            small.push(ms);
+            file_small.push(ms);
+            footprint = footprint.max(doc.worker_footprint().unwrap_or(0));
+            if let Some((_, _, _, ms)) = picture_of(&mut doc, page, 512.0) {
+                large.push(ms);
+            }
+            if let Some((_, _, _, ms)) = picture_of(&mut doc, page, 128.0) {
+                warm.push(ms);
+            }
+        }
+        if !file_small.is_empty() {
+            file_small.sort_by(f64::total_cmp);
+            println!(
+                "{name}: {} pages with no images, 128 px p50 {:.2} ms, most {:.2}",
+                file_small.len(),
+                file_small[file_small.len() / 2],
+                file_small[file_small.len() - 1]
+            );
+        }
+    }
+    let at = |draws: &mut Vec<f64>, share: f64| {
+        draws.sort_by(f64::total_cmp);
+        draws.get(((draws.len().max(1) - 1) as f64 * share) as usize).copied().unwrap_or(0.0)
+    };
+    println!(
+        "{} pages with no images. 128 px, the page's first draw: p50 {:.2} ms, p99 {:.2}, most {:.2}. Then 512 px: p50 {:.2}, p99 {:.2}. Then 128 px again: p50 {:.2}, p99 {:.2}. Largest worker footprint seen after a 128 px draw: {:.1} MiB",
+        small.len(),
+        at(&mut small, 0.5),
+        at(&mut small, 0.99),
+        at(&mut small, 1.0),
+        at(&mut large, 0.5),
+        at(&mut large, 0.99),
+        at(&mut warm, 0.5),
+        at(&mut warm, 0.99),
+        footprint as f64 / 1_048_576.0
+    );
+}

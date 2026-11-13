@@ -1702,5 +1702,30 @@ mod tests {
                 let _ = PageLook::decide(Some(&[photo]), &page, width as usize * 4, width, height);
             });
         }
+        // The decision for a page with no images, which since 2026-11-13 reads its background's darkness: a white page of text and a black one, at the look picture's size and the largest preview's, p50 and p99 of 2,000.
+        for (width, height) in [(396u32, 512u32), (884, 1144)] {
+            for (name, paper, ink) in [("white", 255u8, 40u8), ("black", 0, 230)] {
+                let page: Vec<u8> = (0..(width * height) as usize)
+                    .flat_map(|at| {
+                        let (x, y) = (at % width as usize, at / width as usize);
+                        let value = if y % 7 == 0 && x % 11 != 0 { ink } else { paper };
+                        [value, value, value, 255]
+                    })
+                    .collect();
+                let mut samples: Vec<u128> = (0..2_000)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        std::hint::black_box(PageLook::decide(Some(&[]), std::hint::black_box(&page), width as usize * 4, width, height));
+                        started.elapsed().as_nanos()
+                    })
+                    .collect();
+                samples.sort_unstable();
+                println!(
+                    "decide a {name} page with no images, {width} by {height}: p50 {:.1} us, p99 {:.1} us",
+                    samples[1_000] as f64 / 1000.0,
+                    samples[1_980] as f64 / 1000.0
+                );
+            }
+        }
     }
 }
