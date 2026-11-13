@@ -122,18 +122,16 @@ mod tests {
         };
         let refused = state_with(&quiet, StatePaths::users_own().unwrap()).expect_err("none named");
         assert!(refused.contains(recto_control::state::STATE_ENV), "it says what to set: {refused}");
-        let outside = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
-        if let Ok(named) = StatePaths::overridden(&outside) {
+        if let Some(outside) = crate::testkit::headless::outside_the_tests_folders("state")
+            && let Ok(named) = StatePaths::overridden(&outside)
+        {
             assert!(state_with(&quiet, named).is_err(), "a folder outside the temp folders");
         }
         assert!(
             state_with(&LaunchArgs::default(), StatePaths::users_own().unwrap()).is_ok(),
             "a launch that isn't quiet"
         );
-        let temp = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-launch-{}", std::process::id()));
+        let temp = recto_control::state::quiet_run_temp_folders()[0].join(format!("recto-launch-{}", std::process::id()));
         assert!(
             state_with(&quiet, StatePaths::overridden(&temp).unwrap()).is_ok(),
             "a new folder in the temp folder"

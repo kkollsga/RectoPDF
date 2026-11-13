@@ -42,19 +42,15 @@ pub(super) fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
     Ok(PagePlace { page, x, y, clicks, shift })
 }
 
-/// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
-/// Whether a file is one a quiet run's test made: in its state folder, or a temp folder. Compared by the folders the paths really are, so a link out of one doesn't count.
+/// Whether a file is one a quiet run's test made: in its state folder, or one of the temp folders a quiet run may use
+/// ([`recto_control::state::quiet_run_temp_folders`], never what `$TMPDIR` says). Compared by the folders the paths really are, so a link out of one
+/// doesn't count.
 pub(super) fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
     let Ok(file) = path.canonicalize() else { return false };
-    let roots = [
-        state.map(std::path::Path::to_path_buf),
-        Some(std::env::temp_dir()),
-        Some(std::path::PathBuf::from("/private/tmp")),
-    ];
-    roots
+    state
+        .and_then(|state| state.canonicalize().ok())
         .into_iter()
-        .flatten()
-        .filter_map(|root| root.canonicalize().ok())
+        .chain(recto_control::state::quiet_run_temp_folders())
         .any(|root| file.starts_with(root))
 }
 
@@ -168,6 +164,40 @@ pub(super) fn cleaned(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (review of R2.4, S1): a test's own file is decided by the caller's `$TMPDIR`, so a quiet run started with `TMPDIR=$HOME` lets `qa as-person`
+    /// and `qa password` act on the person's own files. The wall goes by the system's temp folders, as the quiet run's state rule does, whatever the
+    /// environment says. This test binary runs [`tmpdir_is_the_home_here`] again with `TMPDIR` pointed at the home, which can't be set in this process.
+    #[test]
+    fn a_tests_file_isnt_what_tmpdir_says() {
+        let home = recto_platform::local::real_home().expect("the home");
+        let child = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args(["--exact", "core::qa::values::tests::tmpdir_is_the_home_here", "--nocapture"])
+            .env("TMPDIR", &home)
+            .env(TMPDIR_CHILD, "1")
+            .output()
+            .expect("the test binary again");
+        let said = String::from_utf8_lossy(&child.stdout).into_owned() + &String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success() && said.contains("1 passed"), "with TMPDIR at the home:\n{said}");
+        let temp = recto_control::state::quiet_run_temp_folders();
+        assert!(!temp.is_empty(), "no temp folder");
+        assert!(is_a_tests_file(&temp[0], None), "the system's temp folder is a test's");
+    }
+
+    /// Set when [`a_tests_file_isnt_what_tmpdir_says`] runs this binary again.
+    const TMPDIR_CHILD: &str = "RECTO_TEST_TMPDIR_IS_HOME";
+
+    /// Run by [`a_tests_file_isnt_what_tmpdir_says`] with `TMPDIR` at the home; nothing to do otherwise.
+    #[test]
+    fn tmpdir_is_the_home_here() {
+        if std::env::var_os(TMPDIR_CHILD).is_none() {
+            return;
+        }
+        let home = recto_platform::local::real_home().expect("the home").canonicalize().expect("the home is there");
+        assert_eq!(std::env::temp_dir().canonicalize().ok(), Some(home.clone()), "TMPDIR is the home here");
+        assert!(!is_a_tests_file(&home, None), "the home taken as a test's own because TMPDIR said so");
+        assert!(!is_a_tests_file(&home.join("Library"), None), "nor a folder in it");
+    }
 
     /// Failure: a shot lands in the real home, by a path or through a link to it, or takes a document's name. Holds the rule, with what counts as the home given.
     #[test]

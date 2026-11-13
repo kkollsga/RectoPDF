@@ -204,7 +204,9 @@ mod tests {
             edits["tabs"][0]["edits"]["holds_owner_edits"], true,
             "the person's edit is the owner's: {edits}"
         );
-        let elsewhere = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/recto-as-person-{}.pdf", std::process::id()));
+        let Some(elsewhere) = crate::testkit::headless::outside_the_tests_folders("recto-as-person.pdf") else {
+            return;
+        };
         std::fs::copy(&own, &elsewhere).unwrap();
         let refused = run(app.core(), &format!("open \"{}\"", elsewhere.display())).expect_err("opening a file that isn't a test's");
         assert_eq!(refused.code, "usage");

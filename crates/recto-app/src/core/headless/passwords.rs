@@ -88,7 +88,9 @@ fn qa_password_types_only_into_a_tests_own_sheet() {
     let app = HeadlessApp::start();
     let refused = crate::core::qa::password_sheet_is_a_tests(app.core()).expect_err("no sheet");
     assert!(refused.message.contains("No password sheet"), "{refused:?}");
-    let outside = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/recto-qa-password-{}.pdf", std::process::id()));
+    let Some(outside) = crate::testkit::headless::outside_the_tests_folders("recto-qa-password.pdf") else {
+        return;
+    };
     std::fs::write(&outside, locked_with("open sesame", 1)).expect("a file outside the test's folders");
     open(&app, &outside);
     assert!(sheet(&app).is_some(), "the person's open asks for the password");

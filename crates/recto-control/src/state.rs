@@ -127,11 +127,7 @@ impl StatePaths {
     pub fn for_a_quiet_run(self) -> Result<Self, AgentError> {
         let paths = self;
         let real = default_root().ok().and_then(|real| resolved(&real));
-        let temps: Vec<PathBuf> = [local::system_temp_dir(), Some(PathBuf::from("/tmp"))]
-            .into_iter()
-            .flatten()
-            .filter_map(|temp| temp.canonicalize().ok())
-            .collect();
+        let temps = quiet_run_temp_folders();
         if !paths.overridden || real.as_deref().is_none_or(|real| refuses_for_quiet_run(&paths.root, real, &temps)) {
             return Err(AgentError::new(
                 "needs_temp_state",
@@ -208,6 +204,16 @@ pub fn refuses_real_home(wanted: &Path, home: &Path, temp: Option<&Path>) -> boo
         return true;
     }
     !temp.is_some_and(|temp| !home.starts_with(temp) && wanted.starts_with(temp))
+}
+
+/// **The temp folders a quiet run may use,** for its state and its test's files: the system's own (from the OS, never `$TMPDIR`, which the caller can
+/// point anywhere) and `/tmp`, each as the folder it really is. One list, so the state rule and the QA verbs' file wall can't disagree.
+pub fn quiet_run_temp_folders() -> Vec<PathBuf> {
+    [local::system_temp_dir(), Some(PathBuf::from("/tmp"))]
+        .into_iter()
+        .flatten()
+        .filter_map(|temp| temp.canonicalize().ok())
+        .collect()
 }
 
 /// **The rule for a quiet run's state folder,** with every path already resolved through its links: refused when it's the user's own state folder, holds
