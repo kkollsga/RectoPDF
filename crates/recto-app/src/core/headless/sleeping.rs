@@ -120,6 +120,7 @@ fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_read
             "the session thread took what was queued"
         );
         let mut ops = engine.drain();
+        crate::testkit::headless::applied_as_the_host(&ops);
         engine.applied();
         let mut quiet = ops.is_empty();
         while let Some(op) = ops.pop() {
@@ -127,6 +128,7 @@ fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_read
                 view.y = y;
                 view.scrolled_to = seq;
                 ops = engine.set_viewport(*view);
+                crate::testkit::headless::applied_as_the_host(&ops);
                 engine.applied();
                 quiet = false;
             }
@@ -162,7 +164,7 @@ fn full(app: &crate::testkit::headless::HeadlessApp, words: &[&str]) -> serde_js
 fn opened_and_moved(app: &crate::testkit::headless::HeadlessApp, doc: &std::path::Path, view: &mut recto_reader::Viewport) {
     app.open(doc);
     *view = window_view();
-    drop(app.core().engine.set_viewport(*view));
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(*view));
     host_turns(app, view, true);
     app.core().engine.hold_drawing(true);
     full(app, &["goto", "30"]);
@@ -181,7 +183,7 @@ fn a_tab_moved_and_left_before_its_place_is_drawn_wakes_with_a_picture_of_it() {
     app.open(&b);
     engine.hold_drawing(false);
     view = window_view();
-    drop(engine.set_viewport(view));
+    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
     host_turns(&app, &mut view, true);
     let draws = engine.report().0["sleep_draws"].clone();
     assert_eq!(draws["leaves_owing"], 1, "{draws}");
@@ -230,7 +232,7 @@ fn a_tab_whose_pages_change_off_screen_wakes_with_no_picture_of_another_page() {
     for doc in [&c, &a, &b] {
         app.open(doc);
         view = window_view();
-        drop(engine.set_viewport(view));
+        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
         host_turns(&app, &mut view, true);
     }
     let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
@@ -264,7 +266,7 @@ fn a_tab_asleep_whose_pages_change_wakes_with_no_picture_from_before() {
     for doc in [&a, &b] {
         app.open(doc);
         view = window_view();
-        drop(engine.set_viewport(view));
+        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
         host_turns(&app, &mut view, true);
     }
     let a = tab_named(&app, "a.pdf");
@@ -309,7 +311,7 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     for doc in [&a, &b] {
         app.open(doc);
         view = window_view();
-        drop(engine.set_viewport(view));
+        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));

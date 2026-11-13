@@ -59,7 +59,7 @@ fn window_view() -> recto_reader::Viewport {
 fn drawn(app: &HeadlessApp) {
     let engine = &app.core().engine;
     let mut view = window_view();
-    drop(engine.set_viewport(view));
+    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
     let began = std::time::Instant::now();
     loop {
         assert!(
@@ -67,6 +67,7 @@ fn drawn(app: &HeadlessApp) {
             "the session thread took what was queued"
         );
         let mut ops = engine.drain();
+        crate::testkit::headless::applied_as_the_host(&ops);
         engine.applied();
         let mut quiet = ops.is_empty();
         while let Some(op) = ops.pop() {
@@ -74,6 +75,7 @@ fn drawn(app: &HeadlessApp) {
                 view.y = y;
                 view.scrolled_to = seq;
                 ops = engine.set_viewport(view);
+                crate::testkit::headless::applied_as_the_host(&ops);
                 engine.applied();
                 quiet = false;
             }
