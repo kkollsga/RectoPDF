@@ -4,6 +4,7 @@
 mod exits;
 mod files;
 mod find;
+mod input_to_frame;
 mod launch;
 mod levels;
 mod palette;
