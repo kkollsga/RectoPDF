@@ -136,10 +136,14 @@ impl Cmd for PageInsert {
         {
             require_absolute(path)?;
             let position = one_based(*at)?;
+            // Put to a confined session's rule before anything looks at it, and read where the rule looked (review of the quiet-run wall, F3 and F4).
+            let to_read = access
+                .with(|s| s.confinement().to_read(path))
+                .ok_or_else(|| crate::quiet_files::outside_the_run(path))?;
             // The file is read first and outside the session, so a slow one holds nobody else up.
             let loader = access.with(|s| s.loader().clone());
-            let stamp = recto_platform::file_stamp(path).ok();
-            let facts = loader.load(path)?;
+            let stamp = recto_platform::file_stamp(&to_read).ok();
+            let facts = loader.load(&to_read)?;
             access.with(|s| {
                 let id = select(s, tab)?;
                 keep_owners_undone_steps(s, id, actor.level())?;

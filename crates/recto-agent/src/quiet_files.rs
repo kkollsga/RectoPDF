@@ -182,27 +182,73 @@ mod tests {
         assert!(untried.is_empty(), "commands with a file that weren't tried: {untried:?}");
     }
 
-    /// Failure (review of the branch, F4): what a confined session writes rests only on the table's check in the executor, so a route that runs a command
-    /// without it (a host added later, a command run from inside another) writes an export, a print or a Save As outside the run's folders. Every
-    /// command that names a file, run past that check, as [`execute`] runs it after its checks: each is refused, and nothing is written outside.
+    /// Failure (review of the branch, F4): what a confined session reads and writes rests only on the table's check in the executor, so a route that runs a
+    /// command without it (a host added later, a command run from inside another) writes an export, a print or a Save As outside the run's folders, or
+    /// reads another PDF's pages in and says by its refusal whether it was there. Every session command that names a file, run past that check, as
+    /// [`execute`] runs it after its checks: each is refused the one way, the same with a file it would read gone, nothing outside is read (its last-read
+    /// time), and nothing is written there. The app's own commands (`update install`) are held by the app's route, in `AppHost::run_app`.
     #[test]
-    fn past_the_tables_check_the_session_still_writes_nothing_outside() {
-        let outside = outside();
+    fn past_the_tables_check_the_session_still_uses_nothing_outside() {
+        // In `/var/tmp`: not hidden (a worktree's `target` is, under `.worktrees`), so what refuses is the run's rule and not a file name's.
+        let outside = FreshDir::new_in(Path::new("/private/var/tmp"), "recto-quiet-outside-", "").unwrap();
+        let secret = outside.path().join("secret.pdf");
+        std::fs::write(&secret, pdf("the user's own words")).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&secret)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_accessed(long_ago))
+            .unwrap();
+        let last_read = || std::fs::metadata(&secret).unwrap().accessed().unwrap();
+        let before = last_read();
         let run = recto_testpdf::TempDir::new("recto-quiet-run-");
         std::fs::write(run.join("mine.pdf"), pdf("the run's own")).unwrap();
+        let mut tried = Vec::new();
         for (name, wire) in commands_naming_files() {
-            let mut line = wire.clone();
             let spec = table::TABLE.iter().find(|spec| spec.name == name).unwrap();
-            for arg in spec.args.iter().filter(|arg| arg.kind == Kind::Path) {
-                line[arg.key] = json!(outside.path().join(format!("{}-{}.out", line["cmd"].as_str().unwrap(), arg.key)));
+            // The run's one tab and its one page, so nothing but the file stands in the way; and each file at `read` if it's one to read.
+            let line_with = |read: &Path| {
+                let mut line = wire.clone();
+                for arg in spec.args {
+                    match arg.kind {
+                        Kind::Path if matches!(spec.tag, "open" | "page_insert") => line[arg.key] = json!(read),
+                        // A new name beside it, the example's own, so its ending is what the command takes.
+                        Kind::Path => {
+                            let named = line[arg.key].as_str().and_then(|path| Path::new(path).file_name().map(|name| name.to_owned()));
+                            line[arg.key] = json!(outside.path().join(named.unwrap_or_else(|| format!("{}.out", arg.key).into())));
+                        }
+                        Kind::Tab => line[arg.key] = json!("#1"),
+                        Kind::Page => line[arg.key] = json!(1),
+                        Kind::Pages | Kind::PagesOpen if line.get(arg.key).is_some() => line[arg.key] = json!("1"),
+                        _ => {}
+                    }
+                }
+                parse(&line.to_string()).unwrap_or_else(|error| panic!("{line}: {}", error.message))
+            };
+            if line_with(&secret).route() == crate::Runs::App {
+                continue;
             }
-            let command = parse(&line.to_string()).unwrap_or_else(|error| panic!("{line}: {}", error.message));
-            let mut session = Session::new(crate::DrawableLoader);
-            session.confinement().confine(RunFolders::quiet_run());
-            session.open(&run.join("mine.pdf")).unwrap();
-            let access = Mutex::new(session);
-            let refused = crate::execute_held(&access, Actor::Agent(Level::Full), &command, &mut Vec::new());
-            assert!(refused.is_err(), "{name} ran with a file outside");
+            let refusal = |read: &Path| {
+                let mut session = Session::new(crate::DrawableLoader);
+                session.confinement().confine(RunFolders::quiet_run());
+                session.open(&run.join("mine.pdf")).unwrap();
+                let refused = crate::execute_held(&Mutex::new(session), Actor::Agent(Level::Full), &line_with(read), &mut Vec::new())
+                    .expect_err(&format!("{name} ran with a file outside"));
+                (refused.code, refused.message)
+            };
+            let there = refusal(&secret);
+            assert_eq!(there.0, "outside_quiet_run", "{name}: {}", there.1);
+            assert_eq!(
+                there,
+                refusal(&outside.path().join("missing.pdf")),
+                "{name}: the refusal says whether the file is there"
+            );
+            assert_eq!(last_read(), before, "{name} read the outside file");
+            tried.push(name);
+        }
+        for each in ["open", "page insert", "save-as", "render", "export svg", "image", "snapshot", "print"] {
+            assert!(tried.contains(&each), "{each} wasn't tried: {tried:?}");
         }
         let left: Vec<_> = std::fs::read_dir(outside.path())
             .unwrap()
@@ -210,55 +256,6 @@ mod tests {
             .map(|entry| entry.file_name())
             .collect();
         assert_eq!(left, ["secret.pdf"], "something was written outside");
-    }
-
-    /// Failure (review of the branch, F3): the folder a confined tab's file is in is swapped for a link out after the open, and the tab's later reads and
-    /// writes follow it: its text, a search, a picture of a page, a save. Each is refused or finds nothing of the outside file, which is left as it was.
-    #[cfg(unix)]
-    #[test]
-    fn a_tab_whose_folder_turns_into_a_link_out_reads_and_writes_nothing_there() {
-        let outside = outside();
-        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
-        std::fs::create_dir(run.join("docs")).unwrap();
-        std::fs::write(run.join("docs/secret.pdf"), pdf("the run's own")).unwrap();
-        let mut session = Session::new(crate::DrawableLoader);
-        session.confinement().confine(RunFolders::quiet_run());
-        session.open(&run.join("docs/secret.pdf")).unwrap();
-        let access = Mutex::new(session);
-        // An edit, so a save has something to write.
-        let rotate = table::parse_cli(&["page".into(), "rotate".into(), "1".into(), "--by".into(), "90".into()]).unwrap();
-        execute(&access, Actor::Agent(Level::Full), &parse(&rotate.wire()).unwrap(), &mut Vec::new()).unwrap();
-        std::fs::rename(run.join("docs"), run.join("docs-real")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), run.join("docs")).unwrap();
-        let before = std::fs::read(outside.path().join("secret.pdf")).unwrap();
-        let out = run.join("page.png");
-        for words in [
-            vec!["text", "--page", "1"],
-            vec!["search", "user's"],
-            vec!["render", "--page", "1", "--out", out.to_str().unwrap()],
-            vec!["save"],
-        ] {
-            let mut words: Vec<String> = words.into_iter().map(str::to_owned).collect();
-            words.insert(0, "recto".into());
-            let line = table::parse_cli(&words[1..]).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
-            let command = parse(&line.wire()).unwrap();
-            let answer = execute(&access, Actor::Agent(Level::Full), &command, &mut Vec::new());
-            let said = match &answer {
-                Ok(value) => value.to_string(),
-                Err(error) => format!(
-                    "{} {}",
-                    error.message,
-                    error.untrusted.as_ref().map(|data| data.to_string()).unwrap_or_default()
-                ),
-            };
-            assert!(!said.contains("user's own"), "{words:?} read the outside file: {said}");
-        }
-        assert!(!out.exists(), "a page was drawn from the outside file");
-        assert_eq!(
-            std::fs::read(outside.path().join("secret.pdf")).unwrap(),
-            before,
-            "the outside file was written"
-        );
     }
 
     /// Failure (review of the branch, S1's sweep beyond QA): a command's argument is text to the table but a file to the command, so no wall sees it, and a
