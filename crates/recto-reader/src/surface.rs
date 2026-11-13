@@ -1,10 +1,10 @@
 //! **What the page view's types let other code reach,** listed and held (R3.6). `Reader` and its parts, `Engine` and its facades: every method visible
-//! past its own module (`pub` or `pub(crate)`) with its signature, every trait implemented, and every field of `Reader` and `Engine` visible past theirs.
+//! past its own module (`pub` or `pub(crate)`) with its signature, every trait implemented (in any file of the crate: an `impl Reader` in `paper.rs` is listed too), and every field of every struct named here that is visible past its module.
 //! A part that can be built, replaced or reached around from outside where it belongs shows up here as a changed line, so a widening is a deliberate edit
 //! of [`SURFACE`] that a reviewer sees, not a side effect of a move (the lesson of `Session`'s R3.5: a public `Default` and a `_mut` accessor let outside
 //! code replace a whole part, and nothing listed it).
 //!
-//! A text scan of the sources, as the ratchet's is: an item under `#[cfg(test)]` isn't listed, and a signature is joined onto one line.
+//! A text scan of the sources, as the ratchet's is: an item under `#[cfg(test)]` isn't listed, a signature is joined onto one line, an inline `mod` is read as if its items were at the top, and an `impl` header over several lines (a `where` line) is joined. A `pub(super)` field isn't listed: it reaches only the `tiles` module the parts live in.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,37 @@ fn sources() -> Vec<PathBuf> {
     }
     files.sort();
     files
+}
+
+/// Every `.rs` file of the crate outside the page view's own: where an `impl` of one of its types could hide.
+fn other_sources() -> Vec<PathBuf> {
+    fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                into.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    let own = sources();
+    files.retain(|file| !own.contains(file) && !file.ends_with("surface.rs") && !file.components().any(|part| part.as_os_str() == "tests"));
+    files.sort();
+    files
+}
+
+/// The names of the structs and enums a page view file defines, of any visibility and wherever they stand: the types an `impl` elsewhere is held against.
+fn defined_types(text: &str, into: &mut BTreeSet<String>) {
+    for line in text.lines() {
+        if let Some((_, _, rest)) = type_item(line.trim()) {
+            into.insert(strip_generics(rest.split([' ', '{', '(', ';']).next().unwrap_or("")));
+        }
+    }
 }
 
 /// Whether a line, trimmed, says its item is reached past its module.
@@ -66,6 +97,11 @@ fn strip_generics(text: &str) -> String {
 
 /// What a file lets past its module, as lines of the listing.
 fn listing_of(text: &str, into: &mut BTreeSet<String>) {
+    listing_in(text, into, None);
+}
+
+/// [`listing_of`], and with `only` the `impl` blocks for those types alone (a file outside the page view's own).
+fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<String>>) {
     let lines: Vec<&str> = text.lines().collect();
     let mut at = 0;
     // The `impl` or `struct` being read: its name, and whether the struct's fields are listed.
@@ -107,16 +143,51 @@ fn listing_of(text: &str, into: &mut BTreeSet<String>) {
                 at += 1;
                 continue;
             }
-            if trimmed.starts_with("impl") && trimmed.ends_with('{') {
-                let of = impl_of(trimmed);
-                if of.contains(": ") {
-                    into.insert(format!("{of} (trait impl)"));
+            if trimmed.starts_with("mod ")
+                || trimmed.starts_with("pub mod ")
+                || trimmed.starts_with("pub(crate) mod ")
+                || trimmed.starts_with("pub(super) mod ")
+            {
+                // An inline module: its items are read as if they stood at the top (four spaces taken off), to its closing brace.
+                if trimmed.ends_with('{') {
+                    let from = at + 1;
+                    while at + 1 < lines.len() && !lines[at + 1].starts_with('}') {
+                        at += 1;
+                    }
+                    let inner = lines[from..(at + 1).max(from)]
+                        .iter()
+                        .map(|line| line.strip_prefix("    ").unwrap_or(line))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    listing_in(&inner, into, only);
+                    at += 1;
                 }
-                within = Some(of);
+            } else if trimmed.starts_with("impl") && !trimmed.ends_with(';') {
+                // The header may run over lines (a `where` clause): joined to its opening brace.
+                let mut header = String::from(trimmed);
+                while !header.ends_with('{') && at + 1 < lines.len() {
+                    at += 1;
+                    header.push(' ');
+                    header.push_str(lines[at].trim());
+                }
+                let header = header.split(" where ").next().unwrap_or("").trim_end_matches('{').trim().to_string();
+                let of = impl_of(&header);
+                let named = of.split(':').next().unwrap_or("");
+                if only.is_none_or(|types| types.contains(named)) {
+                    if of.contains(": ") {
+                        into.insert(format!("{of} (trait impl)"));
+                    }
+                    within = Some(of);
+                }
+            } else if only.is_some() {
+                // Outside the page view's own files only an `impl` of its types is listed.
             } else if let Some((shown, kind, rest)) = type_item(trimmed) {
                 let name = strip_generics(rest.split([' ', '{', '(', ';']).next().unwrap_or(""));
-                if matches!(name.as_str(), "Reader" | "Engine") {
+                if kind == "struct" {
                     fields_of = Some(name.clone());
+                    if let Some(tuple) = rest.split_once('(').filter(|(_, fields)| fields.contains("pub")) {
+                        into.insert(format!("{name}.({}", one_line(tuple.1)));
+                    }
                 }
                 let derived = if derived.is_empty() {
                     String::new()
@@ -128,7 +199,7 @@ fn listing_of(text: &str, into: &mut BTreeSet<String>) {
                 && trimmed.contains(" fn ")
             {
                 let mut signature = String::from(trimmed);
-                while !signature.ends_with('{') && !signature.ends_with(';') && at + 1 < lines.len() {
+                while !ends_signature(&signature) && at + 1 < lines.len() {
                     at += 1;
                     signature.push(' ');
                     signature.push_str(lines[at].trim());
@@ -147,7 +218,7 @@ fn listing_of(text: &str, into: &mut BTreeSet<String>) {
             let shown = visibility(trimmed);
             if trimmed.contains("fn ") && (shown.is_some() || of.contains(": ")) && !skip {
                 let mut signature = String::from(trimmed);
-                while !signature.ends_with('{') && !signature.ends_with(';') && at + 1 < lines.len() {
+                while !ends_signature(&signature) && at + 1 < lines.len() {
                     at += 1;
                     signature.push(' ');
                     signature.push_str(lines[at].trim());
@@ -157,7 +228,7 @@ fn listing_of(text: &str, into: &mut BTreeSet<String>) {
             at += 1;
             continue;
         }
-        // A field of `Reader` or `Engine`, visible past its module.
+        // A field of a struct named here, visible past its module.
         if let Some(of) = &fields_of
             && line.starts_with("    ")
             && !line.starts_with("     ")
@@ -184,8 +255,14 @@ fn type_item(line: &str) -> Option<(&'static str, &'static str, &str)> {
     None
 }
 
-/// A signature as one line: its body's brace gone, its whitespace one space.
+/// Whether a joined signature is whole: it reached its body's opening brace, its `;`, or a body written on the same line (`fn x(&self) {}`).
+fn ends_signature(signature: &str) -> bool {
+    signature.ends_with('{') || signature.ends_with(';') || signature.ends_with('}')
+}
+
+/// A signature as one line: its body gone (an opening brace, or a whole body on the line), its whitespace one space.
 fn one_line(signature: &str) -> String {
+    let signature = signature.split(" {").next().unwrap_or(signature);
     let signature = signature.trim_end_matches('{').trim_end_matches(';').trim();
     signature
         .split_whitespace()
@@ -197,12 +274,22 @@ fn one_line(signature: &str) -> String {
 
 fn listing() -> String {
     let mut lines = BTreeSet::new();
+    let read = |file: &PathBuf| std::fs::read_to_string(file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+    let mut types = BTreeSet::new();
     for file in sources() {
-        let text = std::fs::read_to_string(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+        let text = read(&file);
         if text.contains("#![cfg(test)]") {
             continue;
         }
+        defined_types(&text, &mut types);
         listing_of(&text, &mut lines);
+    }
+    for file in other_sources() {
+        let text = read(&file);
+        if text.contains("#![cfg(test)]") {
+            continue;
+        }
+        listing_in(&text, &mut lines, Some(&types));
     }
     lines.into_iter().collect::<Vec<_>>().join("\n")
 }
@@ -222,7 +309,9 @@ fn what_the_page_view_lets_other_code_reach_is_listed() {
     }
 }
 
-/// Holds the scan itself: an item under `#[cfg(test)]` isn't listed, a signature across lines is joined, and a private method isn't listed.
+/// Holds the scan itself: an item under `#[cfg(test)]` isn't listed, a signature across lines is joined, and a private method isn't listed. Failure it
+/// catches: a part's visible field, an item inside an inline `mod`, or an `impl` whose header ends on a `where` line going unlisted (the three ways the listing
+/// was blind before R3.6a).
 #[test]
 fn the_listing_reads_what_rust_says() {
     let mut lines = BTreeSet::new();
@@ -241,6 +330,38 @@ fn the_listing_reads_what_rust_says() {
             "Reader.pub(crate) part: Part",
         ]
     );
+}
+
+/// Failure it catches: the listing not seeing a part's field widened (`Docs.views` from `pub(super)` to `pub(crate)`), a trait impl on a part written under
+/// an inline `mod` or with its header on a `where` line, or an `impl` of a page view type in a file the listing doesn't read (the second pass, with `only`).
+#[test]
+fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
+    let mut lines = BTreeSet::new();
+    listing_of(
+        "pub(crate) struct Docs {\n    pub(super) kept: u32,\n    pub(crate) views: Vec<u8>,\n}\n\nmod inner {\n    impl Default for Docs {\n        fn default() -> Self {\n            todo!()\n        }\n    }\n}\n\nimpl<T> Clone for Docs\nwhere\n    T: Copy,\n{\n    fn clone(&self) -> Self {\n        todo!()\n    }\n}\n",
+        &mut lines,
+    );
+    let got: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert_eq!(
+        got,
+        [
+            "Docs (pub(crate) struct)",
+            "Docs.pub(crate) views: Vec<u8>",
+            "Docs: Clone (trait impl)",
+            "Docs: Clone::fn clone(&self) -> Self",
+            "Docs: Default (trait impl)",
+            "Docs: Default::fn default() -> Self",
+        ]
+    );
+    let mut outside = BTreeSet::new();
+    let types = BTreeSet::from(["Reader".to_string()]);
+    listing_in(
+        "impl Reader {\n    pub(crate) fn sneak(&mut self) {}\n}\n\nimpl Other {\n    pub(crate) fn fine(&self) {}\n}\n",
+        &mut outside,
+        Some(&types),
+    );
+    let got: Vec<&str> = outside.iter().map(String::as_str).collect();
+    assert_eq!(got, ["Reader::pub(crate) fn sneak(&mut self)"]);
 }
 
 /// What the page view lets other code reach, sorted. Each change to it is deliberate: see [`what_the_page_view_lets_other_code_reach_is_listed`].
@@ -315,13 +436,27 @@ Engine::pub fn workers(&self) -> Workers<'_>
 Engine::pub fn zoom(&self, zoom: Zoom) -> Option<f64>
 Engine::pub fn zoom_soon(&self, value: f64) -> bool
 EngineConfig (pub struct, derives Clone, Debug, Default)
+EngineConfig.pub keys: Option<Arc<Keyring>>
+EngineConfig.pub policy: Option<Policy>
+EngineConfig.pub service: Option<ServiceConfig>
 Entry (pub(super) struct, derives Debug)
 HostQueue (pub(crate) struct, derives Debug)
 HostQueue::pub(crate) fn has_ops(&self) -> bool
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
+Job.pub file: PathBuf
+Job.pub generation: u64
+Job.pub kind: JobKind
+Job.pub position: u32
+Job.pub source_page: u32
+Job.pub tab: u32
 JobKind (pub enum, derives Debug)
 JobPlan (pub struct, derives Debug)
+JobPlan.pub file: PathBuf
+JobPlan.pub generation: u64
+JobPlan.pub position: u32
+JobPlan.pub source_page: u32
+JobPlan.pub tab: u32
 JobPlan::pub fn ready(self) -> Option<Job>
 Keyring (pub struct, derives Default)
 Keyring: Debug (trait impl)
@@ -345,6 +480,12 @@ OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
 Owed (pub(super) struct, derives Debug)
 PageMap (pub struct, derives Clone, Debug, Default, PartialEq, Eq)
+PageMap.pub expected: Vec<Option<FileStamp>>
+PageMap.pub files: Vec<PathBuf>
+PageMap.pub follows: Option<FileStamp>
+PageMap.pub own: Option<FileStamp>
+PageMap.pub slots: Option<Vec<(u16, u32)>>
+PageMap.pub turns: Option<Arc<[u8]>>
 PageNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Pending (private struct, derives Default)
 Place (pub(crate) struct, derives Debug)
@@ -373,6 +514,12 @@ Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
+RawPicture.pub bgra: Vec<u8>
+RawPicture.pub height: u32
+RawPicture.pub page: u32
+RawPicture.pub paper: PaperKind
+RawPicture.pub scale: f32
+RawPicture.pub width: u32
 Reader (pub(crate) struct)
 Reader.pub(crate) cache: TileCache
 Reader.pub(crate) docs: Docs
@@ -423,9 +570,25 @@ Reader::pub fn window_closed(&mut self)
 Reader::pub fn window_opened(&mut self)
 Reader::pub fn zoom(&mut self, zoom: Zoom) -> Option<f64>
 ReaderCounts (pub struct, derives Clone, Debug, Default)
+ReaderCounts.pub blank_seen_steps: u64
+ReaderCounts.pub blank_steps: u64
+ReaderCounts.pub cancelled: u64
+ReaderCounts.pub cancels_asked: u64
+ReaderCounts.pub discards_lost: u64
+ReaderCounts.pub drawn: u64
+ReaderCounts.pub jobs: u64
+ReaderCounts.pub viewport_steps: u64
 ReaderReport (pub struct)
+ReaderReport.(pub Value)
 Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
+SavedPlace.pub anchor: (u32, f64)
+SavedPlace.pub document_height: f64
+SavedPlace.pub magnification: f64
+SavedPlace.pub page: u32
+SavedPlace.pub page_size: Option<PageBox>
+SavedPlace.pub x: f64
+SavedPlace.pub y: f64
 Scratch (pub(super) struct, derives Debug, Default)
 SelectingNews (private struct)
 Selection (pub struct, derives Clone, Copy)
@@ -447,13 +610,33 @@ Selection::pub fn take_copied(&self) -> Option<recto_index::select::CopiedText>
 Selection::pub fn text_now(&self) -> Option<String>
 Shared (private struct)
 SleepDrawCounts (pub struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
+SleepDrawCounts.pub heavy_passed: u64
+SleepDrawCounts.pub jobs: u64
+SleepDrawCounts.pub leaves_owing: u64
+SleepDrawCounts.pub leaves_pictured: u64
+SleepDrawCounts.pub pages_owed: u64
+SleepDrawCounts.pub picture_bytes: u64
+SleepDrawCounts.pub pictures: u64
 SleepDraws (pub struct, derives Debug, Default)
 SleepDraws::pub(crate) fn is_for(reader: &Reader, tab: u32) -> bool
 SleepDraws::pub(crate) fn plan(reader: &mut Reader) -> Option<JobPlan>
 SleepDraws::pub(crate) fn under_way(reader: &Reader) -> bool
 SleepMaterial (pub struct, derives Clone, Debug, Default, PartialEq)
+SleepMaterial.pub in_view: Vec<u32>
+SleepMaterial.pub pictures: Vec<RawPicture>
+SleepMaterial.pub sizes: Vec<(u32, PageBox)>
+SleepMaterial.pub usual: Option<PageBox>
+SleepMaterial.pub version: Option<u64>
 SleepShot (pub struct, derives Debug)
+SleepShot.pub page: u32
+SleepShot.pub paper: PaperKind
+SleepShot.pub scale: f32
+SleepShot.pub surface: PixelSurface
 SleepView (pub struct, derives Debug, Default)
+SleepView.pub pictures: Vec<SleepShot>
+SleepView.pub sizes: Vec<(u32, PageBox)>
+SleepView.pub usual: Option<PageBox>
+SleepView.pub version: Option<u64>
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
@@ -461,7 +644,20 @@ TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue
 TileKey (pub(super) struct, derives Clone, Copy, Debug, PartialEq, Eq, Hash)
 Unopened (private enum)
 Viewport (pub struct, derives Clone, Copy, Debug, Default, PartialEq)
+Viewport.pub backing: f64
+Viewport.pub frame_width: f64
+Viewport.pub height: f64
+Viewport.pub live: bool
+Viewport.pub magnification: f64
+Viewport.pub scrolled_to: u64
+Viewport.pub width: f64
+Viewport.pub x: f64
+Viewport.pub y: f64
 ViewportOutcome (pub struct)
+ViewportOutcome.pub anchor: Option<(u32, f64)>
+ViewportOutcome.pub magnification: Option<f64>
+ViewportOutcome.pub ops: Vec<Op>
+ViewportOutcome.pub scrolled: bool
 Wake (pub struct, derives Clone, Copy)
 Wake::pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView)
 Wake::pub fn holds(&self, tab: u32) -> bool
@@ -471,6 +667,15 @@ Wake::pub fn note_wake(&self, tab: u32, began: Instant)
 Wake::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
 Wake::pub fn window_up(&self)
 WakeReport (pub struct, derives Clone, Copy, Debug, Default)
+WakeReport.pub bare_with_picture: u16
+WakeReport.pub blank_frames: u32
+WakeReport.pub first_frame_us: Option<u64>
+WakeReport.pub from_sleep: bool
+WakeReport.pub had: WakeStock
+WakeReport.pub sharp_us: Option<u64>
+WakeReport.pub sleep_in_view: u16
+WakeReport.pub sleep_pictures: u16
+WakeReport.pub tab: u32
 WakeStock (pub enum, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 WakeStock::pub fn covered_the_view(self) -> bool
 WakeStock::pub fn word(self) -> &'static str
