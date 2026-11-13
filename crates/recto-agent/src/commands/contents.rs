@@ -142,7 +142,7 @@ fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, A
     };
     let (id, look) = access.with(|s| {
         let id = select(s, tab)?;
-        s.choose_generated(id, generated);
+        s.tabs_mut().choose_generated(id, generated);
         let shown = matches!(s.generated().view(id), Some(GeneratedView::Ready(_) | GeneratedView::Making));
         let look = (generated && !shown)
             .then(|| Some((s.tabs().path_of(id)?, s.tabs().tab(id)?.page_count, s.tabs().own_stamp(id))))
@@ -195,10 +195,7 @@ impl Cmd for ContentsStop {
         if let (Some(generating), Some(path)) = (access.generating(), path) {
             generating.cancel_files(Some(&[path]));
         }
-        access.with(|s| {
-            s.choose_generated(id, false);
-            s.generated_mut().forget(id);
-        });
+        access.with(|s| s.stop_generated_contents(id));
         Ok(json!({ "tab": id.0, "stopped": making }))
     }
     fn human(data: &Value) -> String {

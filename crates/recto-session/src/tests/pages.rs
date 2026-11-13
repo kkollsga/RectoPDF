@@ -40,12 +40,12 @@ fn page_count_and_position_follow_edits() {
 /// keeps its file's label.
 #[test]
 fn pages_are_a_look_over_the_tab_its_list_and_its_labels() {
-    let mut tabs = registry::Tabs::default();
+    let mut tabs = registry::Tabs::new();
     tabs.push(bare_tab(1, 12));
     tabs.push(bare_tab(2, 7));
-    let mut warm = warm::Warm::default();
+    let mut warm = warm::Warm::new();
     warm.push(TabId(1), Arc::new(Labelled.load(Path::new("/d/book.pdf")).unwrap().toc), |_| {});
-    let mut lists = lists::Lists::default();
+    let mut lists = lists::Lists::new();
     let look = |lists: &lists::Lists| {
         let pages = Pages {
             tabs: &tabs,

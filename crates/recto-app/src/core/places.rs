@@ -83,7 +83,7 @@ impl Said {
         events: &mut Vec<Event>,
     ) -> Vec<(usize, u32)> {
         if let Some((tab, range)) = self.selection {
-            session.note_selection(
+            session.tabs_mut().note_selection(
                 TabId(tab),
                 range.map(|range| Selection {
                     from_page: range.start.page,

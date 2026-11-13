@@ -293,19 +293,19 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     const AFTER: u32 = 300;
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.tabs_mut().touch_at(a, 100);
+    s.tabs.touch_at(a, 100);
     assert_eq!(s.dormant().next_at(AFTER), Some(400));
-    assert!(s.dormant().due(399, AFTER).is_empty());
-    assert_eq!(s.dormant().due(400, AFTER), [a]);
-    assert!(!s.dormant().due(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
-    s.tabs_mut().touch_at(a, 200);
+    assert!(s.dormant().due_at(399, AFTER).is_empty());
+    assert_eq!(s.dormant().due_at(400, AFTER), [a]);
+    assert!(!s.dormant().due_at(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
+    s.tabs.touch_at(a, 200);
     assert_eq!(s.dormant().next_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
     s.dormancy_mut().hold(a);
-    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().due_at(10_000, AFTER).is_empty());
     assert!(s.dormant().oldest_first().is_empty(), "whatever's asking");
     s.let_go(a);
-    assert_eq!(s.dormant().due(10_000, AFTER), [a]);
+    assert_eq!(s.dormant().due_at(10_000, AFTER), [a]);
     // A save under way.
     s.save_prepared(
         a,
@@ -317,7 +317,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
         },
         None,
     );
-    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().due_at(10_000, AFTER).is_empty());
     // Cold tabs aren't candidates, however many there are.
     let mut s = session(5);
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
@@ -431,19 +431,19 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
 /// long enough, oldest touched first.
 #[test]
 fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
-    let mut tabs = registry::Tabs::default();
+    let mut tabs = registry::Tabs::new();
     for (id, touched) in [(1, 0), (2, 50), (3, 10), (4, 0)] {
         tabs.push(bare_tab(id, 5));
         tabs.tab_mut(TabId(id)).unwrap().touched = touched;
     }
     tabs.set_active(Some(TabId(1)));
-    let mut warm = warm::Warm::default();
+    let mut warm = warm::Warm::new();
     for id in [1, 2, 3] {
         warm.push(TabId(id), Arc::new(Toc::default()), |_| {});
     }
-    let lists = lists::Lists::default();
-    let mut dormancy = dormancy::Dormancy::default();
-    dormancy.hold(TabId(3));
+    let lists = lists::Lists::new();
+    let mut dormancy = dormancy::Dormancy::new();
+    crate::PartMut(&mut dormancy).hold(TabId(3));
     let look = Dormant {
         tabs: &tabs,
         warm: &warm,
@@ -459,8 +459,8 @@ fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
         Some(80),
         "the warm tab left, 30 after it was touched; tab 4 holds nothing to let go"
     );
-    assert_eq!(look.due(79, 30), Vec::<TabId>::new());
-    assert_eq!(look.due(80, 30), vec![TabId(2)]);
+    assert_eq!(look.due_at(79, 30), Vec::<TabId>::new());
+    assert_eq!(look.due_at(80, 30), vec![TabId(2)]);
     dormancy.let_go(TabId(3));
     let look = Dormant {
         tabs: &tabs,
@@ -494,11 +494,28 @@ fn a_woken_list_naming_an_outside_file_is_unreadable() {
     s.confinement().confine(recto_platform::run_folders::RunFolders::of(&[&dir.join("run")]));
     let loads = s.loader().loads.get();
     assert!(!s.wake_list(a), "the list naming the outside file was woken");
-    assert!(s.page_edits(a).is_none(), "it's in memory");
+    assert!(s.lists().get(a).is_none(), "it's in memory");
     assert_eq!(s.tabs().tab_notice(a).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
-        (0..s.pages_in(a)).all(|page| s.page_source(a, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
+        (0..s.pages().count(a)).all(|page| s.page_source(a, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
         "a page comes from outside"
     );
     assert_eq!(s.loader().loads.get(), loads, "a file was read to wake it");
+}
+
+/// **Failure: `session save`'s count of edited tabs counts lists in memory, not tabs with unsaved changes:** an edited tab whose list went to disk isn't
+/// counted, and one whose every step was undone is. Counted by the one read the close and quit rules use, it's the edited tab asleep and the edited tab
+/// awake.
+#[test]
+fn edited_tabs_counts_tabs_with_unsaved_changes_wherever_their_lists_are() {
+    let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let (mut s, a, b) = with_a_list(&files);
+    s.edit_pages(b, |e| e.rotate(0, 1, 1)).unwrap();
+    let c = s.open(Path::new("/d/c.pdf")).unwrap();
+    s.edit_pages(c, |e| e.rotate(0, 1, 1)).unwrap();
+    assert!(s.undo_edit(c));
+    assert!(s.go_dormant(a));
+    assert!(s.lists().is_asleep(a) && s.lists().is_edited(a));
+    assert!(s.lists().get(c).is_some() && !s.lists().is_edited(c), "c's every step is undone");
+    assert_eq!(s.lists().edited_tabs(), 2, "a, asleep, and b; not c");
 }

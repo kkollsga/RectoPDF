@@ -67,8 +67,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                 renderer_only: record.renderer_only,
                 positions,
                 changed: false,
-                // Edits that don't fit the file name no version of it that can be current.
-                check_against: s.lists().get(id).map(|_| s.tabs().own_stamp(id).filter(|_| s.notices().fit(id).fits())),
+                check_against: s.notices().own_file_expected(id),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.

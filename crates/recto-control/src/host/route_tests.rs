@@ -101,3 +101,75 @@ fn whether_a_session_is_confined_costs_a_command_no_lock() {
     // And what's read with no lock is the session's own: confined after the host was made, it says so.
     assert!(free.confinement().is_none() && confined.confinement().is_some());
 }
+
+/// A confined host on a run folder of its own, with `run/a.pdf` in it and `outside/a.pdf` beside it.
+fn confined_host(dir: &recto_testpdf::TempDir) -> SessionHost<Fake> {
+    std::fs::create_dir(dir.join("run")).unwrap();
+    std::fs::create_dir(dir.join("outside")).unwrap();
+    std::fs::write(dir.join("run/a.pdf"), b"x").unwrap();
+    std::fs::write(dir.join("outside/a.pdf"), b"x").unwrap();
+    let host = SessionHost::new(Fake);
+    host.with_session(|session| session.confinement().confine(recto_platform::run_folders::RunFolders::of(&[&dir.join("run")])));
+    host
+}
+
+/// That a host's session goes by the host's own cell, confined: the lock-free read and the session's are the one cell, a file outside isn't opened, and
+/// a tab's path still meets the rule once its file is swapped for a link out.
+fn assert_confined_as_its_host(host: &SessionHost<Fake>, dir: &recto_testpdf::TempDir) {
+    let folders = host.confinement().expect("the host reads itself confined");
+    host.with_session(|session| {
+        assert!(
+            session.confinement().folders().is_some_and(|theirs| std::sync::Arc::ptr_eq(theirs, &folders)),
+            "the session goes by the host's own cell"
+        );
+        assert_eq!(session.open(&dir.join("outside/a.pdf")), Err(recto_session::SessionError::OutsideQuietRun));
+        let tab = session.open(&dir.join("run/a.pdf")).unwrap();
+        assert_eq!(session.tabs().path_of(tab), Some(dir.join("run/a.pdf")));
+        std::fs::remove_file(dir.join("run/a.pdf")).unwrap();
+        std::os::unix::fs::symlink(dir.join("outside/a.pdf"), dir.join("run/a.pdf")).unwrap();
+        assert_eq!(session.tabs().path_of(tab), None, "a tab's path meets the rule as its file resolves now");
+    });
+}
+
+/// **Failure (R3.5a): a step run with the session in hand replaces the whole session** (`*session = Session::new(..)`, which `with_session` allows
+/// as it hands out `&mut Session`), and the new one's confinement cell is a fresh, free one: the host still reads itself confined, with no lock, while
+/// its session opens and reads the user's files. The host's cell is the authority and is put back after the step, so the session stays confined; in a
+/// debug build the step is also a loud failure, as no code should do it.
+#[test]
+fn a_session_replaced_inside_with_session_stays_confined_as_its_host() {
+    let dir = recto_testpdf::TempDir::new("recto-cell-");
+    let host = confined_host(&dir);
+    let replaced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        host.with_session(|session| *session = recto_session::Session::new(Fake))
+    }));
+    assert_eq!(
+        replaced.is_err(),
+        cfg!(debug_assertions),
+        "loud in a debug build, and no panic in a release one"
+    );
+    assert_confined_as_its_host(&host, &dir);
+}
+
+/// **Failure (R3.5a): two hosts' sessions swapped** leave the confined host with the free session, and so free. Neither ends up free where it was
+/// confined. The free host comes out confined with the folders of the session it was given, the safe direction: no code swaps sessions, and a host that
+/// reads itself confined refuses more, never less.
+#[test]
+fn sessions_swapped_between_hosts_leave_neither_free_where_it_was_confined() {
+    let dir = recto_testpdf::TempDir::new("recto-cell-");
+    let confined = confined_host(&dir);
+    let free = SessionHost::new(Fake);
+    let swapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        confined.with_session(|mine| {
+            let inner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| free.with_session(|theirs| std::mem::swap(mine, theirs))));
+            assert_eq!(inner.is_err(), cfg!(debug_assertions));
+        });
+    }));
+    assert_eq!(swapped.is_err(), cfg!(debug_assertions), "loud in a debug build, and no panic in a release one");
+    assert_confined_as_its_host(&confined, &dir);
+    let folders = free
+        .confinement()
+        .expect("the free host took the confined session's folders, the safe direction");
+    free.with_session(|session| {
+        assert!(session.confinement().folders().is_some_and(|theirs| std::sync::Arc::ptr_eq(theirs, &folders)));
+    });
+}

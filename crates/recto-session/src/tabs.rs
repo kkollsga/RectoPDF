@@ -6,17 +6,17 @@ impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
         Self {
             loader,
-            viewing: viewing::Viewing::default(),
-            tabs: registry::Tabs::default(),
-            warm: warm::Warm::default(),
-            lists: lists::Lists::default(),
-            dormancy: dormancy::Dormancy::default(),
-            mail: mail::PageViewMail::default(),
-            journals: journals::Journals::default(),
-            generated: generated::Generated::default(),
+            viewing: viewing::Viewing::new(),
+            tabs: registry::Tabs::new(),
+            warm: warm::Warm::new(),
+            lists: lists::Lists::new(),
+            dormancy: dormancy::Dormancy::new(),
+            mail: mail::PageViewMail::new(),
+            journals: journals::Journals::new(),
+            generated: generated::Generated::new(),
             comparison: None,
-            saves: saves::Saves::default(),
-            recent: recent::Recent::default(),
+            saves: saves::Saves::new(),
+            recent: recent::Recent::new(),
         }
     }
 

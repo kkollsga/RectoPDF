@@ -41,7 +41,7 @@ fn a_confined_session_adds_no_pages_from_outside() {
         s.insert_pdf_with_facts(tab, Author::Agent, 0, &dir.join("outside/b.pdf"), &facts, None),
         Err(SessionError::OutsideQuietRun)
     );
-    assert_eq!(s.pages_in(tab), 3, "nothing was added");
+    assert_eq!(s.pages().count(tab), 3, "nothing was added");
     assert!(s.insert_pdf(tab, 0, &dir.join("run/c.pdf")).is_ok());
 }
 
@@ -77,11 +77,11 @@ fn a_confined_tab_doesnt_follow_its_file_out() {
         inode: 9,
     };
     s.apply_file_status(tab, FileStatus::Moved(dir.join("outside/a.pdf"), now));
-    assert_eq!(s.path_of(tab), Some(dir.join("run/a.pdf")));
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/a.pdf")));
     assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // Inside, it follows as ever.
     s.apply_file_status(tab, FileStatus::Moved(dir.join("run/moved.pdf"), now));
-    assert_eq!(s.path_of(tab), Some(dir.join("run/moved.pdf")));
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/moved.pdf")));
 }
 
 /// Failure: a second confinement widens the first, so whatever makes a session can be talked into a wider one later; or a session that was never
@@ -107,10 +107,10 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     std::fs::create_dir(dir.join("run/docs")).unwrap();
     let tab = s.open(&dir.join("run/docs/a.pdf")).unwrap();
     s.open(&dir.join("run/b.pdf")).unwrap();
-    assert!(s.path_of(tab).is_some() && s.page_source(tab, 0).is_some());
+    assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
     std::fs::rename(dir.join("run/docs"), dir.join("run/docs-real")).unwrap();
     std::os::unix::fs::symlink(dir.join("outside"), dir.join("run/docs")).unwrap();
-    assert_eq!(s.path_of(tab), None, "the tab's file is handed out through the link");
+    assert_eq!(s.tabs().path_of(tab), None, "the tab's file is handed out through the link");
     assert_eq!(
         s.tabs().path_of(tab),
         None,
@@ -135,7 +135,7 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     assert!(s.tab_for_path(&dir.join("run/docs/a.pdf")).is_some());
     std::fs::remove_file(dir.join("run/docs")).unwrap();
     std::fs::rename(dir.join("run/docs-real"), dir.join("run/docs")).unwrap();
-    assert!(s.path_of(tab).is_some() && s.page_source(tab, 0).is_some());
+    assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
 }
 
 /// A loader that notes the path each read was made by.
@@ -171,7 +171,7 @@ fn the_first_read_is_by_the_path_that_was_checked() {
     let tab = s.open(&dir.join("run/link.pdf")).unwrap();
     let real = dir.join("run/real.pdf").canonicalize().unwrap();
     assert_eq!(s.loader().0.borrow().as_slice(), [real], "read by the name, not where the rule looked");
-    assert_eq!(s.path_of(tab), Some(dir.join("run/link.pdf")), "the tab keeps its name");
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/link.pdf")), "the tab keeps its name");
     let mut free = Session::new(Noting(std::cell::RefCell::default()));
     free.open(Path::new("/d/as/named.pdf")).unwrap();
     assert_eq!(free.loader().0.borrow().as_slice(), [PathBuf::from("/d/as/named.pdf")]);
@@ -193,10 +193,10 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     let mut back = journaled(3);
     back.confinement().confine(RunFolders::of(&[&dir.join("run")]));
     back.restore(&free.to_record(), back_from(&files)).unwrap();
-    assert!(back.page_edits(tab).is_none(), "the list naming the outside file came back");
+    assert!(back.lists().get(tab).is_none(), "the list naming the outside file came back");
     assert_eq!(back.tabs().tab_notice(tab).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
-        (0..back.pages_in(tab)).all(|page| back.page_source(tab, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
+        (0..back.pages().count(tab)).all(|page| back.page_source(tab, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
         "a page comes from outside"
     );
     // The same list, as a closed PDF's history taken up on its open.
@@ -206,5 +206,67 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     let facts = opening.loader().load(&dir.join("run/a.pdf")).unwrap();
     let taken = TakenHistory { name: "a".into(), restored };
     let reopened = opening.open_with_facts(&dir.join("run/a.pdf"), facts, None, Some(taken)).unwrap();
-    assert!(opening.page_edits(reopened).is_none(), "the history naming the outside file was taken up");
+    assert!(opening.lists().get(reopened).is_none(), "the history naming the outside file was taken up");
+}
+
+/// **Failure: a restore replaces the tabs' confinement cell, or makes one of its own** (R3.5a), so the session and its host's lock-free copy
+/// (`Confinement::shared`, taken when the host is made, before any restore) disagree: the host confines a session that then reads as free, or the
+/// restored tabs hand out paths without the rule. The copy taken before the restore confines the session after it, and a restored tab's path still meets
+/// the rule as its file resolves now.
+#[test]
+fn a_restore_keeps_the_confinement_cell_the_host_shares() {
+    let dir = recto_testpdf::TempDir::new("recto-confined-");
+    std::fs::create_dir(dir.join("run")).unwrap();
+    std::fs::create_dir(dir.join("outside")).unwrap();
+    std::fs::write(dir.join("run/a.pdf"), b"x").unwrap();
+    std::fs::write(dir.join("outside/a.pdf"), b"x").unwrap();
+    let mut free = session(3);
+    free.open(&dir.join("run/a.pdf")).unwrap();
+    let saved = free.to_record();
+
+    let mut back = session(3);
+    let host = back.confinement().shared();
+    back.restore(&saved, HashMap::new()).unwrap();
+    host.confine(RunFolders::of(&[&dir.join("run")]));
+    assert!(back.confinement().folders().is_some(), "the host's copy confined the session it was taken from");
+    back.restore(&saved, HashMap::new()).unwrap();
+    assert!(back.confinement().folders().is_some(), "a restore of a confined session leaves it confined");
+    let tab = back.tabs().for_path(&dir.join("run/a.pdf")).unwrap();
+    assert_eq!(back.tabs().path_of(tab), Some(dir.join("run/a.pdf")));
+    // The file swapped for a link out of the run after the restore: the rule, asked again, refuses it.
+    std::fs::remove_file(dir.join("run/a.pdf")).unwrap();
+    std::os::unix::fs::symlink(dir.join("outside/a.pdf"), dir.join("run/a.pdf")).unwrap();
+    assert_eq!(back.tabs().path_of(tab), None);
+}
+
+/// **Failure (R3.5a): putting the host's cell back is a way to widen a session**, as `keep_confinement` is public and takes any cell: a confined session
+/// handed a free one (a `Confinement::default()` made for the purpose) comes out free, or one handed a cell confined to wider folders comes out with
+/// those. A free cell takes the session's folders before it's taken; a wider one isn't taken; the same or narrower is.
+#[test]
+fn keeping_the_hosts_cell_never_widens_a_session() {
+    let (mut s, dir) = confined();
+    let run = s.confinement().folders().cloned().unwrap();
+
+    let free = confined::Confinement::default();
+    assert!(!s.tabs_mut().keep_confinement(&free), "it wasn't the session's");
+    assert_eq!(
+        free.folders().map(|f| f.roots().to_vec()),
+        Some(run.roots().to_vec()),
+        "the free cell took the session's folders"
+    );
+    assert!(s.confinement().is(&free));
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
+
+    let wider = confined::Confinement::default();
+    wider.confine(RunFolders::of(&[dir.path()]));
+    assert!(!s.tabs_mut().keep_confinement(&wider));
+    assert!(s.confinement().is(&free), "a wider cell isn't taken");
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
+
+    let narrower = confined::Confinement::default();
+    std::fs::create_dir(dir.join("run/deeper")).unwrap();
+    narrower.confine(RunFolders::of(&[&dir.join("run/deeper")]));
+    assert!(!s.tabs_mut().keep_confinement(&narrower));
+    assert!(s.confinement().is(&narrower), "a narrower one is");
+    assert!(s.tabs_mut().keep_confinement(&narrower.shared()), "the same cell again is the session's");
 }

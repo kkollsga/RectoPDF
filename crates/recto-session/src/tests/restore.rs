@@ -61,7 +61,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     s.tabs_mut().set_view_rotation(a, 1);
     assert!(s.tabs_mut().set_spread(a, record::Spread::TwoUpCover));
     assert!(!s.tabs_mut().set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
-    s.tabs_mut().set_selection(
+    s.tabs.set_selection(
         a,
         Some(Selection {
             from_page: 1,
@@ -168,12 +168,12 @@ fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
     }];
     let mut other = session(10);
     let b = other.open(Path::new("/d/other.pdf")).unwrap();
-    other.choose_generated(b, true);
+    other.tabs_mut().choose_generated(b, true);
     let record = other.to_record();
     let mut s = session(10);
     let a = s.open(Path::new("/d/old.pdf")).unwrap();
     assert_eq!(a, b, "the restored tab has the old one's number");
-    s.choose_generated(a, true);
+    s.tabs_mut().choose_generated(a, true);
     s.set_generated_view(a, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     s.restore(&record, HashMap::new()).unwrap();
     // As the agent's restore does next.
