@@ -94,6 +94,38 @@ pub enum CoreCall {
     Find(crate::find::FindCall),
     /// Into edit mode or out, by the owner.
     SetEditMode(bool),
+    /// **A command for the person** (step R2.3): the one an agent would send, run by the one executor on this thread, as theirs.
+    Run(Box<PersonCommand>),
+}
+
+/// A person's command, as it's queued: what it is, where it came from, and what was read for it, if it's running again once a file's in.
+#[derive(Debug)]
+pub struct PersonCommand {
+    pub command: recto_agent::Command,
+    pub origin: Origin,
+    /// A file it's opening, read off the session thread, for it to take up as it runs again.
+    pub fetched: Option<(PathBuf, recto_agent::later::Fetched)>,
+}
+
+impl PersonCommand {
+    /// What the person just did.
+    #[must_use]
+    pub fn input(command: recto_agent::Command) -> Box<Self> {
+        Box::new(Self {
+            command,
+            origin: Origin::Input,
+            fetched: None,
+        })
+    }
+}
+
+/// Where a person's command came from, which says whether a hand-off's freeze holds it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// What the person just did: held back, as everything a person does is.
+    Input,
+    /// The end of something already under way, as a command running again once its file's been read: let through, or it would wait for good.
+    Finishing,
 }
 
 impl CoreCall {
@@ -127,6 +159,7 @@ impl CoreCall {
             | Self::ToggleSection(..)
             | Self::SetEditMode(_) => true,
             Self::Find(call) => call.is_user_action(),
+            Self::Run(run) => run.origin == Origin::Input,
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
             Self::Unlocked(..)
             // The end of a save the close prompt started, which a hand-off waits for: dropped, a quit that stays would leave the saved tab open.
@@ -450,6 +483,12 @@ mod tests {
             CoreCall::Find(crate::find::FindCall::News),
             CoreCall::Find(crate::find::FindCall::Reveal(1, hit)),
             CoreCall::SetEditMode(true),
+            CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
+            CoreCall::Run(Box::new(PersonCommand {
+                command: recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
+                origin: Origin::Finishing,
+                fetched: None,
+            })),
         ]
     }
 
@@ -503,8 +542,12 @@ mod tests {
                 crate::find::FindCall::Reveal(..) => 43,
             },
             CoreCall::SetEditMode(_) => 44,
+            CoreCall::Run(run) => match run.origin {
+                Origin::Input => 45,
+                Origin::Finishing => 46,
+            },
         };
-        (place, 45)
+        (place, 47)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -519,38 +562,39 @@ mod tests {
             "one sample of every call, and of every find call"
         );
         let a_persons = |call: &CoreCall| {
-            matches!(
-                call,
-                CoreCall::Tap(_)
-                    | CoreCall::ClearRecent
-                    | CoreCall::Jump(..)
-                    | CoreCall::JumpTyped(..)
-                    | CoreCall::Step(_)
-                    | CoreCall::Open(_)
-                    | CoreCall::SetSidebarHidden(_)
-                    | CoreCall::SetSpread(..)
-                    | CoreCall::CompareClick(_)
-                    | CoreCall::FocusPane(_)
-                    | CoreCall::SetSynced(_)
-                    | CoreCall::Rotate(_)
-                    | CoreCall::UndoOrRedo(_)
-                    | CoreCall::SetPaper(_)
-                    | CoreCall::ToggleAgentIcon
-                    | CoreCall::ClearEditHistory
-                    | CoreCall::CloseTab(..)
-                    | CoreCall::CloseAnswered(..)
-                    | CoreCall::ContentsAction(..)
-                    | CoreCall::ToggleSection(..)
-                    | CoreCall::SetEditMode(_)
-                    | CoreCall::Find(
-                        crate::find::FindCall::Typed(_)
-                            | crate::find::FindCall::Open
-                            | crate::find::FindCall::Close
-                            | crate::find::FindCall::Step(..)
-                            | crate::find::FindCall::Choose(_)
-                            | crate::find::FindCall::Reveal(..)
-                    )
-            )
+            matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
+                || matches!(
+                    call,
+                    CoreCall::Tap(_)
+                        | CoreCall::ClearRecent
+                        | CoreCall::Jump(..)
+                        | CoreCall::JumpTyped(..)
+                        | CoreCall::Step(_)
+                        | CoreCall::Open(_)
+                        | CoreCall::SetSidebarHidden(_)
+                        | CoreCall::SetSpread(..)
+                        | CoreCall::CompareClick(_)
+                        | CoreCall::FocusPane(_)
+                        | CoreCall::SetSynced(_)
+                        | CoreCall::Rotate(_)
+                        | CoreCall::UndoOrRedo(_)
+                        | CoreCall::SetPaper(_)
+                        | CoreCall::ToggleAgentIcon
+                        | CoreCall::ClearEditHistory
+                        | CoreCall::CloseTab(..)
+                        | CoreCall::CloseAnswered(..)
+                        | CoreCall::ContentsAction(..)
+                        | CoreCall::ToggleSection(..)
+                        | CoreCall::SetEditMode(_)
+                        | CoreCall::Find(
+                            crate::find::FindCall::Typed(_)
+                                | crate::find::FindCall::Open
+                                | crate::find::FindCall::Close
+                                | crate::find::FindCall::Step(..)
+                                | crate::find::FindCall::Choose(_)
+                                | crate::find::FindCall::Reveal(..)
+                        )
+                )
         };
         for call in calls {
             let queue = CoreQueue::default();

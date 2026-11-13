@@ -75,7 +75,7 @@ impl Cmd for Tap {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let (access, events) = (cx.access, &mut *cx.events);
         let id = access.with(|s| select(s, &self.tab))?;
-        read_ahead(access, |s| s.wake_for_tap(id));
+        read_ahead(access, |s| s.wake_for_tap(id))?;
         access.with(|s| {
             let id = select(s, &self.tab)?;
             let switched = s.tap(id)?;
@@ -208,7 +208,7 @@ impl Cmd for Close {
                 refuse_close_that_loses_something(s, id, level)?;
                 Ok::<_, AgentError>(id)
             })?;
-            read_ahead(access, |s| s.wake_for_close(id));
+            read_soon(access, |s| s.wake_for_close(id));
             access.with(|s| {
                 let id = select(s, tab)?;
                 refuse_close_that_loses_something(s, id, level)?;
@@ -280,10 +280,20 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         .then("Open it with a page it has, or with no `--page`.")
     };
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // A host that mustn't wait on a disk has the file looked at and read off its thread, and this runs again once it's in: unless a tab has it by this name, as
+    // the window has always gone to that tab without reading the file. Everywhere else it's looked at here.
+    let fetched = match access.reads_later() {
+        Some(reads) if access.with(|s| s.tab_for_path(path)).is_none() => Some(reads.load(path).ok_or_else(later::later)?),
+        _ => None,
+    };
     // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
-    let stamp = recto_platform::file_stamp(path).ok();
+    let stamp = match (&fetched, access.reads_later()) {
+        (Some(fetched), _) => fetched.stamp,
+        (None, Some(_)) => None,
+        (None, None) => recto_platform::file_stamp(path).ok(),
+    };
     // A file already open, in a tab gone cold, is read with the session free too.
-    read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)));
+    read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)))?;
     // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_file(path, stamp)?;
@@ -302,17 +312,27 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         Some(found) => (found?, false),
         None => {
             // The file is read outside the session, so a slow or hostile one holds nobody else up.
-            let loader = access.with(|s| s.loader().clone());
-            let facts = loader.load(path)?;
+            let (facts, read_history, unlocked) = match fetched {
+                Some(fetched) => (fetched.facts?, Some(fetched.history), fetched.unlocked),
+                None => (access.with(|s| s.loader().clone()).load(path)?, None, false),
+            };
             // No tab for a page that isn't there: failing here leaves nothing to explain.
             if !fits(facts.page_count) {
                 return Err(wrong_page(facts.page_count));
             }
             let before = access.with(|s| s.tabs().len());
             // A closed PDF's history comes back on this route as on any, read with the session free too.
-            let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
-            let history = source.and_then(|source| source.history_of(stamp, path));
-            let id = access.with(|s| s.open_with_facts(path, facts, stamp, history))?;
+            let history = read_history.unwrap_or_else(|| {
+                let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
+                source.and_then(|source| source.history_of(stamp, path))
+            });
+            let id = access.with(|s| {
+                if unlocked {
+                    s.open_unlocked(path, facts, stamp)
+                } else {
+                    s.open_with_facts(path, facts, stamp, history)
+                }
+            })?;
             (id, access.with(|s| s.tabs().len()) > before)
         }
     };

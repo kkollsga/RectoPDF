@@ -8,6 +8,7 @@ pub mod actor;
 pub use actor::Actor;
 pub mod agreement;
 pub mod effect;
+pub mod later;
 pub use effect::Effect;
 pub mod commands;
 pub mod event;
@@ -442,6 +443,10 @@ pub trait SessionAccess {
     }
     /// What the window's to do after this command, if there's a window: see [`Effect`]. A session with no window has nothing to show.
     fn effect(&self, _effect: Effect) {}
+    /// How this host reads what a command needs, if it mustn't wait on a disk: see [`later`]. Every host but the window's session thread reads in place.
+    fn reads_later(&self) -> Option<&dyn later::ReadLater> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -563,6 +568,9 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     let held = command.tab_selector().and_then(|selector| {
         access.with(|s| {
             let id = select(s, selector).ok()?;
+            // Its edits' list, if it's asleep, is read back from its journal: a bounded private file in the app's own state folder, never the PDF or its
+            // volume, so it's read here, on whatever thread runs this, the window's session thread included, as that thread's own taps, opens and edits
+            // always have (coordinator, 2026-11-13).
             let awake = s.wake_list(id);
             s.touch(id);
             s.hold(id);
@@ -700,13 +708,31 @@ pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     })
 }
 
-/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
-fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
-    let Some((id, path)) = access.with(|s| plan(s)) else { return };
+/// Reads a cold tab's file, if what's about to happen needs it awake, with the session free. A file on a dead volume holds up this command and no other. A host
+/// that mustn't wait has it read off its thread and runs the command again: [`later`].
+fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) -> Result<(), AgentError> {
+    // On a host that reads later, what's held already was read for this command, which is running again now it's in.
+    let reads_later = access.reads_later().is_some();
+    let Some((id, path)) = access.with(|s| plan(s).filter(|(id, _)| !(reads_later && s.holds_read_of(*id)))) else {
+        return Ok(());
+    };
+    if let Some(reads) = access.reads_later() {
+        reads.wake(id, path);
+        return Err(later::later());
+    }
     let loader = access.with(|s| s.loader().clone());
     let stamp = recto_platform::file_stamp(&path).ok();
     let loaded = loader.load(&path);
     access.with(|s| s.give_woken(id, loaded, stamp));
+    Ok(())
+}
+
+/// [`read_ahead`] where it only spares the session's lock a read it would otherwise make, as for the tab a close shows next: a host that reads later lets the
+/// session wake it as that host always has, and the command doesn't wait for it.
+fn read_soon<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
+    if access.reads_later().is_none() {
+        let _ = read_ahead(access, plan);
+    }
 }
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
@@ -1312,6 +1338,123 @@ mod tests {
             page: None,
         }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(3));
+    }
+
+    /// A session on a host that mustn't wait on a disk, as the window's session thread is: what a command asks to read is noted, and read only when the test
+    /// says, as the window's own read would be.
+    struct Deferring<'a> {
+        session: RefCell<&'a mut Session<Fake>>,
+        woke: RefCell<Vec<(TabId, PathBuf)>>,
+        loads: RefCell<Vec<PathBuf>>,
+        ready: RefCell<Option<later::Fetched>>,
+    }
+
+    impl SessionAccess for Deferring<'_> {
+        type Loader = Fake;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<Fake>) -> R) -> R {
+            step(&mut self.session.borrow_mut())
+        }
+        fn reads_later(&self) -> Option<&dyn later::ReadLater> {
+            Some(self)
+        }
+    }
+
+    impl later::ReadLater for Deferring<'_> {
+        fn wake(&self, tab: TabId, path: PathBuf) {
+            self.woke.borrow_mut().push((tab, path));
+        }
+        fn load(&self, path: &Path) -> Option<later::Fetched> {
+            let ready = self.ready.borrow_mut().take();
+            if ready.is_none() {
+                self.loads.borrow_mut().push(path.to_path_buf());
+            }
+            ready
+        }
+    }
+
+    /// What a command could have changed: the tabs, which is active, and each one's page.
+    fn looks(session: &Session<Fake>) -> (Option<TabId>, Vec<(TabId, u32)>) {
+        (session.active(), session.tabs().iter().map(|tab| (tab.id, tab.page)).collect())
+    }
+
+    /// Failure (R2.3's riskiest part): a person's command on the window's session thread, waiting for a file to be read, changes something before its read, so
+    /// running it again once the read's in does it twice or half (a tab opened twice, a tap that leaves a comparison and then lands elsewhere); or it reads the
+    /// file in place and holds the thread up; or a close waits on the next tab's read, which a dead volume would make for ever. For a tap of a cold tab, an open of
+    /// a new file and of a cold tab already open, and a close: nothing changes and nothing's said until the read's in, asking again changes nothing either, and
+    /// once it's in the command answers as it would have in one go.
+    #[test]
+    fn a_command_waiting_for_a_read_does_nothing_until_it_runs_again() {
+        let names = ["a", "b", "c", "d", "e", "f"];
+        let tap = Command::from(crate::commands::tabs::Tap { tab: "#1".into() });
+        let open_new = Command::from(crate::commands::tabs::Open {
+            path: PathBuf::from("/d/new.pdf"),
+            page: None,
+        });
+        let open_cold = Command::from(crate::commands::tabs::Open {
+            path: PathBuf::from("/d/a.pdf"),
+            page: Some(2),
+        });
+        for command in [&tap, &open_new, &open_cold] {
+            let mut session = with_tabs(&names);
+            let before = looks(&session);
+            let deferring = Deferring {
+                session: RefCell::new(&mut session),
+                woke: RefCell::default(),
+                loads: RefCell::default(),
+                ready: RefCell::default(),
+            };
+            let mut events = Vec::new();
+            for asked in 0..2 {
+                let first = execute(&deferring, Actor::Person, command, &mut events).expect_err("it waits for its read");
+                assert!(later::is_later(&first), "{}: {first:?}", command.tag());
+                assert_eq!(
+                    deferring.with(|s| looks(s)),
+                    before,
+                    "{}: nothing changed before the read, asked {} times",
+                    command.tag(),
+                    asked + 1
+                );
+                assert!(events.is_empty(), "{}: and nothing said", command.tag());
+            }
+            // The read, as the window's thread makes it.
+            let woke = deferring.woke.borrow_mut().drain(..).next_back();
+            if let Some((tab, path)) = woke {
+                deferring.with(|s| s.give_woken(tab, Fake.load(&path), None));
+            } else {
+                assert_eq!(
+                    deferring.loads.borrow().last().map(PathBuf::as_path),
+                    Some(Path::new("/d/new.pdf")),
+                    "{}",
+                    command.tag()
+                );
+                *deferring.ready.borrow_mut() = Some(later::Fetched {
+                    stamp: None,
+                    facts: Fake.load(Path::new("/d/new.pdf")),
+                    history: None,
+                    unlocked: false,
+                });
+            }
+            let answer = execute(&deferring, Actor::Person, command, &mut events).expect("once it's in");
+            let after = deferring.with(|s| looks(s));
+            let mut twin = with_tabs(&names);
+            let mut twin_events = Vec::new();
+            let direct = execute(&Direct(RefCell::new(&mut twin), None), Actor::Person, command, &mut twin_events).expect("in one go");
+            assert_eq!(answer, direct, "{}: the same answer", command.tag());
+            assert_eq!(after, looks(&twin), "{}: the same session", command.tag());
+            assert_eq!(format!("{events:?}"), format!("{twin_events:?}"), "{}: the same news", command.tag());
+        }
+        // A close doesn't wait for the tab it shows next: the session wakes that as it always has for the window.
+        let mut session = with_tabs(&names);
+        let deferring = Deferring {
+            session: RefCell::new(&mut session),
+            woke: RefCell::default(),
+            loads: RefCell::default(),
+            ready: RefCell::default(),
+        };
+        let close = Command::from(crate::commands::tabs::Close { tab: "#6".into() });
+        execute(&deferring, Actor::Person, &close, &mut Vec::new()).expect("closed at once");
+        assert!(deferring.woke.borrow().is_empty(), "nothing read for it");
+        assert_eq!(deferring.with(|s| s.tabs().len()), 5);
     }
 
     fn with_tabs(names: &[&str]) -> Session<Fake> {

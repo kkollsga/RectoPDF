@@ -94,6 +94,8 @@ struct Hosted<'a, L> {
     /// The app's record, or this session's own, or none.
     records: Option<&'a (dyn Records + Send + Sync)>,
     effects: Option<&'a Effects>,
+    /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
+    reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -125,6 +127,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
         if let Some(effects) = self.effects {
             effects(effect);
         }
+    }
+    fn reads_later(&self) -> Option<&dyn recto_agent::later::ReadLater> {
+        self.reads_later
     }
 }
 
@@ -251,8 +256,47 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             saving: self.saving.get().map(|saving| &**saving),
             records: self.records.get().map(|records| &**records),
             effects: self.effects.get(),
+            reads_later: None,
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
+    }
+
+    /// **A command on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`, off this thread, and it
+    /// runs again once that's in ([`recto_agent::later`]). Otherwise as [`Host::run`].
+    pub fn run_reading_later(
+        &self,
+        actor: Actor,
+        command: &Command,
+        events: &mut Vec<Event>,
+        reads: &dyn recto_agent::later::ReadLater,
+    ) -> Result<Value, AgentError> {
+        self.run_on(
+            &Hosted {
+                reads_later: Some(reads),
+                ..self.access()
+            },
+            actor,
+            command,
+            events,
+        )
+    }
+
+    /// A command on the session, by whichever way it's reached, and what a close takes with it.
+    fn run_on(&self, access: &Hosted<'_, L>, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        // A tab that closes takes its generated contents' job with it, if one's running or waiting.
+        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
+            .then(|| {
+                let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                acted_tab(&session, command).and_then(|id| session.path_of(id))
+            })
+            .flatten();
+        let result = recto_agent::execute(access, actor, command, events);
+        if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
+            generator.cancel_path(path);
+        }
+        let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
+        self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
+        result
     }
 
     /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
@@ -291,17 +335,7 @@ pub fn store_error(error: StoreError) -> AgentError {
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        // A tab that closes takes its generated contents' job with it, if one's running or waiting.
-        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
-            .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
-            .flatten();
-        let result = recto_agent::execute(&self.access(), actor, command, events);
-        if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
-            generator.cancel_path(path);
-        }
-        let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
-        self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
-        result
+        self.run_on(&self.access(), actor, command, events)
     }
 
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {

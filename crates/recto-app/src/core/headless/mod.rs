@@ -11,6 +11,7 @@ mod palette;
 mod passwords;
 mod protected_save;
 mod quit;
+mod reading_later;
 mod recent;
 mod selection;
 mod sidebar;

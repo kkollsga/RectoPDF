@@ -294,6 +294,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
             CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),
             CoreCall::SetSpread(tab, spread) => set_spread(inner, tab, spread, &mut events),
+            CoreCall::Run(run) => {
+                let _ = person::run(inner, &mut reads, *run, &mut events);
+            }
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
@@ -347,6 +350,8 @@ pub struct FileReads {
     pub flushes: Vec<Arc<Flushed>>,
     /// The last file being opened, so several opened together keep their order unless one isn't answering.
     pub last_open: Option<Arc<Flushed>>,
+    /// The person's command each read is for, which runs again once it's in: the last asked for each.
+    pub then: HashMap<Reading, Box<recto_agent::Command>>,
 }
 
 /// What's said when there are more files not answering than can be waited on.
@@ -470,8 +475,15 @@ impl FileReads {
                 }
             }
             Reading::Tab(tab) => {
+                let then = self.then.remove(&Reading::Tab(tab));
                 // Only if it's still what's wanted. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
-                if self.wanted_tab == Some(tab) {
+                if let Some(command) = then {
+                    if self.wanted_tab == Some(tab) {
+                        self.wanted_tab = None;
+                        host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                        person::read_in(inner, *command, None);
+                    }
+                } else if self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                     host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
                     tap_now(inner, tab, events);
@@ -493,6 +505,16 @@ impl FileReads {
                     host.session
                         .with_session(|session| session.focus_pane(tab).then(|| recto_agent::event::tab_activated(session, tab))),
                 );
+            }
+            Reading::File(path) if self.then.contains_key(&Reading::File(path.clone())) => {
+                let command = self.then.remove(&Reading::File(path.clone())).expect("looked at");
+                let fetched = recto_agent::later::Fetched {
+                    stamp: read.stamp,
+                    facts: read.loaded,
+                    history: read.history,
+                    unlocked: read.unlocked,
+                };
+                person::read_in(inner, *command, Some((path, fetched)));
             }
             Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
                 host.session.with_session(|session| {
