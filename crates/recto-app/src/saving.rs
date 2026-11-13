@@ -299,7 +299,14 @@ pub fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
     // on disk under the edits, or edits that don't fit it: a copy is refused as Save is, as the edits would land on the other version's pages.
     let copy_helps = matches!(
         error.code,
-        "changed_since_opened" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original"
+        "changed_since_opened"
+            | "changed_while_copying"
+            | "read_only"
+            | "hard_links"
+            | "breaks_certification"
+            | "locked_by_signature"
+            | "signed_needs_copy"
+            | "signed_original"
     );
     SaveProblem {
         title: "The document couldn't be saved.".into(),

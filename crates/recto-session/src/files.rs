@@ -49,11 +49,19 @@ impl<L: DocLoader> Session<L> {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
-                    let was = (tab.file.stamp, tab.file.notice().is_some());
+                    // Edits about another version than what's held, found to fit again, are news whatever's said: what's held is of the other one.
+                    let was = (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                     if other_version_unnamed {
-                        // What's read next is this version, and it's what a look will find again; the edits stay about none.
-                        let file_changed = fit != EditsFit::NotThisFile;
-                        tab.file.set_elsewhere(Some(fit::Elsewhere { seen: Some(now), file_changed }));
+                        // What's read next is this version, and it's what a look will find again; the edits stay about none, and what's known against
+                        // them stays known until a read of this one says otherwise.
+                        let file_changed = matches!(fit, EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown);
+                        let other_length = elsewhere.is_some_and(|elsewhere| elsewhere.other_length);
+                        tab.file.set_elsewhere(Some(fit::Elsewhere {
+                            seen: Some(now),
+                            seen_pages: None,
+                            file_changed,
+                            other_length,
+                        }));
                     }
                     if stamp.is_some() || !has_edits {
                         // The version the edits were made on, or the file as it is for a tab with none: so it fits.
@@ -65,7 +73,7 @@ impl<L: DocLoader> Session<L> {
                     {
                         tab.file.set_notice(None);
                     }
-                    return other_version_unnamed || was != (tab.file.stamp, tab.file.notice().is_some());
+                    return other_version_unnamed || was != (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                 }
             }
             FileStatus::Moved(path, now) => {
@@ -96,7 +104,9 @@ impl<L: DocLoader> Session<L> {
                         // The stamp stays the version the edits were made on, and they don't fit what's there now.
                         tab.file.set_elsewhere(Some(fit::Elsewhere {
                             seen: Some(now),
+                            seen_pages: None,
                             file_changed: true,
+                            other_length: false,
                         }));
                     } else {
                         tab.file.take_version(Some(now));
