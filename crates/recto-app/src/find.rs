@@ -23,6 +23,14 @@ pub const ROW_HEIGHT: f64 = 24.0;
 /// The field, and the line under it.
 pub const FIELD_HEIGHT: f64 = 28.0;
 pub const STATUS_HEIGHT: f64 = 20.0;
+/// Each line the line under the field takes past its first, at its 11.5 pt.
+pub const STATUS_LINE: f64 = 15.0;
+/// The most lines it takes. A reason Find can't search is a sentence, which takes three at the sidebar's narrowest; past that the host cuts it with an ellipsis and shows it whole on hover.
+pub const MOST_STATUS_LINES: u32 = 3;
+/// How much narrower the line is than the sidebar: the host sets it in 18 points from the left and 12 from the right.
+pub const STATUS_INSET: f64 = 30.0;
+/// The width a character of the line is taken to need, at 11.5 pt in the system font: a little over its average (about 5.6 for English), so a line is never counted short and cut.
+const STATUS_CHAR_WIDTH: f64 = 6.0;
 /// Space under the list, before the tabs.
 pub const GAP: f64 = 8.0;
 /// The most of the sidebar's room the hit list takes. With the contents' 60% of what's left, the tabs keep the rest.
@@ -120,26 +128,64 @@ pub struct FindRow {
     pub note: String,
 }
 
-/// The Find block's heights, for this much room in the sidebar: the whole block, and its list.
+/// The Find block's heights, for this much room in the sidebar: the whole block, the line under the field, and its list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Heights {
     pub block: f64,
+    pub status: f64,
     pub list: f64,
 }
 
-/// Rust's height rule for Find: nothing while it's closed; the field and its line while it's open; and the list, as tall as its rows up to [`MOST_OF_ROOM`].
+/// **How many lines the line under the field takes** in a sidebar this wide, words wrapped whole as the host wraps them, from one to [`MOST_STATUS_LINES`]. An estimate by characters, a little generous ([`STATUS_CHAR_WIDTH`]), as Rust has no font: a line too many is a blank one, a line too few cuts the sentence.
 #[must_use]
-pub fn heights(room: f64, open: bool, rows: u32) -> Heights {
-    if !open || !room.is_finite() || room <= 0.0 {
-        return Heights { block: 0.0, list: 0.0 };
+pub fn status_lines(status: &str, sidebar_width: f64) -> u32 {
+    let room = ((sidebar_width - STATUS_INSET) / STATUS_CHAR_WIDTH).floor();
+    if !room.is_finite() || room < 1.0 {
+        return 1;
     }
+    let room = room as usize;
+    let (mut lines, mut used) = (1u32, 0usize);
+    for word in status.split_whitespace() {
+        let length = word.chars().count();
+        let wanted = if used == 0 { length } else { used + 1 + length };
+        if used > 0 && wanted > room {
+            lines += 1;
+            used = length;
+        } else {
+            used = wanted;
+        }
+        // A word longer than a line breaks across lines.
+        while used > room {
+            lines += 1;
+            used -= room;
+        }
+        if lines >= MOST_STATUS_LINES {
+            return MOST_STATUS_LINES;
+        }
+    }
+    lines
+}
+
+/// Rust's height rule for Find: nothing while it's closed; the field and its line, as many lines as [`status_lines`] says, while it's open; and the list, as tall as its rows up to [`MOST_OF_ROOM`] less the line's extra lines, so a long line takes from the list and never pushes the tabs and the contents further down.
+#[must_use]
+pub fn heights(room: f64, open: bool, rows: u32, status_lines: u32) -> Heights {
+    if !open || !room.is_finite() || room <= 0.0 {
+        return Heights {
+            block: 0.0,
+            status: 0.0,
+            list: 0.0,
+        };
+    }
+    let extra = f64::from(status_lines.clamp(1, MOST_STATUS_LINES) - 1) * STATUS_LINE;
+    let status = STATUS_HEIGHT + extra;
     let list = (f64::from(rows) * ROW_HEIGHT)
-        .min((room * MOST_OF_ROOM / ROW_HEIGHT).floor() * ROW_HEIGHT)
+        .min(((room * MOST_OF_ROOM - extra) / ROW_HEIGHT).floor() * ROW_HEIGHT)
         .max(0.0);
-    let block = (FIELD_HEIGHT + STATUS_HEIGHT + list + GAP).min(room);
+    let block = (FIELD_HEIGHT + status + list + GAP).min(room);
     Heights {
         block,
-        list: list.min((block - FIELD_HEIGHT - STATUS_HEIGHT - GAP).max(0.0)),
+        status,
+        list: list.min((block - FIELD_HEIGHT - status - GAP).max(0.0)),
     }
 }
 
