@@ -1011,7 +1011,7 @@ pub(crate) fn select<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result
                 .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
         }
         TabRef::Id(id) => return session.tabs().tab(*id).map(|_| *id).ok_or_else(not_found),
-        TabRef::Name(name) => name.to_lowercase(),
+        TabRef::Name(name) => name.as_str().to_lowercase(),
     };
     let matches: Vec<_> = session
         .tabs()
@@ -1399,7 +1399,7 @@ mod tests {
         // A ⌘-click on a cold tab's row, and two cold tabs put side by side, each read in turn (R2.3, C5e).
         let toggle_cold = Command::from(crate::commands::compare::Compare::Toggle("#1".into()));
         let compare_cold = Command::from(crate::commands::compare::Compare::Set {
-            tabs: vec!["#1".into(), "#2".into()],
+            tabs: crate::commands::compare::Panes::parse("#1,#2").unwrap(),
             sync: None,
         });
         for command in [&tap, &open_new, &open_cold, &toggle_cold, &compare_cold] {
@@ -3563,7 +3563,7 @@ mod protected_tests {
                     page: None,
                 }),
                 Command::from(crate::commands::compare::Compare::Set {
-                    tabs: vec!["#1".into(), "#2".into()],
+                    tabs: crate::commands::compare::Panes::parse("#1,#2").unwrap(),
                     sync: None,
                 }),
                 // The protected tab's pane read, and it out and in again, as the window's own moves are (R2.3, C5e): said as protected, as `--tabs` is.

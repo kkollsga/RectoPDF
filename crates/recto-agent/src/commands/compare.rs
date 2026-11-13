@@ -19,7 +19,7 @@ pub enum Compare {
     /// Back to one tab, the one being read.
     Off,
     /// These tabs side by side, left to right, and their scroll synced or not if said.
-    Set { tabs: Vec<TabRef>, sync: Option<OnOff> },
+    Set { tabs: Panes, sync: Option<OnOff> },
     /// Synced scroll, or separate, for the comparison there is.
     Sync(OnOff),
     /// One tab into the comparison, or out of it, as ⌘-clicking its row does.
@@ -53,6 +53,58 @@ pub mod line {
 /// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
 const MAX_COMPARE_SELECTORS: usize = 8;
 
+/// The tabs `compare --tabs` names, left to right. Made by [`Panes::parse`] from the words, or [`Panes::new`] from tabs, each of which keeps to what a list
+/// can say: at most [`MAX_COMPARE_SELECTORS`], and no name with a comma or with spaces at its ends, or empty, which the list's words would read back as
+/// other tabs (review of R2.5, F1). So a compare that exists prints as a line that reads back as itself.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Panes(Vec<TabRef>);
+
+impl Panes {
+    /// These tabs, if a list can say them: `None` past [`MAX_COMPARE_SELECTORS`], or for a name the list's words can't hold.
+    #[must_use]
+    pub fn new(tabs: Vec<TabRef>) -> Option<Self> {
+        let sayable = |tab: &TabRef| {
+            let words = tab.to_string();
+            !words.is_empty() && words.trim() == words && !words.contains(',')
+        };
+        (tabs.len() <= MAX_COMPARE_SELECTORS && tabs.iter().all(sayable)).then_some(Self(tabs))
+    }
+
+    /// The tabs a list names, by selector with commas between (`#1,#3`); spaces around each and empty ones are let go. Past [`MAX_COMPARE_SELECTORS`]
+    /// is refused in the session's words, having read no more than one past it.
+    pub fn parse(list: &str) -> Result<Self, AgentError> {
+        let tabs: Vec<TabRef> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+            .take(MAX_COMPARE_SELECTORS + 1)
+            .map(TabRef::parse)
+            .collect();
+        if tabs.len() > MAX_COMPARE_SELECTORS {
+            return Err(refused(recto_session::compare::CompareError::TooMany));
+        }
+        Ok(Self(tabs))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[TabRef] {
+        &self.0
+    }
+}
+
+/// Its words in the list: the selectors with commas between.
+impl std::fmt::Display for Panes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (at, tab) in self.0.iter().enumerate() {
+            if at > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{tab}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Checked whole as it's read, in the order the run checked it before: what goes alone, then the scroll's word, then how many tabs are named.
 impl TryFrom<line::Compare> for Compare {
     type Error = AgentError;
@@ -82,19 +134,10 @@ impl TryFrom<line::Compare> for Compare {
             .map(|word| OnOff::from_word(&word).ok_or_else(|| usage(&format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(&word)))))
             .transpose()?;
         Ok(match (tabs, sync, off, toggle, reading) {
-            (Some(list), sync, ..) => {
-                let tabs: Vec<TabRef> = list
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|word| !word.is_empty())
-                    .take(MAX_COMPARE_SELECTORS + 1)
-                    .map(TabRef::parse)
-                    .collect();
-                if tabs.len() > MAX_COMPARE_SELECTORS {
-                    return Err(refused(recto_session::compare::CompareError::TooMany));
-                }
-                Self::Set { tabs, sync }
-            }
+            (Some(list), sync, ..) => Self::Set {
+                tabs: Panes::parse(&list)?,
+                sync,
+            },
             (None, Some(sync), ..) => Self::Sync(sync),
             (None, None, true, ..) => Self::Off,
             (None, None, false, Some(tab), _) => Self::Toggle(TabRef::parse(&tab)),
@@ -110,7 +153,7 @@ impl From<&Compare> for line::Compare {
             Compare::Look => Self::default(),
             Compare::Off => Self { off: true, ..Self::default() },
             Compare::Set { tabs, sync } => Self {
-                tabs: Some(tabs.iter().map(TabRef::to_string).collect::<Vec<_>>().join(",")),
+                tabs: Some(tabs.to_string()),
                 sync: sync.map(|sync| sync.word().to_string()),
                 ..Self::default()
             },
@@ -228,7 +271,12 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
         Compare::Look => {}
         Compare::Off => changed |= access.with(|s| s.end_compare()),
         Compare::Set { tabs, sync } => {
-            let ids = access.with(|s| tabs.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
+            let ids = access.with(|s| {
+                tabs.as_slice()
+                    .iter()
+                    .map(|selector| select(s, selector))
+                    .collect::<Result<Vec<TabId>, AgentError>>()
+            })?;
             recto_session::compare::Comparison::check(&ids).map_err(refused)?;
             // Each pane is a live document, so each cold one is read with the session free, as a tap's is, and none with it held.
             let reading = access.with(|s| s.tabs().active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));

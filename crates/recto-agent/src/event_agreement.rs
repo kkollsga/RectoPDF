@@ -73,7 +73,7 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     let events = events_of(
         &mut session,
         Command::from(crate::commands::compare::Compare::Set {
-            tabs: both.clone().split(',').map(crate::TabRef::from).collect(),
+            tabs: crate::commands::compare::Panes::parse(&both).unwrap(),
             sync: None,
         }),
     );
@@ -91,7 +91,7 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
         events_of(
             &mut session,
             Command::from(crate::commands::compare::Compare::Set {
-                tabs: both.split(',').map(crate::TabRef::from).collect(),
+                tabs: crate::commands::compare::Panes::parse(&both).unwrap(),
                 sync: None
             })
         )

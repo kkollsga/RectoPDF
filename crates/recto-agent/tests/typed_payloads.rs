@@ -5,7 +5,7 @@
 //! command stop being one action); a row's words drift from the type's, so the CLI takes a word the type refuses, or refuses one it takes; a malformed
 //! request is refused differently by route or level, or its refusal tells something of the session.
 
-use recto_agent::commands::compare::Compare;
+use recto_agent::commands::compare::{Compare, Panes};
 use recto_agent::commands::contents::{ContentsShow, Which};
 use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::finding::{Find, FindAsk};
@@ -31,7 +31,7 @@ fn every_typed_command() -> Vec<Command> {
         all.push(UpdateDevBuilds { set }.into());
         all.push(Settings { auto_update: set }.into());
     }
-    let tabs = |list: &[&str]| list.iter().map(|tab| TabRef::from(*tab)).collect::<Vec<TabRef>>();
+    let tabs = |list: &[&str]| Panes::new(list.iter().map(|tab| TabRef::from(*tab)).collect()).expect("tabs a list can say");
     all.extend([Compare::Look, Compare::Off].map(Command::from));
     for sync in [None].into_iter().chain(OnOff::ALL.map(Some)) {
         for list in [&["#1", "#2"][..], &["#1", "report", "#3"]] {
@@ -207,5 +207,28 @@ fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
         let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
         let refused = table::parse_cli(&words).and_then(|line| line.command()).expect_err("refused");
         assert_eq!(refused.code, "usage", "{words:?}");
+    }
+}
+
+/// Failure (review of R2.5, F1): a compare whose tabs code built prints as a list that reads back as other tabs: a name with a comma as two, one with
+/// spaces at its ends as another name, an empty one as none, or more than a list is read as refused. Such tabs make no compare; those a list can say read
+/// back as themselves.
+#[test]
+fn a_compare_built_in_code_reads_back_as_itself() {
+    for name in ["a,b", " report", "report ", ""] {
+        assert!(Panes::new(vec![TabRef::parse(name), TabRef::parse("#2")]).is_none(), "{name:?}");
+    }
+    assert!(Panes::new(vec![TabRef::Active; 9]).is_none(), "more than are read");
+    for list in [&["re port", "#2"][..], &["#+3", "#007", "active", "#x"], &["#1"; 8]] {
+        let built = Compare::Set {
+            tabs: Panes::new(list.iter().map(|tab| TabRef::parse(tab)).collect()).unwrap_or_else(|| panic!("{list:?}")),
+            sync: None,
+        };
+        let line = Command::from(built.clone()).wire();
+        let back = parse(&line);
+        assert!(
+            back.as_ref().is_ok_and(|back| same(back, &Command::from(built.clone()))),
+            "{list:?}: {line} reads back as {back:?}"
+        );
     }
 }

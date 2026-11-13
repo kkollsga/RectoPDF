@@ -1,5 +1,13 @@
 //! **Which tab a command means** (step R2.5): the one showing, one by its number, or one by a piece of its name, as a type. The window names a tab by its id
 //! and never writes `#3` for [`crate::select`] to read back; the words exist only on the wire, where this reads and prints them.
+//!
+//! A [`TabRef`] that exists prints as words that read back as itself: a name, or a selector that can name no tab, is made only by [`TabRef::parse`]
+//! (their fields are private), so no code can make `Name("#3")` or `Name("active")`, which would print as another tab. Printing is canonical rather than
+//! as typed: `#007` and `#+3` are tabs 7 and 3, as `str::parse` reads a number and as `main` read them before the type, and print as `#7` and `#3`.
+//!
+//! What the activity log keeps of one ([`TabRef::log`]) is `active` or a tab's number, never a name: `#+3` is logged as `#3`, the tab it means, where the
+//! words before the type logged it as `by name`; a number too large to be a tab (`#4294967296`, or one longer than ten digits) means no tab and is logged
+//! as `by name`, as an overlong selector is.
 
 use crate::MAX_SELECTOR_BYTES;
 use recto_session::TabId;
@@ -15,11 +23,28 @@ pub enum TabRef {
     /// A tab by its number.
     Id(TabId),
     /// A tab by a piece of its name, any case.
-    Name(Box<str>),
+    Name(Name),
     /// Written as a tab's number (`#…`) that can't be one, or longer than any name: it means no tab, and no name is searched for it. Kept as written, so it
     /// prints back as it came.
-    Nothing(Box<str>),
+    Nothing(Nothing),
 }
+
+/// A piece of a tab's name, as an agent wrote it. Made only by [`TabRef::parse`], so it's never `active`, never starts with `#` and is no longer than a
+/// selector is looked at: it prints as words that read back as a name.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Name(Box<str>);
+
+impl Name {
+    /// The words, as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A selector that can name no tab, as written. Made only by [`TabRef::parse`].
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Nothing(Box<str>);
 
 /// The tab showing, for a command that names none and acts on that one.
 pub static ACTIVE: TabRef = TabRef::Active;
@@ -29,21 +54,21 @@ impl TabRef {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         if text.len() > MAX_SELECTOR_BYTES {
-            return Self::Nothing(text.into());
+            return Self::Nothing(Nothing(text.into()));
         }
         if text == "active" {
             return Self::Active;
         }
         match text.strip_prefix('#') {
-            Some(number) => number.parse().map_or_else(|_| Self::Nothing(text.into()), |id| Self::Id(TabId(id))),
-            None => Self::Name(text.into()),
+            Some(number) => number.parse().map_or_else(|_| Self::Nothing(Nothing(text.into())), |id| Self::Id(TabId(id))),
+            None => Self::Name(Name(text.into())),
         }
     }
 
     /// Longer than any selector is looked at, which the server refuses before it waits for one.
     #[must_use]
     pub fn over_long(&self) -> bool {
-        matches!(self, Self::Nothing(text) if text.len() > MAX_SELECTOR_BYTES)
+        matches!(self, Self::Nothing(Nothing(text)) if text.len() > MAX_SELECTOR_BYTES)
     }
 
     /// What goes in the activity log: `active` or the tab's number, never a name as typed, which could be anything.
@@ -77,7 +102,7 @@ impl fmt::Display for TabRef {
         match self {
             Self::Active => f.write_str("active"),
             Self::Id(id) => write!(f, "#{}", id.0),
-            Self::Name(text) | Self::Nothing(text) => f.write_str(text),
+            Self::Name(Name(text)) | Self::Nothing(Nothing(text)) => f.write_str(text),
         }
     }
 }
@@ -116,22 +141,17 @@ mod tests {
         assert_eq!(TabRef::parse("#+3"), TabRef::Id(TabId(3)), "as `str::parse` reads a number");
         assert_eq!(
             TabRef::parse("Active"),
-            TabRef::Name("Active".into()),
+            TabRef::Name(Name("Active".into())),
             "a name, as only `active` is the tab showing"
         );
-        assert_eq!(TabRef::parse("report"), TabRef::Name("report".into()));
-        assert_eq!(TabRef::parse(""), TabRef::Name("".into()));
+        assert_eq!(TabRef::parse("report"), TabRef::Name(Name("report".into())));
+        assert_eq!(TabRef::parse(""), TabRef::Name(Name("".into())));
         for nothing in ["#", "#x", "#-1", "#4294967296"] {
-            assert_eq!(TabRef::parse(nothing), TabRef::Nothing(nothing.into()), "{nothing}");
+            assert_eq!(TabRef::parse(nothing), TabRef::Nothing(Nothing(nothing.into())), "{nothing}");
         }
         let long = "a".repeat(MAX_SELECTOR_BYTES + 1);
-        assert_eq!(TabRef::parse(&long), TabRef::Nothing(long.as_str().into()));
-        for tab in [
-            TabRef::Active,
-            TabRef::Id(TabId(7)),
-            TabRef::Name("report".into()),
-            TabRef::Nothing("#x".into()),
-        ] {
+        assert_eq!(TabRef::parse(&long), TabRef::Nothing(Nothing(long.as_str().into())));
+        for tab in [TabRef::Active, TabRef::Id(TabId(7)), TabRef::parse("report"), TabRef::parse("#x")] {
             assert_eq!(TabRef::parse(&tab.to_string()), tab);
         }
     }
