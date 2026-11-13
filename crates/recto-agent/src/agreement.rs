@@ -228,12 +228,32 @@ impl Drop for LookEnds {
     }
 }
 
+/// A file's change time: writing to it, or setting its modification time, moves it, and nothing sets it back. A look at its metadata, with no opening of it.
+fn change_time(path: &Path) -> Option<i64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path)
+            .ok()
+            .map(|meta| meta.ctime().saturating_mul(1_000_000_000).saturating_add(meta.ctime_nsec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Runs a look for `stamp` and keeps its answer, whatever it is, for that stamp: so the window, told it's done, finds it and doesn't ask again.
 fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>) -> Option<Disagreement> {
     #[cfg(test)]
     LOOKS_RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut ends = LookEnds { stamp, answer: None, done };
+    let before = change_time(path);
     let answer = looker(path, stamp, Instant::now() + LOOK_DEADLINE);
+    // Written over in place while it was looked at, its two readers may have seen two versions, and it can come back to the same stamp (a version
+    // restored, bytes and time): its change time, which nothing sets back, says so, and the look can't vouch for the stamp.
+    let answer = if change_time(path) == before { answer } else { Some(Disagreement::Unchecked) };
     ends.answer = Some(answer.clone());
     drop(ends);
     answer
@@ -400,6 +420,39 @@ mod tests {
             ),
             Ask::Known(Some(Disagreement::Unchecked)),
             "kept, and nothing starts"
+        );
+    }
+
+    /// Failure (found 2026-11-13 by `build/seen-fixes`' test of a version written back over its file, failing 20 of 20 at CI's speed): a look took its
+    /// structure from one version and its renderer's pages from another, as the file was written over in place while it looked, and was then put back,
+    /// bytes and time, as a backup tool restores it; the stamp came back the same, so the mixed reading was kept as that version's answer, and Save was
+    /// refused for good as a damaged file. A look during which the file was written to can't vouch for its stamp: it's kept as one that couldn't check,
+    /// and a save looks again.
+    #[test]
+    fn a_look_the_file_was_written_over_during_cant_vouch_for_its_stamp() {
+        let _lock = test_lock();
+        let bytes = recto_testpdf::pages(&[recto_testpdf::Page::new("")]);
+        let file = recto_testpdf::TempPdf::new("written-over.pdf", &bytes);
+        let stamp = stamp_of(&file.0);
+        let modified = std::fs::metadata(&file.0).and_then(|meta| meta.modified()).unwrap();
+        let path = file.0.clone();
+        let written_over = Box::new(move |_: &Path, _, _| {
+            // Another version, and then this one back as it was: the same stamp.
+            std::fs::write(&path, b"%PDF-1.4 another version").unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|open| open.set_modified(modified))
+                .unwrap();
+            Some(Disagreement::PageSize { page: 0 })
+        });
+        assert_eq!(check_by(&file.0, stamp, written_over), Some(Disagreement::Unchecked));
+        assert_eq!(stamp_of(&file.0), stamp, "the same stamp as before");
+        assert_eq!(
+            check_by(&file.0, stamp, Box::new(|_, _, _| None)),
+            None,
+            "a save looks again, and that answer stands"
         );
     }
 
