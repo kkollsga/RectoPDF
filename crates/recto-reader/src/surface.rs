@@ -546,6 +546,7 @@ Reader::pub fn new() -> Self
 Reader::pub fn next_plan(&mut self) -> Option<JobPlan>
 Reader::pub fn note(&self) -> Option<&str>
 Reader::pub fn note_version(&mut self, file: &std::path::Path, version: u64)
+Reader::pub fn note_wake(&mut self, tab: u32, began: std::time::Instant)
 Reader::pub fn places(&self) -> Vec<(u32, SavedPlace)>
 Reader::pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool
 Reader::pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit>
@@ -680,7 +681,6 @@ WakeStock::pub fn word(self) -> &'static str
 Waking (pub(crate) struct, derives Debug)
 Waking::pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView)
 Waking::pub(crate) fn last_wake(&self) -> Option<WakeReport>
-Waking::pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant)
 Waking::pub(crate) fn window_up(&mut self)
 Work (pub(crate) struct, derives Debug)
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)

@@ -673,6 +673,12 @@ impl Reader {
         self.let_lists_go();
     }
 
+    /// **A tab's being woken, as of now.** "A tab already showing isn't being woken" is decided here, where the tab showing is held, not by the caller.
+    pub fn note_wake(&mut self, tab: u32, began: std::time::Instant) {
+        let hot = self.docs.hot;
+        self.wake.note_wake(hot, tab, began);
+    }
+
     /// The window is back: everything is asked for again.
     pub fn window_opened(&mut self) {
         self.window_open = true;

@@ -222,8 +222,8 @@ impl Waking {
         self.sleep_view = Some((tab, view));
     }
 
-    /// A tab's being woken, as of now, with `hot` the tab showing. For how long it takes.
-    pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
+    /// A tab's being woken, as of now, with `hot` the tab showing ([`Reader::note_wake`] says it, so a caller can't give another). For how long it takes.
+    pub(super) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
         // Said when it was asked for, and said again on its way to the screen: the first is when it began.
         if hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
             self.waking = Some((

@@ -3,7 +3,6 @@
 use super::{Op, Reader};
 use crate::selection::{Notice, Selecting};
 use recto_index::select::Range;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Built only in the tiles module ([`Pointer::new`]), with no `Default`, and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field to call the methods below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
@@ -224,16 +223,12 @@ impl Reader {
         true
     }
 
-    pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
-        self.docs.shown().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
-    }
-
     /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.
     pub fn start_copy(&mut self, anyway: bool) {
         let Some(pages) = self.docs.shown().map(|doc| doc.layout.count()) else {
             return;
         };
-        let heavy = self.heavy_pages();
+        let heavy = self.docs.heavy_pages();
         self.pointer
             .selecting
             .start_copy(anyway, pages, |page| heavy.get(&page).copied().unwrap_or(false));
@@ -257,7 +252,7 @@ impl Reader {
 
     pub(super) fn advance_copy(&mut self) {
         let pages = self.docs.shown().map_or(0, |doc| doc.layout.count());
-        let heavy = self.heavy_pages();
+        let heavy = self.docs.heavy_pages();
         self.pointer.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
     }
 

@@ -32,6 +32,11 @@ impl Docs {
         self.hot
     }
 
+    /// Which pages of the tab showing were found too heavy to draw in the ordinary way (the selection reads their text another way).
+    pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
+        self.shown().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
+    }
+
     /// The files a tab it holds has.
     pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf> {
         self.views.get(&tab).map_or_else(Vec::new, |doc| doc.map.files.clone())
