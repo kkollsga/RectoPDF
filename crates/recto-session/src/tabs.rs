@@ -6,7 +6,7 @@ impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
         Self {
             loader,
-            view: ViewSettings::default(),
+            viewing: viewing::Viewing::default(),
             tabs: Vec::new(),
             active: None,
             next_id: 1,
@@ -24,8 +24,6 @@ impl<L: DocLoader> Session<L> {
             left_warm: Vec::new(),
             draws: VecDeque::new(),
             place_lost: false,
-            find: FindRecord::default(),
-            edit_mode: false,
             journaling: false,
             journals: HashMap::new(),
             fresh_journals: Vec::new(),

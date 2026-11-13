@@ -25,13 +25,14 @@ mod saving;
 mod tabs;
 mod tiers;
 mod view;
+mod viewing;
 
 pub use change::Closed;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 use record::{
     EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError,
-    Selection, SessionRecord, TabEntry, ViewRecord,
+    Selection, SessionRecord, TabEntry,
 };
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
@@ -769,7 +770,8 @@ pub fn edits_summary_of(edits: &PageEdits) -> EditsSummary {
 /// All open tabs and which one is active.
 pub struct Session<L = DiskLoader> {
     loader: L,
-    view: ViewSettings,
+    /// The view settings, Find and edit mode.
+    viewing: viewing::Viewing,
     tabs: Vec<TabRecord>,
     active: Option<TabId>,
     next_id: u32,
@@ -798,10 +800,6 @@ pub struct Session<L = DiskLoader> {
     woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
     place_lost: bool,
-    /// Find, as the reader left it.
-    find: FindRecord,
-    /// Edit mode: the panel opens on its tools, and Rotate turns the page being read rather than every page.
-    edit_mode: bool,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.
