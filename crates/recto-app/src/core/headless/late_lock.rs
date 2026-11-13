@@ -982,6 +982,30 @@ fn an_appearance_chosen_while_the_saved_session_is_read_stays() {
     drop(app.quit());
 }
 
+/// Failure (review, 2026-11-13, also 4: the host now applies Rust's appearance when it hears a late state it doesn't make the window again from, which this
+/// branch added for a late keep): an ordinary state that comes in after the window went up without it and has taken input (past its ten seconds) isn't made
+/// into the window, but the saved appearance was put in the app's state over the one the window shows, so the host now flips the window to it, over what the
+/// person chose meanwhile. The window that's taking input keeps its appearance, and the record says it; the rest of the session comes back into it.
+#[test]
+fn an_ordinary_late_state_keeps_the_appearance_the_window_shows_once_it_takes_input() {
+    use recto_session::record::Appearance;
+    let app = a_saved_session().builder().hold(&[Seam::State]).start();
+    app.advance(u64::try_from(crate::core::updates::INPUT_PATIENCE.as_millis()).expect("ms"));
+    assert!(app.core().window_interactive(), "past its patience, the window takes input");
+    crate::lock(&app.core().window.app).appearance = Appearance::Dark;
+    app.core().saver.view_changed();
+    app.let_state_in();
+    app.settle();
+    assert_eq!(tab_names(&app), ["a", "b"], "the session comes back into the window");
+    assert_eq!(crate::lock(&app.host).remade, 0, "not made again: it's taking input");
+    assert_eq!(
+        app.core().app_record().appearance,
+        Appearance::Dark,
+        "what the window shows, which the host applies"
+    );
+    drop(app.quit());
+}
+
 /// Failure (review, 2026-11-13: only opening a file was tested): the person changes the paper, or the appearance, before the lock comes, and the restore then
 /// replaces their choice, or keeps the record with it and writes it over the saved session. Each stops the trying and says so (the paper at once, as a call on
 /// the session thread; the appearance, set by the window directly, by the look before the next try), and the saved session waits for the next launch.
