@@ -362,6 +362,61 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     drop(app.quit());
 }
 
+/// Failure (a whole-suite run of 2026-11-13, `a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once` once in one run under load: its second sleep
+/// neither written nor put off): a tab woken from its sleep file stays "from a sleep file, unchecked" until its worker says the file's length, and such a tab
+/// has no sleep file written. Its worker had outlived the tab's dormancy, as the page view's thread hadn't come round between the tab going and coming back,
+/// and a worker says the length once in its life, so it never said it again: the tab kept its old file for good, whose pictures are of where it was.
+/// Forced with the page view's thread held in a job for b (`Seam::Worker`) while a is put to sleep and woken: once drawn, a's next sleep is decided.
+#[test]
+fn a_tab_woken_while_its_worker_outlived_its_sleep_has_its_next_sleep_file_decided() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 12));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
+    let decided = || {
+        let sleep = app.record_json()["sleep"].clone();
+        sleep["writes_put_off"].as_u64().expect("put off") + sleep["sleep_files_written"].as_u64().expect("written")
+    };
+    // a's file written, a woken and drawn: its worker's open and has said the length.
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    // The page view's thread held in a job for b, so it doesn't come round while a goes and comes back.
+    recto_platform::slow::gate::hold(&[Seam::Worker]);
+    full(&app, &["goto", "7"]);
+    host_turns(&app, &mut view, false);
+    app.wait_until("a job for b held", || app.waiting(Seam::Worker) > 0);
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, false);
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, false);
+    recto_platform::slow::gate::open(Seam::Worker);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    let before = decided();
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    assert_eq!(
+        decided(),
+        before + 1,
+        "a's sleep reached no decision: its file's length was never checked: {}",
+        app.record_json()["sleep"]
+    );
+    drop(app.quit());
+}
+
 /// Failure (a quiet run of 2026-11-13, `dark-paper-sheet-woken-dark.png`: of pages 2, 4, 7, 8 and 9 each left, slept and woken in turn, the first woke from its
 /// sleep picture and the later ones to an empty pane, `sleep_pictures=1 sleep_in_view=0`): a tab whose sleep file was written under a minute before (the write
 /// gap, for the drive's sake) had its next write put off, so the file kept its picture of the page the tab was left on before, which a wake at the page it's

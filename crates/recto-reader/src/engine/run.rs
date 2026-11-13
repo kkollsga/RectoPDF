@@ -5,7 +5,7 @@
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
 use crate::tiles::sleep_draw::SleepDraws;
-use crate::tiles::{DrawKind, Job, JobKind, JobPlan, Outcome};
+use crate::tiles::{DrawKind, Job, JobKind, JobPlan, Outcome, Renew};
 use recto_index::select::PageText;
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
@@ -91,11 +91,7 @@ fn run(shared: &Shared) {
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
-            // Dropping one kills its worker and closes its file, and the next job opens what's there now.
-            for file in reader.work.take_reopen_files() {
-                renderers.remove(&file);
-                openings.remove(&file);
-            }
+            renew(&mut reader, &mut renderers, &mut openings);
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
             let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
             (reader.next_plan(), changed)
@@ -216,6 +212,25 @@ fn run(shared: &Shared) {
 }
 
 /// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
+/// **What's been asked of the renderers since the thread last came round** ([`Renew`]): one with the wrong version open is dropped, which kills its worker and
+/// closes its file, and the next job opens what's there now; one whose tab was let go of and shown again before this came round keeps its worker, which says
+/// the file's length again.
+fn renew(reader: &mut crate::tiles::Reader, renderers: &mut HashMap<PathBuf, OpenDoc>, openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>) {
+    for (file, how) in reader.work.take_renewals() {
+        match how {
+            Renew::Reopen => {
+                renderers.remove(&file);
+                openings.remove(&file);
+            }
+            Renew::TellLength => {
+                if let Some(open) = renderers.get_mut(&file) {
+                    open.length_told = false;
+                }
+            }
+        }
+    }
+}
+
 fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
     shared.settled.notify_all();
     if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {

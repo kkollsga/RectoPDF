@@ -183,13 +183,26 @@ pub(super) struct Running {
     pub(super) check: bool,
 }
 
+/// What a file's renderer is to have done, at the thread that draws' next turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Renew {
+    /// It has the wrong version open: it's let go of, and the next job opens what's there now.
+    Reopen,
+    /// A tab of it was let go of (gone dormant, say): its worker, if the same one serves the tab again, says the file's length again. A worker says it once,
+    /// to the tab it opened for, and a tab let go of and shown again before that thread came round kept the same worker, which never said it again, so the
+    /// session never checked what the tab's sleep file said and wrote it none after (a whole-suite run, 2026-11-13).
+    TellLength,
+}
+
 /// Built only in the tiles module ([`Work::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for what it takes and notes below.
 #[derive(Debug)]
 pub(crate) struct Work {
     pub(super) running: Option<Running>,
     pub(super) next_generation: u64,
-    /// Files whose renderers have the wrong version open, to be let go of and opened again.
-    pub(super) reopen_files: Vec<PathBuf>,
+    /// **What the thread that draws does to a file's renderer when it next comes round** ([`Renew`]): opens it again, as it has the wrong version open, or has
+    /// its worker say the file's length again. Touched only when one of those is asked and when that thread comes round, which empties it; one entry a file
+    /// and kind, so bounded by the files there are.
+    pub(super) renew: Vec<(PathBuf, Renew)>,
     /// Files the renderer couldn't open for want of a password, which the app has none for: a protected file moved to another volume, or replaced, while it was open. The app asks for it again. At most [`MAX_KEYLESS`].
     pub(super) keyless: Vec<PathBuf>,
     /// The thread that draws has failed too many times to go on trying, and this says so.
@@ -210,7 +223,7 @@ impl Work {
             next_generation: 1,
             wanted_files: Arc::new(Vec::new()),
             gave_up: false,
-            reopen_files: Vec::new(),
+            renew: Vec::new(),
             keyless: Vec::new(),
             hold_drawing: false,
         }
@@ -224,9 +237,16 @@ impl Work {
 }
 
 impl Work {
-    /// Files whose renderers have to start again.
-    pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.reopen_files)
+    /// What's to be done to renderers ([`Renew`]), since this was last asked. Asking clears it.
+    pub(crate) fn take_renewals(&mut self) -> Vec<(PathBuf, Renew)> {
+        std::mem::take(&mut self.renew)
+    }
+
+    /// This file's renderer is to have this done when the thread that draws next comes round, once however often it's asked.
+    pub(super) fn renew(&mut self, file: Option<&PathBuf>, how: Renew) {
+        if let Some(file) = file.filter(|file| !self.renew.iter().any(|(had, was)| had == *file && *was == how)) {
+            self.renew.push((file.clone(), how));
+        }
     }
 
     /// Files the renderer found need a password it has none for, since this was last asked. Asking clears them.

@@ -799,6 +799,7 @@ ReaderCounts.pub jobs: u64
 ReaderCounts.pub viewport_steps: u64
 ReaderReport (pub struct)
 ReaderReport.(pub Value)
+Renew (pub(crate) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
 SavedPlace.pub anchor: (u32, f64)
@@ -907,7 +908,7 @@ Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
-Work::pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf>
+Work::pub(crate) fn take_renewals(&mut self) -> Vec<(PathBuf, Renew)>
 Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
 WorkerFigures (pub struct, derives Clone, Copy)
 WorkerFigures::pub fn bytes(&self, tab: u32) -> u64

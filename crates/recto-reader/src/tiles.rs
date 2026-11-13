@@ -34,9 +34,9 @@ use cache::{TileCache, TileKey};
 use doc::Issue;
 pub(crate) use doc::{DocView, Docs};
 use host::HostQueue;
-pub(crate) use jobs::Work;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind};
+pub(crate) use jobs::{Renew, Work};
 use place::Place;
 pub use place::place_stamp;
 use pointer::Pointer;
@@ -345,7 +345,7 @@ impl Reader {
     /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
     pub fn key_given(&mut self, path: &std::path::Path) {
         self.work.keyless.retain(|file| file != path);
-        self.work.reopen_files.push(path.to_path_buf());
+        self.work.renew(Some(&path.to_path_buf()), jobs::Renew::Reopen);
         for doc in self.docs.views.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
                 doc.drawing.problem = None;
@@ -409,7 +409,7 @@ impl Reader {
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
             // Another version of its file: a worker that's running has the old one open, and goes on drawing that.
             if doc.map.own != map.own {
-                self.work.reopen_files.extend(map.files.first().cloned());
+                self.work.renew(map.files.first(), jobs::Renew::Reopen);
             }
             if carried {
                 // **A save leaves the view as it was** (owner: "perfect" state recovery): the pages keep their sizes as shown, so the fit, the zoom shown, the place and the layout don't move. Only what's drawn is of the new file, and is drawn again.
@@ -498,7 +498,9 @@ impl Reader {
     fn keep_only(&mut self, warm: &[u32], hot: u32) {
         let gone: Vec<u32> = self.docs.views.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
         for tab in gone {
-            self.docs.views.remove(&tab);
+            if let Some(view) = self.docs.views.remove(&tab) {
+                self.work.renew(view.map.files.first(), jobs::Renew::TellLength);
+            }
             self.cache.drop_tab(tab, &mut self.host);
         }
     }
@@ -518,7 +520,9 @@ impl Reader {
         for tab in tabs {
             self.cache.drop_tab(tab, &mut self.host);
         }
-        self.docs.views.clear();
+        for view in std::mem::take(&mut self.docs.views).into_values() {
+            self.work.renew(view.map.files.first(), jobs::Renew::TellLength);
+        }
         self.docs.hot = None;
         self.work.wanted_files = Arc::new(Vec::new());
         self.set_note(None);

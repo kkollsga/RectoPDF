@@ -552,8 +552,8 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     assert!(reader.sleep_material(1, &on(version(2))).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert_eq!(
-        reader.work.take_reopen_files(),
-        [PathBuf::from("/d/a.pdf")],
+        reader.work.take_renewals(),
+        [(PathBuf::from("/d/a.pdf"), crate::tiles::Renew::Reopen)],
         "and a worker that has the old one open goes, or it goes on drawing that"
     );
 }
@@ -947,4 +947,30 @@ fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
         run(&mut reader, &mut asked);
     }
     assert_eq!(asked, 1, "asked for once on its way back, and remembered again");
+}
+
+/// Failure (a whole-suite run, 2026-11-13): a tab let go of (gone dormant) and shown again before the thread that draws came round kept its worker, which says
+/// a file's length once, so the session never checked the tab's sleep file and wrote it none after. A view let go of asks for its file's length again, once
+/// however often it's let go of before that thread comes round, and the ask is gone once taken, so what's held is bounded by the files there are.
+#[test]
+fn a_tab_let_go_of_has_its_files_length_said_again_once() {
+    let b = PageMap {
+        files: vec![PathBuf::from("/d/b.pdf")],
+        ..map()
+    };
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(1, 5, 0, map(), &[], None, Spread::Single);
+    reader.activate(2, 5, 0, b.clone(), &[1], None, Spread::Single);
+    assert!(reader.work.take_renewals().is_empty(), "nothing let go of yet");
+    reader.set_warm(&[]);
+    reader.activate(1, 5, 0, map(), &[2], None, Spread::Single);
+    reader.activate(2, 5, 0, b, &[1], None, Spread::Single);
+    reader.set_warm(&[]);
+    assert_eq!(
+        reader.work.take_renewals(),
+        [(PathBuf::from("/d/a.pdf"), crate::tiles::Renew::TellLength)],
+        "let go of twice, asked once"
+    );
+    assert!(reader.work.take_renewals().is_empty(), "taken, it's gone");
 }
