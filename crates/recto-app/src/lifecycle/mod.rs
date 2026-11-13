@@ -255,10 +255,11 @@ impl Life {
     /// with `late`). A state that came after the window went up without it, while the window takes no input yet (as always). A saved session taken in on a late
     /// try at the record's lock ([`keeping`]), once, unless the person has `touched` the window since the launch: then what they have stays as it is, its frame and
     /// focus kept, and only what's in it comes back. Never for a state read without the lock, which has nothing to make a window from, while it's still trying
-    /// or restoring: so a launch makes its window again at most once.
+    /// or restoring: so a launch makes its window again at most once. Never with a sheet up (`sheet_up`: a password, a link's question, an agent's permission
+    /// request), which would go with the window: the session still comes back into it.
     #[must_use]
-    pub fn may_remake_window(&self, now_ms: u64, touched: bool) -> bool {
-        if self.keeping.refuses_agents_changes() {
+    pub fn may_remake_window(&self, now_ms: u64, touched: bool, sheet_up: bool) -> bool {
+        if sheet_up || self.keeping.refuses_agents_changes() {
             return false;
         }
         if self.late_kept {

@@ -379,7 +379,8 @@ impl Lifecycle {
     pub fn may_remake_window(&self) -> bool {
         let now = self.now_ms();
         let touched = self.touched.load(Ordering::Relaxed);
-        self.life().may_remake_window(now, touched)
+        let sheet_up = self.sheets.load(Ordering::SeqCst) > 0;
+        self.life().may_remake_window(now, touched, sheet_up)
     }
 
     /// Whether the host's been told to quit for a hand-off that's written.

@@ -1035,11 +1035,11 @@ fn hiding_the_sidebar_while_it_tries_doesnt_stop_it() {
 
 /// Failure (owner, 2026-11-13: "restored as a launch would have"): the saved session comes back and the window keeps the frame it went up with, while the record
 /// says the saved one, so the two disagree; or the window's made again twice, or made again when the person had already touched it, closing what they're
-/// using. Untouched, it's made again once, from the saved frame. Touched before the lock comes, it isn't made again: what's in it comes back, and the record says
-/// where the real window is.
+/// using. Untouched, it's made again once, from the saved frame. Touched before the lock comes, or with a sheet up (an agent's permission request, which would
+/// go with the window), it isn't made again: what's in it comes back, and the record says where the real window is.
 #[test]
 fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
-    for touched in [false, true] {
+    for (touched, sheet) in [(false, false), (true, false), (false, true)] {
         let disk = a_saved_session();
         let before = the_copy_before(&disk);
         let app = disk.builder().another_keeps().hold(&[Seam::Remake]).start();
@@ -1047,6 +1047,8 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
         if touched {
             app.touch();
         }
+        // An agent's permission request up on the window, as the host says a sheet is.
+        app.core().sheet_changed(sheet);
         app.settle();
         assert_eq!(tries(&app), Some(0), "touching the window isn't working in it");
         drop(before);
@@ -1056,14 +1058,21 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
         app.wait_until("the host told", || app.waiting(Seam::Remake) > 0);
         app.let_through(Seam::Remake, 1);
         app.settle();
-        assert_eq!(tab_names(&app), ["a", "b"], "touched {touched}");
+        assert_eq!(
+            tab_names(&app),
+            ["a", "b"],
+            "touched {touched}, a sheet up {sheet}: the session comes back either way"
+        );
         let remade = crate::lock(&app.host).remade;
-        if touched {
-            assert_eq!(remade, 0, "not made again under the person");
+        if touched || sheet {
+            assert_eq!(remade, 0, "not made again under the person, or under a sheet");
             assert_eq!(window_x(&app), Some(REAL_X), "the record says where the real window is");
         } else {
             assert_eq!(remade, 1, "made again once");
             assert_eq!(window_x(&app), Some(SAVED_X), "from the saved frame");
+        }
+        if sheet {
+            app.core().sheet_changed(false);
         }
         assert!(!app.core().life.may_remake_window(), "and never again this launch");
         drop(app.quit());

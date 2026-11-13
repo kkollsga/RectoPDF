@@ -56,7 +56,7 @@ impl Launch {
         self.heard.push((self.now, out));
         // As `App.swift` does: made again if Rust's rule says so now, and said.
         if let Out::RestoreReady { with_state: true, late } = out {
-            if late && self.life.may_remake_window(self.now, false) {
+            if late && self.life.may_remake_window(self.now, false, false) {
                 assert_eq!(self.life.step(Event::WindowRemade, self.now), None);
             }
             assert_eq!(self.life.step(Event::ShownWithState, self.now), None);
@@ -583,13 +583,13 @@ fn trying_for_the_lock() -> Life {
 fn a_late_keep_is_made_into_the_window_once_unless_touched() {
     for touched in [false, true] {
         let mut life = trying_for_the_lock();
-        assert!(!life.may_remake_window(500, false), "nothing to make while it tries");
+        assert!(!life.may_remake_window(500, false, false), "nothing to make while it tries");
         assert_eq!(life.step(Event::Keeping(keeping::Event::Asking), 3_000), Some(Out::Keeping(keeping::Out::Ask)));
         assert_eq!(
             life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000),
             Some(Out::Keeping(keeping::Out::Restore))
         );
-        assert!(!life.may_remake_window(3_000, false), "nor while the saved session's read");
+        assert!(!life.may_remake_window(3_000, false, false), "nor while the saved session's read");
         assert_eq!(
             life.step(
                 Event::Keeping(keeping::Event::Read {
@@ -602,10 +602,38 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
             Some(Out::Keeping(keeping::Out::Kept { remake: true })),
             "kept, the window to be made again from it: the host's told, as at a launch"
         );
-        assert_eq!(life.may_remake_window(3_060, touched), !touched, "touched {touched}");
+        assert_eq!(life.may_remake_window(3_060, touched, false), !touched, "touched {touched}");
         let _ = life.step(Event::ShownWithState, 3_070);
-        assert!(!life.may_remake_window(3_080, false), "once a launch");
+        assert!(!life.may_remake_window(3_080, false, false), "once a launch");
     }
+}
+
+/// Failure (review, 2026-11-13): an agent's `permission request` sheet is up on the window when a late state or a late keep's saved session comes in, and the
+/// window is made again under it, taking the sheet and the question it asks with the window that goes. With a sheet up it isn't made again, by either rule.
+#[test]
+fn a_window_with_a_sheet_up_is_not_made_again() {
+    let mut life = trying_for_the_lock();
+    let _ = life.step(Event::Keeping(keeping::Event::Asking), 3_000);
+    let _ = life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000);
+    let _ = life.step(
+        Event::Keeping(keeping::Event::Read {
+            keeps: true,
+            as_read: 0,
+            by_update: false,
+        }),
+        3_050,
+    );
+    assert!(life.may_remake_window(3_060, false, false), "untouched and nothing over it");
+    assert!(!life.may_remake_window(3_060, false, true), "a sheet up: not made again");
+    let mut late = Life::default();
+    let _ = late.step(
+        Event::PatienceOver {
+            may_be_reopened_by_update: false,
+        },
+        ms(RESTORE_PATIENCE),
+    );
+    let _ = late.step(Event::StateRead, ms(RESTORE_PATIENCE) + 200);
+    assert!(!late.may_remake_window(ms(RESTORE_PATIENCE) + 300, false, true), "nor a late state's window");
 }
 
 /// Failure: the rule for a state that came late with the lock got at once changes with this: the window not made again from it while it takes no input yet, or
@@ -631,12 +659,12 @@ fn the_ordinary_late_state_is_made_into_the_window_as_before() {
         ms(RESTORE_PATIENCE),
     );
     let _ = life.step(Event::StateRead, ms(RESTORE_PATIENCE) + 200);
-    assert!(life.may_remake_window(ms(RESTORE_PATIENCE) + 300, false), "late, before it takes input");
+    assert!(life.may_remake_window(ms(RESTORE_PATIENCE) + 300, false, false), "late, before it takes input");
     assert!(
-        life.may_remake_window(ms(RESTORE_PATIENCE) + 300, true),
+        life.may_remake_window(ms(RESTORE_PATIENCE) + 300, true, false),
         "the ordinary rule goes by input taken, not touches"
     );
-    assert!(!life.may_remake_window(ms(INPUT_PATIENCE), false), "not once it takes input");
+    assert!(!life.may_remake_window(ms(INPUT_PATIENCE), false, false), "not once it takes input");
 }
 
 /// Failure (review, 2026-11-13, route 1): a quit or a hand-off begins while it tries for the lock, and a try after that takes the lock and restores under the
@@ -677,7 +705,7 @@ fn a_window_not_made_again_is_never_said_to_have_been() {
         None
     );
     assert_eq!(life.step(Event::StateRead, late), Some(Out::RestoreReady { with_state: true, late: true }));
-    assert!(!life.may_remake_window(late, false), "not made again while it tries");
+    assert!(!life.may_remake_window(late, false, false), "not made again while it tries");
     let _ = life.step(Event::ShownWithState, late);
     assert!(!life.remade(), "and not said to have been");
 }
