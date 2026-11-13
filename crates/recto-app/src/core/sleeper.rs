@@ -298,14 +298,12 @@ impl Inner {
         let Some(Out::Write(write @ (Write::WithPictures | Write::FactsOnly))) = write else {
             return;
         };
+        let in_view = material.in_view.clone();
         let mut sleep = with_material(sleep, material);
         if write == Write::FactsOnly {
             sleep.pictures.clear();
-        } else if sleep.pictures.is_empty()
-            && let Some(there) = there
-                .filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
-        {
-            sleep.pictures = there.pictures;
+        } else {
+            sleep = crate::sleep_writer::with_older_pictures(sleep, there, &in_view);
         }
         let bytes = self.saver.store.write_sleep(&path, &sleep);
         let _ = self.sleeper.step(Event::Wrote { id, bytes });

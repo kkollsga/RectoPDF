@@ -214,6 +214,11 @@ impl Saver {
         lock(&self.last_error).is_some()
     }
 
+    /// What the last visit to the disk said went wrong, if it did.
+    pub fn last_error(&self) -> Option<StoreError> {
+        lock(&self.last_error).clone()
+    }
+
     /// Takes what's waiting and writes it, and tells the session what got there. What didn't stays waiting, and only that goes next time. Says the first thing that went wrong.
     fn write_journals(&self, inner: &Inner, force: bool) -> Option<StoreError> {
         let work = inner.host.session.with_session(recto_session::Session::journal_work);

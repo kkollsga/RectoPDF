@@ -665,11 +665,25 @@ impl HeadlessApp {
     ///
     /// Past [`WAIT_LIMIT`], naming `what` and what's still under way.
     pub fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
+        self.wait_for(what, || if done() { Ok(()) } else { Err(String::new()) });
+    }
+
+    /// Waits for `what`, as [`Self::wait_until`] does, with `done` saying what's still missing, which a failure says too.
+    ///
+    /// # Panics
+    ///
+    /// Past [`WAIT_LIMIT`], naming `what`, what was still missing at the last look, and what's still under way.
+    pub fn wait_for(&self, what: &str, done: impl Fn() -> Result<(), String>) {
         let began = Instant::now();
-        while !done() {
+        loop {
+            let missing = match done() {
+                Ok(()) => return,
+                Err(missing) if missing.is_empty() => String::new(),
+                Err(missing) => format!(", missing: {missing}"),
+            };
             assert!(
                 began.elapsed() < WAIT_LIMIT,
-                "waited {WAIT_LIMIT:?} for {what}; under way: {:?}; heard: {:?}",
+                "waited {WAIT_LIMIT:?} for {what}{missing}; under way: {:?}; heard: {:?}",
                 self.under_way(),
                 self.listener.heard().len()
             );
