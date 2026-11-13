@@ -24,6 +24,7 @@ pub mod controls;
 mod editing;
 #[cfg(test)]
 mod headless;
+mod keeping;
 mod launching;
 pub mod menu_rows;
 mod navigation;
@@ -341,6 +342,17 @@ impl Lifecycle {
     pub(crate) fn due(&self) -> Option<Duration> {
         let now = self.now_ms();
         self.life().due(now)
+    }
+
+    /// Whether this copy keeps the record, or is trying again for its lock ([`crate::lifecycle::keeping`]).
+    pub(crate) fn keeping(&self) -> crate::lifecycle::keeping::Keeping {
+        self.life().keeping()
+    }
+
+    /// How long until the next try at the record's lock, while a launch that didn't get it tries again.
+    pub(crate) fn keeping_due(&self) -> Option<Duration> {
+        let now = self.now_ms();
+        self.life().keeping_due(now)
     }
 
     /// Whether the host's been told to quit for a hand-off that's written.

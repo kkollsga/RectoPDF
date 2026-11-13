@@ -34,6 +34,7 @@ pub fn apply_restored(
     let holds_the_record = inner.saver.store.holds_the_record();
     host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
+    let other_instance = matches!(loaded, Loaded::OtherInstance);
     match loaded {
         Loaded::Restored(restored) => {
             let restored = *restored;
@@ -94,6 +95,9 @@ pub fn apply_restored(
         }
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
+    }
+    if !keeping::taken_in(inner, other_instance, first_time) {
+        notice = None;
     }
     if let Some(words) = notice {
         *lock(&host.notice) = Some(words.to_string());
@@ -222,10 +226,15 @@ pub fn session_thread(inner: &Arc<Inner>) {
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
-            [inner.saver.wait_for_due(), inner.sleeper.wait_for_due(), inner.life.due()]
-                .into_iter()
-                .flatten()
-                .min()
+            [
+                inner.saver.wait_for_due(),
+                inner.sleeper.wait_for_due(),
+                inner.life.due(),
+                inner.life.keeping_due(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
         }) else {
             if inner.core.has_ended() {
                 return;
@@ -234,6 +243,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
+            keeping::when_due(inner, &mut synced, &mut reads, &mut deferred);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
@@ -313,6 +323,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
+    keeping::look_after_call(inner);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);

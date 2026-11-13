@@ -183,6 +183,8 @@ impl Inner {
             Some(out @ (crate::lifecycle::Out::QuitAnswer { .. } | crate::lifecycle::Out::QuitStayed)) => self.carry_out_quit_answer(out),
             Some(crate::lifecycle::Out::HandOffQuit) => self.listener.hand_off_quit(),
             Some(crate::lifecycle::Out::SessionEnded) => self.listener.session_ended(),
+            // Carried out on the session thread, which made the step: see `keeping`.
+            Some(crate::lifecycle::Out::Keeping(_)) => {}
         }
     }
 }

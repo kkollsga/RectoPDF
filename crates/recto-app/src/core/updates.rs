@@ -232,16 +232,17 @@ pub fn note_asked_to_open(paths: &[PathBuf]) {
 
 /// **Back from a version that kept ending,** the record's as it left it, as that holds whatever was done since. If this version can't read it, damaged or of a newer kind, the record from before the update is put back, where this version reads, and read instead. Only at that one launch.
 pub fn fall_back_if_unreadable(inner: &Inner, loaded: Loaded) -> Loaded {
-    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
-        return loaded;
-    };
-    let into = match loaded {
+    let into = match &loaded {
         // Damaged, whether or not anything could be brought back from its journals beside it.
         Loaded::Damaged => inner.saver.store.main_folder(),
         Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => inner.saver.store.main_folder(),
         // A newer kind is never written over: this version's own folder beside it is where it reads.
         Loaded::Newer => inner.saver.store.own_folder(),
-        other => return other,
+        // Nothing to fall back from, and what's kept to fall back on stays: a launch refused the lock reads the state again once it has it.
+        _ => return loaded,
+    };
+    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
+        return loaded;
     };
     recto_update::install::restore_record(&before, &into);
     inner.updates.fell_back();

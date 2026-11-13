@@ -12,6 +12,8 @@
 use crate::core::updates::{Patience, restore_patience, takes_input};
 use std::time::Duration;
 
+/// Keeping the record when its lock comes late: tried again quietly for ten seconds.
+pub mod keeping;
 #[cfg(test)]
 mod tests;
 
@@ -69,6 +71,8 @@ pub struct Life {
     remade: bool,
     /// The host's been told the control socket's session has ended ([`Out::SessionEnded`]): once in the app's life, as only this being false tells it.
     ended: bool,
+    /// Whether this copy keeps the record, and its tries when the lock didn't come at the start ([`keeping`]).
+    keeping: keeping::Keeping,
 }
 
 /// What happens to the app's life.
@@ -97,6 +101,8 @@ pub enum Event {
     QuitWritten { written: bool, unsaved_tabs: usize },
     /// The quit's question was answered with Stay.
     QuitStayed,
+    /// Keeping the record: the state taken in, a call taken, or a try at the lock ([`keeping::Event`]).
+    Keeping(keeping::Event),
 }
 
 /// What the caller does, once it has let go of the lock.
@@ -119,6 +125,8 @@ pub enum Out {
     HandOffQuit,
     /// The host's told the control socket's session has ended ([`crate::Listener::session_ended`]). At most once.
     SessionEnded,
+    /// Keeping the record came to something: restore the saved session now, or say the window won't be remembered ([`keeping::Out`]).
+    Keeping(keeping::Out),
 }
 
 impl Life {
@@ -209,7 +217,19 @@ impl Life {
                 Some(Out::QuitStayed)
             }
             Event::QuitStayed => None,
+            Event::Keeping(event) => self.keeping.step(event, now_ms).map(Out::Keeping),
         }
+    }
+
+    /// How long until the next try at the record's lock, zero once it's due: the session thread's deadline while it's trying ([`keeping::Keeping::due`]).
+    #[must_use]
+    pub fn keeping_due(&self, now_ms: u64) -> Option<Duration> {
+        self.keeping.due(now_ms)
+    }
+
+    #[must_use]
+    pub fn keeping(&self) -> keeping::Keeping {
+        self.keeping
     }
 
     /// How long until the patience for the state is over by the core's own deadline, if it's waiting on one: zero once it's due.

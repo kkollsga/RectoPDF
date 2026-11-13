@@ -131,6 +131,15 @@ impl RecordStore {
         }
     }
 
+    /// **One try at the lock, never waiting:** a `try_lock`, and whether this store keeps the record now. For a launch that didn't get it at the start and tries
+    /// again on its own deadline (`recto-app`'s `lifecycle::keeping`). A store that has let go doesn't get it back.
+    pub fn try_to_keep(&self) -> bool {
+        if !self.holds_the_record() {
+            self.ask_for_lock();
+        }
+        self.holds_the_record()
+    }
+
     /// One try at the lock, keeping it or why not.
     pub(super) fn ask_for_lock(&self) {
         if self.gone.load(Ordering::SeqCst) {
