@@ -93,10 +93,12 @@ fn command_line(bytes: &[u8]) {
         invocation.fields.insert(field.into(), serde_json::json!("from stdin"));
     }
     let wire = invocation.wire();
-    // What the CLI builds is what the socket reads, so what it built must be a command the socket takes. A line past the socket's cap gets refused there, in words, which is fine.
+    // What the CLI builds is what the socket reads, so what it built must be a line the socket reads as a command. A line past the socket's cap gets refused
+    // there, in words, which is fine; and a typed payload refuses flags that can't go together as it's read, as usage, the same by either route (R2.5).
     if !invocation.help && invocation.spec.route == Route::Session && wire.len() <= MAX_COMMAND_BYTES {
-        let parsed = invocation.command();
-        assert!(parsed.is_ok(), "the CLI built a line the socket refuses: {wire}");
+        if let Err(refused) = invocation.command() {
+            assert_eq!(refused.code, "usage", "the CLI built a line the socket refuses: {wire}");
+        }
     }
 }
 
