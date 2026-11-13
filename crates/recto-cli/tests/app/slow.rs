@@ -9,7 +9,7 @@ fn times(report: &Value, seam: &str) -> u64 {
     report["slow"]["seams"][seam]["times"].as_u64().unwrap_or(0)
 }
 
-/// Failure: the slow mode is on but waits nowhere, or at some seams only, so a stage run with it passes for a slow machine's when nothing was slow; or a seam waits on the UI thread, which would hang the app (AGENTS rule 3). Each seam a launch, two tabs, an index, going dormant and waking pass through is counted as waited at, and none was asked on the UI thread.
+/// Failure: the slow mode is on but waits nowhere, or at some seams only, so a stage run with it passes for a slow machine's when nothing was slow; or a seam waits on the UI thread, which would hang the app (AGENTS rule 3). Each seam a launch, two tabs, an index, going dormant and waking pass through is counted as waited at, and none was asked on the UI thread. And the tab woken from its sleep file, with the reading and the workers late, shows no blank frame.
 #[test]
 fn a_slow_run_waits_at_every_seam_it_passes() {
     let state = State::at(Level::Full);
@@ -41,6 +41,14 @@ fn a_slow_run_waits_at_every_seam_it_passes() {
     run.ok(&["tap", &format!("#{left_tab}")]);
     run.settled();
     let report = run.report();
+    // Woken from its sleep file with the reading and the workers late, a picture is on every page before anything's drawn (decision 25): what
+    // `a_tab_left_alone_goes_dormant_and_wakes_from_its_file` held in the slow stage.
+    let wake = &report["reader"]["last_wake"];
+    assert_eq!(
+        (&wake["from_sleep"], &wake["blank_frames"]),
+        (&serde_json::json!(true), &serde_json::json!(0)),
+        "{wake}"
+    );
     let slow = &report["slow"];
     for seam in ["state", "socket", "worker", "draw", "index", "sleep_write", "sleep_read"] {
         assert!(times(&report, seam) >= 1, "{seam} was never waited at: {slow}");
@@ -97,7 +105,8 @@ fn every_test_the_slow_stage_names_is_there() {
         .find(|line| line.starts_with("SLOW_TESTS='"))
         .expect("check.sh says what the slow stage runs");
     let names: Vec<&str> = line.split("test(=").skip(1).filter_map(|part| part.split(')').next()).collect();
-    assert!(names.len() >= 20, "{names:?}");
+    // Lean since R1.4, but never empty: a line the split can't read would leave the stage running nothing.
+    assert!(!names.is_empty(), "{line}");
     for name in names {
         // The module is the last one before the function (`update::slow::x` is in `restore/update/slow.rs`).
         let (files, function) = match name.rsplit_once("::") {

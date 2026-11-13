@@ -216,12 +216,13 @@ names_or_stop() {
     exit 2
   }
 }
-# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/engineering/slow-mode.md): whole-state comparisons across a quit and
-# updates, what comes back, the launch and its first frame, a quit that has to write, sleep and wake, what acts on the window as soon as it's up, Find,
-# copy, the index and the headings helper, and the slow mode's own checks. Chosen to keep it near two minutes: each found something, or stands for a path
-# that did (2026-11-11). Left out as covered here: quitting twice (every whole-state test here crosses a quit), a launch from a sleep file (the dormant
-# test wakes from one), the minimised update (its bug has a unit test, and two other updates are here).
-SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=update::slow::an_update_changes_nothing_when_every_wait_is_late) | test(=update::a_closed_window_stays_closed_across_an_update) | test(=update::a_new_version_that_keeps_ending_goes_back_by_itself) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=a_quit_during_a_stuck_read_still_writes) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=a_tab_left_alone_goes_dormant_and_wakes_from_its_file) | test(=find_in_the_sidebar_lists_steps_and_keeps_to_its_room) | test(=recto_acts_on_the_running_app_and_sees_what_it_does) | test(=the_sidebar_folds_switches_and_goes_to_contents) | test(=contents_fold_reveal_at_once_and_keep_a_thumb) | test(=a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app) | test(=a_search_in_the_app_gets_its_index) | test(=the_sidebar_offers_generated_contents_and_labels_them) | test(=the_watchdog_catches_a_stall_and_it_fails_the_script) | test(=quiet::a_quiet_run_stays_quiet_when_the_system_opens_it_again) | test(=slow::a_slow_run_waits_at_every_seam_it_passes) | test(=slow::a_quiet_run_with_no_switch_is_never_slow) | test(=slow::a_switch_that_cant_be_read_refuses_the_launch)'
+# What the slow stage runs, with every waiting point late (`RECTO_QA_SLOW=ci`, docs/engineering/slow-mode.md): what only the real app shows when every seam is
+# late at once. Since R1.4 (2026-11-13) what Rust decides of a late arrival is tested in process, each seam held and let through in order by the headless
+# kit (`recto_platform::slow::gate`); a window made again from a late state is the window tier's `everything_comes_back_when_the_state_is_read_late`, which
+# says the remake happened (`record.remade`); a tab woken from its sleep file late is `slow::a_slow_run_waits_at_every_seam_it_passes`. Here: the one
+# whole-state test with every seam late, the first frame drawn through late workers, the switch's own check, and the late-state tests whose twins are still
+# to come (PLAN R1.4).
+SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=update::slow::an_update_changes_nothing_when_every_wait_is_late) | test(=a_selection_comes_back) | test(=find_comes_back_with_its_hits_and_the_hit_gone_to) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=slow::a_quiet_run_with_no_switch_is_never_slow)'
 export SLOW_TESTS
 # How a run is shaped, set below from the mode and what changed, and read by `run`:
 #   tests_first    the crates whose tests go first (what changed is most likely to fail)

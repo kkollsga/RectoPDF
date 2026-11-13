@@ -1,4 +1,4 @@
-apptest crates/recto-cli/tests 204
+apptest crates/recto-cli/tests 203
 ffi crates/recto-ffi/src 2354
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
