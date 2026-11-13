@@ -383,7 +383,7 @@ fn a_worker_from_a_helper_that_says_it_isnt_walled_is_refused() {
     let file = TempPdf::new("refused.pdf", &pages(&[Page::new(text_lines(&["Never sent"]))]));
     let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).unwrap();
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::WallsDown(WallsDown::NotSandboxed));
-    assert!(!doc.has_worker(), "the refused worker was kept");
+    assert!(!doc.worker_pid().is_some(), "the refused worker was kept");
 }
 
 const INSIDE: &str = "RECTO_SANDBOX_INSIDE_ANOTHER";

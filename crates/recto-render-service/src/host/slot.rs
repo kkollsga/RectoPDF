@@ -1,6 +1,6 @@
 //! **The heavy slot:** at most one heavy worker at a time across everything sharing it, and the ticket that holds it for as long as the heavy process lives.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,8 @@ struct SlotShared {
     freed: Condvar,
     /// Outside the lock, so a cancel with nobody waiting stays one atomic read.
     waiting: AtomicU32,
+    /// Times it's been taken, for a test or QA to see who used it.
+    times_taken: AtomicU64,
 }
 
 /// Why a wait for the slot ended without it.
@@ -44,6 +46,11 @@ impl HeavySlot {
         *self.taken()
     }
 
+    /// How many times it's been taken, by a viewer or an export.
+    pub fn times_taken(&self) -> u64 {
+        self.0.times_taken.load(Ordering::SeqCst)
+    }
+
     /// How many exports are waiting for it.
     pub fn waiting(&self) -> u32 {
         self.0.waiting.load(Ordering::SeqCst)
@@ -56,6 +63,7 @@ impl HeavySlot {
             return None;
         }
         *taken = true;
+        self.0.times_taken.fetch_add(1, Ordering::SeqCst);
         Some(HeavyTicket(self.clone()))
     }
 
@@ -78,6 +86,7 @@ impl HeavySlot {
             }
             if !*taken {
                 *taken = true;
+                self.0.times_taken.fetch_add(1, Ordering::SeqCst);
                 return Ok(HeavyTicket(self.clone()));
             }
             let left = deadline.saturating_duration_since(Instant::now());

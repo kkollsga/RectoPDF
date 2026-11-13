@@ -151,6 +151,15 @@ pub struct ServiceConfig {
     pub replace_args: Option<Vec<OsString>>,
 }
 
+/// **Whether a job may start a worker.** A job for nobody looking (the place of a tab left, drawn before it sleeps) is done by the worker that's there or not at all (owner, 2026-11-13: "no file is opened again for it").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Workers {
+    #[default]
+    MayStart,
+    /// Only by the worker that's running, as it is. None is started, opened again for a replaced file, made heavy or tried again in a new one, and one waiting to retire takes nothing more: each of those ends the job with [`RenderFailure::WouldStart`].
+    OnlyTheOneThere,
+}
+
 /// What a drawing is for. It decides what happens when a page can't have the larger limit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrawPurpose {
@@ -303,6 +312,10 @@ pub enum RenderFailure {
     DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
+    /// Done only by a worker that's there, and it would have needed another, a heavy one if `heavy`: nothing was started. See [`Workers::OnlyTheOneThere`].
+    WouldStart {
+        heavy: bool,
+    },
 }
 
 /// Why a worker's walls weren't up. Only the first says the app is signed wrong.
@@ -441,6 +454,8 @@ impl RenderFailure {
             Self::NotDrawableNow { .. } => "page_not_drawable_now",
             Self::DocumentStopped => "document_stopped",
             Self::TookTooLong => "render_took_too_long",
+            Self::WouldStart { heavy: false } => "would_start_renderer",
+            Self::WouldStart { heavy: true } => "would_start_heavy_renderer",
         }
     }
 
@@ -499,6 +514,7 @@ impl RenderFailure {
             Self::NotDrawableNow { page, .. } => format!("Page {} can't be drawn right now: this Mac is short of the memory it needs. It may draw when more is free.", page + 1),
             Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
+            Self::WouldStart { .. } => "Nothing was drawn: it would have taken another renderer, and none is started for this.".into(),
         }
     }
 }
@@ -704,6 +720,14 @@ struct KnownOpenFailure {
     try_again_at: Option<Instant>,
 }
 
+/// Where a document's caps count from: what [`DocRenderer::forget_failures`] last moved them to.
+#[derive(Clone, Copy, Debug, Default)]
+struct CountedFrom {
+    kills: u32,
+    /// Of [`RenderStats::heavy_pages`].
+    heavy_pages: u32,
+}
+
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
     config: ServiceConfig,
@@ -725,14 +749,15 @@ pub struct DocRenderer {
     next_job: u32,
     slot_wait_total: Duration,
     /// Where the caps start from, moved by `forget_failures`.
-    kills_counted_from: u32,
+    counted_from: CountedFrom,
     /// Of those since then, what the hidden-text check took.
     check_kills: u32,
     /// Of those since then, deadlines the Mac was too busy for the worker to meet: nothing about the document, so they don't count towards stopping it.
     busy_kills: u32,
     /// `image_places` has been forgotten, past its cap, and nobody's been told.
     image_places_cleared: bool,
-    heavy_retries_counted_from: u32,
+    /// Whether the job under way may start a worker: [`Self::with_workers`].
+    workers: Workers,
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
@@ -801,8 +826,8 @@ impl DocRenderer {
             repaired: None,
             next_job: 0,
             slot_wait_total: Duration::ZERO,
-            kills_counted_from: 0,
-            heavy_retries_counted_from: 0,
+            counted_from: CountedFrom::default(),
+            workers: Workers::MayStart,
             remembered: Vec::new(),
             traits: Vec::new(),
             image_places: HashMap::new(),
@@ -858,10 +883,13 @@ impl DocRenderer {
         }
     }
 
-    /// Whether a worker is running. Never true for a cold tab, because a cold tab has no `DocRenderer`.
-    pub fn has_worker(&mut self) -> bool {
-        self.reap_if_gone();
-        self.worker.is_some()
+    /// **Runs `job` under `workers`,** on this renderer as `renderer` finds it in `holder`, and puts it back to [`Workers::MayStart`] after, however `job` ends, a panic included: a job for nobody looking can't leave the next one without a worker. Every job of the page view's goes through here, so it's held that none starts with the mode left on.
+    pub fn with_workers<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut Self, workers: Workers, job: impl FnOnce(&mut T) -> R) -> R {
+        debug_assert_eq!(renderer(holder).workers, Workers::MayStart, "a job began with another's mode left on");
+        renderer(holder).workers = workers;
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
+        renderer(holder).workers = Workers::MayStart;
+        done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
     /// The process id of the current worker, if there is one.
@@ -900,10 +928,10 @@ impl DocRenderer {
     pub fn forget_failures(&mut self) {
         self.remembered.clear();
         self.open_failure = None;
-        self.kills_counted_from = self.kills();
+        self.counted_from.kills = self.kills();
         self.check_kills = 0;
         self.busy_kills = 0;
-        self.heavy_retries_counted_from = self.stats.heavy_pages;
+        self.counted_from.heavy_pages = self.stats.heavy_pages;
     }
 
     /// The page count, if a worker's said. Asks nothing.
@@ -1069,7 +1097,8 @@ impl DocRenderer {
                 }
                 _ => Err(ProtoError("the wrong kind of reply to an images request")),
             });
-            if self.control.is_stale(generation) {
+            // Stale, or not asked for want of a worker: neither is about the page, so nothing's remembered.
+            if self.control.is_stale(generation) || matches!(reply, Err(JobFailure::Failed(RenderFailure::WouldStart { .. }))) {
                 return None;
             }
             reply.ok()
@@ -1136,6 +1165,10 @@ impl DocRenderer {
             if !matches!(state, PageDrawState::Failed(_)) && self.stopped() {
                 return Err(RenderFailure::DocumentStopped);
             }
+            // Past the normal limit is a heavy worker's, or a lower resolution after one: neither is for a job only the worker there may do.
+            if self.workers == Workers::OnlyTheOneThere && matches!(state, PageDrawState::NeedsHeavy | PageDrawState::LowResOnly) {
+                return Err(RenderFailure::WouldStart { heavy: true });
+            }
             match state {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
                 PageDrawState::LowResOnly => match purpose {
@@ -1157,7 +1190,7 @@ impl DocRenderer {
                     other => return other_result(other),
                 },
                 PageDrawState::NeedsHeavy => {
-                    let retries = self.stats.heavy_pages - self.heavy_retries_counted_from;
+                    let retries = self.stats.heavy_pages - self.counted_from.heavy_pages;
                     let counted = self.remembered(page).is_some_and(|memory| memory.counted_as_heavy);
                     let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
                     if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes
@@ -1219,7 +1252,7 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        (self.kills() - self.kills_counted_from)
+        (self.kills() - self.counted_from.kills)
             .saturating_sub(self.check_kills)
             .saturating_sub(self.busy_kills)
             >= self.policy.max_kills_per_document
@@ -1489,7 +1522,8 @@ impl DocRenderer {
 
     /// Retires a worker waiting to go, if this job is for another page.
     fn retire_if_other_page(&mut self, page: u32) {
-        if self.retire_after_page.is_some_and(|last| last != page) {
+        // It goes as it would have, and [`Self::ensure_worker`] gives it nothing more.
+        if self.workers == Workers::MayStart && self.retire_after_page.is_some_and(|last| last != page) {
             self.stats.retirements += 1;
             self.bury_worker();
         }
@@ -1534,10 +1568,11 @@ impl DocRenderer {
     ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
         // Past twice the cap it goes whatever page it's on: a one-page file would otherwise never get to its retirement.
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2))
+        if self.workers == Workers::MayStart
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2))
         {
             self.stats.retirements += 1;
             self.bury_worker();
@@ -1692,6 +1727,18 @@ impl DocRenderer {
     /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the other way round. A failure
     /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `generation` is the job this is for, so a long open can be cancelled.
     fn ensure_worker(&mut self, class: WorkerClass, generation: Option<u64>) -> Result<(), JobFailure> {
+        if self.workers == Workers::OnlyTheOneThere {
+            self.reap_if_gone();
+            let fits = self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Normal || worker.heavy);
+            // One waiting to retire (heavy, past its line or its surfaces) goes as it would have; one with another file than what's at its path now isn't drawn from.
+            if !fits || self.retire_after_page.is_some() || file_stamp(&self.path).ok() != self.opened_stamp {
+                return Err(RenderFailure::WouldStart {
+                    heavy: class == WorkerClass::Heavy,
+                }
+                .into());
+            }
+            return Ok(());
+        }
         if let Some(failure) = self.known_open_failure() {
             return Err(failure.into());
         }

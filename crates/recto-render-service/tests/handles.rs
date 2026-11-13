@@ -245,7 +245,7 @@ fn a_flood_of_handles_kills_the_worker_and_closes_every_one() {
         ),
         "{failure:?}"
     );
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
     drop((doc, surface));
     wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);
     assert!(std::fs::read_to_string("/etc/hosts").is_ok());

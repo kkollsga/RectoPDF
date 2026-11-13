@@ -36,7 +36,7 @@ pub use budget::{
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
 pub use host::{
     CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure,
-    RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,
+    RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown, Workers,
 };
 pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
 

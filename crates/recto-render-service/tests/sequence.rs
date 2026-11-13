@@ -851,7 +851,7 @@ fn a_heavy_worker_lets_go_sooner_than_a_normal_one() {
     done(doc.render_tile(&request(0), &surface()));
     assert!(slot.is_taken());
     common::wait_until("the slot to free", || !slot.is_taken());
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
 }
 
 /// Failure: a job cancelled during a step goes on to the next: takes the slot and starts a heavy worker for a tile nobody wants.
@@ -903,7 +903,7 @@ fn a_temporary_open_failure_holds_only_for_a_moment() {
         assert_eq!(held.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
     }
     assert_eq!(held.stats().spawns, 1, "one process was enough to learn that");
-    assert!(!held.has_worker());
+    assert!(!held.worker_pid().is_some());
     let (mut passes, _file) = doc_with(
         "open_unreadable",
         Policy {
