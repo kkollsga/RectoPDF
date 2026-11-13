@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Seams only this crate's own tests use (`under_page_deadline_for_test`). Turned on by the dev-dependency on itself below and by nothing in the app's
+# dependency graph, so a release `recto-ffi` or `recto-cli` doesn't contain them.
+test-seams = []
+
 [lints]
 workspace = true
 
@@ -26,6 +31,8 @@ recto-render.workspace = true
 
 [dev-dependencies]
 lopdf.workspace = true
+# Its own tests build it with its test seams.
+recto-render-service = { path = ".", features = ["test-seams"] }
 recto-testpdf.workspace = true
 
 # A stand-in worker in `tests/handles.rs` sends what `Channel::send` wouldn't.

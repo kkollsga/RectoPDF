@@ -1,4 +1,5 @@
-//! A test's way to make one job short of time, in a file of its own so `host.rs` doesn't grow for it.
+//! A test's way to make one job short of time, in a file of its own so `host.rs` doesn't grow for it. Only with the `test-seams` feature, which only this
+//! crate's own tests turn on: a release build has no such function.
 
 use crate::DocRenderer;
 use std::time::Duration;

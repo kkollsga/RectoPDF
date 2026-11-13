@@ -823,6 +823,7 @@ dependencies = [
  "recto-platform",
  "recto-proto",
  "recto-render",
+ "recto-render-service",
  "recto-testpdf",
 ]
 
