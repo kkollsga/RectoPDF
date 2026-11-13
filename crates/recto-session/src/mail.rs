@@ -41,6 +41,11 @@ impl PageViewMail {
         self.jumps.push((id, to));
     }
 
+    /// The jump waiting for a tab, if the page view hasn't taken it: where the session has sent the reader.
+    pub(crate) fn waiting_jump(&self, tab: TabId) -> Option<Stop> {
+        self.jumps.iter().find(|(id, _)| *id == tab).map(|(_, stop)| *stop)
+    }
+
     pub(crate) fn take_jump(&mut self, id: TabId) -> Option<Stop> {
         let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
         Some(self.jumps.swap_remove(at).1)
@@ -63,11 +68,6 @@ impl PageViewMail {
     #[cfg(test)]
     pub(crate) fn holds_draw_of(&self, tab: TabId) -> bool {
         self.draws.iter().any(|draw| draw.tab == tab)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn holds_jump_of(&self, tab: TabId) -> bool {
-        self.jumps.iter().any(|(id, _)| *id == tab)
     }
 
     #[cfg(test)]

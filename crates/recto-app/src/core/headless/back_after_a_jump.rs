@@ -129,3 +129,27 @@ fn the_persons_back_after_a_jump_stays_back() {
     app.settle();
     assert_eq!(page(&app), 1, "⌘[ after Return and ⌘G: back to where Return left, on page {}", page(&app));
 }
+
+/// Failure: a jump on the page already showing, still waiting to be sent when the next step runs, is lost to the trail: `back` straight after `goto 5
+/// --within 0.8` from 0.3 of the way down page 5 keeps 0.3 for Forward, as Back marked where the page view still was, so Forward lands at 0.3 where the
+/// session had sent the reader to 0.8.
+#[test]
+fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
+    let app = thirty_pages();
+    agent(&app, r#"{"cmd":"goto","page":5,"within":0.3}"#);
+    app.settle();
+    let held = app.hold_session_thread();
+    agent(&app, r#"{"cmd":"goto","page":5,"within":0.8}"#);
+    agent(&app, r#"{"cmd":"back"}"#);
+    drop(held);
+    app.settle();
+    agent(&app, r#"{"cmd":"forward"}"#);
+    app.settle();
+    let inner = app.core();
+    let (page, within) = inner.panes.reading_engine(&inner.engine).reading_anchor().expect("a place");
+    assert_eq!(page, 4, "page 5");
+    assert!(
+        (within - 0.8).abs() < 0.01,
+        "Forward lands 0.8 of the way down page 5, where the jump went, not {within}"
+    );
+}

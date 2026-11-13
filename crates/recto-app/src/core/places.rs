@@ -150,7 +150,8 @@ fn place_record(saved: &SavedPlace) -> PlaceRecord {
 impl Inner {
     /// **Takes in where the page views say each tab they hold is,** by [`is_views_own`]: before a command jumps or steps, so the trail marks where the
     /// view really is, and before the record is written. The pages the readers moved to are left for the session thread's look, which alone knows which
-    /// jumps it's about to send.
+    /// jumps it's about to send. A jump on the page already showing, still waiting, isn't seen from here; the mark doesn't need it to be, as the session
+    /// answers where the reader is from that jump itself (`Session::here`).
     pub fn take_places(&self) {
         let said = Said::read(self, false);
         let sent = self.panes.sent();
