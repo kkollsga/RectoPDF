@@ -200,7 +200,8 @@ fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
         .collect();
     assert_eq!(marked, vec!["Annual report 2024".to_string(), "2".to_string()], "{page}");
     let (shown, _, _) = State::at(recto_agent::Level::Control).text(&["local", file.0.to_str().unwrap(), "text", "2"]);
-    assert!(shown.contains("2 lines are marked as running heads, footers or page numbers"), "{shown}");
+    // That two lines are marked, on the line that points to `chrome_spans`, however it's worded.
+    assert!(shown.lines().any(|line| line.starts_with("2 ") && line.contains("chrome_spans")), "{shown}");
     // Picking only the running head copies it.
     let head = read.find("Annual").unwrap();
     let only = data(&file, &["copy", "--page", "2", "--chars", &format!("{head}-{}", head + 18)]);

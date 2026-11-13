@@ -311,18 +311,18 @@ pub(crate) mod tests {
         );
     }
 
-    /// Failure: a server that takes the request and never answers holds a thread past the limit.
+    /// Failure: a server that takes the request and never answers holds a thread past the limit. A short limit, as the answer is the same at any, and a bound that's the limit and some room, so a limit kept only loosely fails too.
     #[test]
     fn a_server_that_hangs_times_out() {
         let server = Server::start();
         server.set("/a", Answer::Hang);
+        let limit = Duration::from_millis(200);
         let started = std::time::Instant::now();
         assert_eq!(
-            get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, Duration::from_millis(1500)),
+            get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, limit),
             Err(FetchError::TimedOut)
         );
-        // Far short of the server's own two minutes.
-        assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
+        assert!(started.elapsed() < limit + Duration::from_secs(10), "{:?}", started.elapsed());
     }
 
     /// Failure: a server that sends for ever fills memory or the disk, in a check or a download.

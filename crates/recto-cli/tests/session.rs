@@ -951,7 +951,7 @@ fn contents_come_in_pieces_and_follow_edits() {
 
 /// Failure: some command prints JSON at a person, or has no version under `--json`, or a usage error can't be read as JSON. Walks every row a person can run with nothing set up.
 ///
-/// And (PLAN phase 7): the test took over 60 s, as two waits' examples waited out their default 30 s twice each, for an index and generated contents that nothing here makes. Every wait is asked with a 1 s limit, so a new wait row can't make it slow again.
+/// And (PLAN phase 7): the test took over 60 s, as two waits' examples waited out their default 30 s twice each, for an index and generated contents that nothing here makes. Every wait is asked with a limit of 1 ms, as a wait that ran out answers in the same shape as one that heard, so a new wait row can't make it slow again.
 #[test]
 fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let state = State::at(Level::Full);
@@ -993,7 +993,7 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
             .collect();
         // What a wait gives is the question here, not waiting out its default for what nothing here makes.
         if spec.tag == "wait" && !args.contains(&"--timeout") {
-            args.extend(["--timeout", "1s"]);
+            args.extend(["--timeout", "1ms"]);
         }
         let output = state.command().args(&args).arg("--json").output().unwrap();
         let reply: Value =
@@ -1406,7 +1406,8 @@ fn a_refused_close_says_what_would_be_lost() {
     assert_eq!(code, exit::FAILED, "{refused}");
     assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
-    assert!(message.contains("unsaved edits and undone steps"), "{message}");
+    // Both named, however it's worded; the sentence is `recto-agent`'s own test's.
+    assert!(message.contains("edits") && message.contains("undone"), "{message}");
     assert!(next.contains("recto save") && next.contains("recto discard"), "{next}");
     let (tabs, _) = state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 1);

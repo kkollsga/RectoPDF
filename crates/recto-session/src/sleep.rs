@@ -750,26 +750,24 @@ mod tests {
         assert_eq!(back.pictures[0].page, 2);
     }
 
+    /// A good sleep file with its first line changed, sealed again as a forger would, and read.
+    fn forge(good: &[u8], change: &dyn Fn(&mut serde_json::Value)) -> Result<SleepFile, RecordError> {
+        let body = &good[good.iter().position(|byte| *byte == b'\n').unwrap() + 1..];
+        let end = body.iter().position(|byte| *byte == b'\n').unwrap();
+        let mut meta = serde_json::from_slice::<serde_json::Value>(&body[..end]).unwrap();
+        change(&mut meta);
+        let mut forged = serde_json::to_vec(&meta).unwrap();
+        forged.push(b'\n');
+        forged.extend_from_slice(&body[end + 1..]);
+        decode_sleep(&seal(SLEEP_KIND, 0, &forged), CURRENT_VERSION)
+    }
+
     /// Failure (hostile input): a forged sleep file with a good checksum gets numbers past what's real into a surface's size, a memory allocation or a page's place, or panics. Every one is refused, and only costs the sleep file. A flipped byte anywhere is caught.
     #[test]
     fn a_forged_file_is_refused() {
         let good = encode_sleep(&sample());
-        let body_of = |bytes: &[u8]| {
-            let end = bytes.iter().position(|byte| *byte == b'\n').unwrap();
-            bytes[end + 1..].to_vec()
-        };
-        let rest_of = |body: &[u8]| {
-            let end = body.iter().position(|byte| *byte == b'\n').unwrap();
-            (serde_json::from_slice::<serde_json::Value>(&body[..end]).unwrap(), body[end + 1..].to_vec())
-        };
-        let forged = |change: &dyn Fn(&mut serde_json::Value)| {
-            let (mut meta, rest) = rest_of(&body_of(&good));
-            change(&mut meta);
-            let mut body = serde_json::to_vec(&meta).unwrap();
-            body.push(b'\n');
-            body.extend_from_slice(&rest);
-            decode_sleep(&seal(SLEEP_KIND, 0, &body), CURRENT_VERSION)
-        };
+        let body_of = |bytes: &[u8]| bytes[bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1..].to_vec();
+        let forged = |change: &dyn Fn(&mut serde_json::Value)| forge(&good, change);
         assert!(forged(&|_| {}).is_ok(), "the forging works");
         type Change = fn(&mut serde_json::Value);
         let changes: [(&str, Change); 15] = [
@@ -890,6 +888,9 @@ mod tests {
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
         assert_eq!(back.toc.labels.label(0).as_deref(), Some("i"));
         assert_eq!(back.toc.labels.label(1).as_deref(), Some("A-1"), "cleaned once, and the same after");
+        // Labels are cleaned as they're made, so only a forged file can bring one that isn't.
+        let back = forge(&encode_sleep(&sleep), &|meta| meta["labels"][1][3] = "A\u{202E}-".into()).unwrap();
+        assert_eq!(back.toc.labels.label(1).as_deref(), Some("A-1"), "a forged prefix is cleaned");
         sleep.toc.labels = PageLabels::from_ranges(
             vec![range(0, LabelStyle::Decimal, ""), range(sleep.file_pages + 5, LabelStyle::Decimal, "")],
             false,
@@ -905,17 +906,8 @@ mod tests {
     fn a_title_goes_through_the_same_cleaning() {
         let hidden: String = "ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
         let raw = format!("Chapter{hidden}\n1\u{202E}");
-        let mut sleep = sample();
-        sleep.toc = Toc::from_lines(
-            &[TocLine {
-                title: &raw,
-                page: 0,
-                parent: NONE,
-                depth: 0,
-            }],
-            false,
-        );
-        let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
+        // A title is cleaned as it's made, so only a forged file can bring one that isn't.
+        let back = forge(&encode_sleep(&sample()), &|meta| meta["toc"][0][0] = raw.clone().into()).unwrap();
         assert_eq!(back.toc.title(&back.toc.entries()[0]), "Chapter 1");
     }
 }
