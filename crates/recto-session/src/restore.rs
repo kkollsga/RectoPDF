@@ -54,7 +54,7 @@ impl<L: DocLoader> Session<L> {
                 } = tab;
                 TabEntry {
                     id: id.0,
-                    path: PathField::from_path(&self.tabs.named_path(*id).unwrap_or_default()),
+                    path: PathField::from_path(&open.named_path_of(tab).unwrap_or_default()),
                     file: stamp.map(Into::into),
                     page: *page,
                     page_count: *page_count,

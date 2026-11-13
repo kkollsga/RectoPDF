@@ -165,7 +165,11 @@ impl Tabs {
     /// **The path the tab is named by,** with no rule: only for what names the tab and reads nothing of its file (its record, its journal's and sleep
     /// file's names, the look at whether its file is still there, which is what says a swapped one is missing).
     pub(crate) fn named_path(&self, id: TabId) -> Option<PathBuf> {
-        let tab = self.tab(id)?;
+        self.named_path_of(self.tab(id)?)
+    }
+
+    /// [`Self::named_path`], for a tab whose record is in hand, with no search for it: what a walk over every tab calls, as the record does.
+    pub(crate) fn named_path_of(&self, tab: &TabRecord) -> Option<PathBuf> {
         Some(self.dirs.get(tab.file.dir)?.join(&*tab.file.file_name))
     }
 
