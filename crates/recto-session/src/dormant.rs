@@ -17,6 +17,10 @@ pub struct Dormant<'a> {
     pub(crate) comparison: Option<&'a Comparison>,
 }
 
+/// The look is built on every look at dormancy, as each command and each wait does, so it holds nothing but its borrows: no state, nothing allocated.
+/// Failure caught: a field of its own added to it, which every look would then build.
+const _: () = assert!(std::mem::size_of::<Dormant<'static>>() == 5 * std::mem::size_of::<usize>());
+
 /// Whether a tab is on screen: the active one, or a pane of the comparison. One rule, for the session and for the look.
 pub(crate) fn on_screen(tabs: &Tabs, comparison: Option<&Comparison>, id: TabId) -> bool {
     tabs.active() == Some(id) || comparison.is_some_and(|comparison| comparison.contains(id))

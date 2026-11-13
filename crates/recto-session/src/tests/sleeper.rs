@@ -3,6 +3,7 @@
 //! and wakes at the session's seam, the way the app's sleeper and the executor call it.
 
 use super::*;
+use std::fmt::Write as _;
 use std::sync::Mutex;
 
 /// What the state record's store holds, in memory: journals by name, and sleep files by the file they're about.
@@ -295,5 +296,194 @@ fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_
             "a sleep file's on its way for x with what was read of the old version: {:?}",
             title(&facts)
         );
+    }
+}
+
+/// Stamps and the temporary folder written as names, so a run reads the same on any machine.
+struct Names(Vec<(String, String)>);
+
+impl Names {
+    fn of(dir: &Path, paths: &[PathBuf]) -> Self {
+        let mut names = Vec::new();
+        for path in paths {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let stamp = file_stamp(path).unwrap();
+            names.push((format!("{stamp:?}"), format!("<{name}>")));
+            names.push((format!("{:?}", record::FileRecord::from(stamp)), format!("<{name}>")));
+            names.push((record::journal_file_name(Some(stamp), path, None), format!("<journal of {name}>")));
+        }
+        names.push((dir.to_string_lossy().into_owned(), "<dir>".into()));
+        Self(names)
+    }
+
+    fn say(&self, what: impl std::fmt::Debug) -> String {
+        let mut said = format!("{what:?}");
+        for (raw, name) in &self.0 {
+            said = said.replace(raw, name);
+        }
+        said
+    }
+}
+
+/// What a sleep file would say of a tab, with its contents by title.
+fn facts_said(names: &Names, facts: &SleepFacts) -> String {
+    let sleep = &facts.sleep;
+    let titles: Vec<&str> = sleep.toc.entries().iter().map(|entry| sleep.toc.title(entry)).collect();
+    names.say(format_args!(
+        "tab {} {} file {:?} file_pages {} pages {} list_seq {} renderer_only {} version {:?} toc {titles:?} usual {:?} sizes {:?} pictures {} pictures_allowed {}",
+        facts.id.0,
+        facts.path.display(),
+        sleep.file,
+        sleep.file_pages,
+        sleep.pages,
+        sleep.list_seq,
+        sleep.renderer_only,
+        sleep.version,
+        sleep.usual,
+        sleep.sizes,
+        sleep.pictures.len(),
+        facts.pictures_allowed
+    ))
+}
+
+/// Everything going dormant and waking leaves on a tab: its tier, length, whether it came from a sleep file, the read held for it, what dormancy
+/// holds of it, its list and its notice.
+fn state_of<L: DocLoader>(s: &Session<L>, id: TabId) -> String {
+    let Some(tab) = s.tabs().tab(id) else {
+        return format!("tab {}: closed", id.0);
+    };
+    format!(
+        "tab {}: {:?} page_count {} from_sleep {:?} read_held {} dormancy {:?} asleep {} in_memory {} notice {:?}",
+        id.0,
+        s.tier(id),
+        tab.page_count,
+        tab.from_sleep,
+        s.warm().holds_read_of(id),
+        s.dormancy
+            .holding(id)
+            .iter()
+            .filter(|(_, holds)| *holds)
+            .map(|(part, _)| *part)
+            .collect::<Vec<_>>(),
+        s.lists().is_asleep(id),
+        s.lists().get(id).is_some(),
+        s.tabs().tab_notice(id).map(FileNotice::code)
+    )
+}
+
+/// The scripted run, each step's facts and states written down.
+fn sleeper_run() -> String {
+    let store = Arc::new(Store::default());
+    let (dir, paths) = files(&["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]);
+    let names = Names::of(&dir, &paths);
+    let mut s = sleeping_session(&store, "Contents");
+    let mut out = String::new();
+    let tabs = |s: &Session<Titled>| s.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>();
+    let step = |s: &Session<Titled>, out: &mut String, what: &str| {
+        writeln!(out, "== {what}").unwrap();
+        for id in tabs(s) {
+            writeln!(out, "{}", state_of(s, id)).unwrap();
+            match s.sleep_facts(id) {
+                Some(facts) => writeln!(out, "  facts {}", facts_said(&names, &facts)).unwrap(),
+                None => writeln!(out, "  facts none").unwrap(),
+            }
+            writeln!(
+                out,
+                "  to read {}  awake {}",
+                names.say(s.sleep_to_read(id)),
+                names.say(s.sleep_to_read_awake(id))
+            )
+            .unwrap();
+        }
+        let mut asleep: Vec<(String, EditsSummary)> = s.asleep_by_journal().into_iter().collect();
+        asleep.sort_by(|x, y| x.0.cmp(&y.0));
+        writeln!(out, "asleep by journal {}", names.say(&asleep)).unwrap();
+    };
+    let take_left = |s: &mut Session<Titled>, out: &mut String| {
+        for facts in s.take_left_warm() {
+            writeln!(out, "left warm: {}", facts_said(&names, &facts)).unwrap();
+            store.write_sleep(&facts);
+        }
+    };
+
+    let a = s.open(&paths[0]).unwrap();
+    s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+    store.write_journals(&mut s);
+    step(&s, &mut out, "a opened and edited");
+
+    let others: Vec<TabId> = paths[1..=MAX_WARM].iter().map(|path| s.open(path).unwrap()).collect();
+    take_left(&mut s, &mut out);
+    step(&s, &mut out, "a pushed out of the warm ones");
+
+    let to_sleep = s.list_to_sleep(a);
+    writeln!(out, "list to sleep {}", names.say(&to_sleep)).unwrap();
+    writeln!(out, "a goes dormant: {}", s.go_dormant(a)).unwrap();
+    step(&s, &mut out, "a dormant");
+
+    writeln!(out, "wake for tap {}", names.say(s.wake_for_tap(a))).unwrap();
+    step(&s, &mut out, "a woken from its sleep file");
+    s.tap(a).unwrap();
+    let read = s.dormancy_mut().take_sleep_read(a).map(|sleep| (sleep.pages, sleep.list_seq, sleep.version));
+    writeln!(out, "sleep read {read:?}, woken from files {:?}", s.dormancy_mut().take_woken_from_file()).unwrap();
+    take_left(&mut s, &mut out);
+    step(&s, &mut out, "a shown");
+    writeln!(out, "file length is 5, version 0: {}", s.file_length_is(a, 5, 0)).unwrap();
+    step(&s, &mut out, "a's file as its sleep file said");
+
+    s.dormancy_mut().hold(others[1]);
+    let due = s.dormant().due_at(1_000, 300);
+    writeln!(out, "due with c held {due:?}").unwrap();
+    writeln!(out, "gone {}", go_dormant(&mut s, &store, &due)).unwrap();
+    s.let_go(others[1]);
+    writeln!(out, "due once let go {:?}", s.dormant().due_at(1_000, 300)).unwrap();
+    step(&s, &mut out, "left alone, c held then let go");
+
+    writeln!(out, "wake for tap {}", names.say(s.wake_for_tap(others[0]))).unwrap();
+    s.tap(others[0]).unwrap();
+    writeln!(out, "file length is 4, version 3: {}", s.file_length_is(others[0], 4, 3)).unwrap();
+    take_left(&mut s, &mut out);
+    step(&s, &mut out, "b woken and found another length");
+
+    let oldest = s.dormant().oldest_first();
+    writeln!(out, "oldest first {oldest:?}, gone {}", go_dormant(&mut s, &store, &oldest)).unwrap();
+    step(&s, &mut out, "the budget");
+
+    s.forget_read(others[0]);
+    let e = s.open(&paths[MAX_WARM + 1]).unwrap();
+    s.give_woken(others[2], s.loader().load(&paths[3]), file_stamp(&paths[3]).ok());
+    take_left(&mut s, &mut out);
+    step(&s, &mut out, "b's read forgotten, e opened, d's read given");
+
+    s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+    store.write_journals(&mut s);
+    step(&s, &mut out, "a woken by an edit");
+    writeln!(out, "gone {}", go_dormant(&mut s, &store, &[a])).unwrap();
+    let name = s.journals().name_of(a).unwrap().to_string();
+    store.journals.lock().unwrap().remove(&name);
+    writeln!(out, "a's list wakes with its journal gone: {}", s.wake_list(a)).unwrap();
+    s.touch(e);
+    step(&s, &mut out, "a's journal unreadable");
+    out
+}
+
+/// What the scripted run said on `main` before the sleeper moved (2026-11-13, after the fix to what's leaving the warm ones), and must go on saying.
+const SLEEPER_GOLDEN: &str = include_str!("sleeper_facts.txt");
+
+/// **Failure: what a sleep file would say, or what a tab is left as by going dormant and waking, changes when the code that does it moves** (the
+/// sleeper, R3.5): a sleep file's facts of another length, list, version or contents, one offered for a tab that may not have one (on screen, woken
+/// from a sleep file and not yet checked, its list asleep), a wake that keeps another read or none, a tab left in another tier or with another
+/// notice, a hold that doesn't hold. Each is a first frame wrong or a file read again for nothing. The whole log is compared, so a failure shows where.
+/// `RECTO_SLEEPER_GOLDEN=write` writes it afresh, for a change of behaviour reviewed as one.
+#[test]
+fn going_dormant_and_waking_say_and_leave_the_same() {
+    let run = sleeper_run();
+    assert_eq!(run, sleeper_run(), "the run is the same twice, or a golden of it holds nothing");
+    if std::env::var("RECTO_SLEEPER_GOLDEN").as_deref() == Ok("write") {
+        std::fs::write(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/sleeper_facts.txt"), &run).unwrap();
+        return;
+    }
+    if run != SLEEPER_GOLDEN {
+        let first = run.lines().zip(SLEEPER_GOLDEN.lines()).position(|(now, then)| now != then);
+        panic!("what going dormant and waking say changed, first at line {first:?}.\nNow:\n{run}\nThen:\n{SLEEPER_GOLDEN}");
     }
 }
