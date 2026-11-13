@@ -717,9 +717,19 @@ mod tests {
                 early.push(arm);
             }
         }
-        assert_eq!(early, ["CoreCall::Restored", "CoreCall::Run", "CoreCall::Page"], "the arms that leave early");
+        assert_eq!(
+            early,
+            [
+                "CoreCall::Restored",
+                "CoreCall::LateRead",
+                "CoreCall::LateRead",
+                "CoreCall::Run",
+                "CoreCall::Page"
+            ],
+            "the arms that leave early"
+        );
         assert!(
-            tail_before.contains("CoreCall::Restored"),
+            tail_before.contains("CoreCall::Restored") && tail_before.contains("CoreCall::LateRead"),
             "the state's coming in ends with the tail before it goes"
         );
     }

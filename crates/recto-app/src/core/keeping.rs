@@ -1,21 +1,26 @@
-//! **The record's lock come late, carried out:** what [`crate::lifecycle::keeping`] decides (a launch that didn't get the lock tries again quietly for ten
-//! seconds), done. Every try is the store's one `try_lock` ([`recto_control::record_store::RecordStore::try_to_keep`]) on the session thread's own deadline,
-//! with nothing held across it; the UI thread never waits for any of it.
+//! **The record's lock come late, carried out:** what [`crate::lifecycle::keeping`] decides (a launch that didn't get the lock tries again quietly, ten seconds
+//! or a minute after an update), done. The UI thread never waits for any of it, and the session thread never waits on the disk for it: the app's life lock is
+//! taken only for a step of the pure machine or a copy of it.
 //!
-//! **The order, once a try gets the lock** (the review of 2026-11-13's two blockers):
-//! 1. The try is made holding the saver's gate and the life's lock, so no writer of the record is between gathering what it writes and writing it, and no quit
-//!    or hand-off begins between the look at whether a try is due and the try; and with no agent's change under way. A writer holding the gate, or an agent's
-//!    change under way, makes it a try that didn't get the lock: the session thread never waits for either. The machine is then restoring, and from here until the saved session is in, every writer writes nothing (`saver`) and what the person does waits,
-//!    as at a launch (the session thread holds it back), so nothing they do is replaced by the restore.
-//! 2. Off the session thread, as at a launch ([`super::launching::read_state`]): the updater is told of the launch, held back until now, as a copy that keeps the
-//!    record ([`updates::tell_launch`]), before anything is read, so a version that keeps failing goes back here having written nothing over the record; then
-//!    the saved session is read, fallen back from if it can't be read after an update that kept ending, and its tabs counted.
-//! 3. On the session thread, as at a launch: it's taken in ([`super::session::apply_restored`]), the machine keeps the record, what the person did meanwhile
+//! **The order of a try** (the reviews of 2026-11-13):
+//! 1. On the session thread, at its deadline: the window is looked at, and if it's as it was read, one try goes out ([`ask`]), on a thread of its own, as the
+//!    store's `try_lock` opens a file ([`recto_control::record_store::RecordStore::try_to_keep`]). None is due while one is out. With no thread to be had, or a
+//!    person's command under way on its own thread (its change isn't in to be looked at), it's a try that didn't get the lock.
+//! 2. Back on the session thread ([`try_back`]): the window is looked at again first, so whatever the person did while it was out counts before the lock does,
+//!    then the machine decides. Kept: the try's thread reads. The trying stopped meanwhile (the person's change, a quit, a hand-off): the lock is let go again
+//!    at once. A person's command came under way: the lock is given back for now, and the next try takes it.
+//! 3. Restoring, on the try's thread, as a launch reads ([`super::launching::read`]): the updater is told of the launch, held back until now, as a copy that
+//!    keeps the record, before anything is read, so a version that keeps failing goes back here having written nothing over the record; then the saved session
+//!    is read, fallen back from if it can't be read after an update that kept ending, and its tabs counted. Meanwhile every writer writes nothing
+//!    ([`may_write`]), what the person does waits (the session thread holds it back, as at a launch), and agents are refused. For
+//!    [`crate::lifecycle::keeping::RESTORING_PATIENCE_MS`] at most: past it, or if the thread ends without the read (a guard says so), the window goes on as it
+//!    is, what waited runs, the notice says it won't be remembered, the lock is let go and the record is left on disk for the next launch; a read that comes in
+//!    after that is dropped ([`late_read`]). Telling the updater stays before the read, inside the patience, as going back and falling back need it there.
+//! 4. On the session thread, as at a launch: it's taken in ([`super::session::apply_restored`]), the machine keeps the record, what the person did meanwhile
 //!    runs on it, a first frame shown meanwhile is told to the updater with the tabs it came up with, and the host is told to make the window again from it,
 //!    once, if the person hasn't touched it.
 //!
-//! The read itself is about 2.3 ms for a session of 100 tabs each with a journal (median of 20, release build, this Mac under a load of about 4, 2026-11-13), but
-//! telling the updater of a launch can tidy up what an install left beside the app, so neither is done on the session thread.
+//! The read itself is about 2.3 ms for a session of 100 tabs each with a journal (median of 20, release build, this Mac under a load of about 4, 2026-11-13).
 
 use super::*;
 use crate::lifecycle::Event as LifeEvent;
@@ -76,6 +81,11 @@ pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
     if !inner.life.keeping_due().is_some_and(|wait| wait.is_zero()) {
         return;
     }
+    if inner.life.keeping().restoring() {
+        let _ = step(inner, KeepingEvent::ReadFailed);
+        inner.core.push(CoreCall::Reconcile);
+        return;
+    }
     let now_as = as_done(inner, reads);
     if step(inner, KeepingEvent::Looked { now_as }).is_some() || !inner.life.keeping().trying() {
         inner.core.push(CoreCall::Reconcile);
@@ -111,12 +121,42 @@ fn ask(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &st
         return;
     }
     match heard.recv() {
-        Ok(Verdict::Read) => launching::read_state(inner),
+        Ok(Verdict::Read) => read_late(inner),
         Ok(Verdict::LetGo) => inner.saver.store.let_go(),
         Ok(Verdict::GiveBack) => inner.saver.store.give_back(),
         // The session thread ended without deciding: the app's going, and the process takes the lock with it.
         Err(_) => {}
     }
+}
+
+/// **A late try's saved session read,** on the try's thread, as a launch reads its state ([`launching::read`]), and handed to the session thread, which takes it
+/// in only while it's still restoring. A panic on the way (in the updater's look at the launch or the read) still says so, by the guard, so the restore's
+/// end never waits on a thread that's gone; one that never returns is bounded by the restore's patience.
+fn read_late(inner: &Arc<Inner>) {
+    struct Guard<'a>(&'a Inner, bool);
+    impl Drop for Guard<'_> {
+        fn drop(&mut self) {
+            if !self.1 {
+                self.0.core.push(CoreCall::LateRead(None));
+            }
+        }
+    }
+    let mut guard = Guard(inner, false);
+    #[cfg(test)]
+    assert!(!PANIC_IN_THE_LATE_READ.load(Ordering::SeqCst), "a test's panic in the late read");
+    let loaded = launching::read(inner);
+    guard.1 = true;
+    inner.core.push(CoreCall::LateRead(Some(Box::new(loaded))));
+}
+
+/// A test's read that panics, in its own process (each test is one).
+#[cfg(test)]
+static PANIC_IN_THE_LATE_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes the late keep's read panic on its thread, for a test of what ends the restore then.
+#[cfg(test)]
+pub(crate) fn panic_in_the_late_read() {
+    PANIC_IN_THE_LATE_READ.store(true, Ordering::SeqCst);
 }
 
 /// What the session thread decided about a try that came back with the lock.
@@ -193,6 +233,20 @@ pub(crate) fn answers_agents(command: &recto_agent::Command) -> bool {
     command.only_asks() && !matches!(command, recto_agent::Command::Record(recto_agent::commands::Record::SessionSave(_)))
 }
 
+/// **A late try's saved session, come in from its thread:** what's taken in, while it's still restoring; and nothing once its patience has run out and the
+/// lock's been let go (the window went on as it was, said, and the read is left for the next launch, as what's done meanwhile would otherwise be replaced),
+/// or if the thread ended without it, which is the same as the patience running out.
+pub(super) fn late_read(inner: &Arc<Inner>, read: Option<Box<Loaded>>) -> Option<Loaded> {
+    if !inner.life.keeping().restoring() {
+        return None;
+    }
+    let Some(loaded) = read else {
+        let _ = step(inner, KeepingEvent::ReadFailed);
+        return None;
+    };
+    Some(*loaded)
+}
+
 /// **Whether a writer of the record may write now:** this copy holds the record's lock and keeps the record, from the launch or since a late try's saved session
 /// is in. Not while it's trying (a try may be back with the lock and not yet decided on), restoring (what it would gather is the window before the restore), or
 /// once it's settled not to keep it. Looked at by every writer before it takes the saver's gate, so one that can't write never waits for it, and again under it.
@@ -212,7 +266,7 @@ fn step(inner: &Arc<Inner>, event: KeepingEvent) -> Option<crate::lifecycle::Out
 fn settled(inner: &Arc<Inner>, out: Option<crate::lifecycle::Out>) -> Option<crate::lifecycle::Out> {
     let host = match out {
         Some(crate::lifecycle::Out::Keeping(KeepingOut::Kept { remake })) => {
-            tell_the_updater(inner);
+            tell_the_updater(inner, false);
             remake.then_some(crate::lifecycle::Out::RestoreReady { with_state: true, late: true })
         }
         Some(crate::lifecycle::Out::Keeping(KeepingOut::SayNotKept)) => {
@@ -229,22 +283,23 @@ fn settled(inner: &Arc<Inner>, out: Option<crate::lifecycle::Out>) -> Option<cra
     host
 }
 
-/// The window won't be remembered: said as it always was, in the record's words, and the updater's told this is a second copy.
+/// The window won't be remembered: said as it always was, in the record's words, and the updater's told this is a second copy. If a late try's restore held
+/// the lock and didn't come in, the lock's let go first, so the updater hears it's a second copy and the record is left on disk as it is.
 fn say_not_kept(inner: &Arc<Inner>) {
     *lock(&inner.host.notice) = Some(record::notices::OTHER_INSTANCE.to_owned());
-    tell_the_updater(inner);
+    tell_the_updater(inner, inner.saver.store.holds_the_record());
 }
 
 /// **The updater told of a launch that was held back,** now that keeping has settled. What's held is taken here, on the session thread, so it can't be left
 /// held once settled; it's told on a thread of its own, as that touches files: of the launch, if it hadn't been (a second copy, or a copy that came to keep the
 /// record by another route than a late try, whose read tells it), and then of a first frame shown meanwhile, with the tabs that were read. Nothing at all for a
 /// launch that wasn't held back.
-fn tell_the_updater(inner: &Arc<Inner>) {
+fn tell_the_updater(inner: &Arc<Inner>, let_go: bool) {
     let (facts, held) = {
         let mut launch = lock(&inner.life.update_facts);
         (launch.facts.take(), launch.held)
     };
-    if facts.is_none() && !held {
+    if facts.is_none() && !held && !let_go {
         return;
     }
     let facts = Arc::new(Mutex::new(facts));
@@ -252,15 +307,18 @@ fn tell_the_updater(inner: &Arc<Inner>) {
     let told = std::thread::Builder::new()
         .name("recto-update-frame".into())
         .stack_size(512 * 1024)
-        .spawn(move || tell(&telling, lock(&theirs).take()));
+        .spawn(move || tell(&telling, let_go, lock(&theirs).take()));
     // With no thread to be had, what's held isn't left held for the rest of the run: told here, on the session thread, as the one thing that can still tell it.
     if told.is_err() {
-        tell(inner, lock(&facts).take());
+        tell(inner, let_go, lock(&facts).take());
     }
 }
 
-/// Told, on the thread that tells it.
-fn tell(inner: &Inner, facts: Option<recto_update::updater::Facts>) {
+/// Told, on the thread that tells it: the record's lock let go first if asked, as that's what the updater asks of the store.
+fn tell(inner: &Inner, let_go: bool, facts: Option<recto_update::updater::Facts>) {
+    if let_go {
+        inner.saver.store.let_go();
+    }
     if let Some(facts) = facts
         && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
     {

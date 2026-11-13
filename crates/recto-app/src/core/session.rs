@@ -132,6 +132,19 @@ pub fn apply_restored(
     ready
 }
 
+/// What the person did while a late keep's restore was read, let go once it's no longer restoring without the restore coming in (its patience ran out, or its
+/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that.
+// The session thread's own list, as `apply_restored` takes it: what the queue holds is boxed.
+#[allow(clippy::vec_box)]
+fn release_held(inner: &Arc<Inner>, deferred: &mut Vec<Box<crate::queue::PersonCommand>>) {
+    if deferred.is_empty() || !inner.life.state_read() || inner.life.keeping().restoring() {
+        return;
+    }
+    for run in deferred.drain(..) {
+        inner.core.push(CoreCall::Run(run));
+    }
+}
+
 /// The two small files that held the paper and the agent icon before there was a record. Read once, and they go when the record's written.
 pub fn migrate_older_settings(inner: &Inner) {
     let Some(paths) = &inner.serving.paths else { return };
@@ -253,6 +266,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 restore_patience_over(inner);
             }
             keeping::when_due(inner, &reads);
+            release_held(inner, &mut deferred);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
@@ -278,6 +292,18 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 // The first time only: the host's told, late or not.
                 inner.carry_out(ready);
                 recto_platform::slow::pause(recto_platform::slow::Seam::Session);
+                continue;
+            }
+            // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
+            CoreCall::LateRead(read) => {
+                let Some(loaded) = keeping::late_read(inner, read) else {
+                    release_held(inner, &mut deferred);
+                    after_call(inner, &mut synced, &mut reads, events);
+                    continue;
+                };
+                let ready = apply_restored(inner, loaded, &mut synced, &mut reads, &mut deferred);
+                after_call(inner, &mut synced, &mut reads, events);
+                inner.carry_out(ready);
                 continue;
             }
             CoreCall::RestorePatienceOver => restore_patience_over(inner),

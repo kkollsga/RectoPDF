@@ -621,7 +621,7 @@ fn a_write_due_while_the_saved_session_is_read_back_writes_nothing_over_it() {
     drop(before);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the saved session's read held at its seam", || app.waiting(Seam::State) > 0);
-    assert_eq!(app.core().life.keeping(), Keeping::Restoring);
+    assert!(app.core().life.keeping().restoring());
     app.core().saver.write_soon();
     app.settle();
     assert_eq!(record_folder(app.disk()), on_disk, "nothing written while it's read back");
@@ -871,6 +871,65 @@ fn a_try_back_with_a_persons_command_under_way_gives_the_lock_back_for_the_next(
     app.settle();
     assert_eq!(tab_names(&app), ["a", "b"]);
     drop(app.quit());
+}
+
+/// How the late keep's read of the saved session goes wrong.
+#[derive(Clone, Copy, Debug)]
+enum ReadGoes {
+    /// It never comes back (a dead disk): held at its seam past the restore's patience, then let through.
+    NeverBack,
+    /// Its thread panics.
+    Panics,
+}
+
+/// Failure (review, 2026-11-13, S4): nothing bounded a late keep's restore, so a read on a dead disk or one whose thread panicked held what the person did and
+/// refused every agent for good, with the record's lock kept and nothing written. The restore ends: past its patience on the fake clock (a read that never
+/// comes back) or at once (a panic), the window goes on as it is, the person's action that waited for it runs, the notice says the window won't be remembered,
+/// the lock is let go and the record's folder is byte for byte as it was. A read that comes in after that is dropped, not put over what the person has, and the
+/// next launch has the saved session.
+#[test]
+fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
+    for goes in [ReadGoes::NeverBack, ReadGoes::Panics] {
+        let disk = a_saved_session();
+        let before = the_copy_before(&disk);
+        let on_disk = record_folder(&disk);
+        let app = disk.builder().another_keeps().start();
+        match goes {
+            ReadGoes::NeverBack => recto_platform::slow::gate::hold(&[Seam::State]),
+            ReadGoes::Panics => crate::core::keeping::panic_in_the_late_read(),
+        }
+        drop(before);
+        app.advance(TRY_EVERY_MS);
+        if let ReadGoes::NeverBack = goes {
+            app.wait_until("the read held", || app.waiting(Seam::State) > 0);
+            assert!(app.core().life.keeping().restoring());
+            let c = app.disk().pdf("c.pdf", 2);
+            app.core().open_file(c);
+            app.settle();
+            assert!(tab_names(&app).is_empty(), "the person's open waits for the restore");
+            app.advance(crate::lifecycle::keeping::RESTORING_PATIENCE_MS);
+        }
+        app.wait_until("the restore over", || app.core().life.keeping() == Keeping::NotKept);
+        app.wait_until("the lock let go", || !app.core().saver.store.holds_the_record());
+        app.settle();
+        assert_eq!(app.reader().note, not_kept_words(), "{goes:?}");
+        if let ReadGoes::NeverBack = goes {
+            assert_eq!(tab_names(&app), ["c"], "the person's open ran on the window as it is");
+            app.let_through(Seam::State, 1);
+            app.settle();
+            app.wait_until("the read's thread gone", || app.core().core.flush(WAIT_LIMIT));
+            assert_eq!(tab_names(&app), ["c"], "the read that came late wasn't put over it");
+        }
+        app.core().saver.write_soon();
+        app.settle();
+        let (_, disk) = app.quit();
+        assert_eq!(
+            record_folder(&disk),
+            on_disk,
+            "{goes:?}: the saved session and its journal as the copy before left them"
+        );
+        comes_back_at_the_next_launch(disk);
+    }
 }
 
 /// Failure (review, 2026-11-13: only opening a file was tested): the person changes the paper, or the appearance, before the lock comes, and the restore then

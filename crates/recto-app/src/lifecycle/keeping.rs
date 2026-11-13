@@ -54,6 +54,11 @@ pub const TRIES: u32 = (KEEP_TRYING_MS / TRY_EVERY_MS) as u32;
 /// limit, 30 s, to appear), the update launch's 20 s of patience for the state, and the first frame's drawing of a page, so the installer hears either way
 /// well inside its limit: kept and restored, or a second copy that started (`recto_update::updater::Updater::first_frame`).
 pub const KEEP_TRYING_AFTER_UPDATE_MS: u64 = 60_000;
+/// **How long a late try's saved session has to come in** once the try got the lock: telling the updater of the launch and the read (about 2.3 ms for 100 tabs),
+/// on a thread of their own, while what the person does waits for it and agents are refused. Past it, the window goes on as it is, as a launch's does when
+/// its state doesn't come, and the record is let go again, left on disk for the next launch ([`Event::ReadFailed`]). Five seconds: room for a starved machine
+/// (a 1.25 s stall of a thread was seen on CI's runner, 2026-11-13), and a bound on the person's wait if the disk is dead.
+pub const RESTORING_PATIENCE_MS: u64 = 5_000;
 /// How many tries in all for a launch an update opened.
 pub const TRIES_AFTER_UPDATE: u32 = (KEEP_TRYING_AFTER_UPDATE_MS / TRY_EVERY_MS) as u32;
 // Half the installer's limit at most, held when it's built: a change to either that breaks it doesn't compile.
@@ -76,8 +81,9 @@ pub enum Keeping {
         asking: bool,
         by_update: bool,
     },
-    /// A try got the lock, and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's done.
-    Restoring,
+    /// A try got the lock (since when), and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's
+    /// done. For [`RESTORING_PATIENCE_MS`] at most.
+    Restoring { since_ms: u64 },
     /// It doesn't, for good: the tries ran out or the person started working in the window first. Said, and the updater told it's a second copy.
     NotKept,
     /// A quit or an update's hand-off began while it tried: no more tries, nothing said, and the updater told nothing, as the app is going.
@@ -101,6 +107,8 @@ pub enum Event {
     Tried { got: bool },
     /// A quit or an update's hand-off has begun.
     Stopped,
+    /// The saved session's read didn't come in: its patience ran out, or its thread ended without it (a panic).
+    ReadFailed,
 }
 
 /// What the app does.
@@ -146,7 +154,7 @@ impl Keeping {
                 };
                 None
             }
-            (Self::Restoring, Event::Read { keeps: true, .. }) => {
+            (Self::Restoring { .. }, Event::Read { keeps: true, .. }) => {
                 *self = Self::Keeps;
                 Some(Out::Kept { remake: true })
             }
@@ -179,8 +187,14 @@ impl Keeping {
                 Some(Out::Ask)
             }
             (Self::Trying { asking: true, .. }, Event::Tried { got: true }) => {
-                *self = Self::Restoring;
+                *self = Self::Restoring { since_ms: now_ms };
                 Some(Out::Restore)
+            }
+            // The read didn't come: as a launch whose state never came, the window goes on as it is, and the record, which it was about to keep, is let go
+            // again and left as it is on disk, for the next launch. Said, as the window won't be remembered; a read that comes in after this is dropped.
+            (Self::Restoring { .. }, Event::ReadFailed) => {
+                *self = Self::NotKept;
+                Some(Out::SayNotKept)
             }
             (
                 Self::Trying {
@@ -219,9 +233,12 @@ impl Keeping {
         }
     }
 
-    /// How long until the next try, zero once it's due; `None` when nothing's trying, or a try is out.
+    /// How long until the next try, zero once it's due, or until a restore's patience is over; `None` when nothing's trying or restoring, or a try is out.
     #[must_use]
     pub fn due(&self, now_ms: u64) -> Option<Duration> {
+        if let Self::Restoring { since_ms } = *self {
+            return Some(Duration::from_millis(since_ms.saturating_add(RESTORING_PATIENCE_MS).saturating_sub(now_ms)));
+        }
         let Self::Trying {
             since_ms,
             tries,
@@ -259,13 +276,13 @@ impl Keeping {
     /// launch.
     #[must_use]
     pub fn restoring(&self) -> bool {
-        *self == Self::Restoring
+        matches!(self, Self::Restoring { .. })
     }
 
     /// **Whether an agent's change is refused now:** while it's trying or restoring. See the module's words.
     #[must_use]
     pub fn refuses_agents_changes(&self) -> bool {
-        matches!(self, Self::Trying { .. } | Self::Restoring)
+        matches!(self, Self::Trying { .. } | Self::Restoring { .. })
     }
 }
 
@@ -325,6 +342,33 @@ mod tests {
         assert_eq!(keeping, Keeping::NotKept);
     }
 
+    /// Failure (review, 2026-11-13, S4): nothing bounds a late keep's restore, so a read on a dead disk, or one whose thread panicked, holds what the person does and
+    /// refuses agents for good. Its patience runs out: not kept, said, and a read that comes after that is taken as nothing.
+    #[test]
+    fn a_restore_that_doesnt_come_in_is_given_up_after_its_patience() {
+        let mut keeping = trying_from(0);
+        assert_eq!(try_once(&mut keeping, true, 1_000), Some(Out::Restore));
+        assert_eq!(keeping.due(1_000 + RESTORING_PATIENCE_MS - 1), Some(std::time::Duration::from_millis(1)));
+        assert_eq!(keeping.due(1_000 + RESTORING_PATIENCE_MS), Some(std::time::Duration::ZERO));
+        assert_eq!(keeping.step(Event::ReadFailed, 1_000 + RESTORING_PATIENCE_MS), Some(Out::SayNotKept));
+        assert_eq!(keeping, Keeping::NotKept);
+        assert!(!keeping.refuses_agents_changes() && !keeping.restoring());
+        assert_eq!(keeping.due(1_000_000), None);
+        assert_eq!(
+            keeping.step(
+                Event::Read {
+                    keeps: true,
+                    as_read: 0,
+                    by_update: false
+                },
+                9_000
+            ),
+            None,
+            "a read that comes in late keeps nothing"
+        );
+        assert_eq!(keeping, Keeping::NotKept);
+    }
+
     /// Failure (the coordinator's decision, 2026-11-13): a launch an update opened gives up after ten seconds like any other, so a lock that comes later leaves the
     /// installer hearing only that a second copy started; or it tries for ever, past the installer's two minutes. Sixty tries, one a second, and then said, with
     /// the installer's limit at least twice that (held when it's built, beside the constant); a launch no update opened still stops at ten.
@@ -357,8 +401,12 @@ mod tests {
         let mut keeping = trying_from(0);
         assert_eq!(try_once(&mut keeping, false, 1_000), None);
         assert_eq!(try_once(&mut keeping, true, 2_000), Some(Out::Restore));
-        assert_eq!(keeping, Keeping::Restoring);
-        assert_eq!(keeping.due(2_000), None, "no more tries while it restores");
+        assert_eq!(keeping, Keeping::Restoring { since_ms: 2_000 });
+        assert_eq!(
+            keeping.due(2_000),
+            Some(std::time::Duration::from_millis(RESTORING_PATIENCE_MS)),
+            "no more tries while it restores: only its patience"
+        );
         assert_eq!(
             keeping.step(Event::Looked { now_as: 99 }, 2_001),
             None,
@@ -527,7 +575,13 @@ mod tests {
 
     /// Every state the machine can be in, with what it was read with: the states to walk every event from.
     fn every_state() -> Vec<Keeping> {
-        let mut states = vec![Keeping::NotAsked, Keeping::Keeps, Keeping::Restoring, Keeping::NotKept, Keeping::Stopped];
+        let mut states = vec![
+            Keeping::NotAsked,
+            Keeping::Keeps,
+            Keeping::Restoring { since_ms: 0 },
+            Keeping::NotKept,
+            Keeping::Stopped,
+        ];
         for (tries, by_update) in [(0, false), (1, false), (TRIES - 1, false), (TRIES - 1, true), (TRIES_AFTER_UPDATE - 1, true)] {
             for asking in [false, true] {
                 states.push(Keeping::Trying {
@@ -544,7 +598,13 @@ mod tests {
 
     /// Every event, each way it can come.
     fn every_event() -> Vec<Event> {
-        let mut events = vec![Event::Stopped, Event::Asking, Event::Tried { got: true }, Event::Tried { got: false }];
+        let mut events = vec![
+            Event::Stopped,
+            Event::Asking,
+            Event::Tried { got: true },
+            Event::Tried { got: false },
+            Event::ReadFailed,
+        ];
         for keeps in [true, false] {
             for by_update in [true, false] {
                 events.push(Event::Read { keeps, as_read: 7, by_update });

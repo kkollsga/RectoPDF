@@ -187,6 +187,12 @@ impl Inner {
 /// still held back (the review's blocker of 2026-11-13); it's the late try's to take. The updater's told of a copy that keeps the record before anything's read,
 /// so a version that keeps failing goes back here and not by reading on.
 pub(super) fn read_state(inner: &Arc<Inner>) {
+    let loaded = read(inner);
+    inner.core.push(CoreCall::Restored(Box::new(loaded)));
+}
+
+/// The state, read as [`read_state`] says, for the caller to hand on: a launch's as [`CoreCall::Restored`], a late try's as its own ([`super::keeping`]).
+pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
     let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
     let keeps = inner.saver.store.wait_for_lock();
     if updates::hold_or_tell(inner, keeps) == recto_update::updater::AtLaunch::Exit {
@@ -202,5 +208,5 @@ pub(super) fn read_state(inner: &Arc<Inner>) {
     };
     let loaded = updates::fall_back_if_unreadable(inner, loaded);
     updates::note_tabs_read(&loaded);
-    inner.core.push(CoreCall::Restored(Box::new(loaded)));
+    loaded
 }
