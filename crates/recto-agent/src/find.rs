@@ -546,7 +546,7 @@ pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Optio
             AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first.")
         })?;
         let plan = plan(s, id)?;
-        s.set_find(true, query, query);
+        s.viewing_mut().set_find(true, query, query);
         Ok::<_, AgentError>(match keys {
             Some(keys) => plan.with_keys(keys),
             None => plan,
@@ -560,7 +560,7 @@ pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Optio
 
 /// What's in the Find field that its hits aren't of, as after a restart or a move to another document, if anything: a query to find again before a step.
 pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -> Option<String> {
-    let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| basis(s, id))));
+    let wanted = access.with(|s| (s.viewing().find().query.clone(), s.active().map(|id| basis(s, id))));
     let mut have = (String::new(), None);
     finding.with_results(&mut |results| have = (results.query.clone(), results.basis));
     (!wanted.0.is_empty() && have != wanted).then_some(wanted.0)
@@ -618,7 +618,7 @@ pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index:
 
 fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Going) {
     access.with(|s| {
-        s.set_find_current(Some((hit.page, hit.start)), Some(tab));
+        s.viewing_mut().set_find_current(Some((hit.page, hit.start)), Some(tab));
         if s.active().map(|id| id.0) == Some(tab) {
             let id = TabId(tab);
             match going {
@@ -652,9 +652,9 @@ pub fn close<A: crate::SessionAccess>(access: &A) {
         finding.clear();
     }
     access.with(|s| {
-        let draft = s.find().draft.clone();
-        s.set_find(false, "", &draft);
-        s.set_find_current(None, None);
+        let draft = s.viewing().find().draft.clone();
+        s.viewing_mut().set_find(false, "", &draft);
+        s.viewing_mut().set_find_current(None, None);
     });
 }
 

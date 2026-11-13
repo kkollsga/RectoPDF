@@ -1,37 +1,19 @@
 //! The view: settings, find, edit mode, selection, place and draws.
 
 use super::*;
+use crate::record::FindRecord;
 
 impl<L: DocLoader> Session<L> {
-    pub fn view(&self) -> ViewSettings {
-        self.viewing.view()
-    }
-
-    pub fn set_view(&mut self, view: ViewSettings) {
-        self.viewing.set_view(view);
-    }
-
     /// Find, as the reader left it.
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged.
     pub fn find(&self) -> &FindRecord {
         self.viewing.find()
     }
 
-    /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
+    /// Sets what's in Find.
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged.
     pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
         self.viewing.set_find(open, query, draft);
-    }
-
-    /// The hit Find went to last, by its place, for the record.
-    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
-        self.viewing.set_find_current(current, tab);
-    }
-
-    pub fn edit_mode(&self) -> bool {
-        self.viewing.edit_mode()
-    }
-
-    pub fn set_edit_mode(&mut self, on: bool) {
-        self.viewing.set_edit_mode(on);
     }
 
     /// Turns the view of a tab, by quarter turns.

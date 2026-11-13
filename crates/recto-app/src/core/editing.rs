@@ -29,7 +29,7 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Act
         return Err(recto_agent::protected_refusal());
     }
     asked.tab = format!("#{}", id.0);
-    if session.edit_mode()
+    if session.viewing().edit_mode()
         && let Some(tab) = session.tab(id)
     {
         asked.pages = (tab.page + 1).to_string();

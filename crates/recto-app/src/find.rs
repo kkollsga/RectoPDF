@@ -285,7 +285,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 }
                 // The hit gone to before a restart, chosen again by its place once the hits are back, if they're of the same tab. Its selection came back with the page view.
                 if !session.finder().is_running()
-                    && let (Some(place), tab) = session.with_session(|s| (s.find().current, s.find().current_tab))
+                    && let (Some(place), tab) = session.with_session(|s| (s.viewing().find().current, s.viewing().find().current_tab))
                 {
                     session.finder().with_results(&mut |results| {
                         if results.current.is_none() && results.end.is_some() && results.tab.is_some() && results.tab == tab {
@@ -319,7 +319,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     /// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change. A query in the field is found again when its hits are about something else: another document being read (after a tap, a move into another pane or a restart), pages moved, added or taken away, the file replaced, or the page count learnt.
     pub fn keep_up(&self) {
         let session = self.session;
-        let (record, now) = session.with_session(|s| (s.find().clone(), s.active().map(|id| (id, find::basis(s, id)))));
+        let (record, now) = session.with_session(|s| (s.viewing().find().clone(), s.active().map(|id| (id, find::basis(s, id)))));
         let moved = {
             let mut field = lock(self.field);
             let moved = field.open != record.open || field.text != record.draft;
@@ -350,7 +350,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             };
             // The hit gone to was a place in hits about something else, which may be another word now. After a restart there were none, and it's kept to be chosen again.
             if had.0.is_some() {
-                session.with_session(|s| s.set_find_current(None, None));
+                session.with_session(|s| s.viewing_mut().set_find_current(None, None));
             }
             // The field stays as it is: a draft typed and not run is the reader's.
             session.finder().start(plan, &record.query, needle);

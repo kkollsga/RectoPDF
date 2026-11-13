@@ -77,9 +77,9 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, actor: Actor, asked: 
     };
     let went = if asked.close {
         // Announced when Find changed, and only then: closing it closed already changes nothing.
-        let before = access.with(|s| s.find().clone());
+        let before = access.with(|s| s.viewing().find().clone());
         close(access);
-        if access.with(|s| *s.find() != before) {
+        if access.with(|s| *s.viewing().find() != before) {
             events.push(Event::FindClosed);
         }
         None
@@ -158,7 +158,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             events.push(Event::FindOpened { page: None });
             return begin_keyed(access, typed, access.find_keys(self.actor)).map(drop).inspect_err(|_| {
                 self.finding.clear();
-                access.with(|s| s.set_find(true, "", typed));
+                access.with(|s| s.viewing_mut().set_find(true, "", typed));
             });
         }
         let generation = begin(access, query)?;
@@ -194,20 +194,20 @@ impl<A: crate::SessionAccess> Run<'_, A> {
     /// in (A6). Announced when Find changed, and only then: ⌘F with it open already only gives its field the keyboard.
     fn open(&self, events: &mut Vec<Event>) -> Result<(), AgentError> {
         let access = self.access;
-        let before = access.with(|s| s.find().clone());
+        let before = access.with(|s| s.viewing().find().clone());
         if self.at_the_window() {
             access.with(|s| {
-                let mut view = s.view();
+                let mut view = s.viewing().view();
                 if view.sidebar_hidden {
                     view.sidebar_hidden = false;
-                    s.set_view(view);
+                    s.viewing_mut().set_view(view);
                     events.push(crate::view_changed(view));
                 }
             });
         }
         let (query, draft) = access.with(|s| {
-            let find = s.find().clone();
-            s.set_find(true, &find.query, &find.draft);
+            let find = s.viewing().find().clone();
+            s.viewing_mut().set_find(true, &find.query, &find.draft);
             (find.query, find.draft)
         });
         let mut found = Ok(());
@@ -215,7 +215,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             let mut quiet = Vec::new();
             found = self.query(&draft, &mut quiet);
         }
-        if access.with(|s| *s.find() != before) {
+        if access.with(|s| *s.viewing().find() != before) {
             events.push(Event::FindOpened { page: None });
         }
         // An agent's Find is open, and its answer says what the draft found; the person's field says why it found nothing.
@@ -225,7 +225,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
     /// A step needs the hits of what's in the field, for the document being read: found again if they're of something else, as after a restart. The
     /// person's ⌘G with Find closed opens it, with what was typed last, as on a Mac. Says whether a query's been started for it.
     fn hits_for_a_step(&self, events: &mut Vec<Event>) -> Result<bool, AgentError> {
-        if self.at_the_window() && self.access.with(|s| !s.find().open || s.find().query.is_empty()) {
+        if self.at_the_window() && self.access.with(|s| !s.viewing().find().open || s.viewing().find().query.is_empty()) {
             self.open(events)?;
         }
         let Some(query) = stale_query(self.access, self.finding) else {
@@ -297,7 +297,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
 
 /// Where Find stands, for an answer.
 fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> Value {
-    let record = access.with(|s| s.find().clone());
+    let record = access.with(|s| s.viewing().find().clone());
     // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
     let mut about = None;
     finding.with_results(&mut |results| about = results.tab);

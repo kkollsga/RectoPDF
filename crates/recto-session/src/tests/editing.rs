@@ -210,7 +210,7 @@ fn the_panels_rotate_turns_every_page_as_one_step() {
         "one undo takes it all back"
     );
     assert!(!s.undo_and_redo(a).0, "it was one step");
-    s.set_edit_mode(true);
+    s.viewing_mut().set_edit_mode(true);
     s.go_to(a, 3).unwrap();
     s.rotate_from_panel(a, -1).unwrap();
     let turns: Vec<u8> = s.page_edits(a).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect();

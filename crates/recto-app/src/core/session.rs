@@ -131,10 +131,11 @@ pub fn migrate_older_settings(inner: &Inner) {
         return;
     }
     inner.host.session.with_session(|session| {
-        session.set_view(ViewSettings {
-            paper: paper.or(session.view().paper),
+        let viewing = session.viewing_mut();
+        viewing.set_view(ViewSettings {
+            paper: paper.or(viewing.view().paper),
             agent_icon_hidden: hidden,
-            ..session.view()
+            ..viewing.view()
         })
     });
     inner.saver.write_soon();

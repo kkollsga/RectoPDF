@@ -206,7 +206,7 @@ pub(crate) fn set<A: SessionAccess>(
 ) -> Result<Value, AgentError> {
     let [paper, sidebar, agent_icon, layout] = asked;
     access.with(|s| {
-            let was = s.view();
+            let was = s.viewing().view();
             let laid_out = match tab {
                 Some(selector) => Some(select(s, selector)?),
                 None => s.active(),
@@ -233,7 +233,7 @@ pub(crate) fn set<A: SessionAccess>(
             {
                 events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
             }
-            s.set_view(view);
+            s.viewing_mut().set_view(view);
             if view != was {
                 events.push(view_changed(view));
             }
@@ -382,11 +382,11 @@ mod tests {
             r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#,
             r#"{"cmd":"view","paper":"dark","sidebar":"sideways"}"#,
         ] {
-            let (view, layout) = (session.view(), session.spread_of(session.active().unwrap()));
+            let (view, layout) = (session.viewing().view(), session.spread_of(session.active().unwrap()));
             let (result, events) = run(&mut session, line);
             assert_eq!(result.map_err(|error| error.code), Err("usage"), "{line}");
             assert_eq!(
-                (session.view(), session.spread_of(session.active().unwrap())),
+                (session.viewing().view(), session.spread_of(session.active().unwrap())),
                 (view, layout),
                 "{line}: nothing changed"
             );
@@ -409,7 +409,7 @@ mod tests {
             let (result, events) = run(&mut session, line);
             let answer = result.expect("done");
             assert_eq!(
-                (session.view().sidebar_hidden, session.view().agent_icon_hidden),
+                (session.viewing().view().sidebar_hidden, session.viewing().view().agent_icon_hidden),
                 (sidebar_hidden, agent_icon_hidden),
                 "{line}"
             );

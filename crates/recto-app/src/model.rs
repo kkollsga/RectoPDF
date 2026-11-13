@@ -507,7 +507,7 @@ impl Facts {
 }
 
 fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot>) -> ReadingFacts {
-    let edit_mode = session.edit_mode();
+    let edit_mode = session.viewing().edit_mode();
     let Some(shown) = shown else { return ReadingFacts::none(edit_mode) };
     let page = session.tab(shown.id).map_or(0, |tab| tab.page);
     let (can_undo, can_redo) = session.undo_and_redo(shown.id);
@@ -563,7 +563,7 @@ pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
     let sidebar = sidebar_parts(&model, compared, held);
     let recent_key = (session.recent_version(), sidebar.view.tabs_version);
     let recent = (held.recent_key != Some(recent_key)).then(|| recent_files(session));
-    let view = session.view();
+    let view = session.viewing().view();
     let mut facts = Facts {
         panes: snapshots,
         comparison,
@@ -1625,7 +1625,7 @@ mod tests {
     #[test]
     fn the_view_settings_reach_the_reader_view() {
         let mut s = session();
-        s.set_view(recto_session::ViewSettings {
+        s.viewing_mut().set_view(recto_session::ViewSettings {
             paper: Some(Paper::Warm),
             sidebar_hidden: true,
             agent_icon_hidden: true,

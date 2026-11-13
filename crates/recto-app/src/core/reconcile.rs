@@ -6,10 +6,10 @@ use recto_session::trail::Stop;
 /// A change to how pages are shown, as `recto view` makes it: announced only if something changed (R2.3, accident A2), as `view`'s is.
 pub fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut ViewSettings)) {
     let (was, view) = inner.host.session.with_session(|session| {
-        let was = session.view();
+        let was = session.viewing().view();
         let mut view = was;
         change(&mut view);
-        session.set_view(view);
+        session.viewing_mut().set_view(view);
         (was, view)
     });
     if view != was {

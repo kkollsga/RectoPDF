@@ -23,16 +23,17 @@ fn an_older_records_focus_view_comes_back_as_a_hidden_sidebar() {
     saved.view = old;
     let mut back = journaled(1);
     back.restore(&saved, HashMap::new()).unwrap();
-    assert!(back.view().sidebar_hidden);
+    assert!(back.viewing().view().sidebar_hidden);
     let written = serde_json::to_string(&back.to_record().view).unwrap();
     assert!(!written.contains("focus") && written.contains("\"sidebar_hidden\":true"), "{written}");
-    back.set_view(ViewSettings {
+    let shown = ViewSettings {
         sidebar_hidden: false,
-        ..back.view()
-    });
+        ..back.viewing().view()
+    };
+    back.viewing_mut().set_view(shown);
     let mut again = journaled(1);
     again.restore(&back.to_record(), HashMap::new()).unwrap();
-    assert!(!again.view().sidebar_hidden, "shown again stays shown");
+    assert!(!again.viewing().view().sidebar_hidden, "shown again stays shown");
 }
 
 /// Failure: anything about the session is different after going through its record and journals: a tab, its order, the active one, a place, a fold, unsaved edits, the steps undone, or who made them. Compares the whole of both.
@@ -55,8 +56,8 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
         },
         1,
     );
-    s.set_find(true, "ran", "typed but not run");
-    s.set_edit_mode(true);
+    s.viewing_mut().set_find(true, "ran", "typed but not run");
+    s.viewing_mut().set_edit_mode(true);
     s.set_view_rotation(a, 1);
     assert!(s.set_spread(a, record::Spread::TwoUpCover));
     assert!(!s.set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
@@ -69,7 +70,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
             to_char: 9,
         }),
     );
-    s.set_view(ViewSettings {
+    s.viewing_mut().set_view(ViewSettings {
         paper: Some(Paper::Warm),
         sidebar_hidden: true,
         agent_icon_hidden: true,
@@ -82,7 +83,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     back.restore(&read.record, back_from(&files)).unwrap();
     assert_eq!(back.to_record(), s.to_record());
     assert_eq!(back.edits_record(a), s.edits_record(a));
-    assert_eq!(back.view(), s.view());
+    assert_eq!(back.viewing().view(), s.viewing().view());
     assert_eq!(back.spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
     assert_eq!(back.active(), s.active());
     assert_eq!(back.tier(a), Tier::Hot, "it's the active one");

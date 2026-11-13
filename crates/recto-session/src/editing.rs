@@ -291,7 +291,7 @@ impl<L: DocLoader> Session<L> {
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
     pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
         let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
-        let one_page = self.edit_mode();
+        let one_page = self.viewing.edit_mode();
         self.edit_pages_as(id, Author::Owner, |edits| {
             if one_page {
                 edits.rotate(page, 1, quarter_turns)
