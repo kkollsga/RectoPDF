@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
-/// How the app shows pages.
-#[derive(Clone, Debug, Deserialize)]
+/// How the app shows pages. The default asks and changes nothing.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
     #[serde(default)]

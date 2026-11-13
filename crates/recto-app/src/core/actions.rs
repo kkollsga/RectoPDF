@@ -55,7 +55,7 @@ impl Inner {
             menus::Action::PaletteOpen => {
                 // The palette is in the sidebar, so ⌘K shows it.
                 if lock(&self.published).reader.sidebar_hidden {
-                    self.core.push(CoreCall::SetSidebarHidden(false));
+                    self.show_sidebar();
                 }
                 self.tools.palette.open();
                 self.listener.model_changed();
@@ -72,19 +72,15 @@ impl Inner {
             menus::Action::Step(back) => self.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
-                self.panes.zoom_all(&self.engine, zoom);
+                self.zoom_for_person(zoom);
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
-            // The pane being read as it's chosen, which a right-click on a pane has just made it, whatever the session's still to hear.
-            menus::Action::SetSpread(spread) => self.core.push(CoreCall::SetSpread(
-                (self.panes.count() > 1).then(|| self.panes.tab_of(self.panes.reading())).flatten(),
-                spread,
-            )),
+            menus::Action::SetSpread(spread) => self.set_layout(spread),
             menus::Action::Rotate(turns) => self.core.push(CoreCall::Rotate(turns)),
             menus::Action::Undo => self.core.push(CoreCall::UndoOrRedo(true)),
             menus::Action::Redo => self.core.push(CoreCall::UndoOrRedo(false)),
-            menus::Action::ToggleAgentIcon => self.core.push(CoreCall::ToggleAgentIcon),
-            menus::Action::SetPaper(paper) => self.core.push(CoreCall::SetPaper(paper)),
+            menus::Action::ToggleAgentIcon => self.toggle_agent_icon(),
+            menus::Action::SetPaper(paper) => self.set_paper(paper),
             menus::Action::TogglePanel => {
                 self.window.panel_open.fetch_xor(true, Ordering::SeqCst);
                 self.listener.model_changed();
@@ -146,12 +142,6 @@ impl Inner {
         let reader = lock(&self.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
         !reader.home && reader.edited && reader.save_enabled && self.life.sheets.load(Ordering::SeqCst) == 0
-    }
-
-    /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
-    pub fn toggle_sidebar(&self) {
-        let hidden = !lock(&self.published).reader.sidebar_hidden;
-        self.core.push(CoreCall::SetSidebarHidden(hidden));
     }
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.

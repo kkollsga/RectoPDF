@@ -29,6 +29,8 @@ pub mod person;
 mod quitting;
 mod record_commands;
 mod unlocking;
+mod viewing;
+pub mod zoom;
 
 use comparison::*;
 use editing::*;

@@ -263,7 +263,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Step(back) => step(inner, back, &mut events),
             CoreCall::Open(path) => open(inner, &mut reads, path),
             CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
-            CoreCall::SetPaper(paper) => set_view(inner, &mut events, |view| view.paper = Some(paper)),
             CoreCall::SleepTabs(tabs, why) => {
                 inner.go_dormant(&tabs, why);
             }
@@ -280,20 +279,17 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::CloseAnswered(id, choice) => close_answered(inner, id, choice, &mut events),
             CoreCall::CloseAfterSave(id) => close_after_save(inner, id, &mut events),
             CoreCall::ClearEditHistory => clear_edit_history(inner),
-            CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
             CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
-            CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
             CoreCall::Rotate(turns) => rotate(inner, turns, &mut events),
             CoreCall::UndoOrRedo(undo) => undo_or_redo(inner, undo, &mut events),
             CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
             CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
             CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),
-            CoreCall::SetSpread(tab, spread) => set_spread(inner, tab, spread, &mut events),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }

@@ -1,4 +1,4 @@
-//! **Side by side, as the session thread does it:** a tab joining or leaving, the pane being read, synced scroll and each pane's spread.
+//! **Side by side, as the session thread does it:** a tab joining or leaving, the pane being read and synced scroll. Each pane's layout is `view`'s.
 
 use super::*;
 
@@ -49,19 +49,4 @@ pub fn set_synced(inner: &Arc<Inner>, on: bool, events: &mut Vec<Event>) {
             .filter(|changed| *changed)
             .map(|_| recto_agent::event::comparison_changed(session))
     }));
-}
-
-/// `CoreCall::SetSpread`, on the session thread.
-pub fn set_spread(inner: &Arc<Inner>, tab: Option<TabId>, spread: record::Spread, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    host.session.with_session(|session| {
-        if let Some(id) = tab.filter(|tab| session.tab(*tab).is_some()).or(session.active())
-            && session.set_spread(id, spread)
-        {
-            events.push(Event::LayoutChanged {
-                tab: id,
-                layout: spread.name(),
-            });
-        }
-    });
 }

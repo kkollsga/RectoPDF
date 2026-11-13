@@ -111,7 +111,7 @@ impl Inner {
             }
             UiAction::ZoomTyped { text, decimal } => Acted {
                 host: HostAction::None,
-                understood: recto_reader::tiles::typed_zoom(&text, decimal).is_some_and(|zoom| self.panes.zoom_all(&self.engine, zoom).is_some()),
+                understood: recto_reader::tiles::typed_zoom(&text, decimal).is_some_and(|zoom| self.zoom_for_person(zoom)),
             },
             UiAction::ToggleSidebar => {
                 self.toggle_sidebar();
