@@ -485,8 +485,16 @@ mod tests {
                         line[arg.key] = json!(form.replace(BESIDE, &run.join("mine.pdf").to_string_lossy()));
                         line
                     };
-                    if parse(&make(Path::new("/tmp")).to_string()).is_err() {
-                        continue;
+                    match parse(&make(Path::new("/tmp")).to_string()) {
+                        // A typed payload's word (step R2.5) refuses an outside file as it's read, before anything runs: its value was looked at, and
+                        // could reach no file.
+                        Err(error) if error.code == "usage" && arg.kind != Kind::Tab => {
+                            tried = true;
+                            got_past_the_tab = true;
+                            continue;
+                        }
+                        Err(_) => continue,
+                        Ok(_) => {}
                     }
                     let what = format!("{} --{} {form}", spec.name, arg.key);
                     let (there, read_there) = run_line(&make);

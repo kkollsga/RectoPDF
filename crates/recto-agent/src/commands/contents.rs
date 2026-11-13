@@ -67,13 +67,80 @@ impl Cmd for ContentsFold {
 }
 
 /// Which contents the sidebar shows for a tab: the file's own, or generated ones, made if they aren't yet.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::ContentsShow")]
 pub struct ContentsShow {
-    /// `own` or `generated`.
-    pub which: String,
-    #[serde(default = "crate::active_tab")]
+    pub which: Which,
     pub tab: String,
+}
+
+/// Which list of contents: the file's own, or generated ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Own,
+    Generated,
+}
+
+impl Which {
+    pub const ALL: [Self; 2] = [Self::Own, Self::Generated];
+
+    /// Its word on the wire.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Generated => "generated",
+        }
+    }
+}
+
+/// `contents show` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ContentsShow {
+        /// `own` or `generated`.
+        pub which: String,
+        #[serde(default = "crate::active_tab")]
+        pub tab: String,
+    }
+}
+
+impl TryFrom<line::ContentsShow> for ContentsShow {
+    type Error = AgentError;
+    fn try_from(line: line::ContentsShow) -> Result<Self, AgentError> {
+        let which = Which::ALL.into_iter().find(|which| which.word() == line.which).ok_or_else(|| {
+            AgentError::new(
+                "usage",
+                format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(&line.which)),
+                exit::USAGE,
+            )
+        })?;
+        Ok(Self { which, tab: line.tab })
+    }
+}
+
+impl From<&ContentsShow> for line::ContentsShow {
+    fn from(asked: &ContentsShow) -> Self {
+        Self {
+            which: asked.which.word().to_string(),
+            tab: asked.tab.clone(),
+        }
+    }
+}
+
+impl From<ContentsShow> for line::ContentsShow {
+    fn from(asked: ContentsShow) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for ContentsShow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::ContentsShow::from(self).fmt(f)
+    }
 }
 
 impl Cmd for ContentsShow {
@@ -94,10 +161,10 @@ impl Cmd for ContentsShow {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "tab": super::log_tab(&self.tab), "which": recto_core::clean_line(&self.which) })
+        json!({ "tab": super::log_tab(&self.tab), "which": self.which.word() })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        show(cx.access, &self.tab, &self.which)
+        show(cx.access, &self.tab, self.which)
     }
     fn human(data: &Value) -> String {
         match (data["shown"].as_str(), data["state"].as_str()) {
@@ -123,18 +190,8 @@ fn view_word(view: Option<&GeneratedView>) -> &'static str {
 
 /// `contents show`, the note's Show and Generate: the file's own chosen, or generated ones, looked for with the session free if they aren't shown yet and
 /// asked for if they aren't made, as the note's Generate always did.
-fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, AgentError> {
-    let generated = match which {
-        "own" => false,
-        "generated" => true,
-        other => {
-            return Err(AgentError::new(
-                "usage",
-                format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(other)),
-                exit::USAGE,
-            ));
-        }
-    };
+fn show<A: SessionAccess>(access: &A, tab: &str, which: Which) -> Result<Value, AgentError> {
+    let generated = which == Which::Generated;
     let generating = if generated {
         Some(access.generating().ok_or_else(generated::no_generating)?)
     } else {
@@ -301,7 +358,7 @@ mod tests {
     }
 
     fn run(session: &Mutex<Session<Sections>>, actor: Actor, line: &str) -> Result<serde_json::Value, crate::AgentError> {
-        execute(session, actor, &parse(line).expect("a command"), &mut Vec::new())
+        parse(line).and_then(|command| execute(session, actor, &command, &mut Vec::new()))
     }
 
     /// Failure (R2.3, C5f): `contents fold` folds a section other than the one `contents` numbered, says it did something to an entry with nothing under it,

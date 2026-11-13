@@ -354,13 +354,8 @@ impl Inner {
                 self.install_build(zip, *now)
             }
             Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
-                if let Some(word) = set {
-                    let on = match word.as_str() {
-                        "on" => true,
-                        "off" => false,
-                        _ => return Err(AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)),
-                    };
-                    self.set_dev_builds(on);
+                if let Some(set) = set {
+                    self.set_dev_builds(set.is_on());
                 }
                 Ok(self.dev_builds_answer())
             }
@@ -390,13 +385,8 @@ impl Inner {
                 Err(refused) => Err(refused_words(&refused)),
             },
             Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
-                if let Some(word) = auto_update {
-                    let on = match word.as_str() {
-                        "on" => true,
-                        "off" => false,
-                        _ => return Err(AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)),
-                    };
-                    self.set_auto_update(on);
+                if let Some(on) = auto_update {
+                    self.set_auto_update(on.is_on());
                 }
                 Ok(self.settings_answer())
             }
@@ -538,7 +528,7 @@ impl Inner {
     /// one executor, off the UI thread. What any of them comes to is in the status, as before.
     pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool) {
         use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
-        let word = || Some(if on { "on" } else { "off" }.to_owned());
+        let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
         let command = match id {
             AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
             DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),

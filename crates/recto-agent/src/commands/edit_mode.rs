@@ -1,18 +1,63 @@
 //! `edit mode on|off`: the window's edit mode, in which the sidebar shows its tools for editing pages and its Rotate turns the page being read, not every page
 //! (R2.3, C5d). It changes no page and throws nothing away: what an agent may edit is the edit commands' to say, at their levels, as with edit mode off.
 
+use super::words::OnOff;
 use super::{Cmd, Cx, row_access};
 use crate::table::{Access, Arg, BASE, GROUP_EDIT, Kind, Spec};
 use crate::{AgentError, Level, Runs, SessionAccess, exit};
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Turns the window's edit mode on or off.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::EditMode")]
 pub struct EditMode {
-    /// `on` or `off`.
-    pub set: String,
+    pub set: OnOff,
+}
+
+/// `edit mode` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct EditMode {
+        /// `on` or `off`.
+        pub set: String,
+    }
+}
+
+impl TryFrom<line::EditMode> for EditMode {
+    type Error = AgentError;
+    fn try_from(line: line::EditMode) -> Result<Self, AgentError> {
+        let set = OnOff::from_word(&line.set).ok_or_else(|| {
+            AgentError::new(
+                "usage",
+                format!("`{}` isn't a way edit mode can be. It's `on` or `off`.", recto_core::clean_line(&line.set)),
+                exit::USAGE,
+            )
+        })?;
+        Ok(Self { set })
+    }
+}
+
+impl From<&EditMode> for line::EditMode {
+    fn from(asked: &EditMode) -> Self {
+        Self {
+            set: asked.set.word().to_string(),
+        }
+    }
+}
+
+impl From<EditMode> for line::EditMode {
+    fn from(asked: EditMode) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for EditMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::EditMode::from(self).fmt(f)
+    }
 }
 
 impl Cmd for EditMode {
@@ -33,20 +78,10 @@ impl Cmd for EditMode {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "set": recto_core::clean_line(&self.set) })
+        json!({ "set": self.set.word() })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let on = match self.set.as_str() {
-            "on" => true,
-            "off" => false,
-            other => {
-                return Err(AgentError::new(
-                    "usage",
-                    format!("`{}` isn't a way edit mode can be. It's `on` or `off`.", recto_core::clean_line(other)),
-                    exit::USAGE,
-                ));
-            }
-        };
+        let on = self.set.is_on();
         Ok(cx.access.with(|s| {
             let was = s.viewing().edit_mode();
             s.viewing_mut().set_edit_mode(on);
@@ -161,7 +196,8 @@ mod tests {
         let line = |set: &str| parse(&format!(r#"{{"cmd":"edit_mode","set":"{set}"}}"#)).expect("a command");
         let refused = execute(&session, Actor::Agent(Level::ReadOnly), &line("on"), &mut Vec::new()).expect_err("Read-only");
         assert_eq!(refused.code, "permission_denied");
-        let refused = execute(&session, Actor::Agent(Level::Control), &line("sideways"), &mut Vec::new()).expect_err("no such way");
+        // A word that isn't on or off can't be a command at all (R2.5): refused as it's read, at every level.
+        let refused = parse(r#"{"cmd":"edit_mode","set":"sideways"}"#).expect_err("no such way");
         assert_eq!(refused.code, "usage");
         assert!(!session.lock().unwrap().viewing().edit_mode(), "left off");
         let answer = execute(&session, Actor::Person, &line("off"), &mut Vec::new()).expect("off again");

@@ -382,11 +382,15 @@ pub fn parse(line: &str) -> Result<Command, AgentError> {
         return Err(AgentError::new("bad_command", "That command is too long.", exit::FAILED));
     }
     // The tag first, then the line as the family that reads it. A tag no family has is a command not moved into one yet, or none.
-    let parsed = match commands::tag_of(line).as_deref().and_then(commands::parser_for) {
+    match commands::tag_of(line).as_deref().and_then(commands::parser_for) {
         Some(family) => family(line),
-        None => serde_json::from_str(line),
-    };
-    parsed.map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
+        None => Err(bad_command()),
+    }
+}
+
+/// The refusal of a line that isn't a command: no tag a family has, or a line serde can't read as its command.
+pub(crate) fn bad_command() -> AgentError {
+    AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED)
 }
 
 /// The refusal for a level that's too low: what's missing, and the one command that asks for it.
@@ -1828,10 +1832,12 @@ mod tests {
             Command::from(crate::commands::editing::Redo { tab: tab() }),
             Command::from(crate::commands::editing::Discard { tab: tab() }),
             Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
-            Command::from(crate::commands::edit_mode::EditMode { set: "on".into() }),
+            Command::from(crate::commands::edit_mode::EditMode {
+                set: commands::words::OnOff::On,
+            }),
             Command::from(crate::commands::contents::ContentsFold { entry: 0, tab: tab() }),
             Command::from(crate::commands::contents::ContentsShow {
-                which: "generated".into(),
+                which: commands::contents::Which::Generated,
                 tab: tab(),
             }),
             Command::from(crate::commands::contents::ContentsStop { tab: tab() }),
@@ -1911,7 +1917,10 @@ mod tests {
             "a build too: only the owner's switch lets one in below that, in the app"
         );
         assert_eq!(
-            Command::from(commands::updates::UpdateDevBuilds { set: Some("on".into()) }).access(),
+            Command::from(commands::updates::UpdateDevBuilds {
+                set: Some(commands::words::OnOff::On)
+            })
+            .access(),
             Access::At(Level::Full)
         );
         assert_eq!(
@@ -1920,14 +1929,14 @@ mod tests {
         );
         assert_eq!(
             Command::from(commands::updates::Settings {
-                auto_update: Some("on".into())
+                auto_update: Some(commands::words::OnOff::On)
             })
             .access(),
             Access::At(Level::Full)
         );
         assert_eq!(
             Command::from(commands::updates::Settings {
-                auto_update: Some("off".into())
+                auto_update: Some(commands::words::OnOff::Off)
             })
             .access(),
             Access::At(Level::Full)

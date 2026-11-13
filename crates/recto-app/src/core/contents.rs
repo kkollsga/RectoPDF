@@ -4,23 +4,17 @@
 
 use super::{Inner, lock, person};
 use recto_agent::Command;
-use recto_agent::commands::contents::{ContentsFold, ContentsShow, ContentsStop};
+use recto_agent::commands::contents::{ContentsFold, ContentsShow, ContentsStop, Which};
 use recto_session::{ContentsAction, TabId};
 use std::sync::Arc;
 
 /// What the note's action comes to: Generate and Show generated are both `contents show generated`, which makes them if they aren't made.
 fn note_command(tab: TabId, action: ContentsAction) -> Command {
     let tab = format!("#{}", tab.0);
-    let show = |which: &str| {
-        ContentsShow {
-            which: which.into(),
-            tab: tab.clone(),
-        }
-        .into()
-    };
+    let show = |which: Which| ContentsShow { which, tab: tab.clone() }.into();
     match action {
-        ContentsAction::Generate | ContentsAction::ShowGenerated => show("generated"),
-        ContentsAction::ShowOwn => show("own"),
+        ContentsAction::Generate | ContentsAction::ShowGenerated => show(Which::Generated),
+        ContentsAction::ShowOwn => show(Which::Own),
         ContentsAction::Stop => ContentsStop { tab: tab.clone() }.into(),
     }
 }

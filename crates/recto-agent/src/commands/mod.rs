@@ -3,6 +3,10 @@
 //! Commands come in families, one enum each, under the small top-level [`Command`](crate::Command): a family is a group of the help (Read, Move, Edit…), declared below with [`family!`] in the shape of a plain enum, so the ratchet counts its variants as it would any enum's. Adding a command to a family is one line there: its rows go into the table, in its group of `recto help`, at its family's place in [`PARTS`].
 //!
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
+//!
+//! # The wire and the types
+//!
+//! A command whose choices are words or a combination of flags (`view`, `compare`, `find`, `edit mode`…) holds them as types, so what it can't mean can't be built (step R2.5). Its wire form is a `line` struct in its module, the fields as the socket has always read them, and serde's reading of it is unchanged: the same nulls, unknown fields and positional arrays. The typed payload is `TryFrom` its line, which refuses what can't be with the words the run gave before, and prints as it (`Serialize` and `Debug`), so a command made in code is a line an agent could send. A command with no `line` is its own.
 
 pub mod access;
 pub mod compare;
@@ -23,6 +27,7 @@ pub mod tabs;
 pub mod text;
 pub mod updates;
 pub mod view;
+pub mod words;
 
 use crate::table::{self, Access, Spec};
 use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess};
@@ -96,11 +101,32 @@ pub fn log_tab(tab: &str) -> String {
     }
 }
 
+/// The type a command is read from on the wire: its [line](self#the-wire-and-the-types) where it has one, or the payload itself.
+macro_rules! line_of {
+    ($line:ty ; $payload:ty) => {
+        $line
+    };
+    (; $payload:ty) => {
+        $payload
+    };
+}
+
+/// A command read from its line: checked whole by its `TryFrom`, where it has a line of its own, or the payload as serde read it.
+macro_rules! from_line {
+    ($line:ty ; $payload:ty ; $read:expr) => {
+        <$payload as TryFrom<$line>>::try_from($read)
+    };
+    (; $payload:ty ; $read:expr) => {
+        Ok::<$payload, $crate::AgentError>($read)
+    };
+}
+
 /// Declares a family: the enum, and everything about its commands taken from their payloads. Written as a plain enum, so the ratchet counts its variants.
+/// A variant marked `#[line(module::line::Name)]` is a typed payload, read from that line and checked whole when it's parsed (step R2.5).
 macro_rules! family {
-    ($(#[$meta:meta])* pub enum $family:ident { $($variant:ident($payload:ty),)* }) => {
+    ($(#[$meta:meta])* pub enum $family:ident { $($(#[line($line:ty)])? $variant:ident($payload:ty),)* }) => {
         $(#[$meta])*
-        #[derive(Clone, serde::Deserialize, serde::Serialize)]
+        #[derive(Clone, serde::Serialize)]
         #[serde(tag = "cmd", rename_all = "snake_case")]
         pub enum $family {
             $($variant($payload),)*
@@ -122,9 +148,18 @@ macro_rules! family {
             /// The wire names this family reads.
             pub const TAGS: &'static [&'static str] = &[$(<$payload as $crate::commands::Cmd>::TAG,)*];
 
-            /// Reads a line known to name one of this family's commands.
-            pub(crate) fn parse(line: &str) -> Result<$crate::Command, serde_json::Error> {
-                serde_json::from_str::<Self>(line).map($crate::Command::$family)
+            /// Reads a line known to name one of this family's commands: as serde reads its line, refused as no command if that fails, and then, for a
+            /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5).
+            pub(crate) fn parse(line: &str) -> Result<$crate::Command, $crate::AgentError> {
+                #[derive(serde::Deserialize)]
+                #[serde(tag = "cmd", rename_all = "snake_case")]
+                enum Lines {
+                    $($variant(line_of!($($line)? ; $payload)),)*
+                }
+                let read = serde_json::from_str::<Lines>(line).map_err(|_| $crate::bad_command())?;
+                Ok($crate::Command::$family(match read {
+                    $(Lines::$variant(read) => Self::$variant(from_line!($($line)? ; $payload ; read)?),)*
+                }))
             }
 
             pub fn tag(&self) -> &'static str {
@@ -251,6 +286,7 @@ family! {
         Tap(tabs::Tap),
         Compare(compare::Compare),
         ContentsFold(contents::ContentsFold),
+        #[line(contents::line::ContentsShow)]
         ContentsShow(contents::ContentsShow),
         ContentsStop(contents::ContentsStop),
         View(view::View),
@@ -272,6 +308,7 @@ family! {
         Redo(editing::Redo),
         ClearHistory(editing::ClearHistory),
         Save(saving::Save),
+        #[line(edit_mode::line::EditMode)]
         EditMode(edit_mode::EditMode),
     }
 }
@@ -302,7 +339,9 @@ family! {
         UpdateStatus(updates::UpdateStatus),
         UpdateCheck(updates::UpdateCheck),
         UpdateInstall(updates::UpdateInstall),
+        #[line(updates::line::UpdateDevBuilds)]
         UpdateDevBuilds(updates::UpdateDevBuilds),
+        #[line(updates::line::Settings)]
         Settings(updates::Settings),
     }
 }
@@ -378,7 +417,7 @@ pub(crate) fn tag_of(line: &str) -> Option<std::borrow::Cow<'_, str>> {
     serde_json::from_str::<Tag<'_>>(line).ok()?.0
 }
 
-type Reads = fn(&str) -> Result<Command, serde_json::Error>;
+type Reads = fn(&str) -> Result<Command, AgentError>;
 type Words = fn(&str, &Value) -> Option<String>;
 
 /// Every family: the wire names it reads, how it reads one, and its commands' plain words. One line each.

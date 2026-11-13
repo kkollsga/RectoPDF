@@ -1,5 +1,6 @@
 //! **Updates and settings, which only the app has:** `update status`, `update check`, `update install`, `update dev-builds` and `settings`. The app's updater answers them (`recto-app`'s `core/updates.rs`); a session with no window says it has none.
 
+use super::words::OnOff;
 use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::human::text;
 use crate::table::*;
@@ -115,11 +116,62 @@ impl Cmd for UpdateInstall {
 }
 
 /// *Allow development builds*. With a value, sets it.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::UpdateDevBuilds")]
 pub struct UpdateDevBuilds {
-    #[serde(default)]
-    pub set: Option<String>,
+    pub set: Option<OnOff>,
+}
+
+/// `update dev-builds` and `settings` as they're written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct UpdateDevBuilds {
+        #[serde(default)]
+        pub set: Option<String>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Settings {
+        #[serde(default)]
+        pub auto_update: Option<String>,
+    }
+}
+
+/// `on` or `off`, or the refusal of what isn't, in the words the app gave it.
+fn on_off(word: Option<String>) -> Result<Option<OnOff>, AgentError> {
+    word.map(|word| OnOff::from_word(&word).ok_or_else(|| AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)))
+        .transpose()
+}
+
+impl TryFrom<line::UpdateDevBuilds> for UpdateDevBuilds {
+    type Error = AgentError;
+    fn try_from(line: line::UpdateDevBuilds) -> Result<Self, AgentError> {
+        Ok(Self { set: on_off(line.set)? })
+    }
+}
+
+impl From<&UpdateDevBuilds> for line::UpdateDevBuilds {
+    fn from(asked: &UpdateDevBuilds) -> Self {
+        Self {
+            set: asked.set.map(|set| set.word().to_string()),
+        }
+    }
+}
+
+impl From<UpdateDevBuilds> for line::UpdateDevBuilds {
+    fn from(asked: UpdateDevBuilds) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for UpdateDevBuilds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::UpdateDevBuilds::from(self).fmt(f)
+    }
 }
 
 impl Cmd for UpdateDevBuilds {
@@ -143,7 +195,7 @@ impl Cmd for UpdateDevBuilds {
         Runs::App
     }
     fn log_details(&self) -> Value {
-        json!({ "set": self.set.as_deref().map(recto_core::clean_line) })
+        json!({ "set": self.set.map(OnOff::word) })
     }
     /// Only the app has an updater, or settings.
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
@@ -155,11 +207,39 @@ impl Cmd for UpdateDevBuilds {
 }
 
 /// The app's settings. With a value, changes it.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::Settings")]
 pub struct Settings {
-    #[serde(default)]
-    pub auto_update: Option<String>,
+    pub auto_update: Option<OnOff>,
+}
+
+impl TryFrom<line::Settings> for Settings {
+    type Error = AgentError;
+    fn try_from(line: line::Settings) -> Result<Self, AgentError> {
+        Ok(Self {
+            auto_update: on_off(line.auto_update)?,
+        })
+    }
+}
+
+impl From<&Settings> for line::Settings {
+    fn from(asked: &Settings) -> Self {
+        Self {
+            auto_update: asked.auto_update.map(|on| on.word().to_string()),
+        }
+    }
+}
+
+impl From<Settings> for line::Settings {
+    fn from(asked: Settings) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::Settings::from(self).fmt(f)
+    }
 }
 
 impl Cmd for Settings {
@@ -183,7 +263,7 @@ impl Cmd for Settings {
         Runs::App
     }
     fn log_details(&self) -> Value {
-        json!({ "auto_update": self.auto_update.as_deref().map(recto_core::clean_line) })
+        json!({ "auto_update": self.auto_update.map(OnOff::word) })
     }
     /// Only the app has an updater, or settings.
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
