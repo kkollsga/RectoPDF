@@ -13,8 +13,8 @@ use recto_agent::Code;
 use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session::Stop, sync::Wait, sync::Watch};
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
-    Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_WAIT_MS, Runs, VERSION, allowed,
-    condition_topics, exit, refusal, reply, table,
+    Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_WAIT_MS, Refused, Runs, UNKNOWN, VERSION,
+    allowed, condition_topics, exit, refusal, reply, table,
 };
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
@@ -533,10 +533,11 @@ impl<H: Host> Loop<H> {
         }
     }
 
+    /// A line past the cap: refused as [`recto_agent::read`] refuses one too long to be a command, and logged as every line refused as it's read is.
     fn refuse_line(&mut self, index: usize) {
-        let error = AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED);
-        self.log.record("unknown", levels::current(&self.paths), error.code.as_str(), &Value::Null);
-        self.answer(index, "unknown", &Err(error));
+        let refused = Refused::too_long();
+        self.log.record_refused_as_read(refused.tag, levels::current(&self.paths), refused.error.code);
+        self.answer(index, refused.tag, &Err(*refused.error));
         let conn = &mut self.conns[index];
         conn.closing = true;
         conn.input = Vec::new();
@@ -548,7 +549,7 @@ impl<H: Host> Loop<H> {
         if self.stopping.is_some() {
             self.answer(
                 index,
-                "unknown",
+                UNKNOWN,
                 &Err(
                     AgentError::new(Code::SESSION_ENDED, "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")
                 ),
@@ -1009,7 +1010,7 @@ impl<H: Host> Loop<H> {
             if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
                 self.answer(
                     index,
-                    "unknown",
+                    UNKNOWN,
                     &Err(AgentError::new(Code::BUSY, "The session couldn't start this right now.", exit::BUSY)),
                 );
             }
@@ -1104,7 +1105,7 @@ impl<H: Host> Loop<H> {
             if let Some(index) = self.conns.iter().position(|c| c.id == conn)
                 && matches!(self.conns[index].state, State::Busy)
             {
-                self.answer(index, "unknown", &Err(stopping_now()));
+                self.answer(index, UNKNOWN, &Err(stopping_now()));
             }
         }
         for index in 0..self.conns.len() {

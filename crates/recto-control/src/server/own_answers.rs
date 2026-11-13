@@ -21,7 +21,7 @@ impl<H: Host> Loop<H> {
                 self.queue.retain(|job| !matches!(job, Job::Command { .. }));
                 for conn in queued {
                     if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
-                        self.answer(index, "unknown", &Err(stopping_now()));
+                        self.answer(index, recto_agent::UNKNOWN, &Err(stopping_now()));
                     }
                 }
             }

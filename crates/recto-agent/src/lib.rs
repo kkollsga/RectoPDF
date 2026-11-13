@@ -336,16 +336,19 @@ impl Refused {
     pub fn not_a_command() -> Self {
         Self::of(UNKNOWN, bad_command())
     }
+
+    /// A line longer than a command can be, refused before anything reads it: by [`read`], and by the socket when a line grows past its cap.
+    #[must_use]
+    pub fn too_long() -> Self {
+        Self::of(UNKNOWN, AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED))
+    }
 }
 
 /// Reads one JSON command, as [`parse`] does, and says which command a refusal was for. What the socket and `recto session` read lines with, so a
 /// refusal is answered and logged under the command's name by either.
 pub fn read(line: &str) -> Result<Command, Refused> {
     if line.len() > MAX_COMMAND_BYTES {
-        return Err(Refused::of(
-            UNKNOWN,
-            AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED),
-        ));
+        return Err(Refused::too_long());
     }
     // The tag first, then the line as the family that reads it. A tag no family has is a command not moved into one yet, or none.
     match commands::tag_of(line).as_deref().and_then(commands::parser_for) {

@@ -144,7 +144,7 @@ const REPEATED_FOR_NOTHING: [Code; 6] = [
 /// What an agent can repeat for nothing, so it's counted rather than written each time. Each record asks, so it looks at those six codes' words, not every
 /// code in the table (review of R2.5).
 fn collapses(cmd: &str, outcome: &str) -> bool {
-    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request")
+    matches!(cmd, "status" | recto_agent::UNKNOWN | "connect" | "permission_show" | "permission_request")
         || REPEATED_FOR_NOTHING.iter().any(|code| code.as_str() == outcome)
 }
 
