@@ -110,7 +110,7 @@ impl Inner {
                 session
                     .tabs()
                     .active()
-                    .and_then(|id| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.is_saving(id))))
+                    .and_then(|id| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.saves().is_saving(id))))
             })
             .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         if saving {

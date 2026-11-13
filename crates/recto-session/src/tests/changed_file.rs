@@ -191,7 +191,7 @@ fn a_look_that_finds_what_is_already_known_is_nothing_new() {
     let look = |bed: &Bed| record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a));
     assert!(bed.s.apply_file_status(a, look(&bed)), "the first look is news");
     assert_eq!(bed.s.tabs().tab_notice(a).map(FileNotice::code), Some("file_changed"));
-    bed.s.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
+    bed.s.tabs.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
     for _ in 0..3 {
         assert!(!bed.s.apply_file_status(a, look(&bed)), "the same again isn't");
     }

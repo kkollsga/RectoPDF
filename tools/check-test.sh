@@ -149,6 +149,7 @@ LIFECYCLE_TESTS='test(~life_test)'
 WINDOW_TESTS="test(~window_test) & !($LIFECYCLE_TESTS)"
 WINDOW_CRATES='beta'
 LIFECYCLE_PATHS='^app/|^crates/gamma/|^crates/beta/src/record\.rs$'
+DOC_LINK_CRATES='alpha'
 SCOPE
 # The queue is the real one only where a case is about it (segment C: its refusal of a command that failed on unchanged code); everywhere else check.sh's
 # two calls to it (the compile gate and the tests) go to a stand-in that runs the command, as the real one does for a command it lets through. The real
@@ -203,8 +204,8 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^doc -p alpha --no-deps.*/doc-links/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows doc-links workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 # Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
 if [ -z "${CHECK_TEST_SLICE:-}" ]; then
@@ -694,6 +695,25 @@ check "a clippy error fails the quick check" "101" "$rc"
 check "and no test was started" "0" "$(grep -c '^nextest' "$CALLS")"
 check "nor the workers built" "0" "$(grep -c '^build' "$CALLS")"
 : > "$CALLS"
+
+# Failure (R3.5b): a doc link to an item that had gone reached main in recto-session's docs, as nothing built them. The gate checks the links of the
+# DOC_LINK_CRATES (alpha here) when one changed, and a broken one fails it like a lint, before any test; a change elsewhere doesn't pay for it.
+git checkout -q main
+git checkout -qb doc-links-1
+echo d >> crates/alpha/src/lib.rs && git add . && git commit -qm alpha-docs
+check "a change to a crate whose links are checked passes the quick check" "0" "$(quick)"
+check "and its doc links were checked, once" "1" "$(grep -c '^doc -p alpha --no-deps --locked$' "$X/quick.calls")"
+has "with the lints that fail a broken link and a private one" "-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links" "$(sed -n 's/.*RUSTDOCFLAGS=//p' tools/check.sh)"
+has "and it says how long they took" "check: alpha's doc links took" "$(cat "$X/quick.out")"
+out=$(STUB_FAIL='doc -p alpha' STUB_EXIT=101 tools/check.sh --quick 2>&1); rc=$?
+check "a broken doc link fails the quick check" "101" "$rc"
+check "and no test was started" "0" "$(grep -c '^nextest' "$CALLS")"
+: > "$CALLS"
+git checkout -q main
+git checkout -qb doc-links-2
+echo d >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-only
+check "an unrelated change passes the quick check" "0" "$(quick)"
+check "without building any crate's docs" "0" "$(grep -c '^doc ' "$X/quick.calls")"
 git checkout -q main
 
 }

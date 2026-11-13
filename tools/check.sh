@@ -502,6 +502,13 @@ gate() {
     cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
   fi
   echo "check: clippy and the Windows compile check took $(($(date +%s) - at)) s"
+  # The docs' links of the crates in doc_crates (DOC_LINK_CRATES that changed, tools/check-scope.sh): a link to nothing, or a public doc linking a private item.
+  local c
+  for c in ${doc_crates:-}; do
+    at=$(date +%s)
+    RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links --document-private-items" cargo doc -p "$c" --no-deps --locked
+    echo "check: $c's doc links took $(($(date +%s) - at)) s"
+  done
 }
 run() {
   set -e
@@ -636,6 +643,13 @@ if ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-heading
   echo "check: the layout is off, so nothing was queued. \`cargo fmt --all\` fixes it." >&2
   exit 1
 fi
+# Whose doc links the gate checks: the DOC_LINK_CRATES that changed, or all of them when everything runs. None outside --quick and --full, which select.
+doc_crates=""
+for c in $DOC_LINK_CRATES; do
+  if [ "${scope_all:-0}" = 1 ] || has_line "$(printf '%s\n' ${scope_changed:-})" "$c"; then doc_crates="$doc_crates${doc_crates:+ }$c"; fi
+done
+[ -n "${scope_key:-}" ] || doc_crates=""
+export doc_crates
 export -f gate
 gate_status=0
 if [ "$part" != window ] && [ "$part" != lifecycle ]; then

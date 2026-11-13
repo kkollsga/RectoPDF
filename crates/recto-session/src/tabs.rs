@@ -36,7 +36,7 @@ impl<L: DocLoader> Session<L> {
         // What's read is where the rule looked: see [`confined::Confinement::to_read`].
         let to_read = self.tabs.confinement().to_read(path).ok_or(SessionError::OutsideQuietRun)?;
         // The tab already showing this file, if there is one.
-        if let Some(id) = self.tab_for_path(path) {
+        if let Some(id) = self.tabs.for_path(path) {
             self.activate(id);
             self.recent.note(path);
             return Ok(id);

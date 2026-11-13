@@ -94,7 +94,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(left) = self.tabs.active().filter(|left| *left != id) {
             let clean = !self.lists.has_list(left);
             self.touch(left);
-            if let Some(tab) = self.tab_mut(left)
+            if let Some(tab) = self.tabs.tab_mut(left)
                 && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
                     || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff)))
             {
@@ -109,8 +109,8 @@ impl<L: DocLoader> Session<L> {
         let (loaded, stamp) = match self.warm.take_read(id) {
             Some(read) => read,
             None => {
-                let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
-                (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
+                let stamp = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());
+                (self.tabs.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
             }
         };
         self.compare_read_with_edits(id, loaded.as_ref().ok().map(|facts| facts.page_count), stamp);
@@ -118,7 +118,7 @@ impl<L: DocLoader> Session<L> {
         // now, is no less the tab's edits: "not in memory" is never "none".
         let pages_with_edits = self.lists.pages(id);
         let mut replaced = None;
-        let tab = self.tab_mut(id);
+        let tab = self.tabs.tab_mut(id);
         match loaded {
             Ok(facts) => {
                 if let Some(tab) = tab {
@@ -160,7 +160,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **What a wake read, against what the tab's list is about** (`pages` and `read` are the file's length and stamp as read). Only history, made on another
     /// version than what was read, doesn't apply to it and goes. Unsaved edits are never let go for it, as a file changing never takes a person's edits: the tab
-    /// knows they don't fit ([`Self::edits_fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
+    /// knows they don't fit ([`fit::Notices::fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
     /// back makes them fit again; where it isn't, the stamp goes, so nothing takes this file as theirs. A list still asleep (its journal couldn't be read just
     /// now) is compared by what's kept of it: the length the file had isn't, so only another version is found, never another length.
     fn compare_read_with_edits(&mut self, id: TabId, pages: Option<u32>, read: Option<FileStamp>) {
@@ -184,7 +184,7 @@ impl<L: DocLoader> Session<L> {
                         .and_then(|path| file_stamp(&path).ok())
                         .is_some_and(|now| !now.same_contents(read));
                 self.clear_history(id, ClearReason::FileChanged);
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     tab.file
                         .set_notice(Some(if replaced { FileNotice::Changed } else { FileNotice::HistoryRolledOff }));
                 }
@@ -212,7 +212,7 @@ impl<L: DocLoader> Session<L> {
         } else {
             None
         };
-        let Some(tab) = self.tab_mut(id) else { return };
+        let Some(tab) = self.tabs.tab_mut(id) else { return };
         match elsewhere {
             Some((stamp, seen, seen_pages, file_changed, other_length)) => {
                 tab.file.stamp = stamp;
