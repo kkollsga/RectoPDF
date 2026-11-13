@@ -92,6 +92,20 @@ fn measure(tabs: usize) {
             adding: false,
         });
     });
+    // A click on a link to a page of this document, as the page view reports the hit: here, a link on the first page.
+    case(&app, "link click", tabs, nothing, |app, first| {
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let hit = recto_reader::links::LinkHit {
+            page: 0,
+            rect: [72.0, 112.0, 300.0, 128.0],
+            target: recto_core::nav::LinkTarget::Page {
+                page: if first { 8 } else { 4 },
+                within: Some(0.3),
+            },
+        };
+        crate::core::follow_link(inner, 0, &engine, hit);
+    });
     case(&app, "typed page", tabs, nothing, |app, first| {
         app.act(UiAction::PageTyped {
             text: (if first { "5" } else { "2" }).into(),
