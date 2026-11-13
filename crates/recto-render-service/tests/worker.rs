@@ -635,35 +635,6 @@ fn full_page_fills(count: usize) -> Vec<u8> {
     content
 }
 
-/// A page that takes far longer to draw for the hidden-text check than these tests' short deadlines allow.
-fn slow_to_check() -> TempPdf {
-    let content = full_page_fills(20_000);
-    TempPdf::new("slow.pdf", &pages(&[Page::new(text_lines(&["A plain page"])), Page::new(content)]))
-}
-
-/// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing. It's remembered as that, so it isn't tried again, and it doesn't count towards stopping the document.
-#[test]
-fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_alone() {
-    let file = slow_to_check();
-    let mut doc = renderer(
-        &file.0,
-        Policy {
-            page_deadline: Duration::from_millis(250),
-            ..Policy::default()
-        },
-    );
-    let read = doc.page_characters(1, true, true).expect("the text still comes back");
-    assert!(!read.hidden_checked, "not checked");
-    assert!(read.chars.iter().any(|record| record.ch() == 'W'));
-    assert!(doc.stats().deadline_kills >= 1, "{:?}", doc.stats());
-    for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
-        assert_eq!(doc.page_draw_state_at(1, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
-    }
-    let kills = doc.stats().deadline_kills;
-    assert!(!doc.page_characters(1, true, true).unwrap().hidden_checked);
-    assert_eq!(doc.stats().deadline_kills, kills, "it isn't tried again");
-}
-
 /// Failure: a copy of a file with many slow pages uses up the kills a document is allowed, and then nothing in it draws. Checks stop being tried long before that, and what they cost isn't counted against drawing.
 #[test]
 fn checks_past_their_deadline_cant_stop_a_document_drawing() {

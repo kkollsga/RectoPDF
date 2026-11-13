@@ -320,6 +320,12 @@ fn fake_worker() {
                 if mode == "dies_drawing_for_the_check" && job.hidden_check {
                     std::process::abort();
                 }
+                // A page whose check draws past any deadline: it never answers, and the host stops it at its deadline. Its text read answers at once.
+                if mode == "check_runs_past_its_deadline" && job.hidden_check {
+                    loop {
+                        std::thread::park();
+                    }
+                }
                 let _ = send_all(&channel, &answer_text(&mode, &job), &[]);
             }
             _ => {
@@ -700,6 +706,35 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     assert!(
         matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
         "a check that failed doesn't stop the page being drawn"
+    );
+}
+
+/// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the
+/// deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to
+/// draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing or the page's text. It's remembered as that, so it isn't tried
+/// again. On the stand-in, whose check never answers and whose read answers at once, so only the check meets the deadline: on a real page whose read had
+/// to beat the test's own 250 ms deadline too, the read lost under CI's limits about one run in five (`worker.rs`, 2026-11-13, 4 of 20 at load 4 to 13).
+#[test]
+fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_and_text_alone() {
+    let (mut doc, _file) = doc(
+        "check_runs_past_its_deadline",
+        Policy {
+            page_deadline: Duration::from_millis(250),
+            ..policy()
+        },
+    );
+    let read = doc.page_characters(0, false, true).expect("the text still comes back");
+    assert!(!read.hidden_checked, "not checked");
+    assert_eq!(read.chars.len(), 1, "the page's text");
+    assert_eq!(doc.stats().deadline_kills, 1, "the check was stopped at its deadline: {:?}", doc.stats());
+    for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
+        assert_eq!(doc.page_draw_state_at(0, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
+    }
+    assert!(!doc.page_characters(0, false, true).unwrap().hidden_checked);
+    assert_eq!(doc.stats().deadline_kills, 1, "it isn't tried again");
+    assert!(
+        matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
+        "the page still draws"
     );
 }
 
