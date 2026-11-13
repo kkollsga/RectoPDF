@@ -451,6 +451,10 @@ pub trait SessionAccess {
     fn finding(&self) -> Option<&dyn find::Finding> {
         None
     }
+    /// The state record this host keeps, for `session show`, `sleep`, `save`, `restore` and `check`. A session in one process has none: they need the long-running one.
+    fn records(&self) -> Result<&dyn commands::record::Records, AgentError> {
+        Err(commands::needs_server())
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -551,6 +555,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     let needed = command.access();
     if !allowed(level, needed) {
         return Err(refusal(table::display_name(command.tag()), level, needed));
+    }
+    // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
+    if command.route() == Runs::Record {
+        return execute_held(access, level, command, events);
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
