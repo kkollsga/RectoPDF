@@ -41,7 +41,7 @@ fn back_and_forward_come_back_after_a_restart() {
     assert_eq!(again.tab(id).unwrap().page, 9);
     assert!(!again.go_forward(id).unwrap(), "nowhere further");
     again.close(id).unwrap();
-    assert!(again.jumps.is_empty());
+    assert!(again.mail.no_jumps());
 }
 
 /// Failure: a tab's trail makes a cold tab cost more than its budget of 4 KiB, as nothing counts it.
@@ -59,10 +59,19 @@ fn a_cold_tab_with_a_full_trail_stays_in_budget() {
     let tab = s.tab(id).unwrap();
     let cost = std::mem::size_of::<TabRecord>()
         + tab.name.len()
-        + tab.file_name.len()
-        + tab.trail.as_ref().map_or(0, |trail| std::mem::size_of::<trail::Trail>() + trail.heap_bytes());
+        + tab.file.file_name.len()
+        + tab
+            .reading
+            .trail
+            .as_ref()
+            .map_or(0, |trail| std::mem::size_of::<trail::Trail>() + trail.heap_bytes());
     assert!(cost <= 4096, "{cost} bytes");
-    assert!(tab.trail.as_ref().is_some_and(|trail| !trail.back().is_empty() || !trail.forward().is_empty()));
+    assert!(
+        tab.reading
+            .trail
+            .as_ref()
+            .is_some_and(|trail| !trail.back().is_empty() || !trail.forward().is_empty())
+    );
 }
 
 /// Failure: after a page is deleted or moved, Back goes to the wrong page, or to where a deleted page used to be.

@@ -79,7 +79,7 @@ impl AppCore {
             .get(first as usize)
             .map(|entry| (entry.tab, entry.entry, entry.expanded));
         self.inner.tools.folds.acted(entry);
-        self.toggle_contents_section(first);
+        self.act(crate::controls::UiAction::Chevron { first });
     }
 
     /// A key with the sidebar's list holding the keyboard: `left` folds the section being read, `right` opens it. Says whether it did anything, so the key goes on to whatever else takes it if not.
@@ -94,7 +94,9 @@ impl AppCore {
         let Some(target) = self.inner.tools.folds.key_target(key, &contents, current) else {
             return false;
         };
-        self.toggle_contents_section(u32::try_from(target).unwrap_or(u32::MAX));
+        self.act(crate::controls::UiAction::Chevron {
+            first: u32::try_from(target).unwrap_or(u32::MAX),
+        });
         true
     }
 }

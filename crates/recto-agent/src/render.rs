@@ -67,6 +67,15 @@ pub(crate) fn default_scale() -> f32 {
 /// `render --scale max`, on its way to where the page's size is known. Nothing else can reach this: JSON has no infinity, and a number too big for a scale is refused on the way in.
 pub(crate) const LARGEST_THAT_FITS: f32 = f32::INFINITY;
 
+/// A scale on the wire, as [`scale_or_max`] reads it back: the largest that fits is the word `max`.
+pub(crate) fn scale_as_sent<S: serde::Serializer>(scale: &f32, to: S) -> Result<S::Ok, S::Error> {
+    if scale.is_infinite() {
+        to.serialize_str("max")
+    } else {
+        to.serialize_f32(*scale)
+    }
+}
+
 /// A scale off the wire: a number, or the word `max`.
 pub(crate) fn scale_or_max<'de, D: serde::Deserializer<'de>>(from: D) -> Result<f32, D::Error> {
     match <Value as serde::Deserialize>::deserialize(from)? {

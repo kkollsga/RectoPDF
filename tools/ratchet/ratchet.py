@@ -10,6 +10,7 @@ BUDGET = {
     "struct": env_int("RATCHET_STRUCT_FIELDS", 15),
     "enum": env_int("RATCHET_ENUM_VARIANTS", 40),
     "impl": env_int("RATCHET_IMPL_METHODS", 40),
+    "type": env_int("RATCHET_TYPE_METHODS", 60),
 }
 WHAT = {
     "file": ("production lines", "Split the file by concern into a module of its own (guide 2.8)."),
@@ -17,7 +18,10 @@ WHAT = {
     "struct": ("fields", "Group related fields into a struct of their own, owned by the feature (guide 2.8)."),
     "enum": ("variants", "Split the enum by feature, each feature owning its variants (guide 2.8)."),
     "impl": ("methods", "Move the methods of one concern into a type or an impl in a module of its own (guide 2.8)."),
+    "type": ("methods in all its inherent impl blocks", "Cut the type into components that own their fields and methods; an `impl` block in another file is the same type (guide 2.8)."),
 }
+# type key -> {file: methods}: filled by measure(), read by compare() to name the files of a type that is over
+TYPE_FILES = {}
 HUBS = [
     "crates/recto-session/src/lib.rs", "crates/recto-agent/src/lib.rs", "crates/recto-agent/src/table.rs",
     "crates/recto-agent/src/human.rs", "crates/recto-ffi/src/lib.rs", "crates/recto-ffi/src/qa.rs",
@@ -231,8 +235,9 @@ def rust_files(root):
             yield from walk(root, os.path.join('crates', c, sub), ('.rs',))
 
 def measure(root):
-    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, sleep, ffi, apptest."""
+    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, type, sleep, ffi, apptest."""
     m = {}
+    TYPE_FILES.clear()
     apptests = 0
     srcs, test_mods = {}, set()
     for rel in rust_files(root):
@@ -274,6 +279,12 @@ def measure(root):
         for kind, key, n in scan_items(t, lineof):
             k = (kind, rel + '::' + key)
             m[k] = max(m.get(k, 0), n)
+            if kind == 'impl':
+                # the same type across files: every inherent impl block of a name in a crate's src/ is one type (a name defined twice in one crate is a blind spot)
+                tk = '/'.join(rel.split('/')[:3]) + '::' + key
+                TYPE_FILES.setdefault(tk, {})[rel] = n
+    for tk, files in TYPE_FILES.items():
+        m[('type', tk)] = sum(files.values())
     m[('ffi', FFI_DIR)] = ffi_total
     if apptests:
         m[('apptest', APPTEST_DIR)] = apptests
@@ -358,6 +369,8 @@ def compare(cur, base, bootstrap_ffi=False):
                 shrunk.append((kind, key, lim, n))
             continue
         what, todo = WHAT[kind]
+        if kind == 'type':
+            todo = '%s Its impl blocks: %s.' % (todo, ', '.join('%s (%d)' % f for f in sorted(TYPE_FILES.get(key, {}).items())))
         if n > lim:
             if inb:
                 fails.append('%s %s grew: %d %s, baseline %d, budget %d. %s' % (kind, key, n, what, lim, BUDGET[kind], todo))
@@ -389,7 +402,8 @@ def moved(root, bpath, old, new, kind=None):
     """Renames the baseline entries of code that moved unchanged, from `old` to `new`: a file's path (every entry under it: the file, its sleeps, its
     functions, structs, enums and impls) or one item's key (`path::Name`). Refused unless the old one is gone from the tree (for a path: or no longer
     measures over its budget there, for every entry's kind, as when a small new file takes its name), the new one is there, and no number measured at
-    the new place is higher than its entry. It never raises a number; --update lowers it later as usual."""
+    the new place is higher than its entry. It never raises a number; --update lowers it later as usual. A `type` entry is per type, not per file, so a
+    move leaves it alone; a renamed type or crate is renamed in the baseline by hand (a lower or equal number; --update drops the stale entry otherwise)."""
     base, problems = read_baseline(bpath)
     if problems:
         print('ratchet --moved: the baseline has problems, fix them first:')
@@ -399,7 +413,7 @@ def moved(root, bpath, old, new, kind=None):
     cur = measure(root)
     item = '::' in old or '::' in new
     under = (lambda key: key == old) if item else (lambda key: key == old or key.startswith(old + '::'))
-    picked = sorted((k, key) for (k, key) in base if k not in ('ffi', 'apptest') and under(key) and kind in (None, k))
+    picked = sorted((k, key) for (k, key) in base if k not in ('ffi', 'apptest', 'type') and under(key) and kind in (None, k))
     if not picked:
         print('ratchet --moved: refused: the baseline has no %sentry for %s' % (kind + ' ' if kind else '', old))
         return 1

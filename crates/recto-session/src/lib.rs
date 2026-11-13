@@ -13,27 +13,42 @@ pub mod sleep;
 pub mod trail;
 
 mod contents;
+mod dirs;
+mod dormancy;
 mod editing;
 mod files;
+mod follow;
+mod generated;
 mod journal;
+mod journals;
+mod lists;
+mod mail;
 mod pages;
+mod paper;
+mod recent;
+mod registry;
 mod restore;
+mod saves;
 mod saving;
 mod tabs;
 mod tiers;
 mod view;
+mod viewing;
+mod warm;
 
 pub use change::Closed;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
+pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
+pub use paper::{Paper, WARM_PAPER, contrast_ratio};
 use record::{
-    EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError,
-    Selection, SessionRecord, TabEntry, ViewRecord,
+    EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection,
+    SessionRecord, TabEntry,
 };
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,20 +90,14 @@ pub enum Tier {
 }
 
 /// One tab. Everything else about it can be rebuilt from disk.
-// size: asserted <= 256 by `tab_record_stays_small`. Held per tab, including cold ones.
+// size: asserted <= 224 at compile time, below, and by `tab_record_stays_small`: its parts' 2 bytes of padding and none of its own. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
     /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.
     from_sleep: Option<u64>,
-    /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
-    encrypted: bool,
-    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
-    password: bool,
     /// When it was last active, edited or worked on, in seconds of the session. What going dormant goes by, with no timer of its own.
     touched: u32,
     pub id: TabId,
-    dir: u32,
-    file_name: Box<OsStr>,
     /// The name shown in the sidebar: the file's name without its extension.
     pub name: Box<str>,
     /// Zero-based page the reader is on.
@@ -99,18 +108,10 @@ pub struct TabRecord {
     pub problem: Option<OpenError>,
     /// Only the renderer could read this file. See [`DocFacts::renderer_only`].
     pub renderer_only: bool,
-    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
-    stamp: Option<FileStamp>,
-    /// Exactly where the reader was, so a tab that goes cold or across a restart comes back there. It's what's asked for on showing the tab, and what the page view says on leaving one.
-    place: Option<PlaceRecord>,
     /// Quarter turns of the view: every page drawn turned, on top of what its edits turn. Set by QA's `view_rotation` and kept in the record.
     pub view_rotation: u8,
     /// How its pages are laid out: a page to a row, or two side by side.
     pub spread: record::Spread,
-    /// What's selected, as the page view last said: kept in the record, so it comes back across a restart.
-    selection: Option<Box<Selection>>,
-    /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
-    notice: Option<Box<FileNotice>>,
     /// Its place has changed since it was last written, so one small line says so.
     place_dirty: bool,
     /// What's thought of its own contents, worked out once when they're read, so the sidebar needn't at every page.
@@ -119,9 +120,47 @@ pub struct TabRecord {
     pub generated_contents: bool,
     /// Sections the reader opened or closed by hand, as `(entry, open)`, against what following the place opens. Nothing for a tab nobody's folded, so a cold tab pays a pointer.
     folds: Option<Box<[(u32, bool)]>>,
+    /// Its file: where it is, which version, and what's said of it.
+    file: TabFile,
+    /// Where the reader is in it, what's selected, and Back and Forward.
+    reading: TabPlace,
+}
+
+/// A tab's file: where it is, which version of it the tab is about, whether it's protected, and what the reader's told of it.
+// size: asserted <= 72 at compile time, 2 of them padding. Held per tab, including cold ones.
+#[derive(Debug)]
+struct TabFile {
+    /// Its folder's number in the session's folders.
+    dir: u32,
+    file_name: Box<OsStr>,
+    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
+    stamp: Option<FileStamp>,
+    /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
+    notice: Option<Box<FileNotice>>,
+    /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
+    encrypted: bool,
+    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
+    password: bool,
+}
+
+/// Where the reader is in a tab: the exact place, what's selected, and Back and Forward.
+// size: asserted <= 80 at compile time. Held per tab, including cold ones.
+#[derive(Debug)]
+struct TabPlace {
+    /// Exactly where the reader was, so a tab that goes cold or across a restart comes back there. It's what's asked for on showing the tab, and what the page view says on leaving one.
+    place: Option<PlaceRecord>,
+    /// What's selected, as the page view last said: kept in the record, so it comes back across a restart.
+    selection: Option<Box<Selection>>,
     /// Back and Forward, once someone's jumped in it: see [`trail`]. A pointer for a tab nobody has, and at most 100 stops of 12 bytes for one somebody has, counted in a cold tab's cost (`a_cold_tab_with_a_full_trail_stays_in_budget`).
     trail: Option<Box<trail::Trail>>,
 }
+
+/// A tab's record and its parts are paid for by every tab, cold ones too, a thousand times over (rule 1). Failure caught: a field added to a tab, or a part that brings padding of its own, grows every tab unnoticed. A contents part would take the tab to 232: don't make one. Numbers that fall are lowered here.
+const _: () = {
+    assert!(std::mem::size_of::<TabFile>() <= 72);
+    assert!(std::mem::size_of::<TabPlace>() <= 80);
+    assert!(std::mem::size_of::<TabRecord>() <= 224);
+};
 
 /// A trail stop's page, and which file and file page that was, if it was any.
 type StopSource = (u32, Option<(u16, u32)>);
@@ -207,7 +246,7 @@ pub struct SidebarModel<'a> {
 
 /// How much of a tab's row in the host is what it's told about the file.
 pub fn tab_notice_words(tab: &TabRecord, has_edits: bool) -> Option<&'static str> {
-    tab.notice.as_deref().map(|notice| notice.message(has_edits))
+    tab.file.notice.as_deref().map(|notice| notice.message(has_edits))
 }
 
 /// A tab's row in the sidebar, in points.
@@ -291,345 +330,6 @@ pub fn sidebar_heights_with_note(room: f64, tabs: u32, contents_rows: u32, note:
         note,
         tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + note + contents > room,
     }
-}
-
-/// How long after the reader stops using the contents, with the pointer out of them, before they may follow again.
-pub const FOLLOW_RESUME_AFTER: f64 = 3.0;
-/// Where the place being read comes to rest, as a part of the contents' height from the top. Above the middle, as reading goes downwards: there's more ahead to see than behind, and a longer rest before it needs to move.
-const FOLLOW_ANCHOR: f64 = 0.3;
-/// The dead zone, as parts of the contents' height from the top. Inside it the list doesn't move by one pixel, so reading slowly gets long rests. Its lower edge is what sets how long and how far: from the anchor to here is 45% of the height, about 12 rows in a 776 point list, and each move covers that much rather than nudging at every section. Its upper edge lets the reader step back a few rows with nothing moving.
-const FOLLOW_DEAD_ZONE: (f64, f64) = (0.12, 0.75);
-/// How long a move takes to settle, in seconds, shortest and longest: it grows with the distance and stays bounded, so a far jump is a fast whoosh that still starts and ends softly. Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends."
-const FOLLOW_SECONDS: (f64, f64) = (0.6, 1.1);
-/// The integration step, so a move's shape doesn't depend on the frame rate. At most a few of these a frame.
-const FOLLOW_STEP: f64 = 1.0 / 240.0;
-/// Close enough to be there, in points, and slow enough to stop, in points a second.
-const FOLLOW_ARRIVED: (f64, f64) = (0.25, 3.0);
-
-/// The contents' scrolling area, as it is when it's asked about.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ContentsView {
-    pub scroll_y: f64,
-    pub height: f64,
-    pub rows: u32,
-}
-
-/// What the host should do with the contents' scroll.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FollowMove {
-    Stay,
-    /// Go there at once: a tab's first showing, or Reduce Motion.
-    SetTo(f64),
-    /// Run frames and call [`ContentsFollow::step`].
-    Move,
-}
-
-/// **How the contents follow the place being read.** Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a "dead-zone" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit." A plain state machine with its times passed in, so the host only runs frames.
-///
-/// - **Reposition, then rest.** The place sits at [`FOLLOW_ANCHOR`]. While it stays in [`FOLLOW_DEAD_ZONE`], nothing moves. Leaving it starts one move, back to the anchor.
-/// - **Every move starts and ends softly,** with its length bounded by [`FOLLOW_SECONDS`]. It's a chain: a lag on the target, followed by a critically damped spring. That's what makes acceleration build from nothing at the start, and fade at the end.
-/// - **A new target during a move only changes where the chain is heading,** so nothing steps, in position, speed or acceleration. Fast reading through many sections carries on as one long move until it settles. It only changes once the place has left the dead zone around where the move is going.
-/// - **A reader who scrolls the contents is left alone,** and so is a pointer resting in them. Following resumes on the next change of section once the pointer's out and [`FOLLOW_RESUME_AFTER`] has passed.
-/// - **With Reduce Motion nothing animates:** it goes straight there, and only when the place has left the view.
-///
-/// Costs a few comparisons a section, and nothing per row. The host's frames run only during a move.
-#[derive(Clone, Copy, Debug)]
-pub struct ContentsFollow {
-    paused: bool,
-    pointer_inside: bool,
-    last_user_scroll: f64,
-    current: Option<u32>,
-    placed: bool,
-    moving: Option<Motion>,
-    /// Where to go on the first showing, as a restore found it, and whether it was following.
-    resume: Option<(f64, bool)>,
-}
-
-/// Which rows of the contents closed and opened, and how far that carried the place.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContentsRowChange {
-    pub from: u32,
-    pub removed: u32,
-    pub inserted: u32,
-    pub place_shift: i32,
-}
-
-/// How much faster a move gets each time a section goes by with the place out of the view.
-const FOLLOW_CATCH_UP: f64 = 1.15;
-/// The chain's fastest rate, per second: its lag behind what it's chasing is about 3 divided by this.
-const FOLLOW_FASTEST_RATE: f64 = 120.0;
-
-/// A move under way.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Motion {
-    target: f64,
-    /// The lagged target the spring chases, which is what makes it start softly.
-    aim: f64,
-    /// Where it really is, in the chain. A scroll view rounds to whole device pixels, and a slow end reading that back would never arrive. Taken from the host on the first frame.
-    at: Option<f64>,
-    velocity: f64,
-    /// Rate of the chain, per second, from the distance.
-    rate: f64,
-}
-
-impl Default for ContentsFollow {
-    fn default() -> Self {
-        Self {
-            paused: false,
-            pointer_inside: false,
-            last_user_scroll: f64::NEG_INFINITY,
-            current: None,
-            placed: false,
-            moving: None,
-            resume: None,
-        }
-    }
-}
-
-/// The chain's rate for a distance: the further, the longer it takes, up to the most, so far jumps are quick and short ones aren't abrupt.
-fn follow_rate(distance: f64, height: f64) -> f64 {
-    let heights = distance.abs() / height.max(1.0);
-    let share = (heights / 4.0).clamp(0.0, 1.0).sqrt();
-    let seconds = FOLLOW_SECONDS.0 + (FOLLOW_SECONDS.1 - FOLLOW_SECONDS.0) * share;
-    // A chain like this takes this many of its natural periods to close from this far to the last quarter of a point, so a long way is no longer than the time above.
-    let periods = 6.0 + (distance.abs().max(1.0) / FOLLOW_ARRIVED.0).ln();
-    periods / seconds
-}
-
-impl ContentsFollow {
-    /// The reader scrolled the contents. Whatever was moving stops, right where it is.
-    pub fn user_scrolled(&mut self, now: f64) {
-        self.paused = true;
-        self.last_user_scroll = now;
-        self.moving = None;
-    }
-
-    /// The pointer came into the contents or left. Nothing's pulled from under it: a move under way stops.
-    pub fn pointer(&mut self, inside: bool) {
-        self.pointer_inside = inside;
-        if inside {
-            self.moving = None;
-        }
-    }
-
-    /// Another tab: its contents start fresh, in the right place.
-    pub fn new_contents(&mut self) {
-        let pointer_inside = self.pointer_inside;
-        *self = Self {
-            pointer_inside,
-            ..Self::default()
-        };
-    }
-
-    /// The first showing goes here, as it was left, and not to where the place would put it. Whether they were following or left by the reader comes back too.
-    pub fn resume_at(&mut self, y: f64, following: bool) {
-        if y.is_finite() {
-            self.resume = Some((y.max(0.0), following));
-            self.paused = !following;
-        }
-    }
-
-    /// The contents' area changed height, as the window did. The place is looked at again next, and goes straight to where it should be, since nothing about a resize wants moving.
-    pub fn view_changed(&mut self) {
-        self.moving = None;
-        // A list the reader has scrolled themselves stays where they left it, resized or not. Clearing this would count as a change of section, and snap it back once they'd stopped.
-        if self.paused {
-            return;
-        }
-        self.current = None;
-        self.placed = false;
-    }
-
-    pub fn is_following(self) -> bool {
-        !self.paused
-    }
-
-    pub fn is_moving(self) -> bool {
-        self.moving.is_some()
-    }
-
-    /// Rows closed or opened. Following, the place stays where it is on screen, so that a chapter closing above it isn't a second move straight after the first: what's above it changes, and the scroll takes it up. Otherwise it's what's at the top that stays, where the reader's looking. Says how many points to move the scroll by, with no animation, or `None` if the rows are to slide, since they're in the view and there's nothing to take up.
-    pub fn row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64> {
-        let following = self.placed && !self.paused && !self.pointer_inside;
-        if following && change.place_shift != 0 {
-            return Some(f64::from(change.place_shift) * CONTENTS_ROW_HEIGHT);
-        }
-        let above = f64::from(change.from) + f64::from(change.removed);
-        (scroll_y / CONTENTS_ROW_HEIGHT >= above).then(|| (f64::from(change.inserted) - f64::from(change.removed)) * CONTENTS_ROW_HEIGHT)
-    }
-
-    /// Rows above something were added or removed, by this many points, and the host moved its scroll to match so nothing appears to jump. The whole of a move goes with them.
-    pub fn shifted(&mut self, by: f64) {
-        if let Some(motion) = &mut self.moving {
-            motion.target += by;
-            motion.aim += by;
-            motion.at = motion.at.map(|at| at + by);
-        }
-    }
-
-    /// The place being read is now on this row. `now` is in seconds, from any fixed moment.
-    pub fn reached(&mut self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove {
-        if self.current == row {
-            return FollowMove::Stay;
-        }
-        self.current = row;
-        // Folded: there's nothing to follow, and what's under way stops. Opened again, the place is straight where it should be, and nothing whooshes from the top.
-        let Some(row) = row else {
-            self.moving = None;
-            self.placed = false;
-            self.paused = false;
-            return FollowMove::Stay;
-        };
-        if self.paused {
-            if self.pointer_inside || now - self.last_user_scroll < FOLLOW_RESUME_AFTER {
-                return FollowMove::Stay;
-            }
-            self.paused = false;
-        }
-        let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
-        let furthest = (f64::from(view.rows) * CONTENTS_ROW_HEIGHT - view.height).max(0.0);
-        let target = (place - view.height * FOLLOW_ANCHOR).clamp(0.0, furthest);
-        if !self.placed {
-            self.placed = true;
-            if let Some((y, following)) = self.resume.take() {
-                self.paused = !following;
-                return FollowMove::SetTo(y.min(furthest));
-            }
-            return FollowMove::SetTo(target);
-        }
-        if self.pointer_inside {
-            return FollowMove::Stay;
-        }
-        if reduce_motion {
-            self.moving = None;
-            let in_view = place >= view.scroll_y && place <= view.scroll_y + view.height;
-            return if in_view { FollowMove::Stay } else { FollowMove::SetTo(target) };
-        }
-        // A move under way counts from where it's going, so sections going by fast are one long move rather than a row of them, and sections going by slowly are a move and then a rest. If the place has got out of the view itself, the view is trailing: it goes for where the place is now, and faster each time, or scrolling past the speed of the move would lose the place for good.
-        if let Some(motion) = &mut self.moving {
-            let zone = (motion.target + view.height * FOLLOW_DEAD_ZONE.0)..=(motion.target + view.height * FOLLOW_DEAD_ZONE.1);
-            let at = motion.at.unwrap_or(view.scroll_y);
-            let in_view = (at..=at + view.height).contains(&place);
-            if zone.contains(&place) && in_view {
-                return FollowMove::Move;
-            }
-            motion.target = target;
-            if !in_view {
-                motion.rate = (motion.rate * FOLLOW_CATCH_UP).min(FOLLOW_FASTEST_RATE);
-            }
-            return FollowMove::Move;
-        }
-        let zone = (view.scroll_y + view.height * FOLLOW_DEAD_ZONE.0)..=(view.scroll_y + view.height * FOLLOW_DEAD_ZONE.1);
-        if zone.contains(&place) || (target - view.scroll_y).abs() < 1.0 {
-            return FollowMove::Stay;
-        }
-        self.moving = Some(Motion {
-            target,
-            aim: view.scroll_y,
-            at: Some(view.scroll_y),
-            velocity: 0.0,
-            rate: follow_rate(target - view.scroll_y, view.height),
-        });
-        FollowMove::Move
-    }
-
-    /// One frame of a move. Returns where the scroll should be, or `None` when it's over and the frames should stop. A long pause between frames is taken as a short one, so a stalled frame doesn't look like a jump.
-    pub fn step(&mut self, position: f64, dt: f64) -> Option<f64> {
-        let motion = self.moving.as_mut()?;
-        let mut left = dt.clamp(0.0, 0.05);
-        let mut at = *motion.at.get_or_insert(position);
-        // Whole steps of one size, and the rest carried in `left` by the last one, so the shape is the same at 60 or 120 frames a second.
-        while left > 0.0 {
-            let step = left.min(FOLLOW_STEP);
-            left -= step;
-            motion.aim += (motion.target - motion.aim) * (motion.rate * step).min(1.0);
-            let acceleration = motion.rate * motion.rate * (motion.aim - at) - 2.0 * motion.rate * motion.velocity;
-            motion.velocity += acceleration * step;
-            at += motion.velocity * step;
-        }
-        motion.at = Some(at);
-        if (at - motion.target).abs() < FOLLOW_ARRIVED.0 && motion.velocity.abs() < FOLLOW_ARRIVED.1 {
-            let target = motion.target;
-            self.moving = None;
-            return Some(target);
-        }
-        Some(at)
-    }
-}
-
-/// The paper a page is shown on, which has nothing to do with the window's own light or dark. Owner, 2026-11-07: "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Paper {
-    White,
-    Warm,
-    Dark,
-}
-
-/// Warm paper's colour, `0xRRGGBB`. Soft cream, as aged book paper is: warm at a glance without reading as yellow. Taken towards the eye from the first idea of `#F5EEDC`, as a multiply over a page leaves black black, and it holds well over WCAG AA for body text: see the test.
-pub const WARM_PAPER: u32 = 0xF5_EE_DC;
-
-impl Paper {
-    fn to_record(self) -> PaperName {
-        match self {
-            Self::White => PaperName::White,
-            Self::Warm => PaperName::Warm,
-            Self::Dark => PaperName::Dark,
-        }
-    }
-
-    fn from_record(name: PaperName) -> Self {
-        match name {
-            PaperName::White => Self::White,
-            PaperName::Warm => Self::Warm,
-            PaperName::Dark => Self::Dark,
-        }
-    }
-
-    /// Every paper, in the order they're offered.
-    pub const ALL: [Self; 3] = [Self::White, Self::Warm, Self::Dark];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::White => "white",
-            Self::Warm => "warm",
-            Self::Dark => "dark",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|paper| paper.name() == name)
-    }
-
-    /// What it's called on a menu, when that exists.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::White => "White",
-            Self::Warm => "Warm",
-            Self::Dark => "Dark",
-        }
-    }
-
-    /// With nothing chosen, the paper goes with the window.
-    pub fn resolved(chosen: Option<Self>, window_is_dark: bool) -> Self {
-        chosen.unwrap_or(if window_is_dark { Self::Dark } else { Self::White })
-    }
-}
-
-/// WCAG's contrast ratio between two colours, `0xRRGGBB`: from 1 to 21. AA for body text is 4.5.
-pub fn contrast_ratio(one: u32, two: u32) -> f64 {
-    fn luminance(rgb: u32) -> f64 {
-        let channel = |shift: u32| {
-            let value = f64::from((rgb >> shift) & 0xFF) / 255.0;
-            if value <= 0.039_28 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
-    }
-    let (one, two) = (luminance(one), luminance(two));
-    (one.max(two) + 0.05) / (one.min(two) + 0.05)
 }
 
 /// What hovering over a row shows: its full text, cleaned and bounded however long or strange it is. A title comes from the file, so it may be 100,000 characters of newlines, and this is the one place the host gets it from.
@@ -766,67 +466,28 @@ pub fn edits_summary_of(edits: &PageEdits) -> EditsSummary {
 /// All open tabs and which one is active.
 pub struct Session<L = DiskLoader> {
     loader: L,
-    view: ViewSettings,
-    tabs: Vec<TabRecord>,
-    active: Option<TabId>,
-    next_id: u32,
-    /// Most recently used first, at most [`MAX_WARM`].
-    warm: VecDeque<(TabId, Arc<Toc>)>,
-    dirs: Vec<Box<Path>>,
-    dir_ids: HashMap<Box<Path>, u32>,
-    /// Only for tabs with page edits. A tab with none costs nothing here.
-    edits: HashMap<TabId, PageEdits>,
-    /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
-    wake_failed: Vec<TabId>,
-    /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`Self::wake_list`] from their journal.
-    asleep: HashMap<TabId, EditsSummary>,
-    /// What tabs' `touched` count from.
-    started: std::time::Instant,
-    /// Tabs being worked on now, once for each thing working on it. Next to none.
-    held: Vec<TabId>,
-    /// Cold tabs wake from their sleep files here.
-    sleep_files: bool,
-    just_read: Option<(TabId, sleep::SleepFile)>,
-    woken_from_file: Vec<TabId>,
-    left_warm: Vec<(TabId, Arc<Toc>)>,
-    /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
-    draws: VecDeque<DrawNote>,
-    /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
-    woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
-    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
-    place_lost: bool,
-    /// Find, as the reader left it.
-    find: FindRecord,
-    /// Edit mode: the panel opens on its tools, and Rotate turns the page being read rather than every page.
-    edit_mode: bool,
-    /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
-    journaling: bool,
-    /// Each edited tab's journal, by name. Nothing for a tab with no edits.
-    journals: HashMap<TabId, Box<str>>,
-    /// Lists whose journal has to start again from the whole list: which tab, as of which count, and the journal it takes over from. Next to none, and only until they're written.
-    fresh_journals: Vec<(TabId, u64, Option<String>)>,
-    /// Journals to remove, as what's in them has been discarded or saved.
-    retired_journals: Vec<Box<str>>,
-    /// Journals of tabs that have closed, with what hadn't gone out yet. Nothing's lost by closing.
-    departing: Vec<JournalAppend>,
-    /// Where a PDF's history is, for one being opened.
-    history: Option<Arc<dyn HistorySource>>,
-    /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
-    agent_at_full: bool,
-    /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
-    saving: Vec<TabId>,
+    /// The view settings, Find and edit mode.
+    viewing: viewing::Viewing,
+    /// Every open tab, which one's active, the next one's number, and the folders their files are in.
+    tabs: registry::Tabs,
+    /// The tabs that keep their contents, and the reads of cold tabs' files made ahead of waking them.
+    warm: warm::Warm,
+    /// Every tab's list of edits, in memory or gone to disk, those that couldn't be read back, and whether an agent's at Full.
+    lists: lists::Lists,
+    /// The session's clock, holds on tabs, and what's on its way to and from the sleep files.
+    dormancy: dormancy::Dormancy,
+    /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
+    mail: mail::PageViewMail,
+    /// Each edited tab's journal, what's waiting to go out to the journals, and where a PDF's history is read from.
+    journals: journals::Journals,
+    /// Tabs being saved, and what saves lately moved their tabs on from.
+    saves: saves::Saves,
     /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.
     comparison: Option<compare::Comparison>,
-    /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
-    generated: Vec<(TabId, GeneratedView)>,
-    /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
-    saved_over: Vec<(TabId, FileStamp, FileStamp)>,
-    /// Files opened lately, newest first, at most [`MAX_RECENT`]. In the state record.
-    recent: VecDeque<PathBuf>,
-    /// Moves whenever `recent` does, so the app rebuilds what it shows of it only then.
-    recent_version: u64,
-    /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
-    jumps: Vec<(TabId, trail::Stop)>,
+    /// Generated contents the sidebar knows of, for tabs someone asked about.
+    generated: generated::Generated,
+    /// Files opened lately, for File > Open Recent and ⌘K.
+    recent: recent::Recent,
 }
 
 /// A file opened lately, for File > Open Recent and ⌘K.
@@ -961,6 +622,12 @@ pub struct DrawNote {
     /// The failure's stable code, or `None` if it was drawn.
     pub failure: Option<&'static str>,
 }
+
+/// The session lives behind the app's one mutex and is handed between its threads: nothing in it may hold a lock, a cell or anything else that isn't `Send`. Failure caught: a component of `Session` (R3.2) brings state of its own that can't cross threads, which would only show in another crate's build.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<Session<DiskLoader>>();
+};
 
 impl Default for Session<DiskLoader> {
     fn default() -> Self {

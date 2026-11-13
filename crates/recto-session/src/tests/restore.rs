@@ -154,3 +154,162 @@ fn a_restored_page_is_held_to_the_document() {
     saved.active = Some(999);
     assert!(back.restore(&saved, HashMap::new()).is_err());
 }
+
+/// Failure: an agent's `session restore` on a live session leaves the generated contents of a tab it replaces, and a restored tab with the same number, another file, shows them: one document's headings under another's name. Tab numbers come back from the record, so a number seen before is the usual case.
+#[test]
+fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
+    let lines = [TocLine {
+        title: "Only in the old file",
+        page: 0,
+        parent: NONE,
+        depth: 0,
+    }];
+    let mut other = session(10);
+    let b = other.open(Path::new("/d/other.pdf")).unwrap();
+    other.choose_generated(b, true);
+    let record = other.to_record();
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    assert_eq!(a, b, "the restored tab has the old one's number");
+    s.choose_generated(a, true);
+    s.set_generated_view(a, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+    s.restore(&record, HashMap::new()).unwrap();
+    // As the agent's restore does next.
+    s.wake_active();
+    assert_eq!(s.tab(a).unwrap().name.as_ref(), "other");
+    assert_eq!(s.generated_view(a), None, "nothing's known of the restored file's generated contents");
+    let shown: Vec<&str> = s
+        .sidebar()
+        .rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Contents)
+        .map(|row| row.text)
+        .collect();
+    assert!(
+        !shown.contains(&"Only in the old file"),
+        "the old file's headings show under the new: {shown:?}"
+    );
+}
+
+/// The record of a session with the same tab numbers as `tabs` live ones, each another file, on a version the record names, the first of them active.
+pub(super) fn another_session_with(tabs: usize) -> SessionRecord {
+    let mut other = session(10);
+    for n in 0..tabs {
+        other.open(Path::new(&format!("/d/other-{n}.pdf"))).unwrap();
+    }
+    let mut record = other.to_record();
+    for (n, tab) in record.tabs.iter_mut().enumerate() {
+        tab.file = Some(replaced_stamp(n as u64).into());
+    }
+    record.active = record.tabs.first().map(|tab| tab.id);
+    record
+}
+
+pub(super) fn replaced_stamp(n: u64) -> FileStamp {
+    FileStamp {
+        size: 100 + n,
+        mtime_ns: 100,
+        device: 1,
+        inode: 100 + n,
+    }
+}
+
+/// Failure: a save under way on a tab that a restore replaced holds the restored tab with its number as being saved, so its edits are refused with "being saved" until a save it has nothing to do with ends.
+#[test]
+fn a_restored_tab_isnt_being_saved_for_the_tab_it_replaced() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap();
+    s.begin_save(a, false).unwrap();
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    assert!(!s.is_saving(a) && !s.any_saving());
+    assert_eq!(s.edit_pages(a, |edits| edits.rotate(0, 1, 1)), Ok(()));
+    s.end_save(a);
+    assert!(s.is_edited(a), "the save that ends later takes nothing of the restored tab's");
+}
+
+/// Failure: a hold on a tab a restore replaced, by an agent's command or an export, keeps the restored tab with its number from ever going dormant once that hold has been let go of as well.
+#[test]
+fn a_restored_tab_isnt_held_for_the_tab_it_replaced() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    s.open(Path::new("/d/old-2.pdf")).unwrap();
+    s.hold(a);
+    let mut record = another_session_with(2);
+    record.active = Some(record.tabs[1].id);
+    s.restore(&record, HashMap::new()).unwrap();
+    assert!(s.can_go_dormant(a), "nothing holds the restored tab");
+    s.let_go(a);
+    assert!(s.can_go_dormant(a));
+}
+
+/// Failure: a save remembered of a tab a restore replaced is believed of the restored tab with its number, so the page view carries another file's layout over as if it had just been saved.
+#[test]
+fn a_restored_tab_wasnt_saved_over_by_the_tab_it_replaced() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    for version in [1, 0] {
+        s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap();
+        s.begin_save(a, false).unwrap();
+        s.saved(a, replaced_stamp(version), 10, None, None);
+        s.end_save(a);
+    }
+    assert!(s.saved_from(a).is_some());
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    assert_eq!(s.own_stamp(a), Some(replaced_stamp(0)), "the restored tab is on the version the save wrote");
+    assert_eq!(s.saved_from(a), None);
+}
+
+/// Failure: the sleep file a tab a restore replaced was woken from is taken for the restored tab with its number's first frame: another file's pictures.
+#[test]
+fn a_restored_tab_takes_no_sleep_file_of_the_tab_it_replaced() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    let sleep = sleep::SleepFile {
+        file: replaced_stamp(9),
+        file_pages: 10,
+        pages: 10,
+        list_seq: 0,
+        renderer_only: false,
+        version: None,
+        toc: Toc::default(),
+        usual: None,
+        sizes: Vec::new(),
+        pictures: Vec::new(),
+    };
+    s.dormancy.woke_from_file(a, sleep);
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    assert!(s.take_sleep_read(a).is_none());
+}
+
+/// Failure: a tab a restore replaced, woken from its sleep file, is still on the list of files to look at, which is then about the restored tab with its number: a look at a file for a wake that never happened to it.
+#[test]
+fn a_restored_tab_isnt_down_as_woken_from_a_sleep_file() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    s.dormancy.note_woken_from_file(a);
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    assert!(s.take_woken_from_file().is_empty());
+}
+
+/// Failure: a tab a restore replaced, just gone cold, has its sleep file made as the restored tab with its number: the restored file's name and version with the replaced file's contents.
+#[test]
+fn a_restored_tab_gets_no_sleep_file_of_the_tab_it_replaced() {
+    let mut s = session(10);
+    s.set_sleep_files(true);
+    let ids: Vec<TabId> = (0..=MAX_WARM).map(|n| s.open(Path::new(&format!("/d/old-{n}.pdf"))).unwrap()).collect();
+    assert_eq!(s.tier(ids[0]), Tier::Cold);
+    s.restore(&another_session_with(MAX_WARM + 1), HashMap::new()).unwrap();
+    assert!(s.take_left_warm().is_empty(), "no sleep file comes of a tab that's gone");
+}
+
+/// Failure: an edit that took away the page being read in a session a restore replaced is said of the restored one: "the page you were on was removed" about a document nobody's edited.
+#[test]
+fn a_restore_doesnt_say_a_place_was_lost_in_the_session_it_replaced() {
+    let mut s = session(10);
+    let a = s.open(Path::new("/d/old.pdf")).unwrap();
+    s.go_to(a, 4).unwrap();
+    s.edit_pages(a, |edits| edits.delete(4, 1)).unwrap();
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    assert!(!s.take_place_lost());
+}

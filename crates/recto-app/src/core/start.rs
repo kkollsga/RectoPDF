@@ -142,7 +142,7 @@ impl Inner {
                 stopper: Mutex::new(stopper),
                 announcer: Mutex::new(announcer),
                 #[cfg(any(test, feature = "testkit"))]
-                heard: Mutex::new(None),
+                heard: Mutex::new(crate::testkit::heard::Overheard::default()),
             },
             window: WindowParts::new(watchdog),
             tools: Tools::new(&save_step),

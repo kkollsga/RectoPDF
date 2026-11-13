@@ -61,7 +61,7 @@ fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
         s.apply_file_status(other, FileStatus::Same(stamp(100 + n)));
         s.saved(other, stamp(1000 + n), 3, None, None);
     }
-    assert!(s.saved_over.len() <= MAX_SAVED_OVER);
+    assert!(s.saves.remembered() <= MAX_SAVED_OVER);
 }
 
 /// Failure (review): an edit made while a save writes comes back reading as saved, with its turn not in the file. Every way of changing a tab's edits waits while it's saved; a save that fails lets go and forgets what it noted, and the edits stand.
@@ -227,7 +227,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     };
     assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
     assert!(!s.is_edited(a));
-    assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
+    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
     assert!(s.tab_notice_message(a).is_some_and(|words| words.contains("Undo")));
     assert_eq!(s.page_edits(a).unwrap().summary().undo, 1);
     assert!(s.undo_edit(a), "the newer step still works");
@@ -239,9 +239,9 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     // Going to another tab has said it.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.tap(a).unwrap();
-    assert!(s.tab(a).unwrap().notice.is_some(), "not yet");
+    assert!(s.tab(a).unwrap().file.notice.is_some(), "not yet");
     s.tap(b).unwrap();
-    assert_eq!(s.tab(a).unwrap().notice, None);
+    assert_eq!(s.tab(a).unwrap().file.notice, None);
     // Only a turn and a move in the history: no pages named, so no copy's needed, and nothing rolls off.
     let mut s = journaled(6);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
@@ -249,7 +249,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(!s.page_edits(a).unwrap().needs_own_pages());
     assert_eq!(s.saved(a, target, 6, None, None), 0);
-    assert_eq!(s.tab(a).unwrap().notice, None);
+    assert_eq!(s.tab(a).unwrap().file.notice, None);
     assert!(s.undo_edit(a) && s.undo_edit(a) && s.is_edited(a));
 }
 
@@ -328,7 +328,7 @@ fn a_save_of_something_else_ends_the_history() {
     assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
     assert!(s.page_edits(a).is_none());
     assert_eq!(s.pages_in(a), 3);
-    assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
+    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
     assert_eq!(s.journal_work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
     // A tab with no list has nothing to carry, and a file kept for it goes.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
@@ -423,7 +423,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     s.apply_file_status(a, FileStatus::Changed(now));
     assert!(s.page_edits(a).is_none());
     assert_eq!(s.own_stamp(a), Some(now));
-    assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
     // With unsaved edits, they stay and say so, as decision 23 has it.
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.apply_file_status(a, FileStatus::Changed(target));
@@ -446,10 +446,10 @@ fn a_file_changed_under_a_history_clears_it_on_waking() {
     let b = s.open(&dir.join("b.pdf")).unwrap();
     s.tap(b).unwrap();
     std::fs::write(&file, b"another version altogether").unwrap();
-    s.warm.clear();
+    s.warm.clear_contents();
     s.tap(a).unwrap();
     assert!(s.page_edits(a).is_none());
-    assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
     assert_eq!(
         s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
         1,
@@ -484,5 +484,71 @@ fn clearing_takes_a_copy_kept_for_an_unconfirmed_save() {
         if let Some(list) = s.page_edits(a) {
             assert!(list.keeping().is_none());
         }
+    }
+}
+
+/// Failure: a save under way when an agent's `session restore` replaced the session finishes on the restored tab that has its tab's number: the restored tab takes the old file's version, its edit list is rebased on a save it never made and reads as saved, or a new save of it begins while the old one's word can still land. A save belongs to the session it began in.
+#[test]
+fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() {
+    use super::restore::{another_session_with, replaced_stamp};
+    let mut s = session(10);
+    let old = s.open(Path::new("/d/old.pdf")).unwrap();
+    s.edit_pages(old, |edits| edits.rotate(0, 1, 1)).unwrap();
+    s.begin_save(old, false).unwrap().expect("something to save");
+    s.restore(&another_session_with(1), HashMap::new()).unwrap();
+    let restored = old;
+    s.edit_pages(restored, |edits| edits.delete(2, 1)).unwrap();
+    let list = s.edits_record(restored);
+    let version = s.own_stamp(restored);
+    assert_eq!(
+        s.begin_save(restored, false).unwrap_err(),
+        SessionError::Saving,
+        "a new save waits for the old one's end"
+    );
+    // The old save finishes, as the saver of the replaced session goes on to.
+    s.save_prepared(old, stamp_for(7), None);
+    assert_eq!(s.saved(old, stamp_for(7), 9, None, None), 0);
+    s.end_save(old);
+    assert_eq!(s.own_stamp(restored), version, "the restored tab keeps its version");
+    assert_eq!(s.edits_record(restored), list, "and its list, with nothing noted of a save");
+    assert!(s.is_edited(restored), "and it's still unsaved");
+    assert_eq!(s.saved_from(restored), None);
+    assert!(!s.any_saving() && !s.saves.abandoned_has(old), "nothing's left marked as saving");
+    assert!(
+        s.begin_save(restored, false).unwrap().is_some(),
+        "once the old save has ended, a new one begins"
+    );
+    s.saved(restored, replaced_stamp(1), 9, None, None);
+    s.end_save(restored);
+    assert_eq!(s.own_stamp(restored), Some(replaced_stamp(1)), "and its word is believed");
+}
+
+/// Failure: a restore that leaves more saves under way than are kept by name forgets the oldest, whose word is then believed of a restored tab; or the list of them grows without a cap.
+#[test]
+fn saves_left_under_way_past_the_cap_are_all_doubted() {
+    use super::restore::another_session_with;
+    let mut s = session(10);
+    let ids: Vec<TabId> = (0..=saves::MAX_ABANDONED_SAVES)
+        .map(|n| s.open(Path::new(&format!("/d/old-{n}.pdf"))).unwrap())
+        .collect();
+    for id in &ids {
+        s.begin_save(*id, true).unwrap().expect("a Save As has something to save");
+    }
+    s.restore(&another_session_with(ids.len()), HashMap::new()).unwrap();
+    assert_eq!(s.saves.abandoned_len(), saves::MAX_ABANDONED_SAVES, "the list holds its cap");
+    for id in &ids {
+        let version = s.own_stamp(*id);
+        assert_eq!(s.saved(*id, stamp_for(99), 10, None, None), 0);
+        assert_eq!(s.own_stamp(*id), version, "no old save is believed, the oldest or the newest");
+        assert_eq!(s.begin_save(*id, true).unwrap_err(), SessionError::Saving);
+    }
+}
+
+fn stamp_for(n: u64) -> FileStamp {
+    FileStamp {
+        size: n,
+        mtime_ns: n as i64,
+        device: 3,
+        inode: n,
     }
 }

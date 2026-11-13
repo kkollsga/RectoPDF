@@ -289,6 +289,26 @@ pub fn misreads_the_record(facts: Option<&Facts>) -> bool {
     facts.is_some_and(|facts| recto_update::test_breakage(&facts.app, recto_update::TestBreakage::MisreadsTheRecord))
 }
 
+/// **What the window does with how the person's update went, when they chose it from the menu** (R2.3, C8): the menu's *Update to X…* whose offer has gone
+/// by the time it runs is answered as the menu always did, by the person's `update check`, a follow-up of the window's, still marked as the menu's; and what
+/// the menu asked for that didn't start, or a check that's said what it found, puts nothing more up as an alert. Settings' button is never the menu's, and
+/// nothing follows it.
+pub fn answered(inner: &Arc<Inner>, ran: &super::person::Ran<'_>) {
+    use recto_agent::commands::Updates;
+    use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
+    let Command::Updates(asked) = ran.command else { return };
+    if !inner.updates.menu().marked() {
+        return;
+    }
+    match (asked, ran.refused()) {
+        (Updates::UpdateInstall(UpdateInstall { zip: None, now: true }), Some(error)) if matches!(error.code, "nothing_on_offer" | "development_build") => {
+            super::person::submit(inner, Command::from(UpdateCheck {}));
+        }
+        (Updates::UpdateCheck(_), _) | (_, Some(_)) => inner.updates.menu().unmark(),
+        _ => {}
+    }
+}
+
 impl Inner {
     /// What `recto update` and `recto settings` come to. The level's been checked.
     pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
@@ -426,7 +446,7 @@ impl Inner {
 
     /// With the window open, the margin says it, and nothing more is put up.
     pub fn take_update_alert(&self) -> Option<UpdateAlert> {
-        let words = self.updates.take_alert()?;
+        let words = self.updates.menu().take_alert()?;
         let app = lock(&self.window.app);
         let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
         alert_for(words, !app.window_closed && !in_dock)
@@ -481,18 +501,35 @@ impl Inner {
         }
     }
 
-    pub fn setting_chosen(&self, id: &str, on: bool) {
-        // Past a hand-off's last look, what's done here wouldn't come back.
-        if self.core.frozen.load(Ordering::SeqCst) {
+    /// **The menu's item, as the person chooses it** (R2.3, C8): what its title says, *Update to X…* the person's `update install --now` and *Check for
+    /// Updates…* their `update check`, each on a thread of its own. What's said of it is put up as an alert too when there's no document window to say it
+    /// in (the updater's mark); with something under way, which was someone else's to ask for, it does nothing.
+    pub fn update_chosen_for_person(self: &Arc<Self>) {
+        use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
+        if !self.updates.menu().mark() {
             return;
         }
-        match id {
-            AUTO_UPDATE_ROW => self.set_auto_update(on),
-            DEV_BUILDS_ROW => self.set_dev_builds(on),
-            // The menu's call and `recto update install --now`: whatever it comes to is in the status.
-            UPDATE_NOW_ROW => drop(self.updates.update_now()),
-            _ => {}
-        }
+        let command = if self.updates.menu_installs() {
+            Command::from(UpdateInstall { zip: None, now: true })
+        } else {
+            Command::from(UpdateCheck {})
+        };
+        super::person::submit(self, command);
+    }
+
+    /// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow
+    /// development builds* `update dev-builds --set on|off`, and *Update Now* `update install --now`, the commands an agent sends, run for the person by the
+    /// one executor, off the UI thread. What any of them comes to is in the status, as before.
+    pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool) {
+        use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
+        let word = || Some(if on { "on" } else { "off" }.to_owned());
+        let command = match id {
+            AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
+            DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
+            UPDATE_NOW_ROW => Command::from(UpdateInstall { zip: None, now: true }),
+            _ => return,
+        };
+        super::person::submit(self, command);
     }
 
     pub fn settings_window_changed(&self, place: Option<SettingsWindow>) {

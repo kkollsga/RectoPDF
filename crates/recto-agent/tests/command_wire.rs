@@ -53,3 +53,16 @@ fn every_request_is_read_as_it_was() {
     }
     assert_eq!(made.lines().count(), GOLDEN.lines().count(), "the number of lines");
 }
+
+/// Failure (R2.3, C6): a command made in code (as the window makes the person's) has no line an agent could send for it, or its line reads back as another
+/// command: a field the wire renames, a default it can't say, or a scale of `max`. Every command the requests read, written as its line and read again, is
+/// the same command.
+#[test]
+fn every_command_is_the_line_it_writes() {
+    for line in REQUESTS.lines() {
+        let Ok(command) = parse(line) else { continue };
+        let wire = command.wire();
+        let again = parse(&wire).unwrap_or_else(|error| panic!("{line}: its line {wire} is refused: {error:?}"));
+        assert_eq!(format!("{again:?}"), format!("{command:?}"), "{line} as {wire}");
+    }
+}

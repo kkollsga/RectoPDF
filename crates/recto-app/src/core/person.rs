@@ -30,19 +30,44 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
 
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
-    let running = &inner.life.persons_running;
-    running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let inner_for_thread = Arc::clone(inner);
+    let counted = Running::start(Arc::clone(inner));
     let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
-        let inner = inner_for_thread;
+        let inner = Arc::clone(&counted.0);
         let mut events = Vec::new();
+        sent(&inner, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
-        inner.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        drop(counted);
     });
-    if spawned.is_err() {
-        running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    // The thread that didn't start took its count with it, as the closure holding it was dropped.
+    drop(spawned);
+}
+
+/// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
+/// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
+struct Running(Arc<Inner>);
+
+impl Running {
+    fn start(inner: Arc<Inner>) -> Self {
+        inner.life.persons_running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(inner)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// **A command run for the person, kept for a test that asked** ([`crate::testkit::headless::HeadlessApp::keep_sent`]): every way one reaches the executor
+/// as theirs says so here. Nothing outside a test.
+#[allow(unused_variables)]
+pub fn sent(inner: &Inner, command: &Command) {
+    #[cfg(any(test, feature = "testkit"))]
+    if let Some(sent) = lock(&inner.serving.heard).sent.as_mut() {
+        sent.push(command.clone());
     }
 }
 
@@ -67,16 +92,17 @@ const BEFORE: &[fn(&Inner, &mut FileReads, &Command)] = &[super::opening::before
 /// **What the window does with how a person's command went,** feature by feature, one line each: a failure in the person's own words, from the feature
 /// it's about, and the window's own steps after (a list kept at once). A failure no feature has words for is said nothing of, as the window's own calls said
 /// nothing (an Undo with nothing to undo); an agent's words, which name `recto` commands and levels, are never shown to a person.
-const ANSWERED: &[fn(&Inner, &Ran<'_>)] = &[
+const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::navigation::answered,
     super::opening::answered,
     super::closing::answered,
     super::editing::answered,
     super::comparison::answered,
     super::find::answered,
+    super::updates::answered,
 ];
 
-fn answered(inner: &Inner, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+fn answered(inner: &Arc<Inner>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
         answer(inner, &ran);
@@ -129,6 +155,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         None => command,
     };
     if origin == Origin::Input {
+        sent(inner, &command);
         for before in BEFORE {
             before(inner, reads, &command);
         }
@@ -200,6 +227,21 @@ pub fn submit_when_run(inner: &Arc<Inner>, command: Command, when_run: crate::qu
 #[cfg(test)]
 mod tests {
     use recto_agent::AgentError;
+
+    /// Failure (review of 2026-11-13): a person's command that panics on its thread is counted as running for good, so a hand-off waits on it to the end of
+    /// its patience. The count goes as the thread ends, a panic included.
+    #[test]
+    fn a_persons_command_that_panics_isnt_counted_running() {
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let inner = std::sync::Arc::clone(app.core());
+        let counted = super::Running::start(std::sync::Arc::clone(&inner));
+        let thread = std::thread::spawn(move || {
+            let _counted = counted;
+            panic!("a command that panics");
+        });
+        assert!(thread.join().is_err(), "it panicked");
+        assert_eq!(inner.life.persons_running.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
     use recto_session::SessionError;
 
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's

@@ -32,10 +32,10 @@ impl DocLoader for NameLoader {
     }
 }
 
-/// Failure: a field added carelessly raises the cost of every idle tab.
+/// Failure: a field added carelessly, or a component that brings padding with it (R3.2 groups the fields), raises the cost of every idle tab. Held at its size today, 224 bytes, of which 2 are padding.
 #[test]
 fn tab_record_stays_small() {
-    assert!(std::mem::size_of::<TabRecord>() <= 256);
+    assert!(std::mem::size_of::<TabRecord>() <= 224, "{} bytes", std::mem::size_of::<TabRecord>());
 }
 
 /// Failure: tapping the active PDF switches tabs or does nothing, instead of folding its contents.
@@ -83,7 +83,7 @@ fn closing_the_active_tab_activates_a_neighbour() {
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.close(b).unwrap();
     assert_eq!(s.active(), Some(a));
-    assert!(s.warm.iter().all(|(id, _)| *id != b));
+    assert!(!s.warm.contains(b));
     s.close(a).unwrap();
     assert_eq!(s.active(), None);
     assert_eq!(s.sidebar().place, "");
@@ -199,8 +199,25 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
 #[test]
 fn tab_numbers_dont_wrap() {
     let mut s = session(5);
-    s.next_id = MAX_TAB_ID;
+    s.tabs.set_next_id(MAX_TAB_ID);
     assert_eq!(s.open(Path::new("/d/a.pdf")), Err(SessionError::TooManyTabs));
+}
+
+/// Failure: a folder is kept with no tab in it to let it go, so it stays for the rest of the session: an open refused because the tab numbers have run out, or a move to a path that names no file. Each refused file in another folder grows the folders kept, without a cap.
+#[test]
+fn no_folder_is_kept_without_a_tab() {
+    let mut s = session(5);
+    s.tabs.set_next_id(MAX_TAB_ID);
+    for path in ["/d/a.pdf", "/e/b.pdf", "/f/c.pdf"] {
+        assert_eq!(s.open(Path::new(path)), Err(SessionError::TooManyTabs));
+    }
+    assert_eq!(s.tabs.dirs_kept(), 0, "an open refused keeps no folder");
+
+    let mut s = session(5);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.relocate(a, Path::new("/elsewhere/.."));
+    assert_eq!(s.path_of(a), Some(PathBuf::from("/d/a.pdf")), "a move to no file doesn't move it");
+    assert_eq!(s.tabs.dirs_kept(), 1, "and keeps no other folder");
 }
 
 /// Failure: a protected PDF just says it needs a password, with nothing to say why it's asking again, or a password is written down. The words say it isn't kept, and nothing in a record's fields could hold one.
@@ -222,50 +239,6 @@ fn a_protected_pdf_asks_again() {
     back.wake_active();
     assert_eq!(back.tab(a).unwrap().problem, Some(OpenError::PasswordNeeded));
     assert!(back.tab_notice_message(a).unwrap().contains("password"));
-}
-
-struct Any;
-
-impl DocLoader for Any {
-    fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
-        Ok(DocFacts {
-            page_count: 3,
-            byte_len: 1,
-            encrypted: false,
-            version: "1.7".into(),
-            title: None,
-            toc: Toc::default(),
-            renderer_only: false,
-        })
-    }
-}
-
-/// Failure: File > Open Recent misses a file just opened, lists one twice, grows without a cap, or forgets them all after a quit; or Clear Menu leaves any.
-#[test]
-fn recent_files_are_newest_first_capped_and_kept() {
-    let mut s = Session::new(Any);
-    for at in 0..(MAX_RECENT + 5) {
-        s.open(&PathBuf::from(format!("/d/file{at}.pdf"))).unwrap();
-    }
-    s.open(Path::new("/d/file10.pdf")).unwrap();
-    let recent = s.recent_files();
-    assert_eq!(recent.len(), MAX_RECENT);
-    assert_eq!(recent[0].path, PathBuf::from("/d/file10.pdf"), "opening again brings it to the front");
-    assert_eq!(recent.iter().filter(|file| file.path == Path::new("/d/file10.pdf")).count(), 1);
-    assert_eq!((recent[0].name.as_str(), recent[0].open.is_some()), ("file10", true));
-    let record = s.to_record();
-    let mut again = Session::new(Any);
-    again.restore(&record, HashMap::new()).unwrap();
-    assert_eq!(
-        again.recent_files().iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-        recent.iter().map(|file| file.path.clone()).collect::<Vec<_>>()
-    );
-    let mut forged = record.clone();
-    forged.recent = vec![PathField::Text("relative.pdf".into()), PathField::Text("/d/ok.pdf".into())];
-    again.restore(&forged, HashMap::new()).unwrap();
-    assert_eq!(again.recent_files().len(), 1, "only a whole path is kept from a record");
-    assert!(again.clear_recent());
-    assert!(again.recent_files().is_empty() && again.to_record().recent.is_empty());
 }
 
 struct Locked;
@@ -306,4 +279,30 @@ fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_go
     s.needs_password_again(locked);
     assert!(s.needs_password(locked) && s.withheld_from_agents(locked));
     assert!(!s.warm_tabs().any(|id| id == locked), "what was read with the password is let go");
+}
+
+/// Failure: every folder a file was ever opened from stays in the session after its last tab has closed, so opening and closing files across many folders grows it for as long as it runs; or letting a folder go breaks the path of a tab still open in another.
+#[test]
+fn folders_are_kept_only_while_a_tab_is_in_them() {
+    let mut s = session(5);
+    let kept = s.open(Path::new("/stays/kept.pdf")).unwrap();
+    for n in 0..2_000 {
+        let id = s.open(Path::new(&format!("/folder-{n}/a.pdf"))).unwrap();
+        let beside = s.open(Path::new(&format!("/folder-{n}/b.pdf"))).unwrap();
+        s.close(id).unwrap();
+        assert_eq!(
+            s.path_of(beside),
+            Some(PathBuf::from(format!("/folder-{n}/b.pdf"))),
+            "its folder stays while a tab's in it"
+        );
+        s.close(beside).unwrap();
+    }
+    assert_eq!(s.tabs.dirs_kept(), 1, "only the folder still in use");
+    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
+    assert_eq!(s.tab_for_path(Path::new("/folder-7/a.pdf")), None);
+    let moved = s.open(Path::new("/before/moved.pdf")).unwrap();
+    s.relocate(moved, Path::new("/after/moved.pdf"));
+    assert_eq!(s.tabs.dirs_kept(), 2, "a tab moved out of its folder lets it go");
+    assert_eq!(s.path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
+    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
 }

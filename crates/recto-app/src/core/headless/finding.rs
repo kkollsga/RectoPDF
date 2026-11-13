@@ -272,3 +272,21 @@ fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
 fn find_view(app: &HeadlessApp) -> crate::core::find::FindView {
     crate::core::find::view(app.core())
 }
+
+/// Failure (R2.3, C5g's follow-up: an announcement is made when something changed, and only then): Escape, or an agent's `find --close`, with Find closed
+/// already announces `find_changed`, though nothing about Find changed. The first close is announced; a second, the person's or an agent's, isn't.
+#[test]
+fn closing_find_that_is_closed_announces_nothing() {
+    let app = findable();
+    app.act(UiAction::FindTyped { text: "pdf".into() });
+    app.settle();
+    drop(app.heard_events());
+    app.act(UiAction::FindClose);
+    app.settle();
+    assert_eq!(names(&app.heard_events()), ["find_changed"], "Find closed");
+    app.act(UiAction::FindClose);
+    app.settle();
+    assert_eq!(names(&app.heard_events()), Vec::<&str>::new(), "the person's Escape with Find closed");
+    let said = agent_said(&app, r#"{"cmd":"find","close":true}"#);
+    assert!(said.is_empty(), "an agent's close with Find closed: {said:?}");
+}

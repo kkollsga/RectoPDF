@@ -11,7 +11,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 /// A page's links, and where each goes.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Links {
     #[serde(default = "crate::active_tab")]
@@ -61,7 +61,7 @@ pub(crate) const ROWS_LINKS: &[Spec] = &[Spec {
 }];
 
 /// A jump to a page, by its number or by what the file calls it. Back comes here again.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Goto {
     #[serde(default = "crate::active_tab")]
@@ -125,7 +125,7 @@ impl Cmd for Goto {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Back {
     #[serde(default = "crate::active_tab")]
@@ -163,7 +163,7 @@ impl Cmd for Back {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Forward {
     #[serde(default = "crate::active_tab")]
@@ -202,7 +202,7 @@ impl Cmd for Forward {
 }
 
 /// Follows a link within the document, as a click does. Never a web address.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Follow {
     #[serde(default = "crate::active_tab")]

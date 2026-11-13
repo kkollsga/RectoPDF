@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::fmt::Write;
 
 /// The session: is it there, which version, what level.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {}
 
@@ -41,7 +41,7 @@ impl Cmd for Status {
 }
 
 /// Ends the session.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stop {}
 

@@ -57,6 +57,7 @@ impl Inner {
             zoom: Some(word(zoom)),
             ..View::default()
         };
+        super::person::sent(self, &asked.clone().into());
         run(&self.host, &asked).is_ok()
     }
 }

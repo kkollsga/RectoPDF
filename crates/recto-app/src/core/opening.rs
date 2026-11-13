@@ -44,7 +44,7 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
 ///
 /// **And once a person's open has:** a file that needs a password asks for it, on the system's sheet, rather than only saying it needs one; any other file
 /// that didn't open says why by the window, in the session's words.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     match (ran.command, ran.refused()) {
         (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => inner.saver.write_soon(),
         (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == OpenError::PasswordNeeded.code() => {

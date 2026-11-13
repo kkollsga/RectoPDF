@@ -446,7 +446,7 @@ final class CenteringClipView: NSClipView {
 
     /// A swipe, by what the system's swipe calls.
     func swiped(deltaX: Double) {
-        core.swiped(deltaX: deltaX)
+        _ = core.act(action: .swiped(deltaX: deltaX))
     }
 
     private func setCursor(_ look: String) {

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// A contents section folded, or opened, as its chevron does.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentsFold {
     /// The entry's number, as `contents` gives it.
@@ -67,7 +67,7 @@ impl Cmd for ContentsFold {
 }
 
 /// Which contents the sidebar shows for a tab: the file's own, or generated ones, made if they aren't yet.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentsShow {
     /// `own` or `generated`.
@@ -159,7 +159,7 @@ fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, A
 }
 
 /// Generated contents on their way stopped, and the file's own shown, as the note's Stop does.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentsStop {
     #[serde(default = "crate::active_tab")]

@@ -4,53 +4,34 @@ use super::*;
 
 impl<L: DocLoader> Session<L> {
     pub fn view(&self) -> ViewSettings {
-        self.view
+        self.viewing.view()
     }
 
     pub fn set_view(&mut self, view: ViewSettings) {
-        self.view = view;
+        self.viewing.set_view(view);
     }
 
     /// Find, as the reader left it.
     pub fn find(&self) -> &FindRecord {
-        &self.find
+        self.viewing.find()
     }
 
     /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
     pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
-        let cut = |text: &str| {
-            let mut end = text.len().min(record::MAX_FIND_BYTES);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text[..end].to_string()
-        };
-        let (current, current_tab) = if query == self.find.query {
-            (self.find.current, self.find.current_tab)
-        } else {
-            (None, None)
-        };
-        self.find = FindRecord {
-            open,
-            query: cut(query),
-            draft: cut(draft),
-            current,
-            current_tab,
-        };
+        self.viewing.set_find(open, query, draft);
     }
 
     /// The hit Find went to last, by its place, for the record.
     pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
-        self.find.current = current;
-        self.find.current_tab = tab;
+        self.viewing.set_find_current(current, tab);
     }
 
     pub fn edit_mode(&self) -> bool {
-        self.edit_mode
+        self.viewing.edit_mode()
     }
 
     pub fn set_edit_mode(&mut self, on: bool) {
-        self.edit_mode = on;
+        self.viewing.set_edit_mode(on);
     }
 
     /// Turns the view of a tab, by quarter turns.
@@ -79,15 +60,15 @@ impl<L: DocLoader> Session<L> {
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
-            tab.selection = selection.map(Box::new);
+            tab.reading.selection = selection.map(Box::new);
         }
     }
 
     /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
     pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
-        for tab in &mut self.tabs {
-            if tab.selection.is_some() && tab.id != showing {
-                tab.selection = None;
+        for tab in self.tabs.iter_mut() {
+            if tab.reading.selection.is_some() && tab.id != showing {
+                tab.reading.selection = None;
             }
         }
         self.set_selection(showing, selection);
@@ -95,15 +76,15 @@ impl<L: DocLoader> Session<L> {
 
     /// What's selected in a tab.
     pub fn selection_of(&self, id: TabId) -> Option<Selection> {
-        self.tab(id)?.selection.as_deref().copied()
+        self.tab(id)?.reading.selection.as_deref().copied()
     }
 
     /// Exactly where a tab's reader is, as the page view says. Marked to be written only if it's moved.
     pub fn note_place(&mut self, id: TabId, place: PlaceRecord) {
         if let Some(tab) = self.tab_mut(id)
-            && tab.place != Some(place)
+            && tab.reading.place != Some(place)
         {
-            tab.place = Some(place);
+            tab.reading.place = Some(place);
             tab.place_dirty = true;
         }
     }
@@ -111,20 +92,20 @@ impl<L: DocLoader> Session<L> {
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.
     pub fn place_to_show(&self, id: TabId) -> Option<PlaceRecord> {
         let tab = self.tab(id)?;
-        tab.place.filter(|place| place.page == tab.page)
+        tab.reading.place.filter(|place| place.page == tab.page)
     }
 
     /// What's changed that a line of the log of places can say. Marks it as said.
     pub fn take_place_delta(&mut self, seq: u64) -> PlaceDelta {
         let mut places = Vec::new();
-        for tab in &mut self.tabs {
+        for tab in self.tabs.iter_mut() {
             if std::mem::take(&mut tab.place_dirty) {
-                places.push((tab.id.0, tab.page, tab.place));
+                places.push((tab.id.0, tab.page, tab.reading.place));
             }
         }
         PlaceDelta {
             seq,
-            active: self.active.map(|id| id.0),
+            active: self.tabs.active().map(|id| id.0),
             places,
             contents_scroll: None,
             focus: None,
@@ -133,20 +114,16 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
     pub fn take_place_lost(&mut self) -> bool {
-        std::mem::take(&mut self.place_lost)
+        self.mail.take_place_lost()
     }
 
     /// Notes that a page finished drawing, or couldn't be.
     pub fn note_drawn(&mut self, note: DrawNote) {
-        self.draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
-        self.draws.push_back(note);
-        while self.draws.len() > MAX_DRAWS_KEPT {
-            self.draws.pop_front();
-        }
+        self.mail.note_drawn(note);
     }
 
     /// What's known about a page's latest draw, if it's still remembered.
     pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
-        self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
+        self.mail.draw_note(tab, page)
     }
 }

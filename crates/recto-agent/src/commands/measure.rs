@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Budget {}
 
@@ -52,7 +52,7 @@ impl Cmd for Budget {
 }
 
 /// What a worker costs: idle, per page, peak, and how often it was retired.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetRender {
     #[serde(default = "crate::active_tab")]
@@ -138,7 +138,7 @@ impl Cmd for BudgetRender {
 }
 
 /// What a reader's window costs: first view, one scroll step, one zoom step, with peak footprint.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetViewport {
     #[serde(default = "crate::active_tab")]

@@ -8,7 +8,7 @@ fn a_tab_whose_file_vanished_stays_and_says_why() {
     assert!(gone.is_err());
     let ids: Vec<_> = (0..5).map(|i| s.open(Path::new(&format!("/d/{i}.pdf"))).unwrap()).collect();
     // Rename the first tab's file underneath the session, then wake it from cold.
-    s.tab_mut(ids[0]).unwrap().file_name = OsStr::new("missing.pdf").into();
+    s.tab_mut(ids[0]).unwrap().file.file_name = OsStr::new("missing.pdf").into();
     s.tap(ids[0]).unwrap();
     assert_eq!(s.tab(ids[0]).unwrap().problem, Some(OpenError::NotFound));
     assert_eq!(s.active(), Some(ids[0]));
