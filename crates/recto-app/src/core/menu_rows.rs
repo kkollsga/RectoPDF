@@ -4,7 +4,12 @@
 //! window's alone, said why. Each feature says its own ids, in its own file, and is registered here in one line ([`ROWS`]).
 //!
 //! Whose the command is, the actor, is passed to the one executor, and each rule about who may do what is the command's: an agent's palette run of a row is
-//! the agent's command at its level, with every check that command has, and nothing an agent couldn't send itself.
+//! the agent's command at its level, with every check that command has, and nothing an agent couldn't send itself. A row that's the window's alone says
+//! whether an agent may have it ([`Agents`]): its way, which sends nothing as anyone, at a level, or never, as the person's own.
+//!
+//! A row that goes by the session when it runs has a resolver ([`WhenRun`]): it runs just before the command, under a hold of the session of its own (on the
+//! session thread for the person, on the agent's thread for an agent), and names in the command what it read (the tab, not "the active one"), so whatever
+//! comes between it and the run, the command is about what was read; for an agent it refuses a tab withheld from it before reading anything of it.
 
 use super::{HostAction, Inner};
 use crate::menus::Action;
@@ -12,13 +17,14 @@ use crate::queue::WhenRun;
 use recto_agent::Command;
 use std::sync::Arc;
 
-/// The person's run of a row that has a way of its own, saying what's left for the host. Never waits.
+/// A row's own way: the person's run of a command row with a way of its own, or what a row that's the window's alone does. Says what's left for the host.
+/// Never waits.
 pub type Way<'a> = Box<dyn FnOnce() -> HostAction + 'a>;
 
 /// What a menu id comes to now.
 pub enum Row<'a> {
-    /// **The agent's command it is, whoever runs it:** the person's sent to the one executor as theirs, by the session as it is when it runs if `when_run`
-    /// says how, then `host` left for the host; an agent's run as the agent's, resolved by `when_run` first.
+    /// **The agent's command it is, whoever runs it:** the person's sent to the one executor as theirs, resolved by `when_run` on the session thread just
+    /// before it runs, then `host` left for the host; an agent's run as the agent's, resolved by `when_run` on its own thread just before.
     Command {
         command: Command,
         when_run: Option<WhenRun>,
@@ -177,8 +183,9 @@ pub enum ForAgent<'a> {
     Unknown,
 }
 
-/// **An agent's palette run of `id`:** the row's command, resolved under `with_session` where it goes by the session when it runs, as the person's is on the
-/// session thread; or the window's part alone, if the row lets an agent have it.
+/// **An agent's palette run of `id`:** the row's command, resolved under `with_session` where it goes by the session when it runs (just before the run,
+/// which is under a hold of its own: what the resolver read, it names in the command); or the window's part alone, if the row lets an agent have it; or why
+/// not.
 ///
 /// # Errors
 ///

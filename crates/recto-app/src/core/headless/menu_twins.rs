@@ -1,6 +1,8 @@
 //! **A menu id is one action whoever runs it** (step R2.3; owner, 2026-11-12: "all features should be implemented once"): every menu id ⌘K's palette can
 //! run, chosen by the person at the window on one app, and run by an agent at Full with `recto palette --run` on another with the same documents, in a small
-//! grid of what's showing. Each must publish, announce and keep the same, but for who it's by and for what the actor rules decide.
+//! grid of what's showing. Each must publish, announce and keep the same, but for what the actor rules decide, and each run must be whose it is: the
+//! person's sent as theirs and marked the owner's, an agent's never sent as the person and marked an agent's. Where the owner's edits or a protected
+//! document decide, an agent's palette run at Control must be its command at Control.
 
 use super::twins::{Mark, Twins};
 use crate::core::controls::UiAction;
