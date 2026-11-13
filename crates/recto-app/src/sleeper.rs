@@ -22,7 +22,7 @@ pub enum Why {
 pub const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 /// What the documents off screen may hold in all, their workers' memory and their histories', before the oldest goes dormant. SPEC section 2: "a byte budget frees the oldest first". What's on screen is another row.
 pub const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
-/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A flush (a quit's, a hand-off's) doesn't wait; being asked does, as the queue's writer does. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of.
+/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A flush (a quit's, a hand-off's) doesn't wait; being asked does, as the queue's writer does. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of; unless no picture in it is of the place it's left at on its paper, when one write goes ahead within the hour's cap ([`crate::sleep_writer::there_for_other_place`]).
 pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
 /// What sleep files may come to in an hour, all told, for the same reason: this is about 8 MiB on a heavy day's eight hours, inside SPEC section 2's "About 10 MiB of state". A file that's text is about 8 KiB, and one of a photograph about 100.
 pub const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;

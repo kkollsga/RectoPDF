@@ -361,3 +361,56 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     assert_eq!(wake["bare_with_picture"], 0, "{wake}");
     drop(app.quit());
 }
+
+/// Failure (a quiet run of 2026-11-13, `dark-paper-sheet-woken-dark.png`: of pages 2, 4, 7, 8 and 9 each left, slept and woken in turn, the first woke from its
+/// sleep picture and the later ones to an empty pane, `sleep_pictures=1 sleep_in_view=0`): a tab whose sleep file was written under a minute before (the write
+/// gap, for the drive's sake) had its next write put off, so the file kept its picture of the page the tab was left on before, which a wake at the page it's
+/// at now can't show. Switching through more tabs than are kept warm does it with no forced sleep: each tab pushed out has its file written, so a tab read on
+/// and left again within the minute woke bare. On the app's own core, the window up so a bare frame counts: four tabs (its first file written as the others
+/// opened), a moved to page 6 and then 10, each time the other three shown in turn so a is pushed out of the warm ones, and then shown, drawing held: each
+/// wake's first frame is covered from its sleep file, with a picture of the page it was left on. Left again at page 10, its file already shows that page, so
+/// its write is put off as before (the store's own byte compare would hide a write of the same bytes, so the put-off count is what's asked).
+#[test]
+fn a_tab_left_again_at_another_page_within_a_minute_wakes_with_a_picture_of_that_page() {
+    let disk = Disk::new();
+    let docs = [disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 3), disk.pdf("d.pdf", 3)];
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    engine.waking().window_up();
+    let mut view = window_view();
+    for doc in &docs {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let a = tab_named(&app, "a.pdf");
+    let others: Vec<u64> = ["b.pdf", "c.pdf", "d.pdf"].iter().map(|name| tab_named(&app, name)).collect();
+    let put_off = || app.record_json()["sleep"]["writes_put_off"].as_u64().expect("writes put off");
+    let mut put_off_before = 0;
+    for page in ["6", "10", "10"] {
+        full(&app, &["tap", &format!("#{a}")]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["goto", page]);
+        host_turns(&app, &mut view, true);
+        put_off_before = put_off();
+        for other in &others {
+            full(&app, &["tap", &format!("#{other}")]);
+            host_turns(&app, &mut view, true);
+        }
+        let wake = woken_at_once(&app, a, &mut view);
+        assert_eq!(wake["tab"], a, "page {page}: {wake}");
+        assert_eq!(wake["had"], "sleep_file", "page {page}: woken bare, its sleep file of another page: {wake}");
+        assert!(wake["sleep_in_view"].as_u64().unwrap() >= 1, "page {page}: {wake}");
+        assert!(
+            wake["first_frame_us"].is_u64(),
+            "page {page}: the first frame, drawing held, isn't covered: {wake}"
+        );
+    }
+    let sleep = app.record_json()["sleep"].clone();
+    assert!(
+        sleep["writes_put_off"].as_u64().unwrap() > put_off_before,
+        "left again at the same page inside the gap, its write is put off as before: {sleep}"
+    );
+    drop(app.quit());
+}

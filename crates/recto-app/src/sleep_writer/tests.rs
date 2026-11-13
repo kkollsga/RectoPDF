@@ -194,6 +194,7 @@ fn every_order_of_writes_the_gap_and_the_hour_keeps_the_ssd_rule() {
                             there: true,
                             pictures_allowed: true,
                             there_for_other_paper: false,
+                            there_for_other_place: false,
                         },
                         now,
                     );
@@ -230,6 +231,7 @@ fn a_tab_with_no_file_gets_its_facts_and_a_protected_one_never_gets_pictures() {
                 there,
                 pictures_allowed,
                 there_for_other_paper: false,
+                there_for_other_place: false,
             },
             10,
         )
@@ -321,6 +323,7 @@ fn what_is_remembered_of_writes_stays_within_the_gap() {
         there: true,
         pictures_allowed: true,
         there_for_other_paper: false,
+        there_for_other_place: false,
     };
     assert_eq!(machine.step(write, now), Some(Out::Write(Write::WithPictures)));
     assert_eq!(
@@ -463,6 +466,7 @@ fn a_file_for_the_other_paper_is_written_once_a_change_of_look_inside_the_gap_an
                 there: true,
                 pictures_allowed,
                 there_for_other_paper: other_paper,
+                there_for_other_place: false,
             },
             10,
         )
@@ -510,4 +514,123 @@ fn a_file_is_for_the_other_paper_only_when_every_picture_in_it_is() {
     assert!(!there_for_other_paper(Some(&light), None), "nothing on hand");
     assert!(!there_for_other_paper(Some(&file_with(&[])), Some(true)), "no pictures there");
     assert!(!there_for_other_paper(None, Some(true)), "no file");
+}
+
+/// Failure (a quiet run of 2026-11-13: of pages 2, 4, 7, 8 and 9 each left, slept and woken in turn, only the first woke from its sleep picture): a tab slept
+/// again at another place inside its gap had the write put off, so the file kept its picture of the place before and the wake was bare. And the other way:
+/// letting it through for a tab slept again at the same place spends the SSD rule for nothing. Inside the gap: the same place again is put off as before; a
+/// file showing nothing of the place is written once, and counted; then it shows this place, so the next is put off; a move to another place is one more
+/// write; a protected tab is never let through for it; and once the hour's cap (one for the whole app, not each tab) is reached, none, at the cap plus one.
+#[test]
+fn a_file_of_another_place_is_written_once_a_move_inside_the_gap_and_never_past_the_hour() {
+    let mut machine = SleepWriter::default();
+    let (one, two) = (TabId(1), TabId(2));
+    let write = |machine: &mut SleepWriter, id, other_place, pictures_allowed| {
+        machine.step(
+            Event::Write {
+                id,
+                by: By::Asked,
+                there: true,
+                pictures_allowed,
+                there_for_other_paper: false,
+                there_for_other_place: other_place,
+            },
+            10,
+        )
+    };
+    let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+    assert_eq!(
+        write(&mut machine, one, false, true),
+        Some(Out::Write(Write::PutOff)),
+        "the same place, inside the gap"
+    );
+    let mut written = 0;
+    for moved in 0..2 {
+        assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::WithPictures)), "move {moved}");
+        let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+        written += 1;
+        assert_eq!(write(&mut machine, one, false, true), Some(Out::Write(Write::PutOff)), "after move {moved}");
+    }
+    assert_eq!(machine.counts().writes_for_place, written, "one write for each move, and no more");
+    assert_eq!(machine.counts().writes_for_paper, 0);
+    assert_eq!(
+        write(&mut machine, one, true, false),
+        Some(Out::Write(Write::PutOff)),
+        "protected: no pictures to put right"
+    );
+    // The hour's cap is the app's: another tab's files fill it to one byte short, and one more file takes it over.
+    let used = 2 * 100 + 100;
+    let _ = machine.step(
+        Event::Wrote {
+            id: two,
+            bytes: SLEEP_BYTES_PER_HOUR - used - 1,
+        },
+        10,
+    );
+    assert_eq!(
+        write(&mut machine, one, true, true),
+        Some(Out::Write(Write::WithPictures)),
+        "one byte of room in the hour"
+    );
+    let _ = machine.step(Event::Wrote { id: one, bytes: 1 }, 10);
+    assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::PutOff)), "the hour's cap holds");
+    assert_eq!(machine.counts().writes_for_place, written + 1);
+}
+
+fn material_of(pages: &[u32], dark: bool, in_view: &[u32]) -> recto_reader::SleepMaterial {
+    recto_reader::SleepMaterial {
+        pictures: pages
+            .iter()
+            .map(|page| recto_reader::RawPicture {
+                page: *page,
+                scale: 0.5,
+                width: 1,
+                height: 1,
+                paper: if dark {
+                    recto_reader::PaperKind::Dark
+                } else {
+                    recto_reader::PaperKind::White
+                },
+                bgra: vec![0; 4],
+            })
+            .collect(),
+        in_view: in_view.to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Failure: the test of a file's place says it shows nothing of the place when it shows a page there on this paper (a second write on the same page, against
+/// the SSD rule), or says it does when its only picture of a page there is for the other paper, or of a page beside the place (a bare wake); or asks for a
+/// write when what's on hand has no picture of the place either.
+#[test]
+fn a_file_is_of_another_place_only_when_no_picture_in_it_is_of_a_page_in_view_on_this_paper() {
+    let at_two = file_with(&[2]);
+    assert!(
+        there_for_other_place(Some(&at_two), &material_of(&[4], false, &[4])),
+        "left at page 4, a file of page 2"
+    );
+    assert!(!there_for_other_place(Some(&at_two), &material_of(&[2], false, &[2])), "the same page");
+    assert!(
+        !there_for_other_place(Some(&file_with(&[2, 3])), &material_of(&[3, 4], false, &[3, 4])),
+        "a page there shown"
+    );
+    assert!(
+        there_for_other_place(Some(&file_with(&[2, 5])), &material_of(&[3, 4], false, &[3, 4])),
+        "pages beside the place"
+    );
+    assert!(
+        there_for_other_place(Some(&at_two), &material_of(&[2], true, &[2])),
+        "page 2 on white paper, dark now"
+    );
+    assert!(
+        there_for_other_place(Some(&file_with(&[])), &material_of(&[4], false, &[4])),
+        "a file of facts only"
+    );
+    assert!(!there_for_other_place(Some(&at_two), &material_of(&[], false, &[4])), "nothing on hand");
+    assert!(
+        !there_for_other_place(Some(&at_two), &material_of(&[5], false, &[4])),
+        "nothing on hand of the place"
+    );
+    assert!(!there_for_other_place(Some(&at_two), &material_of(&[4], false, &[])), "nothing in view");
+    assert!(!there_for_other_place(None, &material_of(&[4], false, &[4])), "no file");
 }

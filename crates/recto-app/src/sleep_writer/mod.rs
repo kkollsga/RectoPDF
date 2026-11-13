@@ -48,6 +48,29 @@ pub fn there_for_other_paper(there: Option<&SleepFile>, new_dark: Option<bool>) 
     !there.pictures.is_empty() && there.pictures.iter().all(|picture| picture.dark != new_dark)
 }
 
+/// **Whether the sleep file there shows nothing of the place the pictures on hand are of** (found 2026-11-13 in a quiet run: a tab left at page 2, slept and
+/// woken, then left at page 4 and slept again inside its gap, kept a file whose one picture was of page 2, so its wake at page 4 was bare). True when a picture
+/// on hand is of a page in view (`material.in_view`), and no picture in the file there is of a page in view on that picture's paper: a write would turn a bare
+/// wake into one from a picture. A file that already shows a page there, on its paper, is what a wake can use, so a tab slept again at the same place is put
+/// off as before. With no file there, nothing in view, or nothing on hand of it, there's nothing a write would put right.
+#[must_use]
+pub fn there_for_other_place(there: Option<&SleepFile>, material: &recto_reader::SleepMaterial) -> bool {
+    let Some(there) = there else {
+        return false;
+    };
+    let on_hand = material.pictures.iter().filter(|picture| material.in_view.contains(&picture.page));
+    let mut wanted = on_hand.map(|picture| picture.paper == recto_reader::PaperKind::Dark).peekable();
+    if wanted.peek().is_none() {
+        return false;
+    }
+    !wanted.any(|dark| {
+        there
+            .pictures
+            .iter()
+            .any(|picture| picture.dark == dark && material.in_view.contains(&picture.page))
+    })
+}
+
 /// How soon a look at dormancy that couldn't go ahead, as a file's being read or the app's frozen, comes again.
 pub const BUSY_RETRY_MS: u64 = 5_000;
 
@@ -90,14 +113,16 @@ pub enum Event {
     GoDormant { why: Why, tabs: Vec<(TabId, bool)>, frozen: bool },
     /// What came of it: this many went.
     WentDormant { why: Why, gone: usize },
-    /// A sleep file's about to be written, the one-at-a-time lock held: `there` is whether the tab has a sleep file already, and `there_for_other_paper`
-    /// whether that file's pictures are all for another paper than the ones on hand ([`there_for_other_paper`]).
+    /// A sleep file's about to be written, the one-at-a-time lock held: `there` is whether the tab has a sleep file already, `there_for_other_paper`
+    /// whether that file's pictures are all for another paper than the ones on hand ([`there_for_other_paper`]), and `there_for_other_place` whether it
+    /// shows nothing of the place the ones on hand are of ([`there_for_other_place`]).
     Write {
         id: TabId,
         by: By,
         there: bool,
         pictures_allowed: bool,
         there_for_other_paper: bool,
+        there_for_other_place: bool,
     },
     /// It was, this many bytes; zero is nothing new, so nothing was.
     Wrote { id: TabId, bytes: u64 },
@@ -151,6 +176,8 @@ pub struct Counts {
     pub writes_put_off: u64,
     /// Written inside the gap, as the file there had pictures only for another paper: once for each change of the look, at most, for each tab.
     pub writes_for_paper: u64,
+    /// Written inside the gap, as the file there showed nothing of the place the tab was left at: once for each move between sleeps, at most, for each tab.
+    pub writes_for_place: u64,
     /// The tab on screen's file at a flush, not written as another was being written past the flush's time.
     pub writes_skipped_busy: u64,
     pub woken_from_file: u64,
@@ -237,13 +264,18 @@ impl SleepWriter {
                 there,
                 pictures_allowed,
                 there_for_other_paper,
+                there_for_other_place,
             } => {
                 let mut may = by == By::Flush || self.may_write_pictures(id, now);
-                // A file whose pictures no page of this paper shows is worth one write inside the gap, still within the hour's cap: a change of the look is
-                // rare, and once written, the file there is of this paper, so the next is held to the gap again.
-                if !may && there && pictures_allowed && there_for_other_paper && self.hour.has_room(now) {
+                // A file whose pictures no page of this paper shows, or no page at this place, is worth one write inside the gap, still within the hour's cap:
+                // a wake from it would be bare. Once written, the file there is of this paper and place, so the next sleep there is held to the gap again.
+                if !may && there && pictures_allowed && (there_for_other_paper || there_for_other_place) && self.hour.has_room(now) {
                     may = true;
-                    self.counts.writes_for_paper += 1;
+                    if there_for_other_paper {
+                        self.counts.writes_for_paper += 1;
+                    } else {
+                        self.counts.writes_for_place += 1;
+                    }
                 }
                 if !may && there {
                     self.counts.writes_put_off += 1;
