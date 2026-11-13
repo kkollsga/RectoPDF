@@ -256,9 +256,11 @@ pub fn as_command(id: &str, recent: &[(&str, &str)]) -> Option<recto_agent::Comm
             page: None,
         }));
     }
-    // A row's id is the words the host hands back, `tab:3`: read as the wire reads `#3`.
-    let tab = recto_agent::TabRef::parse(&format!("#{}", id.strip_prefix("tab:")?));
-    Some(Command::from(recto_agent::commands::tabs::Tap { tab }))
+    // A row's id is the words the host hands back, `tab:3`: the tab by its number, read as `route` reads it for a person's run of the row.
+    let tab = id.strip_prefix("tab:")?.parse::<u32>().ok()?;
+    Some(Command::from(recto_agent::commands::tabs::Tap {
+        tab: recto_agent::TabRef::Id(recto_session::TabId(tab)),
+    }))
 }
 
 /// What running a row comes to, once the palette's closed.
@@ -457,6 +459,23 @@ mod tests {
         assert_eq!(route("find.next", false, true), Run::Perform { focus_find_if_nothing: false }, "frozen");
         assert_eq!(route("view.zoom_in", false, false), Run::Perform { focus_find_if_nothing: false });
         assert_eq!(route("tab:x", false, false), Run::Perform { focus_find_if_nothing: false }, "not a tab's id");
+    }
+
+    /// Failure (review of R2.5, F6): an agent's `palette --run` on a tab's row taps a tab other than the row's, or makes a selector of words the row's
+    /// id carries; or it reads an id as a tab that a person's run of the same row doesn't ([`route`]). The row's tab by its number, and the same ids.
+    #[test]
+    fn an_agents_run_of_a_tabs_row_taps_that_tab() {
+        use recto_agent::Command;
+        use recto_agent::commands::{Move, tabs::Tap};
+        let tapped = |id: &str| match as_command(id, &[]) {
+            Some(Command::Move(Move::Tap(Tap { tab }))) => Some(tab),
+            _ => None,
+        };
+        assert_eq!(tapped("tab:12"), Some(recto_agent::TabRef::Id(recto_session::TabId(12))));
+        for id in ["tab:x", "tab:", "tab:-1", "tab:4294967296"] {
+            assert_eq!(tapped(id), None, "{id}");
+            assert!(!matches!(route(id, false, false), Run::Tap(_)), "{id}");
+        }
     }
 
     /// Failure: ↑ and ↓ move the selection past either end, or off an empty list, so Return runs nothing or a row that isn't drawn.
