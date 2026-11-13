@@ -98,13 +98,10 @@ impl Reader {
 
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
     pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool {
-        let Some(point) = self.point_on_page(x, y) else { return false };
-        let Some(doc) = self.doc() else { return false };
         // Only on a page: the margin and the gap between pages are neither.
-        let size = doc.layout.raw_size(point.page);
-        if point.x < 0.0 || point.y < 0.0 || point.x > size.width || point.y > size.height {
+        let Some(point) = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point)) else {
             return false;
-        }
+        };
         self.pointer.selecting.is_over_text(point)
     }
 
