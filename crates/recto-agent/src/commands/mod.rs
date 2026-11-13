@@ -100,7 +100,7 @@ pub fn log_tab(tab: &str) -> String {
 macro_rules! family {
     ($(#[$meta:meta])* pub enum $family:ident { $($variant:ident($payload:ty),)* }) => {
         $(#[$meta])*
-        #[derive(Clone, serde::Deserialize)]
+        #[derive(Clone, serde::Deserialize, serde::Serialize)]
         #[serde(tag = "cmd", rename_all = "snake_case")]
         pub enum $family {
             $($variant($payload),)*

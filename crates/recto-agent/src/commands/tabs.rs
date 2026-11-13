@@ -11,7 +11,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 /// Opens a file in a tab, or goes to its tab if it's open already.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
     pub path: PathBuf,
@@ -48,7 +48,7 @@ impl Cmd for Open {
 }
 
 /// Brings a tab to the front, as a click on its row does.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tap {
     #[serde(default = "crate::active_tab")]
@@ -92,7 +92,7 @@ impl Cmd for Tap {
 }
 
 /// Files opened lately, as File > Open Recent lists them.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recent {}
 
@@ -137,7 +137,7 @@ impl Cmd for Recent {
 }
 
 /// Clears that list, as Open Recent > Clear Menu does.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecentClear {}
 
@@ -177,7 +177,7 @@ impl Cmd for RecentClear {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Close {
     #[serde(default = "crate::active_tab")]

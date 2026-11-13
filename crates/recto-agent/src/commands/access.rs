@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionShow {}
 
@@ -40,7 +40,7 @@ impl Cmd for PermissionShow {
 }
 
 /// Asks the user for more access. Grants nothing by itself.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRequest {
     pub level: Level,
@@ -76,7 +76,7 @@ impl Cmd for PermissionRequest {
 }
 
 /// What agents have done, newest last.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Log {
     #[serde(default)]
@@ -111,7 +111,7 @@ impl Cmd for Log {
 }
 
 /// Never reachable by an agent. It exists to say so.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sign {}
 
@@ -143,7 +143,7 @@ impl Cmd for Sign {
 }
 
 /// The level's file changed: read it again. Carries no level, so it can't raise one.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LevelChanged {}
 

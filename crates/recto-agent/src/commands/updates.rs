@@ -10,7 +10,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 /// What's running, what's on offer, and how the last update went.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateStatus {}
 
@@ -43,7 +43,7 @@ impl Cmd for UpdateStatus {
 }
 
 /// Looks for a new version now, and says what it found.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateCheck {}
 
@@ -76,7 +76,7 @@ impl Cmd for UpdateCheck {
 }
 
 /// Starts installing what's on offer, with the app's state carried across. With a zip, a development build handed over.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateInstall {
     #[serde(default)]
@@ -115,7 +115,7 @@ impl Cmd for UpdateInstall {
 }
 
 /// *Allow development builds*. With a value, sets it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateDevBuilds {
     #[serde(default)]
@@ -155,7 +155,7 @@ impl Cmd for UpdateDevBuilds {
 }
 
 /// The app's settings. With a value, changes it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]

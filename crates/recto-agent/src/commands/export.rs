@@ -11,14 +11,18 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 /// Draws a page to a PNG file.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Render {
     #[serde(default = "crate::active_tab")]
     pub tab: String,
     pub page: u32,
     /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
-    #[serde(default = "crate::render::default_scale", deserialize_with = "crate::render::scale_or_max")]
+    #[serde(
+        default = "crate::render::default_scale",
+        deserialize_with = "crate::render::scale_or_max",
+        serialize_with = "crate::render::scale_as_sent"
+    )]
     pub scale: f32,
     pub out: PathBuf,
     /// Draws a page of a file that asks not to be copied. Only once the user has said to; logged.
@@ -68,7 +72,7 @@ impl Cmd for Render {
 }
 
 /// Writes a page, or a box on it, to a new SVG file.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportSvg {
     #[serde(default = "crate::active_tab")]
@@ -151,7 +155,7 @@ impl Cmd for ExportSvg {
 }
 
 /// Where a page's images are, and what each is.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Images {
     #[serde(default = "crate::active_tab")]
@@ -195,7 +199,7 @@ impl Cmd for Images {
 }
 
 /// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Image {
     #[serde(default = "crate::active_tab")]
@@ -267,7 +271,7 @@ impl Cmd for Image {
 }
 
 /// A box on a page as PNG, JPG, SVG or text.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
     #[serde(default = "crate::active_tab")]
@@ -352,7 +356,7 @@ impl Cmd for Snapshot {
 }
 
 /// Pages printed to a new PDF, through what the app prints with.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Print {
     #[serde(default = "crate::active_tab")]

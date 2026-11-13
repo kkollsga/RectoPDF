@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// Saves a tab: into its file, or with `out` as a new one (Save As).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Save {
     #[serde(default = "crate::active_tab")]

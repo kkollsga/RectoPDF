@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 
 /// How the app shows pages. The default asks and changes nothing.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
     #[serde(default)]
@@ -102,7 +102,7 @@ impl OnlyAsks for View {
 }
 
 /// ⌘K's palette: what a query finds among the app's commands and tabs, best first, and running the first.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Palette {
     #[serde(default)]

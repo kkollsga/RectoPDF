@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// Asks the running app what it shows. Only an app started in QA mode answers.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QaRead {
     pub verb: String,
@@ -53,7 +53,7 @@ impl Cmd for QaRead {
 }
 
 /// Has the running app do what the UI does. Only an app started in QA mode answers.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QaDrive {
     pub verb: String,

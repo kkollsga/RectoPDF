@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 /// The app's Find, in the document being read: a query, a step to the next or previous hit (as a jump, or not), a hit by its index, opening or closing.
 /// With nothing, only says.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Find {
     #[serde(default)]

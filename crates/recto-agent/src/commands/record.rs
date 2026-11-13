@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 
 /// What the state record holds and what's become of it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionShow {}
 
@@ -45,7 +45,7 @@ impl Cmd for SessionShow {
 }
 
 /// Puts a tab to sleep now, as being left alone for five minutes would.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSleep {
     #[serde(default = "crate::active_tab")]
@@ -83,7 +83,7 @@ impl Cmd for SessionSleep {
 }
 
 /// Writes the state record now and reads it back.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSave {}
 
@@ -130,7 +130,7 @@ impl Cmd for SessionSave {
 }
 
 /// Puts the session back as the state record has it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRestore {}
 
@@ -184,7 +184,7 @@ impl Cmd for SessionRestore {
 }
 
 /// Whether this is a safe moment to hand off to a new version.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCheck {}
 
