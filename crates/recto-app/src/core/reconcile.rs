@@ -157,7 +157,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     // One look at the session for the whole pass, so what's projected is of one moment: the places the page views moved first, then everything the window shows.
     let mut facts = inner.host.session.with_session(|session| {
-        let mut jumps = said.take_in_at_the_look(session, synced, events);
+        let mut jumps = said.take_in_at_the_look(session, synced, &inner.panes, events);
         let mut facts = crate::read(session, &held);
         for snapshot in &mut facts.panes {
             snapshot.jump = places::jump_for(&mut jumps, snapshot.id);

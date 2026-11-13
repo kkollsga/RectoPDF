@@ -118,8 +118,16 @@ impl Said {
 impl Said {
     /// **What the session thread's look takes in,** with the session held: the jumps it's about to send are taken first, then what the views said by
     /// [`is_views_own`], with the pages the readers moved to kept as what each pane's view now has. The jumps go back, for the look to send, each kept by
-    /// the session as sent until a later look takes in the view's word after it.
-    pub fn take_in_at_the_look(self, session: &mut recto_session::Session<DrawableLoader>, synced: &mut Synced, events: &mut Vec<Event>) -> Vec<(TabId, Stop)> {
+    /// the session as sent until a later look takes in the view's word after it; and the look is counted ([`crate::panes::Panes::looked`]), so a command's
+    /// read of the views from before it isn't taken in over what it took ([`Inner::take_places`]).
+    pub fn take_in_at_the_look(
+        self,
+        session: &mut recto_session::Session<DrawableLoader>,
+        synced: &mut Synced,
+        panes: &crate::panes::Panes,
+        events: &mut Vec<Event>,
+    ) -> Vec<(TabId, Stop)> {
+        panes.looked();
         let jumps: Vec<(TabId, Stop)> = session.panes().into_iter().filter_map(|id| Some((id, session.take_jump(id)?))).collect();
         for (pane, page) in self.take_in(session, &sent_to_views(synced), &jumps, true, events) {
             if let Some(pane) = synced.panes.get_mut(pane) {
@@ -162,13 +170,20 @@ impl Inner {
     /// view really is, and before the record is written. The pages the readers moved to are left for the session thread's look, which alone knows which
     /// jumps it's about to send. A jump on the page already showing, waiting or sent by a look and not yet told of, isn't seen from here; the mark doesn't
     /// need it to be, as the session answers where the reader is from that jump itself (`Session::here`), and a look can send it between this and the step.
+    ///
+    /// **What's read is taken in only if no look has taken in the views since** (the last thing a person asked for wins over a read still landing): the
+    /// views are read with no lock on the session, and a look between the read and the take-in took in their word after it, the person's own scroll among
+    /// it, which this older read would undo.
     pub fn take_places(&self) {
+        let looks = self.panes.looks();
         let said = Said::read(self, false);
         #[cfg(any(test, feature = "testkit"))]
         self.serving.on_taking_places.read();
         let sent = self.panes.sent();
         self.host.session.with_session(|session| {
-            said.take_in(session, &sent, &[], false, &mut Vec::new());
+            if self.panes.looks() == looks {
+                said.take_in(session, &sent, &[], false, &mut Vec::new());
+            }
         });
         #[cfg(any(test, feature = "testkit"))]
         self.serving.on_taking_places.taken();

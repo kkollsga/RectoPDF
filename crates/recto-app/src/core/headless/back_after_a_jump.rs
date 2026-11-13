@@ -310,3 +310,30 @@ fn the_persons_scroll_after_a_sent_jump_is_where_the_reader_is() {
         );
     }
 }
+
+/// Failure: a command's read of where the page views are, taken with no lock on the session, is taken in after the session thread's look has taken in
+/// their word since, so the person's own scroll in between is undone by the place from before it: Back marked 0.3 of the way down page 5 for Forward, where
+/// the person had scrolled up to 0.2 while it read. Forced: the scroll and the look come between the command's read and its take-in.
+#[test]
+fn a_read_of_the_views_older_than_a_look_doesnt_undo_the_persons_scroll() {
+    let app = thirty_pages();
+    agent(&app, r#"{"cmd":"goto","page":5,"within":0.3}"#);
+    app.settle();
+    // The view arrives where it was sent, and the session hears it there.
+    app.person_scrolls(0.0);
+    app.settle();
+    let scroll = app.person_scroll_ahead(-0.1 * page_height(&app));
+    let inner = std::sync::Arc::clone(app.core());
+    app.when_the_next_take_places_has_read(move || {
+        drop(inner.panes.viewport(&inner.engine, inner.panes.reading(), true, scroll));
+        assert!(inner.core.flush(crate::testkit::headless::WAIT_LIMIT), "the look at the scroll");
+    });
+    agent(&app, r#"{"cmd":"back"}"#);
+    app.settle();
+    assert_eq!(views_place(&app).0, 0, "Back went to page 1");
+    let (marked, trail) = last_stop_on_page_5(&app, false);
+    assert!(
+        (f64::from(marked) - 0.2).abs() < 0.02,
+        "Back marked {marked} for Forward, where the person had scrolled up to about 0.2 while it read the views at 0.3: {trail}"
+    );
+}

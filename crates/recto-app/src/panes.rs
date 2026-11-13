@@ -11,7 +11,7 @@ use recto_reader::tiles::{Viewport, Zoom};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_session::TabId;
 use recto_session::compare::{Comparison, MAX_PANES};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// **What a pane's page view was last sent by the session thread:** the tab it shows and the page. What it says of where it is is its own only once
@@ -41,6 +41,9 @@ pub struct Panes {
     shown: Mutex<Vec<TabId>>,
     /// What each pane's page view was last sent, for what takes in the views' places off the session thread.
     sent: Mutex<Vec<Option<Sent>>>,
+    /// How many times the session thread's look has taken in what the views say, counted under the session's lock: a read of the views taken before one
+    /// is older than what it took ([`crate::core::Inner::take_places`]).
+    looks: AtomicU64,
     plan: Mutex<Plan>,
     hooks: Arc<dyn EngineEvents>,
     config: EngineConfig,
@@ -53,6 +56,7 @@ impl Panes {
             reading: AtomicUsize::new(0),
             shown: Mutex::new(Vec::new()),
             sent: Mutex::new(Vec::new()),
+            looks: AtomicU64::new(0),
             plan: Mutex::new(Plan::default()),
             hooks,
             config,
@@ -130,6 +134,16 @@ impl Panes {
 
     pub fn sent(&self) -> Vec<Option<Sent>> {
         lock(&self.sent).clone()
+    }
+
+    /// The session thread's look has taken in what the views say, with the session held.
+    pub fn looked(&self) {
+        self.looks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// How many looks have taken in what the views say: the same before a read of the views and under the session's lock after it says none came between.
+    pub fn looks(&self) -> u64 {
+        self.looks.load(Ordering::SeqCst)
     }
 
     /// What's side by side now, for the UI thread: which tab each pane shows, which is read, and the comparison with each pane's length.
