@@ -303,7 +303,10 @@ impl Saver {
         } else {
             lists
         };
-        let asleep: HashMap<String, EditsSummary> = inner.host.session.with_session(|session| session.asleep_by_journal());
+        let (asleep, edited_tabs): (HashMap<String, EditsSummary>, usize) = inner
+            .host
+            .session
+            .with_session(|session| (session.asleep_by_journal(), session.lists().edited_tabs()));
         if let Err(first) = self.store.verify_with_asleep(&record, &lists, &asleep) {
             // A line that didn't say enough is mended by the whole record. Anything else fails.
             self.store.next_write_whole();
@@ -320,7 +323,7 @@ impl Saver {
         *lock(&self.last_error) = None;
         Ok(FlushReport {
             tabs: record.tabs.len(),
-            edited_tabs: lists.len(),
+            edited_tabs,
             record_bytes,
             journal_bytes,
             wrote_bytes: self.store.wrote_bytes() - before,

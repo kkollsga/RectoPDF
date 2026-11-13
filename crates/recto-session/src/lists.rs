@@ -85,6 +85,12 @@ impl Lists {
         self.edits.get(&id).is_some_and(PageEdits::is_edited) || self.asleep.get(&id).is_some_and(|summary| summary.edited)
     }
 
+    /// **How many tabs have unsaved changes,** by [`Self::is_edited`], the read the close and quit rules go by: a list asleep counts by its summary,
+    /// and a list in memory with every step undone doesn't count. What `session save` says as `edited_tabs`, for every host.
+    pub fn edited_tabs(&self) -> usize {
+        self.edits.values().filter(|list| list.is_edited()).count() + self.asleep.values().filter(|summary| summary.edited).count()
+    }
+
     /// Whether saving this tab's edits writes the file anew.
     pub fn needs_rewrite(&self, id: TabId) -> bool {
         match self.edits.get(&id) {

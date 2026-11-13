@@ -499,3 +499,20 @@ fn a_woken_list_naming_an_outside_file_is_unreadable() {
     );
     assert_eq!(s.loader().loads.get(), loads, "a file was read to wake it");
 }
+
+/// **Failure: `session save`'s count of edited tabs counts lists in memory, not tabs with unsaved changes:** an edited tab whose list went to disk isn't
+/// counted, and one whose every step was undone is. Counted by the one read the close and quit rules use, it's the edited tab asleep and the edited tab
+/// awake.
+#[test]
+fn edited_tabs_counts_tabs_with_unsaved_changes_wherever_their_lists_are() {
+    let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let (mut s, a, b) = with_a_list(&files);
+    s.edit_pages(b, |e| e.rotate(0, 1, 1)).unwrap();
+    let c = s.open(Path::new("/d/c.pdf")).unwrap();
+    s.edit_pages(c, |e| e.rotate(0, 1, 1)).unwrap();
+    assert!(s.undo_edit(c));
+    assert!(s.go_dormant(a));
+    assert!(s.lists().is_asleep(a) && s.lists().is_edited(a));
+    assert!(s.lists().get(c).is_some() && !s.lists().is_edited(c), "c's every step is undone");
+    assert_eq!(s.lists().edited_tabs(), 2, "a, asleep, and b; not c");
+}

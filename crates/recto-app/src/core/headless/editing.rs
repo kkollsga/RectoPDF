@@ -217,3 +217,31 @@ fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
     let said = app.heard_events();
     assert!(said.iter().any(|event| event.name() == "edits_changed"), "and says so: {said:?}");
 }
+
+/// **Failure (R3.5a): the app's `session save` counts lists in memory with a journal as `edited_tabs`,** so tabs whose edited lists went to disk
+/// aren't counted and one whose every step was undone is. It's the tabs with unsaved changes, by the read the close and quit rules use: `#1` awake, `#3`
+/// and `#4` asleep; not `#2`, all undone.
+#[test]
+fn a_save_counts_the_tabs_with_unsaved_changes_wherever_their_lists_are() {
+    let disk = crate::testkit::headless::Disk::new();
+    let docs: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.start();
+    for doc in &docs {
+        app.open(doc);
+    }
+    for tab in 1..=4 {
+        app.person(&format!(r##"{{"cmd":"page_rotate","tab":"#{tab}","pages":"1","degrees":90}}"##));
+        app.settle();
+    }
+    app.person(r##"{"cmd":"undo","tab":"#2"}"##);
+    app.person(r##"{"cmd":"tap","tab":"#5"}"##);
+    app.settle();
+    for tab in [3, 4] {
+        let slept = app
+            .agent(Level::Full, &format!(r##"{{"cmd":"session_sleep","tab":"#{tab}"}}"##))
+            .expect("put to sleep");
+        assert_eq!(slept["list_asleep"], true, "#{tab}: {slept}");
+    }
+    let saved = app.agent(Level::Full, r#"{"cmd":"session_save"}"#).expect("saved");
+    assert_eq!(saved["edited_tabs"], 3, "{saved}");
+}

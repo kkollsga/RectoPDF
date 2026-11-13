@@ -208,6 +208,7 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "Journals: pub fn name_of",
         "Lists: impl in lists.rs",
         "Lists: pub fn edits_record",
+        "Lists: pub fn edited_tabs",
         "Lists: pub fn get",
         "Lists: pub fn has_undone_owner_steps",
         "Lists: pub fn holds_owner_edits",
