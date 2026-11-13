@@ -133,7 +133,9 @@ fn opening_a_file_thats_open_announces_its_tab_only_when_it_comes_to_the_front()
     app.open(&b);
     app.hear_events();
     let person = |path: &std::path::Path| {
-        app.act(UiAction::Open { path: path.to_path_buf() });
+        app.act(UiAction::Open {
+            path: path.display().to_string(),
+        });
         app.settle();
         names(&app.heard_events())
     };
@@ -169,7 +171,7 @@ fn the_windows_opens_are_the_agents_open() {
             "the Open panel's new file",
             Box::new(|app| {
                 app.act(UiAction::Open {
-                    path: app.disk().files().join("c.pdf"),
+                    path: app.disk().files().join("c.pdf").display().to_string(),
                 });
             }),
             open("c.pdf"),
@@ -178,7 +180,7 @@ fn the_windows_opens_are_the_agents_open() {
             "a file that's open",
             Box::new(|app| {
                 app.act(UiAction::Open {
-                    path: app.disk().files().join("a.pdf"),
+                    path: app.disk().files().join("a.pdf").display().to_string(),
                 });
             }),
             open("a.pdf"),
@@ -212,7 +214,9 @@ fn the_windows_opens_are_the_agents_open() {
     assert_eq!(twins.person.tabs().len(), 4);
     // A file that isn't a PDF says so by the window, in the session's words.
     let not_pdf = twins.person.disk().file("notes.pdf", b"not a pdf at all");
-    twins.person.act(UiAction::Open { path: not_pdf });
+    twins.person.act(UiAction::Open {
+        path: not_pdf.display().to_string(),
+    });
     twins.person.settle();
     assert_eq!(
         crate::lock(&twins.person.core().window.open_failure).clone().as_deref(),
@@ -232,7 +236,7 @@ fn a_file_opened_before_the_state_is_in_opens_once_it_is() {
     app.open(&a);
     let (_, disk) = app.quit();
     let app = disk.builder().hold(&[recto_platform::slow::Seam::State]).start();
-    app.act(UiAction::Open { path: b.clone() });
+    app.act(UiAction::Open { path: b.display().to_string() });
     assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "taken, and any read for it done");
     assert!(!app.core().state_read(), "the state's still held");
     assert_eq!(

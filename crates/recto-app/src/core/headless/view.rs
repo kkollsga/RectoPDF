@@ -45,7 +45,7 @@ fn the_windows_view_controls_are_the_agents_view() {
         (
             UiAction::ZoomTyped {
                 text: "150,5".into(),
-                decimal: ',',
+                decimal: ",".into(),
             },
             r#"{"cmd":"view","zoom":"150.5%"}"#,
         ),

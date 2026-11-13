@@ -2,8 +2,7 @@
 //! a sheet's answer) is a [`UiAction`], and [`Inner::act`] is where it's turned into what it does. An action that's an agent's command too is run as that command,
 //! for the person, by the one executor (`core/person.rs`); what's left is the host's alone (a sheet, a panel, focus), which comes back as a [`HostAction`].
 //!
-//! The bridge's per-control methods are each a call to [`Inner::act`] until the bridge has the one export (R2.3's last commit); nothing else of the window's
-//! comes in another way.
+//! The bridge has one export for all of it, `AppCore::act`, which is a call to [`Inner::act`]; nothing else of the window's comes in another way.
 
 use super::{HostAction, Inner};
 use crate::SidebarRow;
@@ -22,8 +21,8 @@ pub enum UiAction {
     PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.
     Chevron { first: u32 },
-    /// A file to open: the Open panel's, a drop, the Finder's.
-    Open { path: PathBuf },
+    /// A file to open: the Open panel's, a drop, the Finder's, by its path.
+    Open { path: String },
     /// File > Open Recent's file, by its key.
     OpenRecent { key: String },
     /// What's in the Find field now, as it's typed.
@@ -40,8 +39,8 @@ pub enum UiAction {
     PageTyped { text: String },
     /// A swipe on the page, as the system reports it.
     Swiped { delta_x: f64 },
-    /// Return in the zoom level's field, with the Mac's decimal sign.
-    ZoomTyped { text: String, decimal: char },
+    /// Return in the zoom level's field, with the Mac's decimal sign (its first character; `.` if it has none).
+    ZoomTyped { text: String, decimal: String },
     /// The sidebar's button beside the window's controls.
     ToggleSidebar,
     /// A row of the palette, run.
@@ -94,7 +93,7 @@ impl Inner {
                 Acted::DONE
             }
             UiAction::Open { path } => {
-                self.open_file(path);
+                self.open_file(PathBuf::from(path));
                 Acted::DONE
             }
             UiAction::OpenRecent { key } => {
@@ -132,7 +131,7 @@ impl Inner {
             }
             UiAction::ZoomTyped { text, decimal } => Acted {
                 host: HostAction::None,
-                understood: recto_reader::tiles::typed_zoom(&text, decimal).is_some_and(|zoom| self.zoom_for_person(zoom)),
+                understood: recto_reader::tiles::typed_zoom(&text, decimal.chars().next().unwrap_or('.')).is_some_and(|zoom| self.zoom_for_person(zoom)),
             },
             UiAction::ToggleSidebar => {
                 self.toggle_sidebar();

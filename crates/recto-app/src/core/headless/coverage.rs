@@ -163,7 +163,7 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
         UiAction::PaneRead { tab },
         UiAction::Chevron { first: 0 },
         UiAction::Open {
-            path: app.disk().files().join("c.pdf"),
+            path: app.disk().files().join("c.pdf").display().to_string(),
         },
         UiAction::OpenRecent { key: recent_key(app) },
         UiAction::FindTyped { text: "page".into() },
@@ -176,7 +176,7 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
         UiAction::Swiped { delta_x: 1.0 },
         UiAction::ZoomTyped {
             text: "150".into(),
-            decimal: '.',
+            decimal: ".".into(),
         },
         UiAction::ToggleSidebar,
         UiAction::PaletteRun { id: format!("tab:{tab}") },
