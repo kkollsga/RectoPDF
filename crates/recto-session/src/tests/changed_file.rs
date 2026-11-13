@@ -217,7 +217,7 @@ fn the_edits_own_version_back_under_another_notice_is_news() {
     let made_on = bed.stamp_now();
     replace_file(&bed.path(), b"v2, saved by another app");
     assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
-    bed.s.forget_read(a);
+    bed.s.sleeper().forget_read(a);
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     assert_eq!(bed.s.tier(a), Tier::Hot, "v2's contents are held");
@@ -277,7 +277,7 @@ fn a_list_asleep_when_its_file_changes_wakes_whole() {
     journals.lock().unwrap().clone_from(&bed.files);
     let journal = bed.files.keys().next().unwrap().clone();
     let as_they_were = bed.s.lists().edits_record(a).unwrap();
-    assert!(bed.s.go_dormant(a));
+    assert!(bed.s.sleeper().go_dormant(a));
     assert!(bed.s.lists().is_asleep(a));
     replace_file(&bed.path(), b"a shorter version, saved by another app");
     bed.pages.set(5);
@@ -304,7 +304,7 @@ fn a_list_that_couldnt_be_woken_never_takes_a_new_version_as_its_own() {
     let made_on = bed.stamp_now();
     bed.s.tap(b).unwrap();
     bed.write_journal();
-    assert!(bed.s.go_dormant(a));
+    assert!(bed.s.sleeper().go_dormant(a));
     assert!(bed.s.lists().is_asleep(a));
     replace_file(&bed.path(), b"v2, as long, saved by another app");
     // The journal isn't readable just now (`journals` is empty): the wake fails and the read goes on.
@@ -315,7 +315,7 @@ fn a_list_that_couldnt_be_woken_never_takes_a_new_version_as_its_own() {
     assert!(!bed.s.notices().fit(a).fits(), "and don't fit the one read");
     // Later the journal reads, and the list wakes.
     journals.lock().unwrap().clone_from(&bed.files);
-    assert!(bed.s.wake_list(a));
+    assert!(bed.s.sleeper().wake_list(a));
     assert_eq!(bed.s.notices().fit(a), EditsFit::FileChanged, "v1's edits never fit v2");
     bed.assert_save_cant_take_the_new_file(a);
 }
@@ -348,7 +348,7 @@ fn journal_of_another_length() -> (Bed, TabId, TabId) {
     let mut list = PageEdits::new(12);
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
-    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    bed.s.journal_desk().take_up_history(a, "journal-00000000000000ab.log", list, 1);
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     (bed, a, b)
@@ -365,7 +365,7 @@ fn edits_on_a_file_never_stamped_are_of_an_unknown_version_not_one_they_dont_fit
     assert_eq!(said(&bed), Some("edits_version_unknown"));
     bed.s.apply_file_status(a, record::look_at_file(&bed.path(), None));
     assert_eq!(bed.s.notices().fit(a), EditsFit::VersionUnknown, "after a look");
-    bed.s.forget_read(a);
+    bed.s.sleeper().forget_read(a);
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     assert_eq!(bed.s.notices().fit(a), EditsFit::VersionUnknown, "after a read at the same length");
@@ -380,7 +380,7 @@ fn assert_known_not_to_fit(bed: &Bed, a: TabId, what: &str) {
     assert_ne!(bed.s.notices().fit(a), EditsFit::Fit, "{what}");
     assert_eq!(bed.s.notices().said(a).map(|said| said.code), Some("file_changed"), "{what}: the tab says so");
     assert!(!bed.s.page_source(a, 2).unwrap().is_current(), "{what}: its pages aren't read from this file");
-    assert!(bed.s.sleep_facts(a).is_none(), "{what}: no sleep file of it");
+    assert!(bed.s.dormant().sleep_facts(a).is_none(), "{what}: no sleep file of it");
 }
 
 /// Failure (F1, case 1): that a tab's edits didn't fit its file lived only in its notice, which other notices overwrite. With no stamp, the file deleted
@@ -415,7 +415,7 @@ fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_fil
     let made_on = bed.stamp_now();
     replace_file(&bed.path(), b"another version, saved by another app");
     assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
-    bed.s.forget_read(a);
+    bed.s.sleeper().forget_read(a);
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     assert_eq!(bed.s.tabs().own_stamp(a), Some(made_on), "the edits' version is kept");
@@ -425,7 +425,7 @@ fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_fil
     bed.s.tap(b).unwrap();
     assert_eq!(bed.s.tier(a), Tier::Warm);
     assert_known_not_to_fit(&bed, a, "left");
-    assert!(bed.s.take_left_warm().iter().all(|facts| facts.id != a));
+    assert!(bed.s.sleeper().take_left_warm().iter().all(|facts| facts.id != a));
 }
 
 /// Failure (F7): a list with only undo history (nothing unsaved) went through the block for edits that don't fit: the tab then said "Your unsaved edits are
@@ -450,7 +450,7 @@ fn only_history_about_another_length_goes_and_the_tab_says_whats_so() {
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
     assert!(list.undo());
-    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    bed.s.journal_desk().take_up_history(a, "journal-00000000000000ab.log", list, 1);
     assert!(
         !bed.s.lists().is_edited(a) && bed.s.lists().undo_and_redo(a).1,
         "only history, with a step to redo"
@@ -486,7 +486,7 @@ fn edits_that_dont_fit_undone_to_nothing_leave_the_tab_the_file_as_it_is() {
         replace_file(&bed.path(), b"v2, five pages, saved by another app");
         bed.pages.set(5);
         assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
-        bed.s.forget_read(a);
+        bed.s.sleeper().forget_read(a);
         bed.make_cold(a, b);
         bed.s.tap(a).unwrap();
         (bed, a, b)
@@ -550,7 +550,7 @@ fn no_notice_over_edits_that_dont_fit_changes_what_is_allowed() {
             bed.s.tabs.tab_mut(a).unwrap().file.set_notice(notice.clone());
             assert_eq!(bed.s.notices().fit(a), fit, "{what}, under {notice:?}");
             assert!(!bed.s.page_source(a, 2).unwrap().is_current(), "{what}, under {notice:?}");
-            assert!(bed.s.sleep_facts(a).is_none(), "{what}, under {notice:?}");
+            assert!(bed.s.dormant().sleep_facts(a).is_none(), "{what}, under {notice:?}");
             assert_eq!(bed.s.begin_save(a, false).unwrap().unwrap().stamp, None, "{what}, under {notice:?}");
             bed.s.end_save(a);
         }
@@ -694,7 +694,7 @@ fn a_second_change_under_edits_that_dont_fit_is_news_and_a_third_look_isnt() {
         let stamp = bed.s.tabs().own_stamp(a);
         let look = |bed: &Bed| record::look_at_file(&bed.path(), stamp);
         // v2 read in, as the app does on news: what's held of it is v2's, and a fold is made on its contents.
-        bed.s.forget_read(a);
+        bed.s.sleeper().forget_read(a);
         bed.make_cold(a, b);
         bed.s.tap(a).unwrap();
         bed.s.tabs.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());

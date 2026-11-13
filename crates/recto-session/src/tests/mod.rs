@@ -12,6 +12,7 @@ mod files;
 mod follow;
 mod forgetting;
 mod journal;
+mod journal_desk;
 mod pages;
 mod paper;
 mod parts;
@@ -23,6 +24,7 @@ mod restore;
 mod saving;
 mod sidebar;
 mod sleep_tests;
+mod sleeper;
 mod tabs;
 mod tiers;
 mod trail_tests;
@@ -63,7 +65,7 @@ fn journaled(pages: u32) -> Session<FakeLoader> {
 
 /// What the journal-writing thread does, into plain memory: what comes back from a crash is whatever it had got to.
 fn write_journal<L: DocLoader>(s: &mut Session<L>, files: &mut HashMap<String, Vec<u8>>) {
-    let work = s.journal_work();
+    let work = s.journal_desk().work();
     for name in work.retired {
         files.remove(&name);
     }
@@ -84,7 +86,7 @@ fn write_journal<L: DocLoader>(s: &mut Session<L>, files: &mut HashMap<String, V
         }
         outcome.written.push((append.tab, append.through, append.name));
     }
-    s.journal_outcome(outcome);
+    s.journal_desk().outcome(outcome);
 }
 
 fn back_from(files: &HashMap<String, Vec<u8>>) -> HashMap<String, RestoredEdits> {

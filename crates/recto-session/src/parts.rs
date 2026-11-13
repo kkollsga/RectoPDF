@@ -14,13 +14,31 @@ use super::*;
 pub struct PartMut<'a, T>(pub(crate) &'a mut T);
 
 impl<L: DocLoader> Session<L> {
-    /// Which tabs may go dormant, and when: a look over the tabs, the warm ones, the lists, the holds and the comparison.
+    /// Which tabs may go dormant, and when, what a sleep file would say and what's on hand to wake a tab: a look over the tabs, the warm ones, the lists,
+    /// the holds, the journals and the comparison.
     pub fn dormant(&self) -> dormant::Dormant<'_> {
         dormant::Dormant {
             tabs: &self.tabs,
             warm: &self.warm,
             lists: &self.lists,
             dormancy: &self.dormancy,
+            journals: &self.journals,
+            comparison: self.comparison.as_ref(),
+        }
+    }
+
+    /// **The sleeper:** a tab going dormant and waking, for one call, borrowing what that changes (the tabs, the lists, the journals, the warm tabs,
+    /// dormancy, generated contents and the page view's mail) and reading the comparison. Built inside whatever holds the session, so it's the same lock
+    /// held the same time. See [`Sleeper`].
+    pub fn sleeper(&mut self) -> sleeper::Sleeper<'_> {
+        sleeper::Sleeper {
+            tabs: &mut self.tabs,
+            lists: &mut self.lists,
+            journals: &mut self.journals,
+            warm: &mut self.warm,
+            dormancy: &mut self.dormancy,
+            generated: &mut self.generated,
+            mail: &mut self.mail,
             comparison: self.comparison.as_ref(),
         }
     }
@@ -31,6 +49,25 @@ impl<L: DocLoader> Session<L> {
             tabs: &self.tabs,
             lists: &self.lists,
             warm: &self.warm,
+        }
+    }
+
+    /// **The journal desk:** what goes to the journals and what comes of it, for one call, borrowing the journals and the lists to change and the tabs to
+    /// read. Built inside whatever holds the session, so it's the same lock held the same time. See [`JournalDesk`].
+    pub fn journal_desk(&mut self) -> journal::JournalDesk<'_> {
+        journal::JournalDesk {
+            journals: &mut self.journals,
+            lists: &mut self.lists,
+            tabs: &self.tabs,
+        }
+    }
+
+    /// What the journals have to say, changing nothing: a look over the journals, the lists and the tabs.
+    pub fn journal_look(&self) -> journal::JournalLook<'_> {
+        journal::JournalLook {
+            journals: &self.journals,
+            lists: &self.lists,
+            tabs: &self.tabs,
         }
     }
 

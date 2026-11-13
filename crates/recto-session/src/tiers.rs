@@ -15,9 +15,9 @@ impl<L: DocLoader> Session<L> {
 
     /// The tab tapping this one would wake from cold, and its file, so that can be read with this session free: a file on a dead volume mustn't hold up everything else that asks about tabs.
     pub fn wake_for_tap(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
-        let file = (self.tabs.active() != Some(id)).then(|| self.file_to_wake(id)).flatten()?;
+        let file = (self.tabs.active() != Some(id)).then(|| self.dormant().file_to_wake(id)).flatten()?;
         // A sleep file says all a read would, with nothing asked of the PDF.
-        if self.wake_from_sleep_file(file.0) {
+        if self.sleeper().wake_from_sleep_file(file.0) {
             return None;
         }
         Some(file)
@@ -52,27 +52,11 @@ impl<L: DocLoader> Session<L> {
 
     /// A cold tab's file to read ahead, unless its sleep file says all a read would.
     pub(crate) fn file_to_wake_now(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
-        let file = self.file_to_wake(id)?;
-        if self.wake_from_sleep_file(file.0) {
+        let file = self.dormant().file_to_wake(id)?;
+        if self.sleeper().wake_from_sleep_file(file.0) {
             return None;
         }
         Some(file)
-    }
-
-    fn file_to_wake(&self, id: TabId) -> Option<(TabId, PathBuf)> {
-        if self.warm.contains(id) {
-            return None;
-        }
-        self.tabs.path_of(id).map(|path| (id, path))
-    }
-
-    /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`], kept for that tab's waking. A tab closed or already woken while it was being read has no use for it. Several can be read at once, so they don't take each other's place, and the oldest goes past the cap.
-    pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
-        self.warm.drop_read(id);
-        if self.file_to_wake(id).is_none() {
-            return;
-        }
-        self.warm.keep_read(id, loaded, stamp);
     }
 
     /// Makes a restored active tab what it says it is, once its file has been read. No tap, so its fold isn't touched.
@@ -89,11 +73,11 @@ impl<L: DocLoader> Session<L> {
         }
         // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
         self.generated.keep_ready_only_for(id);
-        self.wake_list(id);
+        self.sleeper().wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.tabs.active().filter(|left| *left != id) {
             let clean = !self.lists.has_list(left);
-            self.touch(left);
+            self.sleeper().touch(left);
             if let Some(tab) = self.tabs.tab_mut(left)
                 && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
                     || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff)))
@@ -241,14 +225,10 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
         }
+        // Warm again, it's not on its way to a sleep file any more: a tab is warm, cold with a sleep file on its way, or cold, never two at once.
+        self.dormancy.not_leaving(id);
         // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
         let dormancy = &mut self.dormancy;
         self.warm.push(id, toc, |left| dormancy.note_left(left));
-    }
-
-    /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
-    pub fn take_left_warm(&mut self) -> Vec<SleepFacts> {
-        let left = self.dormancy.take_left();
-        left.into_iter().filter_map(|(id, toc)| self.sleep_facts_with(id, &toc)).collect()
     }
 }

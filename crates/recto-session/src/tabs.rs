@@ -116,7 +116,7 @@ impl<L: DocLoader> Session<L> {
         let history = history.filter(|taken| self.tabs.confinement().admits_edits(&taken.restored.edits));
         if let Some(id) = self.tab_for_file(path, stamp) {
             // Read already, so no read with the session held if it's cold.
-            self.give_woken(id, Ok(facts), stamp);
+            self.sleeper().give_woken(id, Ok(facts), stamp);
             self.reach_open_file(id, path);
             return Ok(id);
         }
@@ -173,7 +173,8 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
-            self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
+            self.journal_desk()
+                .take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.set_notice(Some(FileNotice::HistoryRolledOff));
             }
@@ -187,7 +188,7 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         self.tabs.note_password_used(id);
-        self.give_woken(id, Ok(facts), stamp);
+        self.sleeper().give_woken(id, Ok(facts), stamp);
         if self.tabs.active() == Some(id) {
             self.activate(id);
         }
@@ -205,7 +206,7 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.tab(id).is_none() || self.tabs.needs_password(id) {
             return;
         }
-        self.forget_read(id);
+        self.sleeper().forget_read(id);
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.problem = Some(OpenError::PasswordNeeded);
         }
@@ -260,13 +261,13 @@ impl<L: DocLoader> Session<L> {
         }
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
         // A list that won't read: nothing unsaved is at stake, or this wouldn't have got here. Its journal's left for a launch to look at.
-        if !self.wake_list(id) {
+        if !self.sleeper().wake_list(id) {
             self.lists.forget_asleep(id);
             self.journals.forget_name(id);
         }
         let keeps_history = self.journals.journaling() && self.lists.get(id).is_some_and(PageEdits::has_history);
         if keeps_history {
-            if let Some(append) = self.append_for(id) {
+            if let Some(append) = self.journal_desk().append_for(id) {
                 self.journals.depart(JournalAppend { closing: true, ..append });
             }
             self.journals.forget_name(id);
@@ -275,7 +276,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.journals.drop_fresh(id);
         self.lists.remove(id);
-        self.retire_sleep_file(id);
+        self.journal_desk().retire_sleep_file(id);
         let index = self.tabs.position(id).ok_or(SessionError::NoSuchTab)?;
         self.tabs.remove(index);
         self.mail.forget(id);

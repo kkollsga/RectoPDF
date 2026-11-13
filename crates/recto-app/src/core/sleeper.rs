@@ -229,14 +229,14 @@ impl Inner {
             } else {
                 self.queue_sleep_for(id);
             }
-            let list = self.host.session.with_session(|session| session.list_to_sleep(id));
+            let list = self.host.session.with_session(|session| session.dormant().list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
             let settled = list.is_none_or(|(name, header, base)| self.saver.store.settle_list(&name, &header, &base));
             // If it's not gone, it's looked at again next time it's been left alone, and not till then.
             let went = self.host.session.with_session(|session| {
-                let went = settled && session.go_dormant(id);
+                let went = settled && session.sleeper().go_dormant(id);
                 if !went {
-                    session.touch(id);
+                    session.sleeper().touch(id);
                 }
                 went
             });
@@ -260,7 +260,7 @@ impl Inner {
         let Some((facts, now)) = self
             .host
             .session
-            .with_session(|session| Some((session.sleep_facts(id)?, pages_now(session, id)?)))
+            .with_session(|session| Some((session.dormant().sleep_facts(id)?, pages_now(session, id)?)))
         else {
             return;
         };
@@ -314,7 +314,7 @@ impl Inner {
 
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
     pub fn queue_those_leaving(&self) {
-        let left = self.host.session.with_session(|session| session.take_left_warm());
+        let left = self.host.session.with_session(|session| session.sleeper().take_left_warm());
         let mut start = false;
         for facts in left {
             let Some(now) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
@@ -334,7 +334,7 @@ impl Inner {
         let Some((facts, now)) = self
             .host
             .session
-            .with_session(|session| Some((session.sleep_facts(id)?, pages_now(session, id)?)))
+            .with_session(|session| Some((session.dormant().sleep_facts(id)?, pages_now(session, id)?)))
         else {
             return;
         };
@@ -397,7 +397,7 @@ impl Inner {
     pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
         let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
         let sleep = read.or_else(|| {
-            let (stamp, path) = self.host.session.with_session(|session| session.sleep_to_read_awake(id))?;
+            let (stamp, path) = self.host.session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)
         });
         let Some(sleep) = sleep else { return };
@@ -596,7 +596,7 @@ pub(crate) fn take_shown_look(inner: &Inner, id: TabId, stamp: Option<recto_plat
     {
         return false;
     }
-    inner.host.session.with_session(|session| session.forget_read(id));
+    inner.host.session.with_session(|session| session.sleeper().forget_read(id));
     // The read, against the stamp as it is now that the news is in.
     let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
     inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));

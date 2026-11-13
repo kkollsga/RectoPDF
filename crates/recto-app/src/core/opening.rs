@@ -129,7 +129,7 @@ pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId,
         }
         let new = session.apply_file_status(id, status) || again;
         if new {
-            session.forget_read(id);
+            session.sleeper().forget_read(id);
         }
         new
     });
@@ -153,7 +153,7 @@ pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId,
 pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: u32, version: u64) {
     let host = &inner.host;
     // What a sleep file said of it is wrong, so it's read after all.
-    let wrong = host.session.with_session(|session| session.file_length_is(id, pages, version));
+    let wrong = host.session.with_session(|session| session.sleeper().file_length_is(id, pages, version));
     let reread = host.session.with_session(|session| {
         session
             .tabs()

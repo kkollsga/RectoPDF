@@ -241,7 +241,7 @@ fn a_restored_tab_isnt_held_for_the_tab_it_replaced() {
     record.active = Some(record.tabs[1].id);
     s.restore(&record, HashMap::new()).unwrap();
     assert!(s.dormant().may_go(a), "nothing holds the restored tab");
-    s.let_go(a);
+    s.sleeper().let_go(a);
     assert!(s.dormant().may_go(a));
 }
 
@@ -306,7 +306,7 @@ fn a_restored_tab_gets_no_sleep_file_of_the_tab_it_replaced() {
     let ids: Vec<TabId> = (0..=MAX_WARM).map(|n| s.open(Path::new(&format!("/d/old-{n}.pdf"))).unwrap()).collect();
     assert_eq!(s.tier(ids[0]), Tier::Cold);
     s.restore(&another_session_with(MAX_WARM + 1), HashMap::new()).unwrap();
-    assert!(s.take_left_warm().is_empty(), "no sleep file comes of a tab that's gone");
+    assert!(s.sleeper().take_left_warm().is_empty(), "no sleep file comes of a tab that's gone");
 }
 
 /// Failure: an edit that took away the page being read in a session a restore replaced is said of the restored one: "the page you were on was removed" about a document nobody's edited.

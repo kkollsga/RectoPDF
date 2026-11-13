@@ -41,7 +41,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, _b) = with_a_list(&files);
     let as_it_was = s.lists().edits_record(a).unwrap();
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     assert!(s.lists().is_asleep(a));
     assert!(s.lists().get(a).is_none(), "out of memory");
     // A look at it, with nothing read.
@@ -86,7 +86,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
                 1
             )
         }),
-        ("wake", |s, a| assert!(s.wake_list(a))),
+        ("wake", |s, a| assert!(s.sleeper().wake_list(a))),
     ];
     for (route, go) in routes {
         let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -95,7 +95,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
             let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
             with_a_list(&files).0
         };
-        assert!(s.go_dormant(a));
+        assert!(s.sleeper().go_dormant(a));
         go(&mut s, a);
         go(&mut twin, a);
         assert!(!s.lists().is_asleep(a), "{route}");
@@ -106,7 +106,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     // And what it goes on to write follows on from the journal, so a crash after that replays exactly.
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, _b) = with_a_list(&files);
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
     let mut plain = files.lock().unwrap().clone();
     write_journal(&mut s, &mut plain);
@@ -121,16 +121,16 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, _b) = with_a_list(&files);
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-    assert!(s.list_to_sleep(a).is_none(), "a step hasn't gone out");
-    assert!(!s.go_dormant(a));
+    assert!(s.dormant().list_to_sleep(a).is_none(), "a step hasn't gone out");
+    assert!(!s.sleeper().go_dormant(a));
     assert!(s.lists().get(a).is_some());
     let mut plain = files.lock().unwrap().clone();
     write_journal(&mut s, &mut plain);
     *files.lock().unwrap() = plain;
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     // The journal can't be read just now. **It stays asleep, by its name, and nothing's laid on what can't be seen,** which would land on the wrong pages (review L3). The tab says so, and every look at it tries again.
     let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
-    assert!(!s.wake_list(a));
+    assert!(!s.sleeper().wake_list(a));
     assert!(s.lists().is_asleep(a));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("edits_unreadable"));
     assert!(s.lists().is_edited(a), "what's known of it stands");
@@ -148,23 +148,23 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     );
     // It's back.
     files.lock().unwrap().insert(name.clone(), bytes);
-    assert!(s.wake_list(a));
+    assert!(s.sleeper().wake_list(a));
     assert!(s.lists().get(a).is_some());
     assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None, "and it's stopped saying so");
     // Gone for good, and given up on by saying so.
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     files.lock().unwrap().clear();
-    assert!(!s.wake_list(a));
+    assert!(!s.sleeper().wake_list(a));
     s.discard_edits(a);
     assert!(!s.lists().is_asleep(a) && !s.lists().is_edited(a));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
-    assert!(s.journal_work().retired.contains(&name));
+    assert!(s.journal_desk().work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
     let mut s = session(5);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.open(Path::new("/d/b.pdf")).unwrap();
-    assert!(!s.go_dormant(a));
+    assert!(!s.sleeper().go_dormant(a));
     assert!(s.lists().get(a).is_some());
 }
 
@@ -196,11 +196,11 @@ fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     let (mut s, a, b) = with_a_list(&files);
     s.dormancy_mut().hold(a);
     assert!(!s.dormant().may_go(a));
-    assert!(!s.go_dormant(a));
+    assert!(!s.sleeper().go_dormant(a));
     assert!(s.lists().get(a).is_some() && !s.lists().is_asleep(a));
     assert!(s.warm.contains(a), "its contents stay too");
-    s.let_go(a);
-    assert!(!s.go_dormant(b), "nor the one on screen");
+    s.sleeper().let_go(a);
+    assert!(!s.sleeper().go_dormant(b), "nor the one on screen");
     s.save_prepared(
         a,
         FileStamp {
@@ -211,7 +211,7 @@ fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
         },
         None,
     );
-    assert!(!s.go_dormant(a), "nor one being saved");
+    assert!(!s.sleeper().go_dormant(a), "nor one being saved");
 }
 
 /// Failure (review): a sleep file's word on a file's length goes on being believed once the worker has said otherwise, so a phantom page takes a rotation, or it's written into the next sleep file as if it had been checked. And a file read the usual way is left alone, as two readers of a damaged file can differ.
@@ -224,7 +224,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     let stamp = file_stamp(&path).unwrap();
     let mut s = session(3);
     let a = s.open(&path).unwrap();
-    assert!(!s.file_length_is(a, 2, 5), "read the usual way, that's nothing to go on");
+    assert!(!s.sleeper().file_length_is(a, 2, 5), "read the usual way, that's nothing to go on");
     s.open(Path::new("/d/b.pdf")).unwrap();
     s.warm.drop_contents(a);
     // Forged: a hundred pages.
@@ -240,17 +240,21 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
         sizes: Vec::new(),
         pictures: Vec::new(),
     };
-    s.wake_from_sleep(a, &forged(100));
+    s.sleeper().wake_from_sleep(a, &forged(100));
     s.tap(a).unwrap();
     assert_eq!(s.pages().count(a), 100, "believed for now");
-    assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
-    assert!(s.file_length_is(a, 3, 5), "it says to read the file");
+    assert!(s.dormant().sleep_facts(a).is_none(), "and not written on, unchecked");
+    assert!(s.sleeper().file_length_is(a, 3, 5), "it says to read the file");
     assert!(!s.warm.contains(a));
     assert!(
-        s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)),
+        s.journal_desk()
+            .work()
+            .retired
+            .iter()
+            .any(|name| *name == record::sleep_file_name(stamp, &path)),
         "and the file's gone"
     );
-    s.give_woken(
+    s.sleeper().give_woken(
         a,
         Ok(DocFacts {
             page_count: 3,
@@ -274,16 +278,16 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     s.discard_edits(a);
     s.open(Path::new("/d/c.pdf")).unwrap();
     s.warm.drop_contents(a);
-    s.wake_from_sleep(a, &forged(3));
+    s.sleeper().wake_from_sleep(a, &forged(3));
     s.tap(a).unwrap();
-    assert!(!s.file_length_is(a, 3, 5));
-    assert!(s.sleep_facts(a).is_some());
+    assert!(!s.sleeper().file_length_is(a, 3, 5));
+    assert!(s.dormant().sleep_facts(a).is_some());
     // The right length, and another version: a rewrite that kept its size, time and number. Read after all.
     s.open(Path::new("/d/d.pdf")).unwrap();
     s.warm.drop_contents(a);
-    s.wake_from_sleep(a, &forged(3));
+    s.sleeper().wake_from_sleep(a, &forged(3));
     s.tap(a).unwrap();
-    assert!(s.file_length_is(a, 3, 6), "another version");
+    assert!(s.sleeper().file_length_is(a, 3, 6), "another version");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -304,7 +308,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     s.dormancy_mut().hold(a);
     assert!(s.dormant().due_at(10_000, AFTER).is_empty());
     assert!(s.dormant().oldest_first().is_empty(), "whatever's asking");
-    s.let_go(a);
+    s.sleeper().let_go(a);
     assert_eq!(s.dormant().due_at(10_000, AFTER), [a]);
     // A save under way.
     s.save_prepared(
@@ -322,7 +326,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     let mut s = session(5);
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
     assert!(s.dormant().candidates().count() <= MAX_WARM + 1);
-    s.go_dormant(ids[998]);
+    s.sleeper().go_dormant(ids[998]);
     assert!(!s.warm.contains(ids[998]), "its contents go");
     assert!(s.dormant().oldest_first().len() < MAX_WARM);
 }
@@ -355,29 +359,29 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     s.dormancy_mut().set_sleep_files(true);
     let open = s.open(&file("open.pdf")).unwrap();
     let locked = s.open(&file("locked.pdf")).unwrap();
-    assert!(s.sleep_facts(open).is_some());
-    assert!(s.sleep_facts(locked).is_none(), "its contents don't go on disk");
-    assert!(s.sleep_to_read(locked).is_none());
+    assert!(s.dormant().sleep_facts(open).is_some());
+    assert!(s.dormant().sleep_facts(locked).is_none(), "its contents don't go on disk");
+    assert!(s.dormant().sleep_to_read(locked).is_none());
     for at in 0..MAX_WARM {
         s.open(&file(&format!("{at}.pdf"))).unwrap();
     }
-    let left = s.take_left_warm();
+    let left = s.sleeper().take_left_warm();
     assert_eq!(
         left.iter().map(|facts| facts.id).collect::<Vec<_>>(),
         [open],
         "the unprotected one that left: {left:?}"
     );
     assert_eq!(left[0].sleep.file_pages, 3);
-    assert!(s.take_left_warm().is_empty());
+    assert!(s.sleeper().take_left_warm().is_empty());
     // A protected file's pages in a plain document: its facts are fine, and no picture is.
     let plain = s.open(&file("plain.pdf")).unwrap();
-    assert!(s.sleep_facts(plain).unwrap().pictures_allowed);
+    assert!(s.dormant().sleep_facts(plain).unwrap().pictures_allowed);
     let locked_file = file("locked.pdf");
     let facts = s.loader().load(&locked_file).unwrap();
     s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok())
         .unwrap();
     assert!(
-        !s.sleep_facts(plain).unwrap().pictures_allowed,
+        !s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
         "a page from a protected file means no pictures"
     );
     assert!(s.lists().get(plain).unwrap().added_sources()[0].protected);
@@ -387,7 +391,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
     assert!(s.undo_edit(plain));
     assert!(
-        s.sleep_facts(plain).unwrap().pictures_allowed,
+        s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
         "with those pages gone from the document, it's fine again"
     );
     std::fs::remove_dir_all(&dir).unwrap();
@@ -410,7 +414,7 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     let mut list = PageEdits::new(12);
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
-    s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
+    s.journal_desk().take_up_history(a, "journal-00000000000000aa.log", list, 1);
     s.warm.clear_contents();
     s.tap(a).unwrap();
     assert_eq!(s.lists().get(a).map(PageEdits::file_pages), Some(12), "it's kept");
@@ -442,6 +446,7 @@ fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
         warm.push(TabId(id), Arc::new(Toc::default()), |_| {});
     }
     let lists = lists::Lists::new();
+    let journals = journals::Journals::new();
     let mut dormancy = dormancy::Dormancy::new();
     crate::PartMut(&mut dormancy).hold(TabId(3));
     let look = Dormant {
@@ -449,6 +454,7 @@ fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
         warm: &warm,
         lists: &lists,
         dormancy: &dormancy,
+        journals: &journals,
         comparison: None,
     };
     assert!(!look.may_go(TabId(1)), "on screen");
@@ -467,6 +473,7 @@ fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
         warm: &warm,
         lists: &lists,
         dormancy: &dormancy,
+        journals: &journals,
         comparison: None,
     };
     assert_eq!(look.oldest_first(), vec![TabId(3), TabId(2)]);
@@ -490,10 +497,10 @@ fn a_woken_list_naming_an_outside_file_is_unreadable() {
     write_journal(&mut s, &mut plain);
     *files.lock().unwrap() = plain;
     s.open(&dir.join("run/b.pdf")).unwrap();
-    assert!(s.go_dormant(a), "the list goes to its journal");
+    assert!(s.sleeper().go_dormant(a), "the list goes to its journal");
     s.confinement().confine(recto_platform::run_folders::RunFolders::of(&[&dir.join("run")]));
     let loads = s.loader().loads.get();
-    assert!(!s.wake_list(a), "the list naming the outside file was woken");
+    assert!(!s.sleeper().wake_list(a), "the list naming the outside file was woken");
     assert!(s.lists().get(a).is_none(), "it's in memory");
     assert_eq!(s.tabs().tab_notice(a).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
@@ -514,7 +521,7 @@ fn edited_tabs_counts_tabs_with_unsaved_changes_wherever_their_lists_are() {
     let c = s.open(Path::new("/d/c.pdf")).unwrap();
     s.edit_pages(c, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(s.undo_edit(c));
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     assert!(s.lists().is_asleep(a) && s.lists().is_edited(a));
     assert!(s.lists().get(c).is_some() && !s.lists().is_edited(c), "c's every step is undone");
     assert_eq!(s.lists().edited_tabs(), 2, "a, asleep, and b; not c");
