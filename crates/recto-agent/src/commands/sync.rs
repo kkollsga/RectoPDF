@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// Blocks until a condition holds, or the time runs out.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wait {
     pub condition: Condition,
@@ -58,7 +58,7 @@ impl Cmd for Wait {
 }
 
 /// Streams events, one line each.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Watch {
     #[serde(default)]
@@ -97,7 +97,7 @@ impl Cmd for Watch {
 }
 
 /// Ends every watch running on this session.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchStop {}
 

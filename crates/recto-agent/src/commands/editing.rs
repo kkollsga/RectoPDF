@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageMove {
     #[serde(default = "crate::active_tab")]
@@ -58,7 +58,7 @@ impl Cmd for PageMove {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageDelete {
     #[serde(default = "crate::active_tab")]
@@ -101,7 +101,7 @@ impl Cmd for PageDelete {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageInsert {
     #[serde(default = "crate::active_tab")]
@@ -165,7 +165,7 @@ impl Cmd for PageInsert {
 }
 
 /// The unsaved page edits on a tab.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Edits {
     #[serde(default = "crate::active_tab")]
@@ -206,7 +206,7 @@ impl Cmd for Edits {
 }
 
 /// Throws away a tab's edits. They can't be got back, so below Full it refuses if any are the user's.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Discard {
     #[serde(default = "crate::active_tab")]
@@ -381,7 +381,7 @@ fn edits_words(data: &Value) -> String {
 }
 
 /// Turns pages clockwise. `all` turns every page as one step, as the panel's Rotate does outside edit mode.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageRotate {
     #[serde(default = "crate::active_tab")]
@@ -436,7 +436,7 @@ impl Cmd for PageRotate {
 }
 
 /// Reverses the last page edit.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Undo {
     #[serde(default = "crate::active_tab")]
@@ -482,7 +482,7 @@ impl Cmd for Undo {
 }
 
 /// Repeats the last undone page edit.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Redo {
     #[serde(default = "crate::active_tab")]
@@ -528,7 +528,7 @@ impl Cmd for Redo {
 }
 
 /// Clears a tab's edit history: every step undo or redo could take, and its file. Unsaved edits stay. Below Full it refuses if any are the user's.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClearHistory {
     #[serde(default = "crate::active_tab")]

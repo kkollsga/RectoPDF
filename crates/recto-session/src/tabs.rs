@@ -7,18 +7,12 @@ impl<L: DocLoader> Session<L> {
         Self {
             loader,
             viewing: viewing::Viewing::default(),
-            tabs: Vec::new(),
-            active: None,
-            next_id: 1,
+            tabs: registry::Tabs::default(),
             warm: warm::Warm::default(),
-            dirs: dirs::Dirs::default(),
-            edits: HashMap::new(),
-            wake_failed: Vec::new(),
-            asleep: HashMap::new(),
+            lists: lists::Lists::default(),
             dormancy: dormancy::Dormancy::default(),
             mail: mail::PageViewMail::default(),
             journals: journals::Journals::default(),
-            agent_at_full: false,
             generated: generated::Generated::default(),
             comparison: None,
             saves: saves::Saves::default(),
@@ -32,21 +26,20 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub fn tabs(&self) -> &[TabRecord] {
-        &self.tabs
+        self.tabs.all()
     }
 
     pub fn active(&self) -> Option<TabId> {
-        self.active
+        self.tabs.active()
     }
 
     pub fn tab(&self, id: TabId) -> Option<&TabRecord> {
-        self.tabs.iter().find(|t| t.id == id)
+        self.tabs.get(id)
     }
 
     /// The tab's full path, rebuilt from its interned folder and name.
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
-        let tab = self.tab(id)?;
-        Some(self.dirs.get(tab.dir)?.join(&*tab.file_name))
+        self.tabs.path_of(id)
     }
 
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
@@ -78,8 +71,8 @@ impl<L: DocLoader> Session<L> {
     pub fn tab_for_file(&self, path: &Path, stamp: Option<FileStamp>) -> Option<TabId> {
         self.tab_for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
-            let same_number = self.tabs.iter().find(|tab| {
-                tab.stamp.is_some_and(|known| {
+            let same_number = self.tabs.all().iter().find(|tab| {
+                tab.file.stamp.is_some_and(|known| {
                     known.inode == stamp.inode
                         && known.device == stamp.device
                         && (known.same_contents(stamp)
@@ -144,9 +137,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The tab already showing this file, if there is one.
     pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
-        let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
-        let file_name = path.file_name()?;
-        self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
+        self.tabs.for_path(path)
     }
 
     /// The second half of [`Self::open`]: makes the tab from facts already read, and what's left of the PDF's history, if a [`HistorySource`] found any. It's the one way a tab comes to exist, so every route has to say. Someone may have opened the same file meanwhile, and then that's the tab, and the history stays where it is.
@@ -162,44 +153,48 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
         }
-        let dir = self.dirs.intern(dir_path);
-        if self.next_id >= MAX_TAB_ID {
+        // Refused before its folder's kept: a folder is let go of only when its last tab goes, and this would have none.
+        if self.tabs.next_id() >= MAX_TAB_ID {
             return Err(SessionError::TooManyTabs);
         }
-        let id = TabId(self.next_id);
-        self.next_id += 1;
+        let dir = self.tabs.intern_dir(dir_path);
+        let id = self.tabs.take_id();
         let name = tab_name(path);
         self.tabs.push(TabRecord {
             from_sleep: None,
-            encrypted: false,
-            password: false,
             touched: 0,
             id,
-            dir,
-            file_name: file_name.into(),
             name: name.into(),
             page: 0,
             page_count: facts.page_count,
             toc_open: true,
             problem: None,
             renderer_only: facts.renderer_only,
-            stamp,
-            place: None,
             view_rotation: 0,
             spread: record::Spread::Single,
-            selection: None,
-            notice: None,
             place_dirty: true,
             contents_verdict: ContentsVerdict::Fine,
             generated_contents: false,
             folds: None,
-            trail: None,
+            file: TabFile {
+                dir,
+                file_name: file_name.into(),
+                stamp,
+                notice: None,
+                encrypted: false,
+                password: false,
+            },
+            reading: TabPlace {
+                place: None,
+                selection: None,
+                trail: None,
+            },
         });
         if let Some(tab) = self.tab_mut(id) {
-            tab.encrypted = facts.encrypted;
+            tab.file.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
-        self.active = Some(id);
+        self.tabs.set_active(Some(id));
         self.note_recent(path);
         self.generated.keep_ready_only_for(id);
         // A new PDF shows alone, as going to any tab that isn't side by side does.
@@ -208,7 +203,7 @@ impl<L: DocLoader> Session<L> {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tab_mut(id) {
-                tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
             }
         }
         Ok(id)
@@ -221,7 +216,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.note_password_used(id);
         self.give_woken(id, Ok(facts), stamp);
-        if self.active == Some(id) {
+        if self.tabs.active() == Some(id) {
             self.activate(id);
         }
     }
@@ -236,7 +231,7 @@ impl<L: DocLoader> Session<L> {
     /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
     pub fn note_password_used(&mut self, id: TabId) {
         if let Some(tab) = self.tab_mut(id) {
-            tab.password = true;
+            tab.file.password = true;
         }
     }
 
@@ -259,7 +254,7 @@ impl<L: DocLoader> Session<L> {
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
         self.tab(id).is_some_and(|tab| {
-            tab.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword))
+            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
         })
     }
 
@@ -268,45 +263,42 @@ impl<L: DocLoader> Session<L> {
         if self.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
         }
-        let before = self.active;
+        let before = self.tabs.active();
         // A plain click on a tab during a comparison returns to one, that one (owner, 2026-11-08: comparison is by ⌘-click).
         let comparing = self.comparison.take().is_some();
-        if self.active == Some(id) && !comparing {
+        if self.tabs.active() == Some(id) && !comparing {
             if let Some(tab) = self.tab_mut(id) {
                 tab.toc_open = !tab.toc_open;
             }
         } else {
             self.activate(id);
         }
-        Ok(change::switched(before, self.active))
+        Ok(change::switched(before, self.tabs.active()))
     }
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
-        let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
+        // With no tab, or no file to move to, there'd be nothing in a new folder to let it go.
+        if self.tab(id).is_none() || path.file_name().is_none() {
+            return;
+        }
+        let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
         let mut left = None;
         if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
-            left = Some(tab.dir).filter(|was| *was != dir);
-            tab.dir = dir;
-            tab.file_name = file_name.into();
+            left = Some(tab.file.dir).filter(|was| *was != dir);
+            tab.file.dir = dir;
+            tab.file.file_name = file_name.into();
             tab.name = name.into();
         }
         if let Some(was) = left {
-            self.let_go_of_dir_if_unused(was);
-        }
-    }
-
-    /// A folder no tab is in any more is let go of, so the folders kept are only those in use.
-    fn let_go_of_dir_if_unused(&mut self, dir: u32) {
-        if !self.tabs.iter().any(|tab| tab.dir == dir) {
-            self.dirs.let_go(dir);
+            self.tabs.let_go_of_dir_if_unused(was);
         }
     }
 
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active, and the answer says which.
     /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<Closed, SessionError> {
-        let before = self.active;
+        let before = self.tabs.active();
         if self.is_saving(id) {
             return Err(SessionError::Saving);
         }
@@ -316,11 +308,10 @@ impl<L: DocLoader> Session<L> {
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
         // A list that won't read: nothing unsaved is at stake, or this wouldn't have got here. Its journal's left for a launch to look at.
         if !self.wake_list(id) {
-            self.asleep.remove(&id);
-            self.wake_failed.retain(|failed| *failed != id);
+            self.lists.forget_asleep(id);
             self.journals.forget_name(id);
         }
-        let keeps_history = self.journals.journaling() && self.edits.get(&id).is_some_and(PageEdits::has_history);
+        let keeps_history = self.journals.journaling() && self.lists.get(id).is_some_and(PageEdits::has_history);
         if keeps_history {
             if let Some(append) = self.append_for(id) {
                 self.journals.depart(JournalAppend { closing: true, ..append });
@@ -330,11 +321,10 @@ impl<L: DocLoader> Session<L> {
             self.let_go_of_list(id);
         }
         self.journals.drop_fresh(id);
-        self.edits.remove(&id);
+        self.lists.remove(id);
         self.retire_sleep_file(id);
-        let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
-        let closed = self.tabs.remove(index);
-        self.let_go_of_dir_if_unused(closed.dir);
+        let index = self.tabs.position(id).ok_or(SessionError::NoSuchTab)?;
+        self.tabs.remove(index);
         self.mail.forget(id);
         self.generated.forget(id);
         self.warm.forget(id);
@@ -349,27 +339,23 @@ impl<L: DocLoader> Session<L> {
                 self.comparison = None;
             }
         }
-        if self.active == Some(id)
+        if self.tabs.active() == Some(id)
             && let Some(next) = next_pane
         {
-            self.active = None;
+            self.tabs.set_active(None);
             self.activate(next);
         }
-        if self.active == Some(id) {
-            self.active = None;
-            let next = self
-                .tabs
-                .get(index)
-                .or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i)))
-                .map(|t| t.id);
+        if self.tabs.active() == Some(id) {
+            self.tabs.set_active(None);
+            let next = self.tabs.at(index).or_else(|| index.checked_sub(1).and_then(|i| self.tabs.at(i))).map(|t| t.id);
             if let Some(next) = next {
                 self.activate(next);
             }
         }
-        Ok(Closed::after(id, before, self.active))
+        Ok(Closed::after(id, before, self.tabs.active()))
     }
 
     pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
-        self.tabs.iter_mut().find(|t| t.id == id)
+        self.tabs.get_mut(id)
     }
 }

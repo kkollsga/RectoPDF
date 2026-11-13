@@ -19,7 +19,7 @@ fn close(tab: TabId) -> Command {
 /// **What the window says when a person's close didn't go:** only the close after the prompt's Save, which an edit made since the save stops, as the file
 /// hasn't got it, says so, in the prompt's words. Any other close that's refused (an edit that came in as File > Close was chosen) said nothing, and says
 /// nothing now.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if let (Some(error), Command::Move(Move::Close(_)), Origin::Finishing) = (ran.refused(), ran.command, ran.origin)
         && error.code == "unsaved_changes"
     {

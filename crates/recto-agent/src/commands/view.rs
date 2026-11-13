@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 
 /// How the app shows pages. The default asks and changes nothing.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
     #[serde(default)]
@@ -102,7 +102,7 @@ impl OnlyAsks for View {
 }
 
 /// ⌘K's palette: what a query finds among the app's commands and tabs, best first, and running the first.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Palette {
     #[serde(default)]
@@ -202,13 +202,15 @@ pub(crate) fn set<A: SessionAccess>(access: &A, asked: [&Option<String>; 4], tab
                 Some(selector) => Some(select(s, selector)?),
                 None => s.active(),
             };
-            if let Some(name) = layout.as_deref() {
-                let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
-                let id = laid_out.ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
-                if s.set_spread(id, spread) {
-                    events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
+            // Everything asked is checked before anything's changed, so a refused `view` changes nothing (review, 2026-11-13).
+            let spread = match layout.as_deref() {
+                Some(name) => {
+                    let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
+                    let id = laid_out.ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+                    Some((id, spread))
                 }
-            }
+                None => None,
+            };
             let mut view = was;
             match paper.as_deref() {
                 Some("auto") => view.paper = None,
@@ -217,6 +219,11 @@ pub(crate) fn set<A: SessionAccess>(access: &A, asked: [&Option<String>; 4], tab
             }
             view.sidebar_hidden = hidden_after(sidebar.as_deref(), view.sidebar_hidden, "the sidebar")?;
             view.agent_icon_hidden = hidden_after(agent_icon.as_deref(), view.agent_icon_hidden, "the agent icon")?;
+            if let Some((id, spread)) = spread
+                && s.set_spread(id, spread)
+            {
+                events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
+            }
             s.set_view(view);
             if view != was {
                 events.push(view_changed(view));
@@ -353,6 +360,29 @@ mod tests {
         let result = execute(&access, Actor::Agent(Level::Control), &command, &mut events);
         *session = access.into_inner().expect("not poisoned");
         (result, events)
+    }
+
+    /// Failure (review of 2026-11-13): a `view` with a good layout and a bad paper, as a line on the socket sends it (JSON skips the words' check the CLI
+    /// makes), lays the tab out and then refuses the paper, so the command changes something and answers that it didn't. Everything asked is checked first:
+    /// refused, nothing changes, and nothing's announced. A bad sidebar word, with a good paper, the same.
+    #[test]
+    fn a_view_that_is_refused_changes_nothing() {
+        let mut session = Session::new(Fake);
+        session.open(&PathBuf::from("/d/a.pdf")).unwrap();
+        for line in [
+            r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#,
+            r#"{"cmd":"view","paper":"dark","sidebar":"sideways"}"#,
+        ] {
+            let (view, layout) = (session.view(), session.spread_of(session.active().unwrap()));
+            let (result, events) = run(&mut session, line);
+            assert_eq!(result.map_err(|error| error.code), Err("usage"), "{line}");
+            assert_eq!(
+                (session.view(), session.spread_of(session.active().unwrap())),
+                (view, layout),
+                "{line}: nothing changed"
+            );
+            assert!(events.is_empty(), "{line}: {events:?}");
+        }
     }
 
     /// Failure (R2.3, accident A3): a toggle is worked out from how things were last shown, so two presses before the first is shown hide the sidebar twice

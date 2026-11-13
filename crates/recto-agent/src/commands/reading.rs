@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tabs {
     /// Tabs to skip, from `next_from` in the last answer.
@@ -50,7 +50,7 @@ impl Cmd for Tabs {
 }
 
 /// Where a tab is: its page, its length and whether it has unsaved edits.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Where {
     #[serde(default = "crate::active_tab")]
@@ -88,7 +88,7 @@ impl Cmd for Where {
 }
 
 /// A document's facts: pages, size, version, what could be read of its structure.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Facts {
     #[serde(default = "crate::active_tab")]
@@ -126,7 +126,7 @@ impl Cmd for Facts {
 }
 
 /// A document's contents, in pieces.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Contents {
     #[serde(default = "crate::active_tab")]
@@ -185,7 +185,7 @@ impl Cmd for Contents {
 }
 
 /// What the file says about signatures. Facts only, never a verdict.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signatures {
     #[serde(default = "crate::active_tab")]
@@ -223,7 +223,7 @@ impl Cmd for Signatures {
 }
 
 // Empty braces, not unit variants: serde ignores extra fields on a unit variant, even with `deny_unknown_fields`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sidebar {}
 

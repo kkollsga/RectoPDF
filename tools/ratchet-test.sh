@@ -6,7 +6,7 @@ set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 X=$(mktemp -d "${TMPDIR:-/tmp}/ratchet-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
-export RATCHET_FILE_LINES=20 RATCHET_FN_LINES=6 RATCHET_STRUCT_FIELDS=3 RATCHET_ENUM_VARIANTS=3 RATCHET_IMPL_METHODS=3
+export RATCHET_FILE_LINES=20 RATCHET_FN_LINES=6 RATCHET_STRUCT_FIELDS=3 RATCHET_ENUM_VARIANTS=3 RATCHET_IMPL_METHODS=3 RATCHET_TYPE_METHODS=5
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: expected [$2], got [$3]"; fails=$((fails + 1)); fi; }
 has() { case "$3" in *"$2"*) echo "ok    $1" ;; *) echo "FAIL  $1: no [$2] in [$3]"; fails=$((fails + 1)) ;; esac; }
@@ -72,6 +72,46 @@ out=$(R --moved crates/recto-ffi/src/lib.rs::W crates/b/src/lib.rs::W); rc=$?
 check "--moved carries a struct from its restatement to the plain type" "0" "$rc"; has "renamed" "struct crates/b/src/lib.rs::W 4" "$(cat "$X/t/base.txt")"
 fresh; printf 'struct T;\nimpl T {\n fn a(&self) {}\n fn b(&self) {}\n fn c(&self) {}\n fn d(&self) {}\n}\nimpl Tr for T {\n fn e(&self) {}\n}\n' > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
 check "an impl over the method budget fails" "1" "$rc"; has "with its count, trait impls left out" "impl crates/a/src/lib.rs::T is a new offender: 4 methods, budget 3" "$out"
+
+# types: every inherent impl of a name in a crate is one type, wherever its blocks are
+# Failure (independent review, 2026-11-13): Reader (138 methods), Inner (119) and Session (193) left the per-impl baseline by spreading their methods over
+# files as impl blocks of 39 or fewer, though each is still one type. Methods are counted per type across the crate, and the files are named.
+impls() { local n=$1 t=$2; echo "impl $t {"; for ((i = 0; i < n; i++)); do echo " fn $3$i(&self) {}"; done; echo "}"; }
+fresh; { echo 'struct T;'; impls 3 T m; } > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
+check "a type under the budget in one file passes" "0" "$rc"
+fresh; { echo 'struct T;'; impls 3 T a; } > "$X/t/crates/a/src/lib.rs"; impls 3 T b > "$X/t/crates/a/src/b.rs"; impls 3 T c > "$X/t/crates/a/src/c.rs"
+out=$(R); rc=$?
+check "the same type spread over three files fails though no block is over the per-impl budget" "1" "$rc"
+has "naming the type with its count and the budget" "type crates/a/src::T is a new offender: 9 methods in all its inherent impl blocks, budget 5" "$out"
+has "listing each file with its count" "crates/a/src/b.rs (3), crates/a/src/c.rs (3), crates/a/src/lib.rs (3)" "$out"
+has "and what to do" "an \`impl\` block in another file is the same type" "$out"
+check "no per-impl entry fires for it" "0" "$(echo "$out" | grep -c '^  - impl ')"
+R --update >/dev/null 2>&1; check "update refuses to take a new offender in" "" "$(grep '^type' "$X/t/base.txt")"
+printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::T 9\n' > "$X/t/base.txt"; out=$(R); rc=$?
+check "at its baseline the type passes" "0" "$rc"
+impls 1 T d > "$X/t/crates/a/src/d.rs"; out=$(R); rc=$?
+check "one more method in any file fails" "1" "$rc"; has "with old and new" "type crates/a/src::T grew: 10 methods in all its inherent impl blocks, baseline 9, budget 5" "$out"
+rm "$X/t/crates/a/src/c.rs" "$X/t/crates/a/src/d.rs"; out=$(R); rc=$?
+check "a fall passes" "0" "$rc"; has "and is offered to update" "type crates/a/src::T: 9 -> 6" "$out"
+R --update >/dev/null; has "update locks it in" "type crates/a/src::T 6" "$(cat "$X/t/base.txt")"
+rm "$X/t/crates/a/src/b.rs"; R --update >/dev/null; check "under the budget the entry is dropped" "" "$(grep '^type' "$X/t/base.txt")"
+printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::Gone 8\ntype crates/a/src::T 9\n' > "$X/t/base.txt"; R --update >/dev/null
+check "an entry for a type that no longer exists is dropped" "" "$(grep '^type' "$X/t/base.txt")"
+printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::T 9\n' > "$X/t/base.txt"; { echo 'struct T;'; impls 3 T a; echo "impl Tr for T {"; for i in 1 2 3 4 5 6; do echo " fn t$i(&self) {}"; done; echo "}"; } > "$X/t/crates/a/src/lib.rs"
+out=$(R); check "trait impls are not counted" "0" "$(echo "$out" | grep -c 'type crates/a/src::T grew')"
+fresh; { echo 'struct T;'; impls 3 T a; echo '#[cfg(test)]'; echo 'mod tests {'; impls 6 T t; echo '}'; } > "$X/t/crates/a/src/lib.rs"
+out=$(R); rc=$?; check "a test module's impl is not counted" "0" "$rc"
+fresh; mkdir -p "$X/t/crates/b/src"; { echo 'struct T;'; impls 2 T a; } > "$X/t/crates/a/src/lib.rs"; impls 2 T b > "$X/t/crates/a/src/b.rs"
+{ echo 'struct T;'; impls 2 T a; } > "$X/t/crates/b/src/lib.rs"; impls 2 T b > "$X/t/crates/b/src/b.rs"
+out=$(R); rc=$?
+check "types of one name in two crates are two types, together they would be over the budget" "0" "$rc"
+impls 3 T c > "$X/t/crates/b/src/c.rs"; out=$(R); rc=$?
+check "and growing one doesn't hide in the other" "1" "$rc"; has "naming the crate's type" "type crates/b/src::T is a new offender: 7 methods" "$out"
+# --moved leaves the per-type count alone: it is per type, not per file
+fresh; { echo 'struct T;'; impls 3 T a; } > "$X/t/crates/a/src/old.rs"; impls 3 T b > "$X/t/crates/a/src/new.rs"
+printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::T 6\n' > "$X/t/base.txt"; before=$(cat "$X/t/base.txt")
+out=$(R --moved crates/a/src/old.rs crates/a/src/new.rs); rc=$?
+check "--moved of a file leaves the type entry where it is" "1" "$rc"; check "and the baseline unchanged" "$before" "$(cat "$X/t/base.txt")"
 
 # the binding crate
 fresh; lines 5 > "$X/t/crates/recto-ffi/src/lib.rs"; boot
@@ -173,6 +213,6 @@ check "the report never fails" "0" "$rc"; has "it lists the hub with lines added
 check "and leaves other files out" "0" "$(echo "$out" | grep -c other.rs)"
 
 # the real tree is ok
-out=$(env -u RATCHET_FILE_LINES -u RATCHET_FN_LINES -u RATCHET_STRUCT_FIELDS -u RATCHET_ENUM_VARIANTS -u RATCHET_IMPL_METHODS "$SOURCE/tools/ratchet.sh"); rc=$?; check "the checked-in baseline holds for this tree" "0" "$rc"
+out=$(env -u RATCHET_FILE_LINES -u RATCHET_FN_LINES -u RATCHET_STRUCT_FIELDS -u RATCHET_ENUM_VARIANTS -u RATCHET_IMPL_METHODS -u RATCHET_TYPE_METHODS "$SOURCE/tools/ratchet.sh"); rc=$?; check "the checked-in baseline holds for this tree" "0" "$rc"
 
 [ "$fails" -eq 0 ] && echo "ratchet-test: all passed" || { echo "ratchet-test: $fails failed"; exit 1; }

@@ -655,7 +655,7 @@ final class TabTable: NSTableView {
     /// What a click on the note over the contents does, and what `recto qa click-row note` calls.
     func clickNote() {
         guard let note = model.contentsNote, model.tocOpen else { return }
-        core.tapRow(row: note)
+        _ = core.act(action: .row(row: note, adding: false))
     }
 
     /// The room between the header and the bottom bar, which Find, the tabs and the contents share by Rust's rule.
@@ -840,7 +840,7 @@ final class TabTable: NSTableView {
 
     private func compareTab(_ row: Int) {
         guard row >= 0, row < tabs.count else { return }
-        core.tapRowAdding(row: tabs[row])
+        _ = core.act(action: .row(row: tabs[row], adding: true))
     }
 
     /// What a ⌘-click on a row does, and what `recto qa compare-click` calls, rows counted as `clickRow` counts them. A contents row does what a click does.
@@ -866,7 +866,7 @@ final class TabTable: NSTableView {
     /// What a click on a contents row's fold does, and what `recto qa click-row fold:N` calls.
     func toggleSection(_ inContents: Int) {
         guard inContents >= 0 else { return }
-        core.toggleContentsSection(first: UInt32(inContents))
+        _ = core.act(action: .chevron(first: UInt32(inContents)))
     }
 
     /// ← folds the section being read and → opens it, with the sidebar's list holding the keyboard: what its key calls, and `recto qa accessibility key:left`. Rust says which section, and whether it took the key.
@@ -898,12 +898,12 @@ final class TabTable: NSTableView {
 
     private func tapTab(_ row: Int) {
         guard row >= 0, row < tabs.count else { return }
-        core.tapRow(row: tabs[row])
+        _ = core.act(action: .row(row: tabs[row], adding: false))
     }
 
     private func tapContents(_ row: Int) {
         guard row >= 0, let chosen = core.contentsRows(first: UInt32(row), count: 1).first else { return }
-        core.tapRow(row: chosen)
+        _ = core.act(action: .row(row: chosen, adding: false))
     }
 
     /// What a click on a row does, and what `recto qa click-row` calls. Rows count down the sidebar as a person sees them, the contents under the active tab.

@@ -85,7 +85,7 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         // A ⌘-click puts the two side by side, and the reader moves into the other pane: `compare --toggle` and `--reading` (C5e).
         UiAction::PaneRead { tab },
         UiAction::Chevron { first: 0 },
-        UiAction::Open { path: a.clone() },
+        UiAction::Open { path: a.display().to_string() },
         UiAction::OpenRecent { key: "0".repeat(16) },
         // Find's field, its list and its keys are the person's `find` (C5g): a query, opening, a jump each way, a hit's row and a page's, and closing.
         UiAction::FindTyped { text: "page".into() },
@@ -99,7 +99,7 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::Swiped { delta_x: 1.0 },
         UiAction::ZoomTyped {
             text: "150".into(),
-            decimal: '.',
+            decimal: ".".into(),
         },
         UiAction::ToggleSidebar,
         UiAction::PaletteRun { id: "view.zoom_in".into() },
@@ -115,7 +115,9 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
             id: "edit.clear_history".into(),
         },
         // Opening a file that isn't open, and Open Recent's file, are a person's `open` (C5c).
-        UiAction::Open { path: not_open.clone() },
+        UiAction::Open {
+            path: not_open.display().to_string(),
+        },
         UiAction::OpenRecent { key: recent_key },
         UiAction::CloseAnswered {
             tab,

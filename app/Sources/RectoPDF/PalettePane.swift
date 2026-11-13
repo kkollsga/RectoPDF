@@ -156,7 +156,7 @@ final class PaletteRowCell: NSView {
         case "return":
             // The row on screen as selected, as a click runs the row clicked: what's run is what's seen.
             guard let selected = model.selected.map({ Int($0) }), selected < model.rows.count else { return }
-            let action = core.paletteRun(id: model.rows[selected].id)
+            let action = core.act(action: .paletteRun(id: model.rows[selected].id)).host
             refresh()
             hostAction?(action)
         case "escape": core.paletteClose(); refresh()
@@ -178,7 +178,7 @@ final class PaletteRowCell: NSView {
     @objc private func rowClicked() {
         let row = list.clickedRow
         guard row >= 0, row < model.rows.count else { return }
-        let action = core.paletteRun(id: model.rows[row].id)
+        let action = core.act(action: .paletteRun(id: model.rows[row].id)).host
         refresh()
         hostAction?(action)
     }

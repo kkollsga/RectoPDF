@@ -406,7 +406,7 @@ final class BookMark: NSView {
         sidebarGrip.dragged = { [weak delegate] x in delegate?.core.setSidebarWidth(width: x) }
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }
         root.fileDropped = { [weak delegate] urls in
-            for url in urls { delegate?.core.openFile(path: url.path) }
+            for url in urls { _ = delegate?.core.act(action: .open(path: url.path)) }
         }
         root.registerForDraggedTypes([.fileURL])
         syncPaneAreas()
@@ -779,7 +779,7 @@ final class BookMark: NSView {
     /// Return in the go-to field: Rust finds the page by its label or number, or says there's none by that.
     @objc private func pageTyped() {
         guard pageEditing else { return }
-        _ = delegate.core.pageTyped(text: pageField.stringValue)
+        _ = delegate.core.act(action: .pageTyped(text: pageField.stringValue))
         endPageEditing()
     }
 
@@ -1060,7 +1060,7 @@ final class BookMark: NSView {
     /// Return in the field. Rust says whether it was a level, and if it wasn't, nothing changes.
     @objc private func zoomTyped() {
         guard zoomEditing else { return }
-        _ = delegate.core.zoomTyped(text: zoomField.stringValue, decimalSeparator: Locale.current.decimalSeparator ?? ".")
+        _ = delegate.core.act(action: .zoomTyped(text: zoomField.stringValue, decimal: Locale.current.decimalSeparator ?? "."))
         endZoomEditing()
     }
 

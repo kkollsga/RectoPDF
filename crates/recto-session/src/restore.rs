@@ -8,51 +8,48 @@ impl<L: DocLoader> Session<L> {
         let Self {
             loader: _,
             viewing,
-            tabs,
-            active,
-            next_id,
+            tabs: open,
             warm: _,
-            dirs: _,
-            edits,
-            wake_failed: _,
-            asleep,
+            lists,
             dormancy: _,
             mail: _,
             journals,
-            agent_at_full: _,
             generated: _,
             comparison,
             saves: _,
             recent,
         } = self;
-        let tabs = tabs
+        let tabs = open
+            .all()
             .iter()
             .map(|tab| {
                 let TabRecord {
                     from_sleep: _,
-                    encrypted: _,
-                    password,
                     touched: _,
                     id,
-                    dir: _,
-                    file_name: _,
                     name: _,
                     page,
                     page_count,
                     toc_open,
                     problem: _,
                     renderer_only,
-                    stamp,
-                    place,
                     view_rotation,
                     spread,
-                    selection,
-                    notice,
                     place_dirty: _,
                     contents_verdict: _,
                     generated_contents,
                     folds,
-                    trail,
+
+                    file:
+                        TabFile {
+                            dir: _,
+                            file_name: _,
+                            stamp,
+                            notice,
+                            encrypted: _,
+                            password,
+                        },
+                    reading: TabPlace { place, selection, trail },
                 } = tab;
                 TabEntry {
                     id: id.0,
@@ -68,7 +65,7 @@ impl<L: DocLoader> Session<L> {
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
                     journal: journals.name_of(*id).map(ToString::to_string),
-                    edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
+                    edits: lists.summary(*id),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
                     password: *password,
@@ -89,8 +86,8 @@ impl<L: DocLoader> Session<L> {
             view,
             find,
             edit_mode,
-            active: active.map(|id| id.0),
-            next_id: *next_id,
+            active: open.active().map(|id| id.0),
+            next_id: open.next_id(),
             tabs,
             comparison,
             recent,
@@ -99,7 +96,7 @@ impl<L: DocLoader> Session<L> {
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
     pub fn edits_record(&self, id: TabId) -> Option<record::EditsRecord> {
-        self.edits.get(&id).map(PageEdits::to_record)
+        self.lists.get(id).map(PageEdits::to_record)
     }
 
     /// **Puts the session back as a record has it.** No file is opened: every tab comes back cold, and its name and place are all it costs. Replaces what's here. The caller reads journals, and gets the active tab's file read, and checks what's become of the rest, each off this lock.
@@ -109,28 +106,21 @@ impl<L: DocLoader> Session<L> {
         let mut deduped = record.clone();
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
-        self.tabs.clear();
-        // Every tab's going, and with them every folder's number.
-        self.dirs = dirs::Dirs::default();
+        self.tabs.restored(record.next_id, record.tabs.len());
         self.warm = warm::Warm::default();
-        self.edits.clear();
-        self.asleep.clear();
-        self.wake_failed.clear();
+        self.lists.restored();
         self.mail = mail::PageViewMail::default();
         self.journals.restored();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
         self.generated = generated::Generated::default();
         self.saves.restored();
         self.dormancy.restored();
-        self.active = None;
         self.comparison = None;
-        self.next_id = record.next_id;
         self.recent.restore(&record.recent);
         self.viewing.restore(&record.view, &record.find, record.edit_mode);
-        self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
-            let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
+            let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();
@@ -149,42 +139,46 @@ impl<L: DocLoader> Session<L> {
                         } else {
                             edits.no_journal();
                         }
-                        self.edits.insert(id, edits);
+                        self.lists.insert(id, edits);
                         self.journals.set_name(id, name);
                     }
                     None => notice = Some(FileNotice::EditsUnreadable),
                 }
             }
-            let pages = self.edits.get(&id).map_or(entry.page_count, PageEdits::len);
+            let pages = self.lists.get(id).map_or(entry.page_count, PageEdits::len);
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {
                 from_sleep: None,
-                encrypted: false,
-                password: entry.password,
                 touched: 0,
                 id,
-                dir,
-                file_name: file_name.into(),
                 name: tab_name(&path).into(),
                 page: entry.page.min(pages.saturating_sub(1)),
                 page_count: entry.page_count,
                 toc_open: entry.toc_open,
                 problem: None,
                 renderer_only: entry.renderer_only,
-                stamp: entry.file.map(Into::into),
-                place: entry.place,
                 view_rotation: entry.view_rotation,
                 spread: entry.layout,
-                selection: entry.selection.map(Box::new),
-                notice: notice.map(Box::new),
                 place_dirty: false,
                 contents_verdict: ContentsVerdict::Fine,
                 generated_contents: entry.generated_contents,
                 folds: (!entry.contents_folds.is_empty()).then(|| entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect()),
-                trail,
+                file: TabFile {
+                    dir,
+                    file_name: file_name.into(),
+                    stamp: entry.file.map(Into::into),
+                    notice: notice.map(Box::new),
+                    encrypted: false,
+                    password: entry.password,
+                },
+                reading: TabPlace {
+                    place: entry.place,
+                    selection: entry.selection.map(Box::new),
+                    trail,
+                },
             });
         }
-        self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
+        self.tabs.set_active(record.active.map(TabId).filter(|id| self.tab(*id).is_some()));
         // Side by side as it was, of the tabs that came back. A record's been checked, but one tab per file can take one out.
         self.comparison = record.comparison.as_ref().and_then(|saved| {
             let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tab(*id).is_some()).collect()).ok()?;
@@ -201,13 +195,13 @@ impl<L: DocLoader> Session<L> {
             Some(comparison)
         });
         if let Some(comparison) = &self.comparison
-            && !self.active.is_some_and(|active| comparison.contains(active))
+            && !self.tabs.active().is_some_and(|active| comparison.contains(active))
         {
-            self.active = comparison.tabs.first().copied();
+            self.tabs.set_active(comparison.tabs.first().copied());
         }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
         if self.journals.kept_and_readable() {
-            let others: Vec<TabId> = self.edits.keys().copied().filter(|id| !self.on_screen(*id)).collect();
+            let others: Vec<TabId> = self.lists.ids().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
                 self.put_list_to_sleep(id);
             }

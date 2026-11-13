@@ -154,6 +154,7 @@ impl<L: DocLoader> Session<L> {
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tab(id)?;
         let within = tab
+            .reading
             .place
             .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
             .map_or(0.0, |place| place.within);
@@ -170,7 +171,7 @@ impl<L: DocLoader> Session<L> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages_in(id).saturating_sub(1)), within);
         let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
-        tab.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
+        tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)
     }
 
@@ -192,7 +193,7 @@ impl<L: DocLoader> Session<L> {
     fn step_trail(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
-        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.trail.as_deref_mut()) else {
+        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
         };
         let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
@@ -221,7 +222,7 @@ impl<L: DocLoader> Session<L> {
 
     /// A tab's trail, for QA and `recto where`.
     pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
-        self.tab(id)?.trail.as_deref()
+        self.tab(id)?.reading.trail.as_deref()
     }
 
     /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.

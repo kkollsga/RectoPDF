@@ -171,7 +171,7 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) {
             .collect::<Vec<_>>()
     };
     let began = Instant::now();
-    let mut clean = 0;
+    let mut settling = recto_platform::registry::Settling::default();
     loop {
         for signal in ["-TERM", "-KILL"] {
             if running().is_empty() {
@@ -185,18 +185,23 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        // Twice in a row clean, as a registration still on its way can land after one clean look: seen once in six, the copy
-        // registered again after its first look said it had gone.
-        let forgotten = recto_platform::registry::forget_until_gone(root, Duration::ZERO);
-        clean = if forgotten && running().is_empty() { clean + 1 } else { 0 };
-        if clean >= 2 {
-            break;
+        // Twice in a row clean, as a registration still on its way can land after one clean look: seen once in six, the copy registered again after its
+        // first look said it had gone. Bounded by looks and not by the clock: a look is a whole dump of the registry, and a starved machine took longer over
+        // two of them than the 20 s this once allowed (CI run 43392356580).
+        let clean = recto_platform::registry::forget_and_look(root) && running().is_empty();
+        match settling.after_look(clean) {
+            recto_platform::registry::Settled::Gone => break,
+            recto_platform::registry::Settled::GaveUp => {
+                eprintln!(
+                    "{} was still registered or running after {} looks and {:.1} s of ending and forgetting it",
+                    root.display(),
+                    settling.looks(),
+                    began.elapsed().as_secs_f64()
+                );
+                break;
+            }
+            recto_platform::registry::Settled::NotYet => std::thread::sleep(Duration::from_millis(250)),
         }
-        if began.elapsed() > Duration::from_secs(20) {
-            eprintln!("{} was still registered or running after 20 s of ending and forgetting it", root.display());
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
     }
 }
 

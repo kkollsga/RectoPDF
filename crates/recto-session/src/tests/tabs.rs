@@ -199,8 +199,25 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
 #[test]
 fn tab_numbers_dont_wrap() {
     let mut s = session(5);
-    s.next_id = MAX_TAB_ID;
+    s.tabs.set_next_id(MAX_TAB_ID);
     assert_eq!(s.open(Path::new("/d/a.pdf")), Err(SessionError::TooManyTabs));
+}
+
+/// Failure: a folder is kept with no tab in it to let it go, so it stays for the rest of the session: an open refused because the tab numbers have run out, or a move to a path that names no file. Each refused file in another folder grows the folders kept, without a cap.
+#[test]
+fn no_folder_is_kept_without_a_tab() {
+    let mut s = session(5);
+    s.tabs.set_next_id(MAX_TAB_ID);
+    for path in ["/d/a.pdf", "/e/b.pdf", "/f/c.pdf"] {
+        assert_eq!(s.open(Path::new(path)), Err(SessionError::TooManyTabs));
+    }
+    assert_eq!(s.tabs.dirs_kept(), 0, "an open refused keeps no folder");
+
+    let mut s = session(5);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.relocate(a, Path::new("/elsewhere/.."));
+    assert_eq!(s.path_of(a), Some(PathBuf::from("/d/a.pdf")), "a move to no file doesn't move it");
+    assert_eq!(s.tabs.dirs_kept(), 1, "and keeps no other folder");
 }
 
 /// Failure: a protected PDF just says it needs a password, with nothing to say why it's asking again, or a password is written down. The words say it isn't kept, and nothing in a record's fields could hold one.
@@ -280,12 +297,12 @@ fn folders_are_kept_only_while_a_tab_is_in_them() {
         );
         s.close(beside).unwrap();
     }
-    assert_eq!(s.dirs.len(), 1, "only the folder still in use");
+    assert_eq!(s.tabs.dirs_kept(), 1, "only the folder still in use");
     assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
     assert_eq!(s.tab_for_path(Path::new("/folder-7/a.pdf")), None);
     let moved = s.open(Path::new("/before/moved.pdf")).unwrap();
     s.relocate(moved, Path::new("/after/moved.pdf"));
-    assert_eq!(s.dirs.len(), 2, "a tab moved out of its folder lets it go");
+    assert_eq!(s.tabs.dirs_kept(), 2, "a tab moved out of its folder lets it go");
     assert_eq!(s.path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
     assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
 }
