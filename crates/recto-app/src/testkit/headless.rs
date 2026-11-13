@@ -433,10 +433,20 @@ impl HeadlessApp {
         self.disk.as_ref().expect("the app is running")
     }
 
-    /// **What the window sends, as a call on the session thread's queue.** Step R2.3 makes this `run(Command, Actor::Person)`: the window sends the command the CLI
-    /// sends, and this goes. Doesn't wait: [`Self::settle`] does.
+    /// **A call on the session thread's queue,** for what isn't a person's action: the system's and the workers' news. What the window does is [`Self::act`].
+    /// Doesn't wait: [`Self::settle`] does.
     pub fn send(&self, call: CoreCall) {
         self.core().core.push(call);
+    }
+
+    /// **What the person does at the window,** by the one way the window says it ([`crate::core::controls::UiAction`]). Doesn't wait: [`Self::settle`] does.
+    pub fn act(&self, action: crate::core::controls::UiAction) -> crate::core::controls::Acted {
+        self.core().act(action)
+    }
+
+    /// **A person's command,** as a line of JSON the way `recto` sends it, run as the window runs the person's commands. Doesn't wait: [`Self::settle`] does.
+    pub fn person(&self, line: &str) {
+        crate::core::person::submit(self.core(), recto_agent::parse(line).expect("a command"));
     }
 
     /// Opens a file as the window's Open does, and settles.

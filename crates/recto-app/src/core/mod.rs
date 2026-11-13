@@ -18,6 +18,7 @@ pub mod start;
 pub mod updates;
 
 mod comparison;
+pub mod controls;
 mod editing;
 #[cfg(test)]
 mod headless;

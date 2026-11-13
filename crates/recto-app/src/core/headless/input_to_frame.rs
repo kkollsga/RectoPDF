@@ -4,9 +4,11 @@
 //! `tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-app --run-ignored only --no-capture -E 'test(=core::headless::input_to_frame::input_to_frame)'`
 //!
 //! Each case times the window's own call (the UI thread's part: it must never wait) and then a flush of the session thread's queue, which returns once the call
-//! and the look after it are done: what the frame waits for. The same calls before and after R2.3 moves a person's actions onto commands, so the two runs compare.
+//! and the look after it are done: what the frame waits for. The window's calls as it makes them, `UiAction`s (which before C4 were the bridge's own methods, the
+//! same calls), before and after R2.3 moves a person's actions onto commands, so the runs compare.
 
 use crate::RowKind;
+use crate::core::controls::UiAction;
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 use std::time::{Duration, Instant};
 
@@ -67,9 +69,12 @@ fn measure(tabs: usize) {
     let (a, b) = (rows[rows.len() - 1].clone(), rows[rows.len().saturating_sub(2)].clone());
     let nothing = |_: &HeadlessApp| {};
     case(&app, "tap row", tabs, nothing, |app, first| {
-        app.core().tap_row(if first { b.clone() } else { a.clone() });
+        app.act(UiAction::Row {
+            row: if first { b.clone() } else { a.clone() },
+            adding: false,
+        });
     });
-    app.core().tap_row(a.clone());
+    app.act(UiAction::Row { row: a.clone(), adding: false });
     app.settle();
     let contents = |page: u32| crate::SidebarRow {
         kind: RowKind::Contents,
@@ -77,26 +82,32 @@ fn measure(tabs: usize) {
         ..a.clone()
     };
     case(&app, "contents jump", tabs, nothing, |app, first| {
-        app.core().tap_row(contents(if first { 7 } else { 3 }));
+        app.act(UiAction::Row {
+            row: contents(if first { 7 } else { 3 }),
+            adding: false,
+        });
     });
     case(&app, "typed page", tabs, nothing, |app, first| {
-        app.core().page_typed(if first { "5" } else { "2" });
+        app.act(UiAction::PageTyped {
+            text: (if first { "5" } else { "2" }).into(),
+        });
     });
-    // What the bridge's `find_typed` does with each keystroke.
     case(&app, "find typed", tabs, nothing, |app, first| {
-        app.send(crate::queue::CoreCall::Find(crate::find::FindCall::Typed(
-            (if first { "page 1" } else { "page" }).into(),
-        )));
+        app.act(UiAction::FindTyped {
+            text: (if first { "page 1" } else { "page" }).into(),
+        });
     });
     case(&app, "zoom", tabs, nothing, |app, first| {
-        app.core().perform((if first { "view.zoom_in" } else { "view.zoom_out" }).into());
+        app.act(UiAction::Menu {
+            id: (if first { "view.zoom_in" } else { "view.zoom_out" }).into(),
+        });
     });
     let rotate = |app: &HeadlessApp| {
-        app.core().perform("rotate.right".into());
+        app.act(UiAction::Menu { id: "rotate.right".into() });
         assert!(app.core().core.flush(WAIT_LIMIT));
     };
     case(&app, "undo", tabs, rotate, |app, _| {
-        app.core().perform("edit.undo".into());
+        app.act(UiAction::Menu { id: "edit.undo".into() });
     });
     drop(app.quit());
 }

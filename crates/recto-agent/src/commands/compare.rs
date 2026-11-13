@@ -28,6 +28,8 @@ impl Cmd for Compare {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    // It reads the panes' cold files in place.
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         None
     }

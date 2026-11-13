@@ -23,6 +23,7 @@ pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSe
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
+use recto_app::core::controls::UiAction;
 use recto_app::core::*;
 pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
 pub use recto_app::listener::QuitAnswer;
@@ -723,29 +724,27 @@ impl AppCore {
 
     /// What's in the Find field now, as it's typed: found at once.
     pub fn find_typed(&self, text: String) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Typed(text)));
+        self.inner.act(UiAction::FindTyped { text });
     }
 
     /// ⌘F: Find opens, with what was last typed.
     pub fn find_open(&self) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Open));
+        self.inner.act(UiAction::FindOpen);
     }
 
     /// Escape in the field, or its close button.
     pub fn find_close(&self) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Close));
+        self.inner.act(UiAction::FindClose);
     }
 
     /// Return (forward) or ⇧Return (back) in the field: the person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
     pub fn find_return(&self, forward: bool) {
-        self.inner
-            .core
-            .push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
+        self.inner.act(UiAction::FindReturn { forward });
     }
 
     /// A click on a row of Find's list.
     pub fn find_choose(&self, row: u32) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Choose(row)));
+        self.inner.act(UiAction::FindChoose { row });
     }
 
     /// What QA reads of Find, as JSON.
@@ -816,17 +815,17 @@ impl AppCore {
 
     /// A contents row's chevron was tapped: its sections fold or open. On the session thread, as every change to what the sidebar shows is.
     pub fn toggle_contents_section(&self, first: u32) {
-        self.inner.toggle_contents_section(first);
+        self.inner.act(UiAction::Chevron { first });
     }
 
     /// A row was tapped. Goes on the session thread, as waking a cold tab reads its file.
     pub fn tap_row(&self, row: SidebarRow) {
-        self.inner.tap_row(row);
+        self.inner.act(UiAction::Row { row, adding: false });
     }
 
     /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A contents row does what a click does.
     pub fn tap_row_adding(&self, row: SidebarRow) {
-        self.inner.tap_row_adding(row);
+        self.inner.act(UiAction::Row { row, adding: true });
     }
 
     /// The pointer went down in a pane: it's the one being read. Cheap, and the session hears on its own thread.
@@ -837,7 +836,7 @@ impl AppCore {
     }
 
     pub fn open_file(&self, path: String) {
-        self.inner.open_file(PathBuf::from(path));
+        self.inner.act(UiAction::Open { path: PathBuf::from(path) });
     }
 
     /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
@@ -917,7 +916,7 @@ impl AppCore {
 
     /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
     pub fn open_recent(&self, key: String) {
-        self.inner.open_recent(key);
+        self.inner.act(UiAction::OpenRecent { key });
     }
 
     /// The sidebar's panel as it stands.
@@ -930,7 +929,7 @@ impl AppCore {
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
     pub fn perform(&self, id: String) -> HostAction {
-        self.inner.perform(id)
+        self.inner.act(UiAction::Menu { id }).host
     }
 
     /// Everything ⌘K's palette draws: its rows, ranked, worded and with their keys, all Rust's. Short locks, never the session's.
@@ -950,7 +949,7 @@ impl AppCore {
 
     /// A click on a row of the palette.
     pub fn palette_run(&self, id: String) -> HostAction {
-        recto_app::core::palette::run(&self.inner, &id)
+        self.inner.act(UiAction::PaletteRun { id }).host
     }
 
     /// Escape, or the keyboard going elsewhere.
@@ -975,7 +974,7 @@ impl AppCore {
 
     /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
     pub fn save_as(&self, tab: u32, path: String) {
-        self.inner.save_as(tab, path);
+        self.inner.act(UiAction::SaveAs { tab, path });
     }
 
     /// What closing the document showing asks.
@@ -985,7 +984,7 @@ impl AppCore {
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
     pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) -> HostAction {
-        self.inner.close_answered(tab, choice)
+        self.inner.act(UiAction::CloseAnswered { tab, choice }).host
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.
@@ -1105,12 +1104,12 @@ impl AppCore {
 
     /// Return in the go-to field: a label the file uses, or a page number. Says whether it was something to look up; one that names no page says so by the page.
     pub fn page_typed(&self, text: String) -> bool {
-        self.inner.page_typed(&text)
+        self.inner.act(UiAction::PageTyped { text }).understood
     }
 
     /// A swipe on the page, as the system reports it: Back or Forward, as in Safari.
     pub fn swiped(&self, delta_x: f64) {
-        self.inner.swiped(delta_x);
+        self.inner.act(UiAction::Swiped { delta_x });
     }
 
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
@@ -1172,10 +1171,7 @@ impl AppCore {
     /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
     pub fn zoom_typed(&self, text: String, decimal_separator: String) -> bool {
         let decimal = decimal_separator.chars().next().unwrap_or('.');
-        let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else {
-            return false;
-        };
-        self.inner.panes.zoom_all(&self.inner.engine, zoom).is_some()
+        self.inner.act(UiAction::ZoomTyped { text, decimal }).understood
     }
 
     /// The zoom after this much ⌘-scroll, from where it is.
@@ -1185,7 +1181,7 @@ impl AppCore {
 
     /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
     pub fn toggle_sidebar(&self) {
-        self.inner.toggle_sidebar();
+        self.inner.act(UiAction::ToggleSidebar);
     }
 
     pub fn window_closed(&self) {
@@ -1568,7 +1564,7 @@ impl AppCore {
 
     /// A switch in Settings was flipped.
     pub fn setting_chosen(&self, id: String, on: bool) {
-        self.inner.setting_chosen(&id, on);
+        self.inner.act(UiAction::SettingChosen { id, on });
     }
 
     /// The Settings window opened, moved or closed. It's part of what comes back.

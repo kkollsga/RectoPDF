@@ -26,6 +26,7 @@ impl Cmd for Tabs {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }
@@ -62,6 +63,7 @@ impl Cmd for Where {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -99,6 +101,7 @@ impl Cmd for Facts {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -147,6 +150,7 @@ impl Cmd for Contents {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -194,6 +198,7 @@ impl Cmd for Signatures {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -228,6 +233,7 @@ impl Cmd for Sidebar {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }

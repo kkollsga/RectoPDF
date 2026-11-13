@@ -25,6 +25,7 @@ impl Cmd for PageMove {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -71,6 +72,7 @@ impl Cmd for PageDelete {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -114,6 +116,7 @@ impl Cmd for PageInsert {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -175,6 +178,7 @@ impl Cmd for Edits {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -215,6 +219,7 @@ impl Cmd for Discard {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -391,6 +396,7 @@ impl Cmd for PageRotate {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -443,6 +449,7 @@ impl Cmd for Undo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -488,6 +495,7 @@ impl Cmd for Redo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -533,6 +541,7 @@ impl Cmd for ClearHistory {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }

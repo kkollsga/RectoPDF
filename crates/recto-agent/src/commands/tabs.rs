@@ -26,6 +26,7 @@ impl Cmd for Open {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }
@@ -60,6 +61,7 @@ impl Cmd for Tap {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -99,6 +101,7 @@ impl Cmd for Recent {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }
@@ -143,6 +146,7 @@ impl Cmd for RecentClear {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }
@@ -185,6 +189,7 @@ impl Cmd for Close {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }

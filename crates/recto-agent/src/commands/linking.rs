@@ -25,6 +25,7 @@ impl Cmd for Links {
     const DRAWS: bool = false;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -77,6 +78,7 @@ impl Cmd for Goto {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -125,6 +127,7 @@ impl Cmd for Back {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -161,6 +164,7 @@ impl Cmd for Forward {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -200,6 +204,8 @@ impl Cmd for Follow {
     const DRAWS: bool = false;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    // It reads the page's links from its file in place.
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }

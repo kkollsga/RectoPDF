@@ -42,6 +42,7 @@ impl Cmd for Search {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -107,6 +108,7 @@ impl Cmd for Index {
     const DRAWS: bool = false;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -144,6 +146,7 @@ impl Cmd for IndexStatus {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -183,6 +186,7 @@ impl Cmd for IndexClear {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -241,6 +245,7 @@ impl Cmd for Text {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -304,6 +309,7 @@ impl Cmd for Select {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -388,6 +394,7 @@ impl Cmd for Copy {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }

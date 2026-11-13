@@ -73,6 +73,23 @@ impl Command {
         }
     }
 
+    /// Whether, run for the person, it may hold its thread for long: see [`crate::commands::Cmd::WAITS`].
+    pub fn waits(&self) -> bool {
+        match self {
+            Self::Measure(command) => command.waits(),
+            Self::Edit(command) => command.waits(),
+            Self::Move(command) => command.waits(),
+            Self::Read(command) => command.waits(),
+            Self::Start(command) => command.waits(),
+            Self::Waits(command) => command.waits(),
+            Self::Rights(command) => command.waits(),
+            Self::Session(command) => command.waits(),
+            Self::Qa(command) => command.waits(),
+            Self::Record(command) => command.waits(),
+            Self::Updates(command) => command.waits(),
+        }
+    }
+
     /// Whether it reads nothing of a document, so it may act on one the user opened with its password.
     pub(crate) fn protected_ok(&self) -> bool {
         match self {
