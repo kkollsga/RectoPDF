@@ -12,7 +12,8 @@ recto="${RECTO_BIN:-$here/target/debug/recto}"
 app="${RECTO_APP:-$here/app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF}"
 mkdir -p "$out"
 root="$(mktemp -d)"
-trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+trap 'quiet_files_out 2>/dev/null || true; "$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+. "$(dirname "$0")/quiet-files.sh"
 # A quiet run this starts ends with this script, however it ends.
 export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"

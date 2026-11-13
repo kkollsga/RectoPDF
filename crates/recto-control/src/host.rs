@@ -67,6 +67,9 @@ pub struct SessionHost<L = DrawableLoader> {
     effects: std::sync::OnceLock<Effects>,
     /// What takes in where the window's page views are, before a jump: set once by the app, none for a session with no window.
     places: std::sync::OnceLock<Places>,
+    /// Whether the session is confined to a quiet run's folders, the session's own cell ([`recto_session::confined::Confinement::shared`]), so a command asks it with
+    /// no lock.
+    confinement: recto_session::confined::Confinement,
 }
 
 /// What carries a command's [`recto_agent::Effect`] to the window.
@@ -107,11 +110,21 @@ struct Hosted<'a, L> {
     /// The person's passwords, for their own Find.
     find_keys: Option<&'a recto_agent::find::KeyLookup>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
+    /// The session's confinement, read without its lock.
+    confinement: &'a recto_session::confined::Confinement,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a command on this thread took the session's lock, for the test that a free session's command takes no more than it did.
+    static SESSION_LOCKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     type Loader = L;
     fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        #[cfg(test)]
+        SESSION_LOCKS.with(|locks| locks.set(locks.get() + 1));
         self.session.with(step)
     }
     fn indexing(&self) -> Option<&dyn Indexing> {
@@ -152,6 +165,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn find_keys(&self, actor: Actor) -> Option<recto_agent::find::KeyLookup> {
         self.find_keys.filter(|_| actor.sees_protected()).cloned()
     }
+    fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
+        self.confinement.folders().cloned()
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -160,10 +176,25 @@ impl Default for SessionHost<DrawableLoader> {
     }
 }
 
+impl SessionHost<DrawableLoader> {
+    /// **`recto serve`'s host:** confined if its state folder is a test one, indexing, generating, keeping its own record and backups, all under it.
+    #[must_use]
+    pub fn serving(paths: &StatePaths) -> Self {
+        Self::on_state(paths, DrawableLoader)
+            .with_indexing(paths)
+            .with_generating(paths)
+            .with_own_record(paths)
+            .with_backups(paths)
+    }
+}
+
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
+        let session = Session::new(loader);
+        let confinement = session.confinement().shared();
         Self {
-            session: Mutex::new(Session::new(loader)),
+            confinement,
+            session: Mutex::new(session),
             tabs: AtomicU32::new(0),
             indexer: None,
             generator: None,
@@ -175,6 +206,15 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             effects: std::sync::OnceLock::new(),
             places: std::sync::OnceLock::new(),
         }
+    }
+
+    /// **A host on a state folder, confined to its own folders if the folder is a test one** ([`crate::quiet`]): the one way shipping code makes a host
+    /// from a state folder, so there's no host to forget to confine (review of the branch, F7). A guard test fails any other.
+    #[must_use]
+    pub fn on_state(paths: &StatePaths, loader: L) -> Self {
+        let mut host = Self::new(loader);
+        crate::quiet::confine(host.session.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner), paths);
+        host
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
@@ -274,6 +314,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             answer_read: true,
             find_keys: self.find_keys.get(),
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
+            confinement: &self.confinement,
         }
     }
 
@@ -317,6 +358,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result
+    }
+
+    /// **The folders this session is confined to, if it is,** asked with no lock: set when the session was made and never changed.
+    pub fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
+        self.confinement.folders().cloned()
     }
 
     /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.

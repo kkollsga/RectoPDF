@@ -5,6 +5,7 @@ mod common;
 use common::{kill_process, real_config, renderer, tile_surface, wait_until};
 use recto_platform::isolate::process_memory;
 use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, TileKind, TileRect, TileRequest, TileResult};
+use recto_render_service::{HeavySlot, Surface, Workers};
 use recto_testpdf::{Page, TempPdf, busy_page, form_bomb, pages, slow_page, text_lines};
 use std::time::Duration;
 
@@ -149,11 +150,11 @@ fn a_tile_drawn_in_the_worker_arrives_in_the_hosts_surface() {
 fn nothing_starts_until_a_page_is_asked_for() {
     let file = plain_doc();
     let mut doc = renderer(&file.0, Policy::default());
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
     assert_eq!(doc.stats().spawns, 0);
     assert_eq!(doc.worker_pid(), None);
     draws(&mut doc, 0);
-    assert!(doc.has_worker());
+    assert!(doc.worker_pid().is_some());
     assert_eq!(doc.stats().spawns, 1);
 }
 
@@ -293,7 +294,7 @@ fn an_idle_worker_leaves_and_the_next_job_starts_another() {
     let mut doc = renderer(&file.0, policy);
     draws(&mut doc, 0);
     let pid = doc.worker_pid().unwrap();
-    wait_until("the worker to leave by itself", || !doc.has_worker());
+    wait_until("the worker to leave by itself", || !doc.worker_pid().is_some());
     assert_eq!(process_memory(pid), None, "the process is really gone, not a zombie");
     assert_eq!(doc.stats().idle_exits, 1);
     assert_eq!(draws(&mut doc, 0), TileKind::Colour);
@@ -344,7 +345,7 @@ fn tiles_of_one_page_share_a_worker_even_past_the_footprint() {
     }
     assert_eq!(doc.stats().spawns, 1);
     assert_eq!(doc.stats().retirements, 0);
-    assert!(doc.has_worker());
+    assert!(doc.worker_pid().is_some());
 }
 
 /// Failure: a request that can't be met kills the worker, so one bad scroll position costs a respawn.
@@ -377,7 +378,7 @@ fn a_job_larger_than_its_surface_never_leaves_the_host() {
     let mut doc = renderer(&file.0, Policy::default());
     let small = recto_render_service::Surface::create(1024).unwrap();
     assert_eq!(doc.render_tile(&tile_request(0, 0), &small).unwrap_err(), RenderFailure::BadRequest);
-    assert!(!doc.has_worker(), "no process for a request that can't be met");
+    assert!(!doc.worker_pid().is_some(), "no process for a request that can't be met");
     let zero = TileRequest {
         rect: TileRect {
             x: 0,
@@ -540,7 +541,7 @@ fn a_region_past_the_cap_or_off_the_grid_never_leaves_the_host() {
     };
     assert_eq!(doc.render_region(&off_grid, 512, &surface).unwrap_err(), RenderFailure::BadRequest);
     assert_eq!(doc.render_region(&off_grid, 0, &surface).unwrap_err(), RenderFailure::BadRequest);
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
 }
 
 /// Failure: cancelling a slow region neither returns nor kills, so the page you've scrolled to waits for a pass nobody wants.
@@ -831,7 +832,7 @@ fn only_the_file_changing_says_the_file_changed() {
     let file = TempPdf::new("places.pdf", &pages(&list));
     let mut doc = renderer(&file.0, Policy::default());
     for page in 0..4100 {
-        doc.image_boxes(page, 0);
+        let _ = doc.image_boxes(page, 0);
     }
     assert!(!doc.take_file_changed(), "a cache filling up");
     assert!(doc.take_image_places_cleared(), "and the cache says it's been cleared");
@@ -843,4 +844,131 @@ fn only_the_file_changing_says_the_file_changed() {
     let _ = doc.page_characters(0, true, false);
     assert!(doc.take_file_changed(), "the file changing");
     assert!(!doc.take_file_changed(), "once");
+}
+
+/// A draw only the worker that's there may do, as the page view's job for a tab off screen's place is.
+fn only_there(doc: &mut DocRenderer, page: u32, generation: u64, surface: &Surface) -> Result<TileResult, RenderFailure> {
+    DocRenderer::with_workers(
+        doc,
+        |doc| doc,
+        Workers::OnlyTheOneThere,
+        |doc| doc.render_tile(&tile_request(page, generation), surface),
+    )
+}
+
+/// An ordinary draw, which must come out drawn.
+fn drawn_after(doc: &mut DocRenderer, generation: u64, after: &str) {
+    let result = doc.render_tile(&tile_request(1, generation), &tile_surface());
+    assert!(
+        matches!(result, Ok(TileResult::Done(_))),
+        "the next ordinary job, after {after}, starts what it needs and draws: {result:?}"
+    );
+}
+
+/// Failure (owner, 2026-11-13: "no file is opened again for it"), and the worse one it could bring: a job that may start no worker leaves that mode on, and the person's next page is refused a worker and stays bare. However a job only the worker there may do ends (drawn, refused for want of a worker, cancelled in the middle, killed in the middle, past its deadline, or a panic), it starts nothing itself, and the very next ordinary job starts a worker if it needs one and draws.
+#[test]
+fn a_job_that_may_start_no_worker_starts_none_and_leaves_the_next_one_free_to() {
+    let file = TempPdf::new("slow.pdf", &pages(&[Page::new(slow_page(400_000)), Page::new(text_lines(&["Next"]))]));
+    let policy = Policy {
+        page_deadline: Duration::from_secs(120),
+        ..Policy::default()
+    };
+    let mut doc = renderer(&file.0, policy);
+    let surface = tile_surface();
+    assert_eq!(doc.page_count().unwrap(), 2);
+
+    assert!(
+        matches!(only_there(&mut doc, 1, 1, &surface), Ok(TileResult::Done(_))),
+        "the worker there draws it"
+    );
+    drawn_after(&mut doc, 1, "one drawn");
+
+    doc.kill_worker();
+    let spawns = doc.stats().spawns;
+    assert_eq!(only_there(&mut doc, 1, 1, &surface), Err(RenderFailure::WouldStart { heavy: false }));
+    assert_eq!(doc.stats().spawns, spawns, "none started for it");
+    drawn_after(&mut doc, 1, "one refused");
+    assert_eq!(doc.stats().spawns, spawns + 1);
+
+    // Cancelled while the slow page is in hand.
+    let (cancel, pid, opened) = (doc.cancel_handle(), doc.worker_pid().unwrap(), doc.stats().opened_footprint_bytes);
+    let canceller = std::thread::spawn(move || {
+        wait_until("the page to start loading", || {
+            process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024)
+        });
+        cancel.cancel_before(3);
+    });
+    let result = only_there(&mut doc, 0, 2, &surface);
+    canceller.join().unwrap();
+    assert!(matches!(result, Ok(TileResult::Cancelled { .. })), "{result:?}");
+    drawn_after(&mut doc, 3, "one cancelled");
+
+    // Killed while the slow page is in hand: not tried again in a new worker.
+    let (pid, opened, spawns) = (doc.worker_pid().unwrap(), doc.stats().opened_footprint_bytes, doc.stats().spawns);
+    let killer = std::thread::spawn(move || {
+        wait_until("the page to start loading", || {
+            process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024)
+        });
+        kill_process(pid);
+    });
+    let result = only_there(&mut doc, 0, 3, &surface);
+    killer.join().unwrap();
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(doc.stats().spawns, spawns, "not tried again in a new one: {result:?}");
+    drawn_after(&mut doc, 3, "one killed");
+
+    // A panic inside it.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        DocRenderer::with_workers(&mut doc, |doc| doc, Workers::OnlyTheOneThere, |_| panic!("a job's panic"))
+    }));
+    assert!(panicked.is_err());
+    doc.kill_worker();
+    drawn_after(&mut doc, 3, "a panic");
+
+    // Past its deadline.
+    let policy = Policy {
+        page_deadline: Duration::from_millis(200),
+        ..Policy::default()
+    };
+    let mut doc = renderer(&file.0, policy);
+    drawn_after(&mut doc, 1, "nothing");
+    let result = only_there(&mut doc, 0, 1, &surface);
+    assert!(result.is_err(), "{result:?}");
+    drawn_after(&mut doc, 1, "one past its deadline");
+}
+
+/// Failure: a page past the normal limit, drawn for nobody looking, went on to a heavy worker of up to the larger limit, and took the one heavy slot from whoever's page needs it. It's refused as needing one, and the worker that's there is kept.
+#[test]
+fn a_job_that_may_start_no_worker_never_goes_heavy() {
+    let file = TempPdf::new("bomb.pdf", &form_bomb());
+    let slot = HeavySlot::new();
+    let config = recto_render_service::ServiceConfig {
+        heavy_slot: slot.clone(),
+        ..real_config()
+    };
+    let policy = Policy {
+        memory_limit_bytes: 64 * 1024 * 1024,
+        heavy_limit_bytes: 128 * 1024 * 1024,
+        heavy_min_free_percent: 0,
+        ..Policy::default()
+    };
+    let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
+    // Looking at the bomb's weight learns it's past the normal limit, at every scale.
+    assert_eq!(doc.largest_image_pixels(0, 1).unwrap(), 0);
+    assert_eq!(doc.page_draw_state(0), recto_render_service::PageDrawState::NeedsHeavy);
+    drawn_after(&mut doc, 1, "learning that");
+    let (pid, stats) = (doc.worker_pid(), doc.stats());
+    let surface = tile_surface();
+    assert_eq!(only_there(&mut doc, 0, 1, &surface), Err(RenderFailure::WouldStart { heavy: true }));
+    assert_eq!(slot.times_taken(), 0, "the slot's free for whoever needs it");
+    assert_eq!(
+        (doc.worker_pid(), doc.stats().spawns),
+        (pid, stats.spawns),
+        "the worker there is the one there was"
+    );
+    assert_eq!(
+        doc.stats().heavy_pages,
+        stats.heavy_pages,
+        "nor is it counted against the document's heavy pages"
+    );
 }

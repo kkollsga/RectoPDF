@@ -25,18 +25,29 @@ impl<L: DocLoader> Session<L> {
         &self.loader
     }
 
+    /// **The folders this session's files may be in,** if it's on a test state folder: see [`confined`]. Kept by the tabs, which hand out their paths by
+    /// it, so there's one cell and one rule.
+    pub fn confinement(&self) -> &confined::Confinement {
+        self.tabs.confinement()
+    }
+
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
-        if let Some(id) = self.go_to_open_file(path) {
+        // What's read is where the rule looked: see [`confined::Confinement::to_read`].
+        let to_read = self.tabs.confinement().to_read(path).ok_or(SessionError::OutsideQuietRun)?;
+        // The tab already showing this file, if there is one.
+        if let Some(id) = self.tab_for_path(path) {
+            self.activate(id);
+            self.recent.note(path);
             return Ok(id);
         }
         // Looked at first, so a change during the read shows as a change.
-        let stamp = file_stamp(path).ok();
+        let stamp = file_stamp(&to_read).ok();
         if let Some(id) = self.tab_for_file(path, stamp) {
             self.reach_open_file(id, path);
             return Ok(id);
         }
-        let facts = self.loader.load(path).map_err(SessionError::Open)?;
+        let facts = self.loader.load(&to_read).map_err(SessionError::Open)?;
         let history = self.journals.history().cloned().and_then(|source| source.history_of(stamp, path));
         self.open_with_facts(path, facts, stamp, history)
     }
@@ -61,7 +72,7 @@ impl<L: DocLoader> Session<L> {
                         && (known.same_contents(stamp)
                             || self
                                 .tabs()
-                                .path_of(tab.id)
+                                .named_path(tab.id)
                                 .and_then(|own| file_stamp(&own).ok())
                                 .is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device))
                 })
@@ -74,12 +85,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Goes to the tab a file is open in, reached by another name. If the name it was open under has gone, the file moved, and the tab goes with it. A stat on the volume this path has just answered from, so it can't be a dead one.
     fn reach_open_file(&mut self, id: TabId, path: &Path) {
-        let gone = self.tabs.path_of(id).is_some_and(|known| known != path && !known.exists());
+        let gone = self.tabs.named_path(id).is_some_and(|known| known != path && !known.exists());
         if gone {
             self.relocate(id, path);
         }
         self.activate(id);
-        if let Some(own) = self.tabs.path_of(id) {
+        if let Some(own) = self.tabs.named_path(id) {
             self.recent.note(&own);
         }
     }
@@ -96,16 +107,13 @@ impl<L: DocLoader> Session<L> {
             .collect()
     }
 
-    /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
-    pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
-        let id = self.tabs.for_path(path)?;
-        self.activate(id);
-        self.recent.note(path);
-        Some(id)
-    }
-
     /// The second half of [`Self::open`]: makes the tab from facts already read, and what's left of the PDF's history, if a [`HistorySource`] found any. It's the one way a tab comes to exist, so every route has to say. Someone may have opened the same file meanwhile, and then that's the tab, and the history stays where it is.
     pub fn open_with_facts(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>, history: Option<TakenHistory>) -> Result<TabId, SessionError> {
+        // A quiet run's tab is a file in its own folders, whatever route it came by, and so is every file its history brings pages from: see [`confined`].
+        if !self.tabs.confinement().admits(path) {
+            return Err(SessionError::OutsideQuietRun);
+        }
+        let history = history.filter(|taken| self.tabs.confinement().admits_edits(&taken.restored.edits));
         if let Some(id) = self.tab_for_file(path, stamp) {
             // Read already, so no read with the session held if it's cold.
             self.give_woken(id, Ok(facts), stamp);
@@ -223,7 +231,7 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
         // With no tab, or no file to move to, there'd be nothing in a new folder to let it go.
-        if self.tabs.tab(id).is_none() || path.file_name().is_none() {
+        if self.tabs.tab(id).is_none() || path.file_name().is_none() || !self.tabs.confinement().admits(path) {
             return;
         }
         let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));

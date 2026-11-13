@@ -233,6 +233,9 @@ impl Reader {
                 doc.drawing.left_pictures = None;
             }
         }
+        // Nothing's drawn for a tab off screen for a while, and what's drawing for one now stops.
+        self.wake.draws.pressure();
+        self.cancel_if_unwanted();
         let ids: Vec<u64> = self
             .cache
             .entries

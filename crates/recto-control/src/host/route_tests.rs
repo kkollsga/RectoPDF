@@ -67,3 +67,37 @@ fn every_route_answers_as_declared_on_a_session_with_no_record() {
     }
     assert!(seen > 20, "only {seen} commands answered elsewhere were found in the golden requests");
 }
+
+/// Failure (review of the branch, round 2, F-d): whether a session is confined is asked of the session under its lock by every command, once by the
+/// executor's check and again by each file a command writes, so the user's own app (whose session never is) pays a lock a command for a fact set when the
+/// session was made and never changed, on the thread the window's taps wait behind. An ordinary command on a free session takes the session's lock as
+/// often as it did before quiet runs were confined, and a confined one no more than that either.
+#[test]
+fn whether_a_session_is_confined_costs_a_command_no_lock() {
+    let locks_for = |host: &SessionHost<Fake>| {
+        super::SESSION_LOCKS.with(|locks| locks.set(0));
+        host.run(
+            recto_agent::Actor::Agent(Level::Full),
+            &parse(r#"{"cmd":"goto","page":2}"#).unwrap(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        super::SESSION_LOCKS.with(std::cell::Cell::get)
+    };
+    let free = SessionHost::new(Fake);
+    free.with_session(|session| session.open(Path::new("/d/a.pdf")).map(|_| ())).unwrap();
+    let run = recto_testpdf::TempDir::new("recto-locks-");
+    let confined = SessionHost::new(Fake);
+    confined
+        .with_session(|session| {
+            session.confinement().confine(recto_platform::run_folders::RunFolders::of(&[run.path()]));
+            session.open(&run.join("a.pdf")).map(|_| ())
+        })
+        .unwrap();
+    // What `goto` took on main before quiet runs were confined (2026-11-13): its protected look, its hold, its move and its let-go.
+    const AS_BEFORE: u32 = 4;
+    assert_eq!(locks_for(&free), AS_BEFORE, "a free session's goto");
+    assert_eq!(locks_for(&confined), AS_BEFORE, "a confined session's goto");
+    // And what's read with no lock is the session's own: confined after the host was made, it says so.
+    assert!(free.confinement().is_none() && confined.confinement().is_some());
+}

@@ -224,7 +224,8 @@ fn the_viewport_budget_reports_first_view_scroll_and_zoom() {
 /// Failure: a missing file through `text` reads as an internal error, rather than saying the file isn't there.
 #[test]
 fn a_missing_file_says_so() {
-    let (reply, code) = recto(&["local", "/no/such/file.pdf", "text", "--page", "1"]);
+    let missing = recto_testpdf::TempDir::new("recto-missing-").join("no-such-file.pdf");
+    let (reply, code) = recto(&["local", missing.to_str().unwrap(), "text", "--page", "1"]);
     assert_eq!(reply["ok"], false);
     assert_eq!(code, recto_agent::exit::NOT_FOUND);
 }

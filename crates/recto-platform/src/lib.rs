@@ -205,6 +205,9 @@ pub mod leave;
 /// A folder of a run's own in a temp folder, never one already there, removed when it's dropped.
 pub mod fresh;
 
+/// A quiet run's own folders, the only places a session on a test state folder opens or writes a file.
+pub mod run_folders;
+
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};

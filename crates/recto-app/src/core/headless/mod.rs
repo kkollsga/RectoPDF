@@ -23,6 +23,7 @@ mod newer_read;
 mod palette;
 mod passwords;
 mod protected_save;
+mod quiet_files;
 mod quit;
 mod reading_later;
 mod recent;

@@ -6,6 +6,7 @@
 
 pub mod change;
 pub mod compare;
+pub mod confined;
 pub mod edit;
 pub mod palette;
 pub mod record;
@@ -660,6 +661,8 @@ pub enum SessionError {
     EditsUnreadable,
     /// It's being saved, and nothing changes its edits until that's done.
     Saving,
+    /// A quiet run's file outside its own folders: see [`confined`].
+    OutsideQuietRun,
 }
 
 impl SessionError {
@@ -673,6 +676,7 @@ impl SessionError {
             Self::RendererOnly => "renderer_only",
             Self::EditsUnreadable => "edits_unreadable",
             Self::Saving => "saving",
+            Self::OutsideQuietRun => "outside_quiet_run",
         }
     }
 
@@ -688,6 +692,7 @@ impl SessionError {
             Self::Edit(error) => error.message(),
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
             Self::Saving => "This PDF is being saved. Nothing changes until that's done, which is a moment.",
+            Self::OutsideQuietRun => confined::OUTSIDE_WORDS,
         }
     }
 }

@@ -5,6 +5,7 @@ use std::cell::Cell;
 
 mod changed_file;
 mod compare_tests;
+mod confined_tests;
 mod contents;
 mod editing;
 mod files;

@@ -913,3 +913,543 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     );
     assert!((rect.x - 100.0).abs() < 0.5 && (rect.width - 200.0).abs() < 0.5, "{rect:?}");
 }
+
+/// A tab's pages, all of its one file's.
+fn tab_map(file: &TempPdf) -> PageMap {
+    PageMap {
+        files: vec![file.0.clone()],
+        slots: None,
+        own: None,
+        turns: None,
+        expected: Vec::new(),
+        follows: None,
+    }
+}
+
+/// Tab 1 drawn at its top, moved far down with nothing drawn there and left for tab 2: a `goto` or a quick scroll and a change of tab before the renderer answers. Returns the engine with drawing let go again, and tab 1's pages owed a picture there.
+fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf, second_pages: u32) -> Vec<u32> {
+    pump(engine, HANG);
+    assert!(settles(engine), "{}", engine.report().0);
+    engine.hold_drawing(true);
+    engine.set_viewport(view(30_000.0));
+    engine.activate(2, second_pages, 0, tab_map(second), &[1], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(0.0));
+    let left = engine.sleep_material(1, &tab_map(first)).expect("tab 1 is held off screen");
+    assert!(!left.in_view.is_empty() && !left.in_view.contains(&0), "{:?}", left.in_view);
+    assert!(
+        left.pictures.iter().all(|picture| !left.in_view.contains(&picture.page)),
+        "nothing's drawn at its place yet: a sleep file now would wake it bare"
+    );
+    engine.hold_drawing(false);
+    left.in_view
+}
+
+/// Failure (owner, 2026-11-13: "I think it makes sense, and extra draw is not costly right?"): a tab left at a place it has no picture of sleeps without one and wakes to bare paper until the renderer catches up. On a real worker: once the tab showing is drawn, the tab left has a picture of every page at its place, at the preview's scale, in what its sleep file takes, and its worker's still the one it had.
+#[test]
+fn a_tab_left_at_a_place_not_drawn_sleeps_with_a_picture_of_it() {
+    let (first, second) = (document(40), document(3));
+    let (engine, _events) = started(&first, 40);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 3);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    sleep_draws_end(&engine);
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let pictured: Vec<u32> = material
+        .pictures
+        .iter()
+        .map(|picture| picture.page)
+        .filter(|page| owed.contains(page))
+        .collect();
+    assert_eq!(pictured, owed, "{}", engine.report().0["sleep_draws"]);
+    assert!(
+        material
+            .pictures
+            .iter()
+            .filter(|picture| owed.contains(&picture.page))
+            .all(|picture| picture.bgra.iter().any(|byte| *byte < 0x80)),
+        "with ink in them: really drawn"
+    );
+    let draws = engine.report().0["sleep_draws"].clone();
+    assert_eq!(draws["ended"]["done"], 1, "{draws}");
+    assert_eq!(draws["ended"]["no_worker"], 0, "{draws}");
+}
+
+/// Failure: a tab off screen whose worker has left (after 30 s with nothing to do, as a warm tab's does) gets one started again to draw its place, a process and its memory for a picture. Nothing's drawn and no worker is started: the asking ends.
+#[test]
+fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
+    let (first, second) = (document(40), document(3));
+    let events = Arc::new(Events::default());
+    let policy = recto_render_service::Policy {
+        idle_exit: Duration::from_millis(300),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = Engine::new(
+        EngineConfig {
+            service: None,
+            policy: Some(policy),
+            keys: None,
+        },
+        events,
+    );
+    engine.set_viewport(view(0.0));
+    engine.activate(
+        1,
+        40,
+        0,
+        PageMap {
+            files: vec![first.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    engine.set_viewport(view(0.0));
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let deadline = Instant::now() + HANG;
+    // The list of workers is said again only when the engine next turns, so it's whether the process is still there that's looked at.
+    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert_eq!(engine.workers_footprint().0, 0, "tab 1's worker left by itself");
+    left_at_a_place_not_drawn(&engine, &first, &second, 3);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let draws = sleep_draws_end(&engine);
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+    assert_eq!(draws["pictures"], 0, "{draws}");
+    assert!(engine.worker_pids().len() <= 1, "tab 2's at most: {:?}", engine.worker_pids());
+}
+
+/// An engine on tab 1, a document of `count` pages, whose workers go by `policy` and share `slot`.
+fn engine_with(file: &TempPdf, count: u32, policy: recto_render_service::Policy, slot: &recto_render_service::HeavySlot) -> Engine {
+    let service = recto_render_service::ServiceConfig {
+        heavy_slot: slot.clone(),
+        ..recto_render_service::ServiceConfig::discover().expect("the worker's here")
+    };
+    let engine = Engine::new(
+        EngineConfig {
+            service: Some(service),
+            policy: Some(policy),
+            keys: None,
+        },
+        Arc::new(Events::default()),
+    );
+    engine.set_viewport(view(0.0));
+    engine.activate(
+        1,
+        count,
+        0,
+        PageMap {
+            files: vec![file.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    engine.set_viewport(view(0.0));
+    engine
+}
+
+/// Waits, for as long as [`HANG`], for the drawing for a tab left to end, however it ends, and says how it went.
+fn sleep_draws_end(engine: &Engine) -> serde_json::Value {
+    let deadline = Instant::now() + HANG;
+    loop {
+        engine.drain();
+        engine.applied();
+        let draws = engine.report().0["sleep_draws"].clone();
+        if draws["under_way"] == false || Instant::now() >= deadline {
+            return draws;
+        }
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+}
+
+/// Ten pages of text, then thirty that each draw `content` as a form of their own: what's at the place a test leaves tab 1 at.
+fn text_then(content: &[u8]) -> TempPdf {
+    let list: Vec<Page> = (0..40)
+        .map(|index| {
+            if index < 10 {
+                Page::new(text_lines(&[&format!("Page number {index}")]))
+            } else {
+                Page::new(b"q /S Do Q".to_vec())
+            }
+        })
+        .collect();
+    let form = first_extra_object(list.len());
+    TempPdf::new(
+        "place.pdf",
+        &pages_with(
+            &list,
+            &format!("/XObject << /S {form} 0 R >>"),
+            vec![Object::Stream {
+                dict: "/Type /XObject /Subtype /Form /BBox [0 0 612 792] /FormType 1".into(),
+                data: content.to_vec(),
+            }],
+        ),
+    )
+}
+
+/// Failure (owner, 2026-11-13: "no file is opened again for it"): a worker past its retirement line waits to go before its next job for another page, and a draw for a tab left was that job: it buried the worker and started a new one that opened the file again, to draw a picture nobody's looking at. With every worker past its line, nothing new is started for tab 1's file, and its worker still goes when the engine rests, not at its idle exit.
+#[test]
+fn a_worker_waiting_to_retire_is_not_replaced_to_draw_a_place_left() {
+    let (first, second) = (document(40), document(1));
+    // The rest a big worker gets, a heavy worker's idle rule, short: what's held is that it goes at rest, not after how long.
+    let policy = recto_render_service::Policy {
+        retire_bytes: 1,
+        idle_exit: Duration::from_secs(600),
+        heavy_idle_exit: Duration::from_millis(100),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let before = engine.worker_pids();
+    assert_eq!(before.len(), 1, "tab 1's, waiting to retire: {before:?}");
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    let draws = sleep_draws_end(&engine);
+    let new: Vec<u32> = engine.worker_pids().into_iter().filter(|pid| !before.contains(pid)).collect();
+    assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+    let deadline = Instant::now() + HANG;
+    while engine.worker_pids().contains(&before[0]) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert!(
+        !engine.worker_pids().contains(&before[0]),
+        "tab 1's worker went at rest, long before its idle exit"
+    );
+}
+
+/// Failure: a page that's too much for a normal worker, at the place a tab was left, went on to a heavy one (up to a gigabyte, and the one slot the person's own heavy page needs) for a picture nobody's looking at. Nothing for it takes the slot.
+#[test]
+fn a_page_that_needs_a_heavy_worker_gets_none_for_a_place_left() {
+    let mib = 1024 * 1024;
+    let (first, second) = (text_then(b"q 1 0 0 1 0 0 cm /S Do Q q 1 0 0 1 5 0 cm /S Do Q"), document(1));
+    let policy = recto_render_service::Policy {
+        memory_limit_bytes: 64 * mib,
+        heavy_limit_bytes: 128 * mib,
+        heavy_min_free_percent: 0,
+        ..recto_render_service::Policy::default()
+    };
+    let slot = recto_render_service::HeavySlot::new();
+    let engine = engine_with(&first, 40, policy, &slot);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    assert_eq!(slot.times_taken(), 0, "the pages at the top are light");
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    let draws = sleep_draws_end(&engine);
+    pump(&engine, HANG);
+    assert_eq!(slot.times_taken(), 0, "the slot was taken for a tab nobody's looking at: {draws}");
+    assert_eq!(draws["pictures"], 0, "{draws}");
+}
+
+/// Failure: a worker killed while drawing for a tab left (a crash, or the system's memory killer) was tried again in a new one, a process and the file opened again for a picture nobody's looking at. Nothing new is started for tab 1's file.
+#[test]
+fn a_worker_killed_drawing_a_place_left_is_not_started_again() {
+    let (first, second) = (text_then(&slow_page(200_000)), document(1));
+    let policy = recto_render_service::Policy {
+        page_deadline: Duration::from_secs(120),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let before = engine.worker_pids();
+    assert_eq!(before.len(), 1, "{before:?}");
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    // Once its first page's size and weight are in, its preview's being drawn, slowly.
+    let deadline = Instant::now() + HANG;
+    while engine.report().0["sleep_draws"]["jobs"].as_u64().unwrap_or(0) < 3 && Instant::now() < deadline {
+        engine.drain();
+        engine.applied();
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    assert!(
+        engine.report().0["sleep_draws"]["jobs"].as_u64().unwrap_or(0) >= 3,
+        "{}",
+        engine.report().0["sleep_draws"]
+    );
+    let killed = std::process::Command::new("/bin/kill").arg("-9").arg(before[0].to_string()).status().unwrap();
+    assert!(killed.success());
+    let draws = sleep_draws_end(&engine);
+    let new: Vec<u32> = engine.worker_pids().into_iter().filter(|pid| !before.contains(pid)).collect();
+    assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+}
+
+/// Ten pages of text, then thirty with a photograph over their top left quarter, of red and blue, which dark paper keeps as it is while it turns the rest over. The photograph is `edge` pixels square, run-length coded so the file stays small, and big enough decoded that drawing it takes its worker past a retirement line text leaves it under.
+fn text_then_photos(edge: usize) -> TempPdf {
+    let list: Vec<Page> = (0..40)
+        .map(|index| {
+            if index < 10 {
+                Page::new(text_lines(&[&format!("Page number {index}")]))
+            } else {
+                Page::new(b"q 306 0 0 396 0 396 cm /Im0 Do Q".to_vec())
+            }
+        })
+        .collect();
+    // Squares of 50 pixels, each colour a run: a length byte of 257 less the run, then the colour's index.
+    let mut data = Vec::new();
+    for y in 0..edge {
+        let mut x = 0;
+        while x < edge {
+            let colour = ((x / 50 + y / 50) % 2) as u8;
+            let run = (50 - x % 50).min(edge - x).min(128);
+            data.extend_from_slice(&[(257 - run) as u8, colour]);
+            x += run;
+        }
+    }
+    data.push(128);
+    let image = first_extra_object(list.len());
+    TempPdf::new(
+        "photos.pdf",
+        &pages_with(
+            &list,
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![Object::Stream {
+                dict: format!(
+                    "/Type /XObject /Subtype /Image /Width {edge} /Height {edge} /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 <FF00000000FF>] /Filter /RunLengthDecode"
+                ),
+                data,
+            }],
+        ),
+    )
+}
+
+/// The colours in the tiles these ops attach to these pages, red, green and blue, each once: every pixel of a surface, or a tile of one colour's colour.
+#[allow(unsafe_code)]
+fn tile_colours_on(ops: &[Op], pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    let mut colours = std::collections::BTreeSet::new();
+    for op in ops {
+        match op {
+            Op::Attach { page, surface: 0, rgb, .. } if pages.contains(page) => colours.extend(rgb.map(bytes)),
+            Op::Attach { page, surface, .. } if pages.contains(page) => {
+                // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+                let Some(surface) = (unsafe { recto_platform::surface::PixelSurface::from_host_reference(*surface) }) else {
+                    continue;
+                };
+                let _ = surface.with_pixels(|pixels| colours.extend(pixels.as_chunks::<4>().0.iter().map(|pixel| [pixel[2], pixel[1], pixel[0]])));
+            }
+            _ => {}
+        }
+    }
+    colours
+}
+
+/// Whether tiles with these colours were put on dark paper by a look decided with the page's images known: the paper around the photograph turned over to the paper's tone, and none of it dimmed white, as a page judged whole, with nothing known of its images, is.
+fn turned_over_around_the_photo(colours: &std::collections::BTreeSet<[u8; 3]>) -> bool {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    colours.contains(&bytes(PaperKind::Dark.rgb())) && !colours.contains(&bytes(dim_rgb(0xFF_FF_FF)))
+}
+
+/// What a failure says of these colours: how many, and whether the paper's tone and dimmed white are among them.
+fn said(colours: &std::collections::BTreeSet<[u8; 3]>) -> String {
+    let bytes = |rgb: u32| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    format!(
+        "{} colours, the paper's tone {}, dimmed white {}",
+        colours.len(),
+        colours.contains(&bytes(PaperKind::Dark.rgb())),
+        colours.contains(&bytes(dim_rgb(0xFF_FF_FF)))
+    )
+}
+
+/// Tab 1 of `file` shown again where it was left, on dark paper: the colours of what the host is told to attach to `pages`.
+fn shown_again_at_its_place(engine: &Engine, file: &TempPdf, pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    engine.activate(1, 40, 0, tab_map(file), &[2], None, recto_reader::layout::Spread::Single);
+    let mut ops = engine.set_viewport(view(30_000.0));
+    engine.applied();
+    ops.extend(pump(engine, HANG));
+    assert!(settles(engine), "{}", engine.report().0);
+    tile_colours_on(&ops, pages)
+}
+
+/// What a fresh engine that never drew anything for a tab left puts on dark paper for `pages` of `file`, at the place the tests leave tab 1 at: the control.
+fn drawn_fresh_at_the_place(file: &TempPdf, pages: &[u32]) -> std::collections::BTreeSet<[u8; 3]> {
+    let engine = engine_with(file, 40, recto_render_service::Policy::default(), &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    let mut ops = engine.set_viewport(view(30_000.0));
+    engine.applied();
+    ops.extend(pump(&engine, HANG));
+    assert!(settles(&engine), "{}", engine.report().0);
+    tile_colours_on(&ops, pages)
+}
+
+/// Failure (review round 2, B1): on dark paper, a preview drawn for a tab left takes its worker past its retirement line (a page with a photograph, as is common), and the page's image boxes, asked straight after in the same job, were refused as though for another page. The look decided without them (the page judged whole, so dimmed) was kept for the page, and the person's own tiles of it went by that look when they came back: the page a dimmed white instead of turned over around its photograph, until the look was cleared. Back at its place, tab 1's tiles of the page drawn for it are turned over as a fresh engine's are.
+#[test]
+fn a_page_drawn_for_a_tab_left_by_a_worker_past_its_line_keeps_its_look_on_dark_paper() {
+    let mib = 1024 * 1024;
+    let (first, second) = (text_then_photos(3000), document(1));
+    // Text leaves a worker at about 6 MiB, and drawing the photograph takes it to about 16 (measured, debug).
+    let policy = recto_render_service::Policy {
+        retire_bytes: 11 * mib,
+        idle_exit: Duration::from_secs(600),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    let draws = sleep_draws_end(&engine);
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let pictured: Vec<u32> = material
+        .pictures
+        .iter()
+        .map(|picture| picture.page)
+        .filter(|page| owed.contains(page))
+        .collect();
+    assert!(
+        !pictured.is_empty(),
+        "the first page at its place was drawn, by the worker that was there: {draws}"
+    );
+    let fresh = drawn_fresh_at_the_place(&first, &pictured);
+    assert!(turned_over_around_the_photo(&fresh), "the control: {}", said(&fresh));
+    let back = shown_again_at_its_place(&engine, &first, &pictured);
+    assert!(!back.is_empty(), "tab 1's page {pictured:?} was shown");
+    assert!(
+        turned_over_around_the_photo(&back),
+        "as a fresh draw has it ({}): {}, {draws}",
+        said(&fresh),
+        said(&back)
+    );
+}
+
+/// Failure (review round 2, B1): a preview drawn for a tab left whose worker went in the moment after it was drawn (the system's memory killer, a crash) had the page's image boxes and size refused, as no worker's started for it, and its look decided without them (the page judged whole, so dimmed) was kept for the page: the person's own tiles of it went by that look when they came back, and the picture put on dark paper by it went into the sleep file. Nothing decided from a refused input is kept: the asking ends for want of a worker, there's no picture of the page, and back at its place its tiles are turned over as a fresh engine's are. The worker is killed while the preview's answer waits at its seam, before the image boxes are asked.
+#[test]
+fn a_look_refused_for_want_of_a_worker_is_kept_for_nothing() {
+    use recto_platform::slow::{Seam, gate};
+    let (first, second) = (text_then_photos(64), document(1));
+    let engine = engine_with(&first, 40, recto_render_service::Policy::default(), &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let tab_1s = engine.worker_pids();
+    assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
+    gate::hold(&[Seam::Worker]);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    // Every worker's answer is let through, one at a time, until the tab left's third job, its first page's preview after its size and weight, has its answer waiting.
+    let deadline = Instant::now() + HANG;
+    loop {
+        engine.drain();
+        engine.applied();
+        let jobs = engine.report().0["sleep_draws"]["jobs"].as_u64().unwrap_or(0);
+        let waiting = gate::waiting(Seam::Worker);
+        if jobs >= 3 && waiting > 0 {
+            break;
+        }
+        if waiting > 0 {
+            gate::let_through(Seam::Worker, 1);
+        }
+        assert!(Instant::now() < deadline, "{}", engine.report().0["sleep_draws"]);
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    assert_eq!(engine.report().0["sleep_draws"]["jobs"], 3, "{}", engine.report().0["sleep_draws"]);
+    let killed = std::process::Command::new("/bin/kill").arg("-9").arg(tab_1s[0].to_string()).status().unwrap();
+    assert!(killed.success());
+    // Gone, not just signalled: no process, or a zombie till it's collected.
+    let gone = || {
+        let stat = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &tab_1s[0].to_string()])
+            .output()
+            .unwrap()
+            .stdout;
+        let stat = String::from_utf8_lossy(&stat);
+        stat.trim().is_empty() || stat.trim().starts_with('Z')
+    };
+    while !gone() {
+        assert!(Instant::now() < deadline, "tab 1's worker didn't go");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    gate::open(Seam::Worker);
+    let draws = sleep_draws_end(&engine);
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+    assert_eq!(
+        draws["pictures"], 0,
+        "a picture put on dark paper by a look decided without the page's images: {draws}"
+    );
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    assert!(material.pictures.iter().all(|picture| !owed.contains(&picture.page)), "{draws}");
+    let fresh = drawn_fresh_at_the_place(&first, &owed[..1]);
+    assert!(turned_over_around_the_photo(&fresh), "the control: {}", said(&fresh));
+    let back = shown_again_at_its_place(&engine, &first, &owed[..1]);
+    assert!(
+        turned_over_around_the_photo(&back),
+        "as a fresh draw has it ({}): {}",
+        said(&fresh),
+        said(&back)
+    );
+}
+
+/// Failure (review round 2, F12): the shown tab's worker holding a heavy page's memory was let go only at rest, so while drawing for a tab left went on it held its hundreds of megabytes for the whole of that asking (up to 5 s and a page's deadline) before its own rest even began. It goes once it's rested as long as a heavy worker's idle rule (100 ms here), between the jobs for the tab left, while their asking is still going. The tab left's jobs are let through one at a time, each over 100 ms after the one before, so the asking lasts as long as the test says.
+#[test]
+fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
+    use recto_platform::slow::{Seam, gate};
+    let mib = 1024 * 1024;
+    let rest = Duration::from_millis(100);
+    let (first, second) = (document(40), text_then_photos(3000));
+    // Text leaves a worker at about 6 MiB, and drawing the photograph takes it to about 16 (measured, debug): the tab showing's is big, the tab left's isn't.
+    let policy = recto_render_service::Policy {
+        retire_bytes: 11 * mib,
+        heavy_idle_exit: rest,
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let tab_1s = engine.worker_pids();
+    assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
+    gate::hold(&[Seam::Worker]);
+    // Tab 1 moved far down with nothing drawn there and left for tab 2, shown at its photographs.
+    engine.hold_drawing(true);
+    engine.set_viewport(view(30_000.0));
+    engine.activate(2, 40, 0, tab_map(&second), &[1], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(30_000.0));
+    engine.hold_drawing(false);
+    let deadline = Instant::now() + HANG;
+    let mut let_go = Instant::now();
+    let tab_2s = loop {
+        engine.drain();
+        engine.applied();
+        let draws = engine.report().0["sleep_draws"].clone();
+        let waiting = gate::waiting(Seam::Worker);
+        // Tab 2's had everything, and the first job for tab 1 has its answer waiting.
+        if draws["jobs"].as_u64().unwrap_or(0) >= 1 && waiting > 0 {
+            break engine.worker_pids().into_iter().filter(|pid| !tab_1s.contains(pid)).collect::<Vec<_>>();
+        }
+        if waiting > 0 {
+            gate::let_through(Seam::Worker, 1);
+            let_go = Instant::now();
+        }
+        assert!(Instant::now() < deadline, "{draws}");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    };
+    assert_eq!(tab_2s.len(), 1, "tab 2's, big: {tab_2s:?} beside tab 1's {tab_1s:?}");
+    let footprint = engine.workers_footprint().0;
+    while engine.worker_pids().contains(&tab_2s[0]) {
+        let draws = engine.report().0["sleep_draws"].clone();
+        assert_eq!(
+            draws["under_way"], true,
+            "tab 2's worker was still there when the asking ended ({footprint} bytes of workers at its start): {draws}"
+        );
+        if gate::waiting(Seam::Worker) > 0 && let_go.elapsed() > rest {
+            gate::let_through(Seam::Worker, 1);
+            let_go = Instant::now();
+        }
+        engine.drain();
+        engine.applied();
+        assert!(Instant::now() < deadline, "{draws}");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    gate::open(Seam::Worker);
+    assert!(engine.worker_pids().contains(&tab_1s[0]), "tab 1's worker isn't big, and stays");
+}

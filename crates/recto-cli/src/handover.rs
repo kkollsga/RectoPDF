@@ -21,6 +21,11 @@ fn refused(refusal: &Refusal) -> AgentError {
 
 /// Hands the build over and asks the app to install the copy. Returns the app's own envelope. Anything the copy leaves behind is removed again if the app doesn't take it.
 pub fn install(paths: &StatePaths, invocation: &Invocation, zip: &Path, wait: Duration) -> Result<Value, AgentError> {
+    // The zip is read here, in `recto`'s process, so the session's wall never sees it: on a test state folder it's held to the run's folders first, before
+    // anything looks at it, so a file outside gets the one refusal whether it's there or not (review of the branch, F1).
+    if let Some(folders) = recto_control::quiet::folders_for(paths) {
+        recto_agent::quiet_files::check_paths(&folders, &[zip.to_path_buf()])?;
+    }
     // Where the app keeps its folder, and whether it answers this user at all: its refusal is the answer.
     let mut client = Client::connect(paths)?;
     let status = client.call(&json!({ "cmd": "update_status" }).to_string(), wait)?;
@@ -44,4 +49,39 @@ pub fn install(paths: &StatePaths, invocation: &Invocation, zip: &Path, wait: Du
         handover::discard(&copy, folder);
     }
     answer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review of the branch, F1): `recto update install <zip>` on a test state folder copies a zip from anywhere into the app's hand-over folder,
+    /// in this process, where no session's wall sees it, and its refusals say whether the file is there. A zip outside the run's folders, there or not, is
+    /// refused the one way before anything is asked or opened.
+    #[test]
+    fn a_zip_outside_the_run_is_refused_before_anything_reads_it() {
+        let state = recto_testpdf::TempDir::new("recto-handover-");
+        let paths = StatePaths::overridden(&state.join("state")).unwrap();
+        let outside = recto_platform::fresh::FreshDir::new_in(Path::new("/private/var/tmp"), "recto-handover-outside-", "").unwrap();
+        let there = outside.path().join("build.zip");
+        std::fs::write(&there, b"PK\x03\x04 not a build").unwrap();
+        let spec = recto_agent::table::by_tag("update_install").unwrap();
+        let invocation = Invocation {
+            spec,
+            fields: serde_json::Map::new(),
+            json: true,
+            help: false,
+            rest: Vec::new(),
+        };
+        let said: Vec<(&str, String)> = [there.clone(), outside.path().join("missing.zip")]
+            .iter()
+            .map(|zip| {
+                let refused = install(&paths, &invocation, zip, Duration::from_secs(1)).unwrap_err();
+                (refused.code, refused.message)
+            })
+            .collect();
+        assert_eq!(said[0].0, "outside_quiet_run", "{said:?}");
+        assert_eq!(said[0], said[1], "the answer says whether the zip is there");
+        assert_eq!(std::fs::read(&there).unwrap(), b"PK\x03\x04 not a build");
+    }
 }

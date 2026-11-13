@@ -385,7 +385,7 @@ impl<L: DocLoader> Session<L> {
         let Some(summary) = self.lists.asleep_summary(id) else { return true };
         let restored = self.journals.name_of(id).and_then(|name| self.journals.history()?.read_list(name));
         match restored {
-            Some(restored) if restored.edits.summary() == summary || restored.rolled_off => {
+            Some(restored) if (restored.edits.summary() == summary || restored.rolled_off) && self.tabs.confinement().admits_edits(&restored.edits) => {
                 let mut edits = restored.edits;
                 edits.set_journal_seq(restored.seq);
                 let said_unreadable = self.lists.woken(id, edits);
@@ -465,7 +465,7 @@ impl<L: DocLoader> Session<L> {
         // A page from a protected file on any page means pictures of none, and it's the same for each of them.
         Some(SleepFacts {
             id,
-            path: self.tabs.path_of(id)?,
+            path: self.tabs.named_path(id)?,
             sleep,
             pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages),
         })
@@ -477,7 +477,7 @@ impl<L: DocLoader> Session<L> {
         if !self.dormancy.sleep_files() || tab.file.encrypted {
             return None;
         }
-        Some((tab.file.stamp?, self.tabs.path_of(id)?))
+        Some((tab.file.stamp?, self.tabs.named_path(id)?))
     }
 
     /// What's on hand to wake a cold tab from its sleep file: which file, as far as anything's known, without looking at it. `None` for a tab that isn't cold.
@@ -489,7 +489,7 @@ impl<L: DocLoader> Session<L> {
         if tab.file.encrypted || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword)) {
             return None;
         }
-        Some((tab.file.stamp?, self.tabs.path_of(id)?))
+        Some((tab.file.stamp?, self.tabs.named_path(id)?))
     }
 
     /// **Wakes a cold tab from its sleep file, if it has one about its file as last known.** Says whether it did. Every route to a cold tab's through here, or through a read of its PDF if not.

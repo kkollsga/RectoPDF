@@ -450,13 +450,13 @@ row 112 qa scroller-style: e9dab440c6b1dde2 583 bytes
 help qa scroller-style: c0988bdf11d81064 340 bytes
 usage qa scroller-style: a8a7300c59895831 31 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 113 qa menu: f2a7807af18287e6 540 bytes
-help qa menu: a7fba600598787bb 307 bytes
-usage qa menu: b8f676def8025aa0 21 bytes
+row 113 qa menu: 5c9b28b3067f6cc3 835 bytes
+help qa menu: 4d17cf35eb67dfaf 555 bytes
+usage qa menu: 5bcc41f897bda54c 35 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 114 qa button: 81b1e6fb73d01427 903 bytes
-help qa button: 1575e41ed4e17dd8 615 bytes
-usage qa button: cf028f4b083caf13 23 bytes
+row 114 qa button: 348cd8b17534caee 1198 bytes
+help qa button: 8dc579c7a88406d4 863 bytes
+usage qa button: 957feeb453ecf26f 37 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 115 qa zoom-type: 5bdd295881146eac 602 bytes
 help qa zoom-type: 21db0fde50af5e72 364 bytes
@@ -466,9 +466,9 @@ row 116 qa context-menu: 74a7fec44cd1805d 596 bytes
 help qa context-menu: d0489bf4131d8a6e 355 bytes
 usage qa context-menu: 11db78e060c76b4a 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 117 qa key-action: af55aa351b8d8306 648 bytes
-help qa key-action: 5321b1466db2541f 389 bytes
-usage qa key-action: d43f5d04550f6eb7 27 bytes
+row 117 qa key-action: 31b240af1c946d1b 943 bytes
+help qa key-action: 8f987473f789425b 637 bytes
+usage qa key-action: 8122e61e6b72578b 41 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 118 qa password: fa533230488053c9 813 bytes
 help qa password: 309a182a85dcf569 619 bytes
@@ -502,16 +502,16 @@ row 125 qa mouse-drag: ffa8fb6287cc1e41 560 bytes
 help qa mouse-drag: 54a2c3450f64ac48 322 bytes
 usage qa mouse-drag: 1d6709be4537a52f 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 126 qa print-to-pdf: 2051972df56248ae 841 bytes
-help qa print-to-pdf: 3f05b3934edb4623 600 bytes
-usage qa print-to-pdf: 5cb80eeb118df943 29 bytes
+row 126 qa print-to-pdf: ea6fe0980f09bb1e 1070 bytes
+help qa print-to-pdf: a9fde3ce2c315fb4 782 bytes
+usage qa print-to-pdf: f5c314f90fedc25f 43 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 127 qa mouse-up: ae3f8d79ffd2239a 406 bytes
 help qa mouse-up: 3dbfba872f8bd7ec 195 bytes
 usage qa mouse-up: a0077545306947e1 17 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 128 qa pointer: a23dd489707ab309 640 bytes
-help qa pointer: b18c1b130dbd2929 405 bytes
+row 128 qa pointer: 3bbcbbcda1d84f00 706 bytes
+help qa pointer: 007646d4d7627cde 471 bytes
 usage qa pointer: 71edfee630f273f6 24 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 129 qa copied: e0cd89bc336a13e7 768 bytes
@@ -598,8 +598,8 @@ row 149 qa save-as: a4e491a230871240 763 bytes
 help qa save-as: db0a7057b21b8b8c 527 bytes
 usage qa save-as: a6137bf88a546c1b 24 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 150 qa save-from: 9fec7421095fe860 780 bytes
-help qa save-from: 35413c4b4dff2e56 542 bytes
+row 150 qa save-from: 23a56eb9732a572e 912 bytes
+help qa save-from: f02569898c004538 674 bytes
 usage qa save-from: 42b27784451f5ebb 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 151 qa as-person: fec4b8eebb2b3e82 997 bytes
@@ -737,6 +737,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: b77b6ff269bfbc6a 12682 bytes
-help --json: 9fa2fa5c60881468 127033 bytes
+help --json: fc89b31f301ced00 128258 bytes
 SKILL.md: a300f313582dd513 24057 bytes
 REFERENCE.md: 9f01a56c3d959cf3 77953 bytes

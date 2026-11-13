@@ -1,5 +1,6 @@
 //! The open tabs: each tab's record in the sidebar's order, which one is active, the number the next one gets, and the folders their files are in.
 
+use crate::confined::Confinement;
 use crate::dirs::Dirs;
 use crate::record::{self, FileNotice, PlaceRecord, Selection};
 use crate::{TabId, TabRecord, trail};
@@ -19,6 +20,9 @@ pub struct Tabs {
     next_id: u32,
     /// The folders tabs' files are in.
     dirs: Dirs,
+    /// **The session's confinement, its one cell:** kept here, by what hands a tab's path out, so a path from here meets the rule ([`Self::path_of`]),
+    /// and the session asks it here too.
+    confinement: Confinement,
 }
 
 impl Default for Tabs {
@@ -28,6 +32,7 @@ impl Default for Tabs {
             active: None,
             next_id: 1,
             dirs: Dirs::default(),
+            confinement: Confinement::default(),
         }
     }
 }
@@ -116,8 +121,22 @@ impl Tabs {
         self.dirs.len()
     }
 
-    /// The tab's full path, rebuilt from its interned folder and name.
+    /// The session's confinement: see [`crate::confined`].
+    pub(crate) fn confinement(&self) -> &Confinement {
+        &self.confinement
+    }
+
+    /// **The tab's full path, for whatever reads or writes its file,** rebuilt from its interned folder and name. In a confined session it's put to the
+    /// rule again, as it resolves now, so a folder swapped for a link after the open leads nowhere: `None`, as for no tab, and
+    /// `Session::apply_file_status` says its file is missing (2026-11-13). It's here, on the one way to a tab's path, so a caller reaching it through
+    /// `Session::tabs` meets the rule as one through the session does. A free session asks nothing of the disk.
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
+        self.named_path(id).filter(|path| self.confinement.admits(path))
+    }
+
+    /// **The path the tab is named by,** with no rule: only for what names the tab and reads nothing of its file (its record, its journal's and sleep
+    /// file's names, the look at whether its file is still there, which is what says a swapped one is missing).
+    pub(crate) fn named_path(&self, id: TabId) -> Option<PathBuf> {
         let tab = self.tab(id)?;
         Some(self.dirs.get(tab.file.dir)?.join(&*tab.file.file_name))
     }

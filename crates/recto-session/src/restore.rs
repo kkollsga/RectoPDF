@@ -53,7 +53,7 @@ impl<L: DocLoader> Session<L> {
                 } = tab;
                 TabEntry {
                     id: id.0,
-                    path: PathField::from_path(&self.tabs.path_of(*id).unwrap_or_default()),
+                    path: PathField::from_path(&self.tabs.named_path(*id).unwrap_or_default()),
                     file: stamp.map(Into::into),
                     page: *page,
                     page_count: *page_count,
@@ -115,12 +115,17 @@ impl<L: DocLoader> Session<L> {
         self.viewing.restore(&record.view, &record.find, record.edit_mode);
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
+            // A quiet run's record naming a file outside its folders doesn't bring that tab back: see [`confined`].
+            if !self.tabs.confinement().admits(&path) {
+                continue;
+            }
             let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();
             if let Some(name) = &entry.journal {
-                match journals.remove(name) {
+                // A list naming a file outside a confined session's folders is as unreadable as one that's gone: see [`confined`].
+                match journals.remove(name).filter(|restored| self.tabs.confinement().admits_edits(&restored.edits)) {
                     Some(restored) => {
                         if restored.rolled_off {
                             notice = Some(FileNotice::HistoryRolledOff);

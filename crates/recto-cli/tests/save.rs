@@ -335,12 +335,13 @@ fn save_as_goes_only_where_a_pdf_belongs() {
     ];
     for out in &refused {
         let (reply, code) = state.json(&["save-as", "--out", out.to_str().unwrap()]);
-        assert_eq!(
-            (code, reply["error"]["code"].as_str()),
-            (exit::USAGE, Some("bad_save_path")),
-            "{}: {reply}",
-            out.display()
-        );
+        // The home is outside a test state folder's run, which refuses it before its name is looked at (2026-11-13).
+        let expected = if out.starts_with(&home) && !out.starts_with(folder) {
+            (exit::PERMISSION, Some("outside_quiet_run"))
+        } else {
+            (exit::USAGE, Some("bad_save_path"))
+        };
+        assert_eq!((code, reply["error"]["code"].as_str()), expected, "{}: {reply}", out.display());
         assert!(!out.exists(), "{} was written", out.display());
     }
     // A link with an innocent name that leads into a hidden file: what it leads to is what's checked (review, reproduced with --replace at Full).

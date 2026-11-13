@@ -142,7 +142,7 @@ fn a_long_session_stays_flat() {
         let footprint = memory["footprint_bytes"].as_u64().unwrap();
         footprints.push(footprint);
         println!(
-            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}",
+            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}, drawn before sleep {}",
             footprint as f64 / 1048576.0,
             memory["worker_bytes"].as_u64().unwrap_or(0) as f64 / 1048576.0,
             memory["workers"],
@@ -152,7 +152,8 @@ fn a_long_session_stays_flat() {
             report["record"]["sleep"]["gone_dormant"],
             report["record"]["sleep"]["sleep_files_written"],
             report["record"]["sleep"]["sleep_bytes_written"],
-            ids.len()
+            ids.len(),
+            report["reader"]["sleep_draws"]
         );
         assert!(report["reader"]["documents_held"].as_u64().unwrap() <= 3, "{}", report["reader"]);
     }

@@ -93,7 +93,8 @@ impl<L: DocLoader> Session<L> {
         // Edits that don't fit the file name no version of it to save onto.
         let fits = self.notices().fit(id).fits();
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
-        let path = self.path_of(id).ok_or(SessionError::NoSuchTab)?;
+        // A confined tab whose path no longer leads into its folders isn't saved over: see [`Self::path_of`].
+        let path = self.path_of(id).ok_or(SessionError::OutsideQuietRun)?;
         let snapshot = match self.lists.get(id).filter(|list| list.is_edited()) {
             Some(list) => SaveSnapshot {
                 path,

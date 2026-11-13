@@ -1200,7 +1200,9 @@ fn a_long_document_is_quick_to_get_around() {
 fn the_reader_script_passes_and_a_wrong_one_fails() {
     let Some(run) = Run::start() else { return };
     let file = numbered(12);
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/reader.qa");
+    // A quiet run reads a script only from its temp folders (2026-11-13): the checked-in one is copied there.
+    let script = run.state.root.with_extension("reader.qa");
+    std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/reader.qa"), &script).unwrap();
     let output = run
         .state
         .command()
@@ -2047,7 +2049,9 @@ fn the_selection_script_passes() {
             Page::new(text_lines(&["Words at the top of the second page"])),
         ]),
     );
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/selection.qa");
+    // A quiet run reads a script only from its temp folders (2026-11-13): the checked-in one is copied there.
+    let script = run.state.root.with_extension("selection.qa");
+    std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/selection.qa"), &script).unwrap();
     let output = run
         .state
         .command()
@@ -2068,7 +2072,9 @@ fn the_chrome_script_passes() {
         .map(|page| Page::new(format!("BT /F1 9 Tf 72 750 Td (Annual report 2024) Tj ET\nBT /F1 11 Tf 14 TL 72 690 Td (Body of page {page}, first line.) Tj T* (Body of page {page}, second line.) Tj ET\nBT /F1 9 Tf 540 30 Td ({page}) Tj ET\n").into_bytes()))
         .collect();
     let file = TempPdf::new("report.pdf", &pages(&report));
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/chrome.qa");
+    // A quiet run reads a script only from its temp folders (2026-11-13): the checked-in one is copied there.
+    let script = run.state.root.with_extension("chrome.qa");
+    std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/chrome.qa"), &script).unwrap();
     let output = run
         .state
         .command()

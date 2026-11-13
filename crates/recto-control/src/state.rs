@@ -3,7 +3,8 @@
 
 use recto_agent::{AgentError, exit};
 use recto_platform::local;
-use std::path::{Component, Path, PathBuf};
+use recto_platform::run_folders::resolved;
+use std::path::{Path, PathBuf};
 
 /// Points the state folder somewhere else, for tests and QA. It can't raise a level: a new folder starts at Off.
 pub const STATE_ENV: &str = "RECTO_STATE_DIR";
@@ -241,32 +242,6 @@ fn is_inside(path: &Path, folder: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_inside(_path: &Path, _folder: &Path) -> bool {
     false
-}
-
-/// A path's real location, following links as far as it exists. Without this a link to the home would pass.
-fn resolved(path: &Path) -> Option<PathBuf> {
-    let absolute = std::path::absolute(path).ok()?;
-    let mut existing = absolute.as_path();
-    let mut missing = Vec::new();
-    loop {
-        if let Ok(real) = existing.canonicalize() {
-            let mut out = real;
-            for part in missing.iter().rev() {
-                out.push(part);
-            }
-            return Some(out);
-        }
-        // A link that points nowhere has no safe meaning here.
-        if existing.symlink_metadata().is_ok() {
-            return None;
-        }
-        let name = existing.components().next_back()?;
-        if !matches!(name, Component::Normal(_)) {
-            return None;
-        }
-        missing.push(name.as_os_str().to_os_string());
-        existing = existing.parent()?;
-    }
 }
 
 fn fingerprint(bytes: &[u8]) -> u64 {

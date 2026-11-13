@@ -3,12 +3,19 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, and the tab knows its edits don't fit it ([`Self::edits_fit`]), so the edits' own checks go on saying so.
+    /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, and the tab knows its edits don't fit it ([`Notices::fit`]), so the edits' own checks go on saying so.
     ///
     /// **Says whether anything was new.** A look that finds what's already known (edits that don't fit their file, finding it still another version; a file
-    /// already said to be gone, finding it gone) changes nothing, while one back from gone is news, and callers forget what's held of the file and read it again only on new: every return to the
-    /// front and every show of such a tab would otherwise read the file's structure again (rule 1).
+    /// already said to be gone, finding it gone) changes nothing, while one back from gone is news, and callers forget what's held of the file and read it again
+    /// only on new: every return to the front and every show of such a tab would otherwise read the file's structure again (rule 1).
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) -> bool {
+        // A confined tab whose path no longer leads into its folders (one swapped for a link after the open) is a missing file, whatever the look found
+        // where the path leads now: see [`confined`] and [`Self::path_of`].
+        let status = if self.tabs.tab(id).is_some() && self.path_of(id).is_none() {
+            FileStatus::Missing
+        } else {
+            status
+        };
         let Some(tab) = self.tabs.tab(id) else { return false };
         let has_edits = self.lists.has_list(id);
         let edited = self.lists.is_edited(id);
@@ -62,14 +69,15 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Moved(path, now) => {
-                // Another tab having it means this one isn't a move of that file so much as a second look at it.
-                if self.tab_for_path(&path).is_some_and(|other| other != id) {
+                // Another tab having it means this one isn't a move of that file so much as a second look at it. And a quiet run's tab doesn't
+                // follow its file out of the run's folders: see [`confined`].
+                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.tabs.confinement().admits(&path) {
                     if let Some(tab) = self.tab_mut(id) {
                         tab.file.set_notice(Some(FileNotice::Missing));
                     }
                     return true;
                 }
-                let from = self.path_of(id).map(|from| PathField::from_path(&from));
+                let from = self.tabs.named_path(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
                 if let Some(tab) = self.tab_mut(id) {
                     tab.file.take_version(Some(now));
@@ -110,7 +118,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.tabs.path_of(tab.id)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.named_path(tab.id)?, tab.file.stamp)))
             .collect()
     }
 }

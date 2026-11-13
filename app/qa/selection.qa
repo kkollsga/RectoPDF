@@ -1,5 +1,5 @@
 # Selecting text in the page view, on what the app reports. No event is posted: these go through what a real press, drag and release call.
-# recto qa run app/qa/selection.qa, with RECTO_QA_PDF set to a PDF of at least 2 pages whose first line is 12 pt text near the top left of page 1, about 68 points down: `recto select 1` says where.
+# recto qa run <a copy of app/qa/selection.qa in a temp folder, where a quiet run reads scripts>, with RECTO_QA_PDF set to a PDF of at least 2 pages whose first line is 12 pt text near the top left of page 1, about 68 points down: `recto select 1` says where.
 open "$RECTO_QA_PDF"
 qa wait-settled --timeout 30s
 qa state

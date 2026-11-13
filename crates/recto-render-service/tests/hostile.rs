@@ -412,7 +412,7 @@ fn bad_tile_metadata_is_rejected_and_the_worker_is_killed() {
         let (mut doc, _file) = doc(mode, policy());
         let failure = doc.render_tile(&request(), &surface()).unwrap_err();
         assert!(is_rejected(failure), "{mode}: {failure:?}");
-        assert!(!doc.has_worker(), "{mode}: a worker that sent this must not survive it");
+        assert!(!doc.worker_pid().is_some(), "{mode}: a worker that sent this must not survive it");
         assert_eq!(doc.stats().rejections, 1, "{mode}");
     }
 }
@@ -494,7 +494,7 @@ fn a_page_that_never_finishes_is_killed_at_the_deadline() {
         }
     );
     assert_eq!(doc.stats().deadline_kills, 1);
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
 }
 
 /// A path the stand-in touches when a job is in hand, and a config that tells it.
@@ -604,7 +604,7 @@ fn bad_region_replies_are_rejected_and_the_worker_is_killed() {
         let (mut doc, _file) = doc(mode, policy());
         let failure = doc.render_region(&region_request(), 512, &region_surface()).unwrap_err();
         assert!(is_rejected(failure), "{mode}: {failure:?}");
-        assert!(!doc.has_worker(), "{mode}");
+        assert!(!doc.worker_pid().is_some(), "{mode}");
     }
 }
 
@@ -885,7 +885,7 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
         },
     );
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
-    assert!(!doc.has_worker());
+    assert!(!doc.worker_pid().is_some());
     assert_eq!(doc.stats().too_busy, 1, "no file has reached it, so that's the Mac being busy");
 }
 

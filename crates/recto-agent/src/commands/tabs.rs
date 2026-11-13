@@ -288,17 +288,21 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         .then("Open it with a page it has, or with no `--page`.")
     };
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // The file is read where the session's rule looked, and not wherever its name leads by the time the read starts; the tab keeps the name (F3).
+    let to_read = access
+        .with(|s| s.confinement().to_read(path))
+        .ok_or_else(|| crate::quiet_files::outside_the_run(path))?;
     // A host that mustn't wait on a disk has the file looked at and read off its thread, and this runs again once it's in: unless a tab has it by this name, as
     // the window has always gone to that tab without reading the file. Everywhere else it's looked at here.
     let fetched = match access.reads_later() {
-        Some(reads) if access.with(|s| s.tabs().for_path(path)).is_none() => Some(reads.load(path).ok_or_else(later::later)?),
+        Some(reads) if access.with(|s| s.tabs().for_path(path)).is_none() => Some(reads.load(&to_read).ok_or_else(later::later)?),
         _ => None,
     };
     // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
     let stamp = match (&fetched, access.reads_later()) {
         (Some(fetched), _) => fetched.stamp,
         (None, Some(_)) => None,
-        (None, None) => recto_platform::file_stamp(path).ok(),
+        (None, None) => recto_platform::file_stamp(&to_read).ok(),
     };
     // A file already open, in a tab gone cold, is read with the session free too.
     read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)))?;
@@ -324,7 +328,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
             // The file is read outside the session, so a slow or hostile one holds nobody else up.
             let (facts, read_history, unlocked) = match fetched {
                 Some(fetched) => (fetched.facts?, Some(fetched.history), fetched.unlocked),
-                None => (access.with(|s| s.loader().clone()).load(path)?, None, false),
+                None => (access.with(|s| s.loader().clone()).load(&to_read)?, None, false),
             };
             // No tab for a page that isn't there: failing here leaves nothing to explain.
             if !fits(facts.page_count) {

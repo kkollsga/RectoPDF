@@ -87,7 +87,7 @@ impl DocRenderer {
                 }
                 PageDrawState::Sharp => WorkerClass::Normal,
                 PageDrawState::NeedsHeavy => {
-                    let retries = self.stats.heavy_retries - self.heavy_retries_counted_from;
+                    let retries = self.stats.heavy_retries - self.counted_from.heavy_pages;
                     let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
                     if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes || (!already_heavy && retries >= self.policy.max_heavy_retries) {
                         self.set_draw(page, scale, PageDrawState::LowResOnly);

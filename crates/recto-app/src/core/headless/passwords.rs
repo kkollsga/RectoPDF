@@ -80,9 +80,10 @@ fn two_protected_files_opened_together_each_get_their_own_password() {
     assert!(!notice.contains("didn't open"), "{notice}");
 }
 
-/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its
-/// state folder or a temp folder. A person's open of a protected file outside them asks, and the sheet is refused to QA; a test's own is taken. (The
-/// app test `qa_password_is_only_for_a_tests_own_file` keeps only that the password never comes on the command line.)
+/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in the
+/// temp folders. Since 2026-11-13 a protected file outside them doesn't even open in a quiet run (the session's wall, `recto_session::confined`), so no
+/// sheet asks for its password and the QA wall's refusal of an outside file's sheet is a second line nothing reaches; with no sheet the verb is refused, and a
+/// test's own sheet is taken. (The app test `qa_password_is_only_for_a_tests_own_file` keeps only that the password never comes on the command line.)
 #[test]
 fn qa_password_types_only_into_a_tests_own_sheet() {
     let app = HeadlessApp::start();
@@ -93,11 +94,11 @@ fn qa_password_types_only_into_a_tests_own_sheet() {
     };
     std::fs::write(&outside, locked_with("open sesame", 1)).expect("a file outside the test's folders");
     open(&app, &outside);
-    assert!(sheet(&app).is_some(), "the person's open asks for the password");
-    let refused = crate::core::qa::password_sheet_is_a_tests(app.core()).expect_err("not a test's own file");
-    assert!(refused.message.contains("test's own file"), "{refused:?}");
-    let (id, _) = sheet(&app).unwrap();
-    answer(&app, id, None);
+    assert!(
+        sheet(&app).is_none() && app.tabs().is_empty(),
+        "a file outside the run's folders opened and asked for its password"
+    );
+    assert!(crate::core::qa::password_sheet_is_a_tests(app.core()).is_err(), "no sheet to type into");
     let own = app.disk().file("own-locked.pdf", &locked_with("open sesame", 1));
     open(&app, &own);
     assert!(sheet(&app).is_some());
