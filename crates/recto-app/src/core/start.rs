@@ -143,6 +143,8 @@ impl Inner {
                 announcer: Mutex::new(announcer),
                 #[cfg(any(test, feature = "testkit"))]
                 heard: Mutex::new(crate::testkit::heard::Overheard::default()),
+                #[cfg(any(test, feature = "testkit"))]
+                on_taking_places: crate::testkit::heard::OnTakingPlaces::default(),
             },
             window: WindowParts::new(watchdog),
             tools: Tools::new(&save_step),

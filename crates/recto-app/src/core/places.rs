@@ -154,10 +154,14 @@ impl Inner {
     /// answers where the reader is from that jump itself (`Session::here`).
     pub fn take_places(&self) {
         let said = Said::read(self, false);
+        #[cfg(any(test, feature = "testkit"))]
+        self.serving.on_taking_places.read();
         let sent = self.panes.sent();
         self.host.session.with_session(|session| {
             said.take_in(session, &sent, &[], &mut Vec::new());
         });
+        #[cfg(any(test, feature = "testkit"))]
+        self.serving.on_taking_places.taken();
     }
 }
 

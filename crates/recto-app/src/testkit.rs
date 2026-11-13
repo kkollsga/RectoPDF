@@ -3,6 +3,7 @@
 
 pub mod headless;
 pub(crate) mod heard;
+mod scrolled;
 pub mod update_bed;
 
 use crate::clock::Clock;
