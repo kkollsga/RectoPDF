@@ -1387,3 +1387,67 @@ fn a_look_refused_for_want_of_a_worker_is_kept_for_nothing() {
         said(&back)
     );
 }
+
+/// Failure (review round 2, F12): the shown tab's worker holding a heavy page's memory was let go only at rest, so while drawing for a tab left went on it held its hundreds of megabytes for the whole of that asking (up to 5 s and a page's deadline) before its own rest even began. It goes once it's rested as long as a heavy worker's idle rule (100 ms here), between the jobs for the tab left, while their asking is still going. The tab left's jobs are let through one at a time, each over 100 ms after the one before, so the asking lasts as long as the test says.
+#[test]
+fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
+    use recto_platform::slow::{Seam, gate};
+    let mib = 1024 * 1024;
+    let rest = Duration::from_millis(100);
+    let (first, second) = (document(40), text_then_photos(3000));
+    // Text leaves a worker at about 6 MiB, and drawing the photograph takes it to about 16 (measured, debug): the tab showing's is big, the tab left's isn't.
+    let policy = recto_render_service::Policy {
+        retire_bytes: 11 * mib,
+        heavy_idle_exit: rest,
+        ..recto_render_service::Policy::default()
+    };
+    let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let tab_1s = engine.worker_pids();
+    assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
+    gate::hold(&[Seam::Worker]);
+    // Tab 1 moved far down with nothing drawn there and left for tab 2, shown at its photographs.
+    engine.hold_drawing(true);
+    engine.set_viewport(view(30_000.0));
+    engine.activate(2, 40, 0, tab_map(&second), &[1], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(30_000.0));
+    engine.hold_drawing(false);
+    let deadline = Instant::now() + HANG;
+    let mut let_go = Instant::now();
+    let tab_2s = loop {
+        engine.drain();
+        engine.applied();
+        let draws = engine.report().0["sleep_draws"].clone();
+        let waiting = gate::waiting(Seam::Worker);
+        // Tab 2's had everything, and the first job for tab 1 has its answer waiting.
+        if draws["jobs"].as_u64().unwrap_or(0) >= 1 && waiting > 0 {
+            break engine.worker_pids().into_iter().filter(|pid| !tab_1s.contains(pid)).collect::<Vec<_>>();
+        }
+        if waiting > 0 {
+            gate::let_through(Seam::Worker, 1);
+            let_go = Instant::now();
+        }
+        assert!(Instant::now() < deadline, "{draws}");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    };
+    assert_eq!(tab_2s.len(), 1, "tab 2's, big: {tab_2s:?} beside tab 1's {tab_1s:?}");
+    let footprint = engine.workers_footprint().0;
+    while engine.worker_pids().contains(&tab_2s[0]) {
+        let draws = engine.report().0["sleep_draws"].clone();
+        assert_eq!(
+            draws["under_way"], true,
+            "tab 2's worker was still there when the asking ended ({footprint} bytes of workers at its start): {draws}"
+        );
+        if gate::waiting(Seam::Worker) > 0 && let_go.elapsed() > rest {
+            gate::let_through(Seam::Worker, 1);
+            let_go = Instant::now();
+        }
+        engine.drain();
+        engine.applied();
+        assert!(Instant::now() < deadline, "{draws}");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    gate::open(Seam::Worker);
+    assert!(engine.worker_pids().contains(&tab_1s[0]), "tab 1's worker isn't big, and stays");
+}

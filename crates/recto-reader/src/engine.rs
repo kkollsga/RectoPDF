@@ -121,9 +121,6 @@ const MAX_PANICS_IN_A_ROW: u32 = 4;
 /// A panic this long after the last one is a new story.
 const PANICS_FORGOTTEN_AFTER: Duration = Duration::from_secs(60);
 
-/// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
-const BIG_WORKER_REST: Duration = Duration::from_secs(3);
-
 struct Shared {
     reader: Mutex<Reader>,
     /// Woken when a job ends or the host says it has applied ops, for whoever's waiting to see everything settled.
@@ -927,8 +924,11 @@ fn run(shared: &Shared) {
             rest(shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
-        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest.
+        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
         let workers = if SleepDraws::is_for(&lock(&shared.reader), job.tab) {
+            if big_workers_rest(&mut renderers, &policy, &mut resting_since).is_some_and(|left| left.is_zero()) {
+                publish_workers(shared, &mut renderers);
+            }
             Workers::OnlyTheOneThere
         } else {
             resting_since = None;
@@ -1026,7 +1026,7 @@ fn run(shared: &Shared) {
     }
 }
 
-/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory, which is let go after [`BIG_WORKER_REST`].
+/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
 fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
     shared.settled.notify_all();
     if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
@@ -1035,27 +1035,31 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         }
         publish_workers(shared, renderers);
     }
-    // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
-    let big = renderers
-        .values_mut()
-        .any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
-    if !big {
-        std::thread::park();
-        *resting_since = None;
-        return;
+    match big_workers_rest(renderers, policy, resting_since) {
+        None => std::thread::park(),
+        // Let go just now: the loop says so before it rests again.
+        Some(left) if left.is_zero() => {}
+        Some(left) => std::thread::park_timeout(left),
     }
-    let since = *resting_since.get_or_insert_with(Instant::now);
-    let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
+}
+
+/// **A worker holding a heavy page's memory, which only goes when it does, is let go once nothing's been done for the person for as long as a heavy worker's idle rule** (`Policy::heavy_idle_exit`, 3 s), for the same reason: long enough to bridge a pause in scrolling, and then a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule. Looked at when there's nothing to do, and between the jobs for a tab off screen's place, which aren't the person's. Says how long is left, zero when they've just been let go, or `None` when there's none.
+fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) -> Option<Duration> {
+    let big = |open: &mut OpenDoc| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes);
+    if !renderers.values_mut().any(|open| big(open)) {
+        *resting_since = None;
+        return None;
+    }
+    let left = policy.heavy_idle_exit.saturating_sub(resting_since.get_or_insert_with(Instant::now).elapsed());
     if left.is_zero() {
         for open in renderers.values_mut() {
-            if open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
+            if big(open) {
                 open.doc.kill_worker();
             }
         }
         *resting_since = None;
-    } else {
-        std::thread::park_timeout(left);
     }
+    Some(left)
 }
 
 /// A page's links, read from the file's structure, here and with no worker.
