@@ -6,7 +6,7 @@ mod rows_features;
 mod rows_recto;
 mod rows_window;
 
-use super::{Cmd, Cx, row_access};
+use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::table::*;
 use crate::*;
 use serde::Deserialize;
@@ -85,6 +85,28 @@ impl Cmd for QaDrive {
     }
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
+    }
+}
+
+impl super::Qa {
+    /// QA's answers are a tester's look at the app, never something an update carries across, and they're answered while one hands off.
+    pub fn only_asks(&self) -> bool {
+        match self {
+            Self::QaRead(command) => command.only_asks(),
+            Self::QaDrive(command) => command.only_asks(),
+        }
+    }
+}
+
+impl OnlyAsks for QaRead {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+impl OnlyAsks for QaDrive {
+    fn only_asks(&self) -> bool {
+        true
     }
 }
 

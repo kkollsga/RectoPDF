@@ -1,10 +1,12 @@
 //! **The session the socket and the app share:** the host every command runs on, and what the page views tell the app.
 
 use super::*;
+use recto_agent::Runs;
 use recto_agent::commands::Move;
-use recto_agent::commands::Record;
-use recto_agent::commands::record::SessionSleep;
 use recto_agent::commands::view::{Palette, View};
+
+#[cfg(test)]
+mod route_tests;
 
 /// The session the socket and the app share.
 pub struct AppHost {
@@ -41,58 +43,11 @@ impl AppHost {
             }
         }));
     }
-
-    pub fn record_command(&self, level: Level, command: &Command) -> Result<Value, AgentError> {
-        match command {
-            Command::Record(Record::SessionShow(_)) => {
-                let notice = lock(&self.notice).clone();
-                let kept = kept_json(&self.saver.store, notice.as_deref().and_then(record::notices::words));
-                Ok(self.session.with_session(|session| recto_agent::session_show_json(session, level, kept)))
-            }
-            Command::Record(Record::SessionSleep(SessionSleep { tab })) => {
-                let id = self.session.with_session(|session| recto_agent::select_tab(session, tab))?;
-                self.core.push(CoreCall::SleepTabs(vec![id], sleeper::Why::Asked));
-                self.core.flush(Duration::from_secs(5));
-                let (warm, list_asleep) = self
-                    .session
-                    .with_session(|session| (session.warm_tabs().any(|other| other == id), session.list_is_asleep(id)));
-                Ok(json!({ "tab": id.0, "dormant": !warm, "list_asleep": list_asleep }))
-            }
-            Command::Record(Record::SessionSave(_)) => {
-                let report = self.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
-                Ok(
-                    json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }),
-                )
-            }
-            Command::Record(Record::SessionRestore(_)) => {
-                if level < Level::Full && self.session.with_session(|session| session.holds_owner_edits()) {
-                    return Err(recto_agent::restore_would_lose_owners_edits());
-                }
-                let loaded = self.saver.store.load();
-                let notice = notice_for(&loaded).and_then(record::notices::words);
-                let restored = matches!(loaded, Loaded::Restored(_));
-                self.core.push(CoreCall::Restored(Box::new(loaded)));
-                self.core.flush(Duration::from_secs(5));
-                let (count, active) = self.session.with_session(|session| (session.tabs().len(), session.active().map(|id| id.0)));
-                Ok(json!({ "restored": restored, "count": count, "active": active, "notice": notice }))
-            }
-            _ => Err(recto_agent::qa_needs_app()),
-        }
-    }
 }
 
 impl Host for AppHost {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let asks_only = matches!(
-            command,
-            Command::Qa(_)
-                | Command::Record(Record::SessionCheck(_))
-                | Command::Record(Record::SessionShow(_))
-                | Command::Record(Record::SessionSave(_))
-                | Command::UpdateStatus {}
-                | Command::UpdateDevBuilds { set: None }
-                | Command::Settings { auto_update: None }
-        );
+        let asks_only = command.only_asks();
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
@@ -103,19 +58,6 @@ impl Host for AppHost {
                         .then("Try again in a moment, when it's back."),
                 );
             }
-        }
-        if matches!(
-            command,
-            Command::Record(Record::SessionSleep(_))
-                | Command::Record(Record::SessionShow(_))
-                | Command::Record(Record::SessionSave(_))
-                | Command::Record(Record::SessionRestore(_))
-        ) {
-            let result = self.record_command(level, command);
-            if !asks_only {
-                self.running.fetch_sub(1, Ordering::SeqCst);
-            }
-            return result;
         }
         let result = self.run_counted(level, command, events);
         if !asks_only {
@@ -165,61 +107,18 @@ impl Host for AppHost {
 }
 
 impl AppHost {
+    /// Where a command goes, by its declared route: the app's own to [`Self::run_app`], the rest to the session.
     pub fn run_counted(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        // The level was checked by the server against the row, and again by `execute`. QA doesn't reach `execute`, which would say it needs an app.
-        if let Command::Qa(asked) = command {
-            return match &self.qa {
-                Some(qa) => qa.run(asked),
-                None => Err(recto_agent::qa_needs_app()),
-            };
+        match command.route() {
+            Runs::App => self.run_app(level, command, events),
+            // The record's commands are the session's, with the app's record: they change nothing the window needs to look at again.
+            Runs::Record => self.session.run(level, command, events),
+            Runs::Session | Runs::Server => self.run_session(level, command, events),
         }
-        // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-        if let Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) = command {
-            let zoom = menus::zoom_from_word(word).ok_or_else(|| {
-                AgentError::new(
-                    "usage",
-                    format!(
-                        "`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.",
-                        recto_core::clean_line(word)
-                    ),
-                    recto_agent::exit::USAGE,
-                )
-            })?;
-            let rest = Command::from(View { zoom: None, ..asked.clone() });
-            let mut answer = self.session.run(level, &rest, events)?;
-            let inner = self.saver.inner();
-            let reading = inner
-                .as_ref()
-                .map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
-            let value = inner
-                .as_ref()
-                .map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom))
-                .ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
-            answer["zoom"] = json!(value);
-            if let Some(fit) = reading.fit() {
-                answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
-            }
-            self.core.push(CoreCall::Reconcile);
-            return Ok(answer);
-        }
-        if let Command::Move(Move::Palette(Palette { query, run, limit })) = command {
-            return self.run_palette(level, command, query, run, limit, events);
-        }
-        if matches!(
-            command,
-            Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. }
-        ) {
-            let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
-            if !recto_agent::allowed(level, command.access()) {
-                return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
-            }
-            return inner.update_command(command);
-        }
-        if matches!(command, Command::Record(Record::SessionCheck(_))) {
-            let check = hand_off_check(self);
-            let busy: Vec<Value> = check.busy.iter().map(|item| json!({ "code": item.code, "message": item.message })).collect();
-            return Ok(json!({ "safe": check.safe, "busy": busy, "seconds_since_input": check.seconds_since_input }));
-        }
+    }
+
+    /// A command the session answers, and what the window does after it.
+    fn run_session(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let result = self.session.run(level, command, events);
         // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
         if let (Command::Move(Move::Find(_)), Ok(answer)) = (command, &result)
@@ -241,19 +140,56 @@ impl AppHost {
         result
     }
 
-    /// **`recto palette`:** what the query finds, as the window's palette ranks it, and with `--run` the first row run at the agent's level, as its own command where it has one.
-    fn run_palette(
-        &self,
-        level: Level,
-        command: &Command,
-        query: &Option<String>,
-        run: &bool,
-        limit: &Option<u32>,
-        events: &mut Vec<Event>,
-    ) -> Result<Value, AgentError> {
+    /// The app's own commands: QA, the zoom, the palette and updates. Their level's checked here, as `execute` checks the session's: the server checked it too, but this host is also reached from inside the app.
+    fn run_app(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         if !recto_agent::allowed(level, command.access()) {
             return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
         }
+        match command {
+            Command::Qa(asked) => match &self.qa {
+                Some(qa) => qa.run(asked),
+                None => Err(recto_agent::qa_needs_app()),
+            },
+            Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) => self.zoom(level, asked, word, events),
+            Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(level, query, run, limit, events),
+            Command::Updates(_) => self.saver.inner().ok_or_else(recto_agent::update_needs_app)?.update_command(command),
+            // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
+            _ => self.run_session(level, command, events),
+        }
+    }
+
+    /// Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
+    fn zoom(&self, level: Level, asked: &View, word: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        let zoom = menus::zoom_from_word(word).ok_or_else(|| {
+            AgentError::new(
+                "usage",
+                format!(
+                    "`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.",
+                    recto_core::clean_line(word)
+                ),
+                recto_agent::exit::USAGE,
+            )
+        })?;
+        let rest = Command::from(View { zoom: None, ..asked.clone() });
+        let mut answer = self.session.run(level, &rest, events)?;
+        let inner = self.saver.inner();
+        let reading = inner
+            .as_ref()
+            .map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
+        let value = inner
+            .as_ref()
+            .map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom))
+            .ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
+        answer["zoom"] = json!(value);
+        if let Some(fit) = reading.fit() {
+            answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
+        }
+        self.core.push(CoreCall::Reconcile);
+        Ok(answer)
+    }
+
+    /// **`recto palette`:** what the query finds, as the window's palette ranks it, and with `--run` the first row run at the agent's level, as its own command where it has one.
+    fn run_palette(&self, level: Level, query: &Option<String>, run: &bool, limit: &Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let inner = self
             .saver
             .inner()

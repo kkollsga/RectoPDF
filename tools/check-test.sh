@@ -907,6 +907,13 @@ echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-crate
 check "on CI, a branch that changed no tool since origin/main skips the tools' tests" "0 0" "$(branch_ci)"
 has "and says why" "the tools' tests are skipped: nothing under tools/, .config/ or .github/ changed since $(git merge-base origin/main HEAD | cut -c1-12)" "$(cat "$X/ci.out")"
 check "but still runs the rest of core" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
+# Failure (2026-11-13): the ratchet's baseline counted as a tool, so every push that only locked a lower number in ran the tools' own tests on CI (183 to
+# 267 s, eight pushes in one evening), and a branch that lowered one ran everything here. It is numbers the ratchet has already checked, first.
+git checkout -q main; git checkout -qb ci-baseline
+mkdir -p tools/ratchet && echo "file crates/alpha/src/lib.rs 1" >> tools/ratchet/baseline.txt && git add . && git commit -qm "ci baseline"
+echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate after the baseline"
+check "on CI, a branch that changed only the ratchet's baseline among the tools skips the tools' tests" "0 0" "$(branch_ci)"
+check "and here its check is still by what changed, not everything" "no" "$(sel_full 2>&1 | grep -q 'everything runs' && echo yes || echo no)"
 for changed in tools/hooks/pre-push .config/nextest.toml .github/workflows/ci.yml; do
   git checkout -q main; git checkout -qb "ci-$(basename "$changed")"
   mkdir -p "$(dirname "$changed")" && echo "# $changed" >> "$changed" && git add . && git commit -qm "ci $changed"

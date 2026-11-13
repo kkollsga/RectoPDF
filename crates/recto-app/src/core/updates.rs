@@ -293,13 +293,15 @@ impl Inner {
     /// What `recto update` and `recto settings` come to. The level's been checked.
     pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
         match command {
-            Command::UpdateStatus {} => Ok(self.updates.report()),
-            Command::UpdateCheck {} => {
+            Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(self.updates.report()),
+            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
                 self.updates.check_here(Asked::ByHand);
                 Ok(self.updates.report())
             }
-            Command::UpdateInstall { zip: Some(zip), now } => self.install_build(zip, *now),
-            Command::UpdateDevBuilds { set } => {
+            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
+                self.install_build(zip, *now)
+            }
+            Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
                 if let Some(word) = set {
                     let on = match word.as_str() {
                         "on" => true,
@@ -311,11 +313,16 @@ impl Inner {
                 Ok(self.dev_builds_answer())
             }
             // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
-            Command::UpdateInstall { zip: None, now: false } if self.updates.waiting_build_words().is_some() => {
+            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, now: false }))
+                if self.updates.waiting_build_words().is_some() =>
+            {
                 let (version, words) = self.updates.waiting_build_words().unwrap_or_default();
                 Ok(json!({ "started": false, "version": version, "words": words }))
             }
-            Command::UpdateInstall { zip: None, .. } => match self.updates.update_now() {
+            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => match self
+                .updates
+                .update_now()
+            {
                 Ok(version) => Ok(
                     json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
                 ),
@@ -330,7 +337,7 @@ impl Inner {
                     .then("`recto update status` says how it's going.")),
                 Err(refused) => Err(refused_words(&refused)),
             },
-            Command::Settings { auto_update } => {
+            Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
                 if let Some(word) = auto_update {
                     let on = match word.as_str() {
                         "on" => true,

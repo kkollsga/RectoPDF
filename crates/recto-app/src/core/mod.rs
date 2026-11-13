@@ -25,6 +25,7 @@ mod launching;
 mod navigation;
 mod opening;
 mod quitting;
+mod record_commands;
 mod unlocking;
 
 use comparison::*;

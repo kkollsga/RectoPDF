@@ -28,7 +28,8 @@ mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
-pub use route::{Runs, qa_needs_app, update_needs_app};
+pub use commands::updates::update_needs_app;
+pub use route::{Runs, qa_needs_app};
 #[cfg(test)]
 mod registry_golden;
 
@@ -181,28 +182,8 @@ pub enum Command {
     Qa(commands::Qa),
     #[serde(skip)]
     Record(commands::Record),
-    /// What's running, what's on offer, and how the last update went.
-    UpdateStatus {},
-    /// Looks for a new version now, and says what it found.
-    UpdateCheck {},
-    /// Starts installing what's on offer, with the app's state carried across. With a zip, a development build handed over.
-    UpdateInstall {
-        #[serde(default)]
-        zip: Option<PathBuf>,
-        /// A development build goes at once, not after 5 minutes without use.
-        #[serde(default)]
-        now: bool,
-    },
-    /// *Allow development builds*. With a value, sets it.
-    UpdateDevBuilds {
-        #[serde(default)]
-        set: Option<String>,
-    },
-    /// The app's settings. With a value, changes it.
-    Settings {
-        #[serde(default)]
-        auto_update: Option<String>,
-    },
+    #[serde(skip)]
+    Updates(commands::Updates),
 }
 
 /// Which tab a command is about to act on, as an id for the log. Never a name, and none if it means no tab or several. Asked before the command runs, because `close` leaves nothing to ask afterwards.
@@ -451,6 +432,10 @@ pub trait SessionAccess {
     fn finding(&self) -> Option<&dyn find::Finding> {
         None
     }
+    /// The state record this host keeps, for `session show`, `sleep`, `save`, `restore` and `check`. A session in one process has none: they need the long-running one.
+    fn records(&self) -> Result<&dyn commands::record::Records, AgentError> {
+        Err(commands::needs_server())
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -552,6 +537,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     if !allowed(level, needed) {
         return Err(refusal(table::display_name(command.tag()), level, needed));
     }
+    // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
+    if command.route() == Runs::Record {
+        return execute_held(access, level, command, events);
+    }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
     let about = command
@@ -596,9 +585,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
-            Err(update_needs_app())
-        }
+        Command::Updates(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Start(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
@@ -1675,60 +1662,79 @@ mod tests {
             Command::from(crate::commands::record::SessionSave {}),
             Command::from(crate::commands::record::SessionRestore {}),
             Command::from(crate::commands::record::SessionCheck {}),
-            Command::UpdateStatus {},
-            Command::UpdateCheck {},
-            Command::UpdateInstall { zip: None, now: false },
-            Command::UpdateDevBuilds { set: None },
-            Command::Settings { auto_update: None },
+            Command::from(commands::updates::UpdateStatus {}),
+            Command::from(commands::updates::UpdateCheck {}),
+            Command::from(commands::updates::UpdateInstall { zip: None, now: false }),
+            Command::from(commands::updates::UpdateDevBuilds { set: None }),
+            Command::from(commands::updates::Settings { auto_update: None }),
         ]
     }
 
     /// Failure: an agent below Full can install an update, or turn on what would install one for it, or can't read how things stand at Read-only. The owner's bar: installing needs Full. A session with no app says it's not a matter of level.
     #[test]
     fn installing_needs_full_and_reading_needs_only_read() {
-        assert_eq!(Command::UpdateInstall { zip: None, now: false }.access(), Access::At(Level::Full));
         assert_eq!(
-            Command::UpdateInstall {
+            Command::from(commands::updates::UpdateInstall { zip: None, now: false }).access(),
+            Access::At(Level::Full)
+        );
+        assert_eq!(
+            Command::from(commands::updates::UpdateInstall {
                 zip: Some("/b/RectoPDF-0.1.0.1.zip".into()),
                 now: true
-            }
+            })
             .access(),
             Access::At(Level::Full),
             "a build too: only the owner's switch lets one in below that, in the app"
         );
-        assert_eq!(Command::UpdateDevBuilds { set: Some("on".into()) }.access(), Access::At(Level::Full));
-        assert_eq!(Command::UpdateDevBuilds { set: None }.access(), Access::At(Level::ReadOnly));
         assert_eq!(
-            Command::Settings {
+            Command::from(commands::updates::UpdateDevBuilds { set: Some("on".into()) }).access(),
+            Access::At(Level::Full)
+        );
+        assert_eq!(
+            Command::from(commands::updates::UpdateDevBuilds { set: None }).access(),
+            Access::At(Level::ReadOnly)
+        );
+        assert_eq!(
+            Command::from(commands::updates::Settings {
                 auto_update: Some("on".into())
-            }
+            })
             .access(),
             Access::At(Level::Full)
         );
         assert_eq!(
-            Command::Settings {
+            Command::from(commands::updates::Settings {
                 auto_update: Some("off".into())
-            }
+            })
             .access(),
             Access::At(Level::Full)
         );
-        assert_eq!(Command::Settings { auto_update: None }.access(), Access::At(Level::ReadOnly));
-        assert_eq!(Command::UpdateStatus {}.access(), Access::At(Level::ReadOnly));
-        assert_eq!(Command::UpdateCheck {}.access(), Access::At(Level::Control));
+        assert_eq!(
+            Command::from(commands::updates::Settings { auto_update: None }).access(),
+            Access::At(Level::ReadOnly)
+        );
+        assert_eq!(Command::from(commands::updates::UpdateStatus {}).access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::from(commands::updates::UpdateCheck {}).access(), Access::At(Level::Control));
         let mut s = with_tabs(&["a"]);
         for command in [
-            Command::UpdateStatus {},
-            Command::UpdateCheck {},
-            Command::UpdateInstall { zip: None, now: false },
-            Command::UpdateDevBuilds { set: None },
-            Command::Settings { auto_update: None },
+            Command::from(commands::updates::UpdateStatus {}),
+            Command::from(commands::updates::UpdateCheck {}),
+            Command::from(commands::updates::UpdateInstall { zip: None, now: false }),
+            Command::from(commands::updates::UpdateDevBuilds { set: None }),
+            Command::from(commands::updates::Settings { auto_update: None }),
         ] {
             let error = run(&mut s, Level::Full, &command).unwrap_err();
             assert_eq!(error.code, "needs_app");
             assert_ne!(error.exit, exit::PERMISSION);
         }
         assert!(
-            run(&mut s, Level::Control, &Command::UpdateInstall { zip: None, now: false }).unwrap_err().exit == exit::PERMISSION,
+            run(
+                &mut s,
+                Level::Control,
+                &Command::from(commands::updates::UpdateInstall { zip: None, now: false })
+            )
+            .unwrap_err()
+            .exit
+                == exit::PERMISSION,
             "below the level, it's the level that's said"
         );
     }

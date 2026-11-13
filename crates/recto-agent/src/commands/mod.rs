@@ -19,6 +19,7 @@ pub mod session;
 pub mod sync;
 pub mod tabs;
 pub mod text;
+pub mod updates;
 pub mod view;
 
 use crate::table::{self, Access, Spec};
@@ -50,6 +51,11 @@ pub trait Cmd {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError>;
     /// Its answer in plain words, for a person at a terminal.
     fn human(data: &Value) -> String;
+}
+
+/// Whether a command only asks about the state, so an update needn't wait for it. Declared by each command the app or a host's record answers, with no default: one that forgot could be refused mid-hand-off, or be run past the hand-off's last look and lose what it did.
+pub trait OnlyAsks {
+    fn only_asks(&self) -> bool;
 }
 
 /// What a command runs with: the session, the level it was asked at, and the events it makes.
@@ -274,6 +280,17 @@ family! {
 }
 
 family! {
+    /// Updates and settings, which only the app has.
+    pub enum Updates {
+        UpdateStatus(updates::UpdateStatus),
+        UpdateCheck(updates::UpdateCheck),
+        UpdateInstall(updates::UpdateInstall),
+        UpdateDevBuilds(updates::UpdateDevBuilds),
+        Settings(updates::Settings),
+    }
+}
+
+family! {
     /// Testing the app: what an app started in QA mode shows, and making it do what the UI does. Their rows are [`qa::ROWS_QA`].
     pub enum Qa {
         QaRead(qa::QaRead),
@@ -359,6 +376,7 @@ const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Session::TAGS, Session::parse, Session::human),
     (Qa::TAGS, Qa::parse, Qa::human),
     (Record::TAGS, Record::parse, Record::human),
+    (Updates::TAGS, Updates::parse, Updates::human),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
@@ -384,13 +402,7 @@ const PARTS: &[&[&[Spec]]] = &[
     Session::ROWS,
     &[table::CLI_LOCAL],
     Record::ROWS,
-    &[
-        table::ROWS_UPDATE_STATUS,
-        table::ROWS_UPDATE_CHECK,
-        table::ROWS_UPDATE_INSTALL,
-        table::ROWS_UPDATE_DEV_BUILDS,
-        table::ROWS_SETTINGS,
-    ],
+    Updates::ROWS,
     Measure::ROWS,
     &[table::CLI_BUDGET_TABS],
     qa::ROWS_QA,

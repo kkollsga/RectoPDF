@@ -3,15 +3,18 @@
 use crate::finding::Finder;
 use crate::generating::Generator;
 use crate::indexing::{Indexer, Notifier};
-use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
+use crate::record_store::{Flavor, RecordStore, StoreError};
 use crate::state::StatePaths;
-use recto_agent::commands::Record;
-use recto_agent::commands::record::SessionSleep;
+use recto_agent::commands::record::Records;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
 use recto_agent::{
     AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
 };
+
+mod own_record;
+#[cfg(test)]
+mod route_tests;
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -58,6 +61,8 @@ pub struct SessionHost<L = DrawableLoader> {
     saving: std::sync::OnceLock<Arc<dyn SaveSupport + Send>>,
     /// The person's passwords, for their own Find: set by the app, and none for a session with no window.
     find_keys: std::sync::OnceLock<recto_agent::find::KeyLookup>,
+    /// The app's state record, which it keeps as it goes, for the record's commands. Set once, by the app.
+    records: std::sync::OnceLock<Arc<dyn Records + Send + Sync>>,
 }
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
@@ -81,6 +86,9 @@ struct Hosted<'a, L> {
     saving: Option<&'a (dyn SaveSupport + Send)>,
     generator: Option<&'a Generator>,
     finder: &'a Finder,
+    /// The app's record, or this session's own, or none.
+    records: Option<&'a (dyn Records + Send + Sync)>,
+    own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
@@ -99,6 +107,13 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn finding(&self) -> Option<&dyn recto_agent::find::Finding> {
         Some(self.finder as &dyn recto_agent::find::Finding)
+    }
+    fn records(&self) -> Result<&dyn Records, AgentError> {
+        match (self.records, &self.own_record) {
+            (Some(records), _) => Ok(records as &dyn Records),
+            (None, Some(own)) => Ok(own as &dyn Records),
+            (None, None) => Err(recto_agent::commands::record::no_record()),
+        }
     }
 }
 
@@ -119,6 +134,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             record: None,
             saving: std::sync::OnceLock::new(),
             find_keys: std::sync::OnceLock::new(),
+            records: std::sync::OnceLock::new(),
         }
     }
 
@@ -185,6 +201,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.saving.set(support);
     }
 
+    /// The state record whoever holds this session keeps, for the record's commands. The first one set stays, and it's used in place of one of this session's own.
+    pub fn set_records(&self, records: Arc<dyn Records + Send + Sync>) {
+        let _ = self.records.set(records);
+    }
+
     /// With generated contents made on demand, kept in the state folder's contents folder.
     #[must_use]
     pub fn with_generating(mut self, paths: &StatePaths) -> Self {
@@ -211,6 +232,8 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             generator: self.generator.as_ref(),
             finder: &self.finder,
             saving: self.saving.get().map(|saving| &**saving),
+            records: self.records.get().map(|records| &**records),
+            own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
     }
 
@@ -236,87 +259,6 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 }
 
-impl<L: DocLoader + Clone> SessionHost<L> {
-    /// The record's commands, for a session with no window: nothing writes until it's told to, and each save is the whole of it. The app has its own, as it keeps its record as it goes.
-    fn run_record_command(&self, level: Level, command: &Command) -> Option<Result<Value, AgentError>> {
-        // Routed by the command's own declaration, the one list of where each is answered.
-        if command.route() != recto_agent::Runs::Record {
-            return None;
-        }
-        // The level was checked by the server against the row. Checked here too, as `execute` would.
-        if !recto_agent::allowed(level, command.access()) {
-            return Some(Err(recto_agent::refusal(
-                recto_agent::table::display_name(command.tag()),
-                level,
-                command.access(),
-            )));
-        }
-        let Some(store) = &self.record else { return Some(Err(no_record())) };
-        Some(match command {
-            Command::Record(Record::SessionShow(_)) => Ok(self.with_session(|session| recto_agent::session_show_json(session, level, kept_json(store, None)))),
-            Command::Record(Record::SessionCheck(_)) => Ok(json!({ "safe": true, "busy": [], "seconds_since_input": null })),
-            Command::Record(Record::SessionSleep(SessionSleep { tab })) => self.sleep_here(tab),
-            Command::Record(Record::SessionSave(_)) => self.save_to(store),
-            _ => self.restore_from(store, level),
-        })
-    }
-
-    /// A session with no window has no pictures for a tab, and keeps no journals as it goes, so all it can let go of is what it's read.
-    fn sleep_here(&self, tab: &str) -> Result<Value, AgentError> {
-        self.with_session(|session| {
-            let id = recto_agent::select_tab(session, tab)?;
-            let dormant = session.go_dormant(id);
-            Ok(json!({ "tab": id.0, "dormant": dormant, "list_asleep": session.list_is_asleep(id) }))
-        })
-    }
-
-    fn save_to(&self, store: &RecordStore) -> Result<Value, AgentError> {
-        let started = std::time::Instant::now();
-        let (record, checkpoints, lists, edited, retired) = self.with_session(|session| {
-            // What's been discarded goes, or it would come back at the next restore.
-            let retired = session.journal_work().retired;
-            let checkpoints = session.checkpoints();
-            let lists = session.lists_by_journal();
-            let edited = session.tabs().iter().filter(|tab| session.page_edits(tab.id).is_some()).count();
-            (session.to_record(), checkpoints, lists, edited, retired)
-        });
-        for name in &retired {
-            store.remove_journal(name);
-        }
-        for (name, header, list) in &checkpoints {
-            store.write_checkpoint(name, header, list).map_err(store_error)?;
-        }
-        store.next_write_whole();
-        store
-            .write_record(&record, &recto_session::record::PlaceDelta::default(), true)
-            .map_err(store_error)?;
-        store.verify(&record, &lists).map_err(store_error)?;
-        let (record_bytes, journal_bytes) = store.sizes();
-        Ok(
-            json!({ "saved": true, "tabs": record.tabs.len(), "edited_tabs": edited, "record_bytes": record_bytes, "journal_bytes": journal_bytes, "wrote_bytes": store.wrote_bytes(), "total_ms": started.elapsed().as_millis() as u64 }),
-        )
-    }
-
-    fn restore_from(&self, store: &RecordStore, level: Level) -> Result<Value, AgentError> {
-        if level < Level::Full && self.with_session(|session| session.holds_owner_edits()) {
-            return Err(recto_agent::restore_would_lose_owners_edits());
-        }
-        let loaded = store.load();
-        let notice = notice_for(&loaded).and_then(recto_session::record::notices::words);
-        let Loaded::Restored(restored) = loaded else {
-            return Ok(json!({ "restored": false, "count": self.tabs.load(Ordering::Relaxed), "notice": notice }));
-        };
-        self.with_session(|session| {
-            session
-                .restore(&restored.record, restored.journals)
-                .map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
-            // The active tab's facts are what a session with no window would otherwise have to find out at its next look.
-            session.wake_active();
-            Ok(json!({ "restored": true, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "notice": notice }))
-        })
-    }
-}
-
 /// What's known about a record, for `session show`. Numbers, and Rust's own words.
 pub fn kept_json(store: &RecordStore, notice: Option<&str>) -> Value {
     let (record_bytes, journal_bytes) = store.sizes();
@@ -329,15 +271,8 @@ pub fn store_error(error: StoreError) -> AgentError {
     AgentError::new(error.code, error.message, exit::FAILED)
 }
 
-fn no_record() -> AgentError {
-    AgentError::new("no_record", "This session doesn't keep a state record.", exit::FAILED)
-}
-
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        if let Some(answer) = self.run_record_command(level, command) {
-            return answer;
-        }
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
         let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))

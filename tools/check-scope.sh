@@ -12,7 +12,7 @@
 # selective `--full`, because a change in one crate breaks the list in another (recto-session's edit showed up in recto-agent's table, 2 minutes into a
 # full check). `test(~x)` is a substring of the test's name (its module path included), and `test(~module::)` is a whole module's tests.
 # A new guard goes here, with the failure it catches in its own doc comment.
-GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does)'
+GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does) | test(~every_route_answers_as_declared_on_a_session_with_no_record) | test(~the_server_answers_only_server_commands_and_sends_on_the_rest) | test(~every_command_reaches_its_own_handler_through_the_app_at_every_level) | test(~only_looks_the_record_save_and_qa_go_past_an_update)'
 
 # --- Tiers of the tests that launch the app --------------------------------------------------------------------------------------------------------------
 # Every test in these binaries (recto-cli's) starts the real app in a quiet run. APP_BINARIES is all of them: `scope_names_missing` fails when a test file
@@ -137,7 +137,10 @@ select_scope() {
     fi
   fi
   [ -n "$base" ] || base=HEAD
-  files=$( { git diff --name-only "$base" 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | grep -vE '^docs/|\.md$' || true)
+  # Not the ratchet's baseline: it is numbers, not a tool, and the ratchet has already run against it, first, in this same check. Counting it as a tool ran
+  # the tools' own tests (183 to 267 s on CI) on every push that only locked a number in, and made a branch's check run everything (2026-11-13: every
+  # one of an evening's eight pushes).
+  files=$( { git diff --name-only "$base" 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | grep -vE '^docs/|\.md$|^tools/ratchet/baseline\.txt$' || true)
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue

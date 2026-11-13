@@ -143,8 +143,6 @@ pub fn render(tag: &str, data: &Value) -> String {
     }
     match tag {
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
-        "update_status" | "update_check" => update_status(data),
-        "update_install" | "update_dev_builds" | "settings" => text(&data["words"]).to_string(),
         "permission_set" => format!("Agent access is now {} (was {}).", text(&data["label"]), text(&data["was_label"])),
         "serve" => {
             let word = if data["already"] == true { "already running" } else { "running" };
@@ -208,27 +206,6 @@ pub(crate) fn contents(data: &Value) -> String {
         let _ = write!(out, "\n{note}");
     }
     out.trim_end().to_string()
-}
-
-/// What `update status` says to a person.
-fn update_status(data: &Value) -> String {
-    let mut out = text(&data["words"]).to_string();
-    let _ = write!(out, "\nAutomatic updates: {}.", if data["auto_update"] == true { "on" } else { "off" });
-    let _ = write!(out, "\nDevelopment builds: {}.", if data["dev_builds"] == true { "allowed" } else { "off" });
-    if let Some(waiting) = data["build_waiting"].as_str() {
-        let _ = write!(out, "\nWaiting to go in: development build {waiting}.");
-    }
-    if let Some(kept) = data["kept"].as_str() {
-        let _ = write!(out, "\nKept to go back to: {kept}.");
-    }
-    if let (Some(from), Some(to), Some(gap)) = (
-        data["last_update"]["from"].as_str(),
-        data["last_update"]["to"].as_str(),
-        data["last_update"]["gap_ms"].as_u64(),
-    ) {
-        let _ = write!(out, "\nLast update: {from} to {to}, {gap} ms from quit to first frame.");
-    }
-    out
 }
 
 pub(crate) fn sidebar(data: &Value) -> String {
