@@ -1410,13 +1410,10 @@ mod tests {
             page: Some(2),
         });
         // A ⌘-click on a cold tab's row, and two cold tabs put side by side, each read in turn (R2.3, C5e).
-        let toggle_cold = Command::from(crate::commands::compare::Compare {
-            toggle: Some("#1".into()),
-            ..Default::default()
-        });
-        let compare_cold = Command::from(crate::commands::compare::Compare {
-            tabs: Some("#1,#2".into()),
-            ..Default::default()
+        let toggle_cold = Command::from(crate::commands::compare::Compare::Toggle("#1".into()));
+        let compare_cold = Command::from(crate::commands::compare::Compare::Set {
+            tabs: vec!["#1".into(), "#2".into()],
+            sync: None,
         });
         for command in [&tap, &open_new, &open_cold, &toggle_cold, &compare_cold] {
             let mut session = with_tabs(&names);
@@ -1693,20 +1690,8 @@ mod tests {
             Command::from(crate::commands::tabs::RecentClear {}),
             Command::from(crate::commands::tabs::Close { tab: tab() }),
             Command::from(crate::commands::measure::Budget {}),
-            Command::from(crate::commands::compare::Compare {
-                tabs: None,
-                sync: None,
-                off: false,
-                toggle: None,
-                reading: None,
-            }),
-            Command::from(crate::commands::compare::Compare {
-                tabs: None,
-                sync: None,
-                off: true,
-                toggle: None,
-                reading: None,
-            }),
+            Command::from(crate::commands::compare::Compare::Look),
+            Command::from(crate::commands::compare::Compare::Off),
             Command::from(crate::commands::export::Render {
                 tab: tab(),
                 page: 1,
@@ -2053,23 +2038,27 @@ mod tests {
     #[test]
     fn compare_puts_tabs_side_by_side_and_says_so() {
         let mut session = with_tabs(&["a", "b", "c", "d"]);
+        // Made from its line, as an agent's is: what can't go together is refused as it's read (R2.5).
         let compare = |tabs: Option<&str>, sync: Option<&str>, off: bool| {
-            Command::from(crate::commands::compare::Compare {
+            crate::commands::compare::Compare::try_from(crate::commands::compare::line::Compare {
                 tabs: tabs.map(str::to_string),
                 sync: sync.map(str::to_string),
                 off,
                 toggle: None,
                 reading: None,
             })
+            .map(Command::from)
         };
-        let asked = run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap();
+        let asked = run(&mut session, Level::ReadOnly, &compare(None, None, false).unwrap()).unwrap();
         assert_eq!(asked["comparing"], false);
         assert_eq!(
-            run(&mut session, Level::ReadOnly, &compare(Some("#1,#2"), None, false)).unwrap_err().exit,
+            run(&mut session, Level::ReadOnly, &compare(Some("#1,#2"), None, false).unwrap())
+                .unwrap_err()
+                .exit,
             exit::PERMISSION,
             "changing it is Control"
         );
-        let two = run(&mut session, Level::Control, &compare(Some("#1, #3"), None, false)).unwrap();
+        let two = run(&mut session, Level::Control, &compare(Some("#1, #3"), None, false).unwrap()).unwrap();
         assert_eq!(two["comparing"], true);
         assert_eq!(
             two["panes"]
@@ -2081,43 +2070,43 @@ mod tests {
             vec![1, 3]
         );
         assert_eq!(two["sync"], "off", "separate is the default");
-        let synced = run(&mut session, Level::Control, &compare(None, Some("on"), false)).unwrap();
+        let synced = run(&mut session, Level::Control, &compare(None, Some("on"), false).unwrap()).unwrap();
         assert_eq!(synced["sync"], "on");
         assert_eq!(synced["sync_from"], json!([1, 1]));
         assert_eq!(
-            run(&mut session, Level::Control, &compare(Some("#1,#2,#3,#4"), None, false)).unwrap_err().code,
+            run(&mut session, Level::Control, &compare(Some("#1,#2,#3,#4"), None, false).unwrap())
+                .unwrap_err()
+                .code,
             "too_many_panes"
         );
         assert_eq!(
-            run(&mut session, Level::Control, &compare(Some("#1"), None, false)).unwrap_err().code,
+            run(&mut session, Level::Control, &compare(Some("#1"), None, false).unwrap()).unwrap_err().code,
             "too_few_panes"
         );
         assert_eq!(
-            run(&mut session, Level::Control, &compare(Some("#1,#1"), None, false)).unwrap_err().code,
+            run(&mut session, Level::Control, &compare(Some("#1,#1"), None, false).unwrap())
+                .unwrap_err()
+                .code,
             "same_tab_twice"
         );
         assert_eq!(
-            run(&mut session, Level::Control, &compare(Some("#1,#9"), None, false)).unwrap_err().code,
+            run(&mut session, Level::Control, &compare(Some("#1,#9"), None, false).unwrap())
+                .unwrap_err()
+                .code,
             "no_such_tab"
         );
-        assert_eq!(
-            run(&mut session, Level::Control, &compare(None, Some("maybe"), false)).unwrap_err().code,
-            "usage"
-        );
-        assert_eq!(
-            run(&mut session, Level::Control, &compare(Some("#1,#2"), None, true)).unwrap_err().code,
-            "usage"
-        );
-        let ended = run(&mut session, Level::Control, &compare(None, None, true)).unwrap();
+        assert_eq!(compare(None, Some("maybe"), false).unwrap_err().code, "usage");
+        assert_eq!(compare(Some("#1,#2"), None, true).unwrap_err().code, "usage");
+        let ended = run(&mut session, Level::Control, &compare(None, None, true).unwrap()).unwrap();
         assert_eq!(ended["comparing"], false);
         assert_eq!(
-            run(&mut session, Level::Control, &compare(None, Some("on"), false)).unwrap_err().code,
+            run(&mut session, Level::Control, &compare(None, Some("on"), false).unwrap()).unwrap_err().code,
             "not_comparing"
         );
-        run(&mut session, Level::Control, &compare(Some("#2,#4"), None, false)).unwrap();
+        run(&mut session, Level::Control, &compare(Some("#2,#4"), None, false).unwrap()).unwrap();
         run(&mut session, Level::Control, &Command::from(crate::commands::tabs::Tap { tab: "#4".into() })).unwrap();
         assert_eq!(
-            run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap()["comparing"],
+            run(&mut session, Level::ReadOnly, &compare(None, None, false).unwrap()).unwrap()["comparing"],
             false,
             "a tap goes back to one"
         );
@@ -3596,26 +3585,14 @@ mod protected_tests {
                     path: "/d/locked.pdf".into(),
                     page: None,
                 }),
-                Command::from(crate::commands::compare::Compare {
-                    tabs: Some("#1,#2".into()),
+                Command::from(crate::commands::compare::Compare::Set {
+                    tabs: vec!["#1".into(), "#2".into()],
                     sync: None,
-                    off: false,
-                    toggle: None,
-                    reading: None,
                 }),
                 // The protected tab's pane read, and it out and in again, as the window's own moves are (R2.3, C5e): said as protected, as `--tabs` is.
-                Command::from(crate::commands::compare::Compare {
-                    reading: Some("#1".into()),
-                    ..Default::default()
-                }),
-                Command::from(crate::commands::compare::Compare {
-                    toggle: Some("#1".into()),
-                    ..Default::default()
-                }),
-                Command::from(crate::commands::compare::Compare {
-                    toggle: Some("#1".into()),
-                    ..Default::default()
-                }),
+                Command::from(crate::commands::compare::Compare::Reading("#1".into())),
+                Command::from(crate::commands::compare::Compare::Toggle("#1".into())),
+                Command::from(crate::commands::compare::Compare::Toggle("#1".into())),
             ];
             for command in &commands {
                 match run(&mut session, level, command) {
@@ -3656,17 +3633,7 @@ mod protected_tests {
                     }
                 }
             }
-            let _ = run(
-                &mut session,
-                Level::Full,
-                &Command::from(crate::commands::compare::Compare {
-                    tabs: None,
-                    sync: None,
-                    off: true,
-                    toggle: None,
-                    reading: None,
-                }),
-            );
+            let _ = run(&mut session, Level::Full, &Command::from(crate::commands::compare::Compare::Off));
             if session.tabs().active() != Some(id) {
                 session.tap(id).unwrap();
             }

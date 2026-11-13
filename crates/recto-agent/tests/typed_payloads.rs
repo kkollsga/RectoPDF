@@ -5,6 +5,7 @@
 //! command stop being one action); a row's words drift from the type's, so the CLI takes a word the type refuses, or refuses one it takes; a malformed
 //! request is refused differently by route or level, or its refusal tells something of the session.
 
+use recto_agent::commands::compare::Compare;
 use recto_agent::commands::contents::{ContentsShow, Which};
 use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::updates::{Settings, UpdateDevBuilds};
@@ -27,6 +28,20 @@ fn every_typed_command() -> Vec<Command> {
     for set in [None].into_iter().chain(OnOff::ALL.map(Some)) {
         all.push(UpdateDevBuilds { set }.into());
         all.push(Settings { auto_update: set }.into());
+    }
+    let tabs = |list: &[&str]| list.iter().map(|tab| (*tab).to_string()).collect::<Vec<String>>();
+    all.extend([Compare::Look, Compare::Off].map(Command::from));
+    for sync in [None].into_iter().chain(OnOff::ALL.map(Some)) {
+        for list in [&["#1", "#2"][..], &["#1", "report", "#3"]] {
+            all.push(Compare::Set { tabs: tabs(list), sync }.into());
+        }
+    }
+    for sync in OnOff::ALL {
+        all.push(Compare::Sync(sync).into());
+    }
+    for tab in ["#2", "report", "active"] {
+        all.push(Compare::Toggle(tab.into()).into());
+        all.push(Compare::Reading(tab.into()).into());
     }
     let maybe = |words: &[Option<&str>]| words.iter().map(|word| word.map(str::to_string)).collect::<Vec<_>>();
     for paper in [None].into_iter().chain(PaperChoice::ALL.map(Some)) {
@@ -63,6 +78,7 @@ fn same(a: &Command, b: &Command) -> bool {
         (Command::Updates(Updates::UpdateDevBuilds(a)), Command::Updates(Updates::UpdateDevBuilds(b))) => a == b,
         (Command::Updates(Updates::Settings(a)), Command::Updates(Updates::Settings(b))) => a == b,
         (Command::Move(Move::View(a)), Command::Move(Move::View(b))) => a == b,
+        (Command::Move(Move::Compare(a)), Command::Move(Move::Compare(b))) => a == b,
         _ => false,
     }
 }
@@ -101,6 +117,7 @@ fn a_rows_words_are_its_types_words() {
     assert_eq!(row_words("update dev-builds", "set"), on_off);
     assert_eq!(row_words("settings", "auto_update"), on_off);
     assert_eq!(row_words("contents show", "which"), Which::ALL.map(Which::word).to_vec());
+    assert_eq!(row_words("compare", "sync"), on_off);
     assert_eq!(row_words("view", "paper"), PaperChoice::ALL.map(PaperChoice::word).to_vec());
     assert_eq!(row_words("view", "sidebar"), Shown::ALL.map(Shown::word).to_vec());
     assert_eq!(row_words("view", "agent_icon"), Shown::ALL.map(Shown::word).to_vec());
@@ -122,6 +139,10 @@ const MALFORMED: &[(&str, &str)] = &[
     (r##"{"cmd":"view","layout":"three-up","tab":"#1"}"##, "three-up"),
     // A good layout with a bad paper: refused whole, so nothing can be laid out first.
     (r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#, "purple"),
+    (r#"{"cmd":"compare","sync":"maybe"}"#, "maybe"),
+    (r##"{"cmd":"compare","off":true,"toggle":"#2"}"##, "--off"),
+    (r##"{"cmd":"compare","tabs":"#1,#2","reading":"#2"}"##, "--reading"),
+    (r##"{"cmd":"compare","toggle":"#2","sync":"on"}"##, "--toggle"),
 ];
 
 /// Failure (owner's decision on R2.5, D2 b): a malformed request is refused one way at one level and another at the next, or for the person and an agent,
@@ -151,6 +172,7 @@ fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
         &["settings", "--auto-update", "later"],
         &["view", "--paper", "purple"],
         &["view", "--layout", "three-up"],
+        &["compare", "--sync", "maybe"],
     ] {
         let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
         assert_eq!(table::parse_cli(&words).expect_err("refused").code, "usage", "{words:?}");

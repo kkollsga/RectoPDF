@@ -286,6 +286,7 @@ family! {
         RecentClear(tabs::RecentClear),
         Close(tabs::Close),
         Tap(tabs::Tap),
+        #[line(compare::line::Compare)]
         Compare(compare::Compare),
         ContentsFold(contents::ContentsFold),
         #[line(contents::line::ContentsShow)]

@@ -64,11 +64,9 @@ find level=control tab=None draws=false reads_pages=false route=session log={"cl
 find level=control tab=None draws=false reads_pages=false route=session log={"close":false,"hit":null,"jump":false,"next":false,"open":false,"previous":false,"query":false}
 find level=control tab=None draws=false reads_pages=false route=session log={"close":false,"hit":3,"jump":true,"next":true,"open":false,"previous":true,"query":true}
 compare level=read_only tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null}
-compare level=control tab=None draws=false reads_pages=false route=session log={"off":true,"sync":"on"}
 compare level=read_only tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null}
 compare level=read_only tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null}
 compare level=read_only tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null}
-compare level=control tab=None draws=false reads_pages=false route=session log={"off":true,"sync":"on"}
 compare level=control tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null,"toggle":"#2"}
 compare level=control tab=None draws=false reads_pages=false route=session log={"off":false,"reading":"#2","sync":null}
 compare level=control tab=None draws=false reads_pages=false route=session log={"off":false,"sync":null,"toggle":"#2"}

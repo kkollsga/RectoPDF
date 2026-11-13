@@ -72,12 +72,9 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     let both = format!("#{},#{}", a.0, b.0);
     let events = events_of(
         &mut session,
-        Command::from(crate::commands::compare::Compare {
-            tabs: Some(both.clone()),
+        Command::from(crate::commands::compare::Compare::Set {
+            tabs: both.clone().split(',').map(str::to_string).collect(),
             sync: None,
-            off: false,
-            toggle: None,
-            reading: None,
         }),
     );
     assert_eq!(
@@ -93,12 +90,9 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     assert!(
         events_of(
             &mut session,
-            Command::from(crate::commands::compare::Compare {
-                tabs: Some(both),
-                sync: None,
-                off: false,
-                toggle: None,
-                reading: None,
+            Command::from(crate::commands::compare::Compare::Set {
+                tabs: both.split(',').map(str::to_string).collect(),
+                sync: None
             })
         )
         .is_empty()
@@ -106,13 +100,7 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     assert!(
         events_of(
             &mut session,
-            Command::from(crate::commands::compare::Compare {
-                tabs: None,
-                sync: Some("off".into()),
-                off: false,
-                toggle: None,
-                reading: None,
-            })
+            Command::from(crate::commands::compare::Compare::Sync(crate::commands::words::OnOff::Off))
         )
         .is_empty()
     );
@@ -120,13 +108,7 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     // On: said, with the tabs; and the app's toggle says it from the same function.
     let events = events_of(
         &mut session,
-        Command::from(crate::commands::compare::Compare {
-            tabs: None,
-            sync: Some("on".into()),
-            off: false,
-            toggle: None,
-            reading: None,
-        }),
+        Command::from(crate::commands::compare::Compare::Sync(crate::commands::words::OnOff::On)),
     );
     assert_eq!(
         events,

@@ -1427,7 +1427,16 @@ mod tests {
             if let Some(field) = stdin_secret_field(spec) {
                 parsed.fields.insert(field.into(), json!("from stdin"));
             }
-            parse(&parsed.wire()).unwrap_or_else(|_| panic!("{} sends a field its command doesn't know: {}", spec.name, parsed.wire()));
+            // A field it doesn't know makes the line no command; a typed payload may still refuse every flag at once as a combination it can't be (R2.5).
+            if let Err(error) = parse(&parsed.wire()) {
+                assert_ne!(
+                    error.code,
+                    "bad_command",
+                    "{} sends a field its command doesn't know: {}",
+                    spec.name,
+                    parsed.wire()
+                );
+            }
         }
     }
 
