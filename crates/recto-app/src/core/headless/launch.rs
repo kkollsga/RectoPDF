@@ -104,3 +104,37 @@ fn a_late_state_and_a_late_remake_come_in_the_order_theyre_let_through() {
     assert_eq!(app.tabs().iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["late"]);
     drop(app.quit());
 }
+
+/// Failure (CI, main at faa9180: "⌘F gives the field the keyboard"; the slow stage's `what_is_done_before_a_late_state_comes_in_isnt_lost`): ⌘F and typing
+/// in the moment a window was up without the state, read late, were taken by that window and lost when it was made again from the state. What a person does
+/// waits for the window made from the state: the state's read and the remake held, the state let in, and ⌘F is neither enabled nor taken, and Find stays as the
+/// state has it; the remake let through, it's enabled and taken, Find opens with what's typed, and the place is the state's. (That
+/// the field then has the keyboard is the window's, held by the app test's normal-tier run.)
+#[test]
+fn what_is_done_before_the_window_is_made_from_a_late_state_waits_for_it() {
+    use crate::queue::CoreCall;
+    let disk = Disk::new();
+    let doc = disk.pdf("alpha.pdf", 20);
+    let app = disk.start();
+    app.open(&doc);
+    app.agent(recto_agent::Level::Control, r#"{"cmd":"goto","page":9}"#).expect("goto");
+    app.settle();
+    let (_, disk) = app.quit();
+    let app = disk.builder().hold(&[Seam::State, Seam::Remake]).start();
+    app.let_state_in();
+    assert!(app.core().state_read() && !app.core().life.shown_with_state(), "the state's in, and the window not yet made from it");
+    assert!(!app.core().menu_item_enabled("find.open".into()), "⌘F isn't enabled on the window that's to go");
+    app.core().perform("find.open".into());
+    app.settle();
+    assert_eq!(app.session_json()["find"]["open"], false, "nor taken there: {}", app.session_json()["find"]);
+    app.let_through(Seam::Remake, 1);
+    app.settle();
+    assert!(app.core().menu_item_enabled("find.open".into()), "on the window made from the state, it is");
+    app.core().perform("find.open".into());
+    app.send(CoreCall::Find(crate::find::FindCall::Typed("words".into())));
+    app.settle();
+    let session = app.session_json();
+    assert_eq!(session["find"]["open"], true, "{}", session["find"]);
+    assert_eq!(session["find"]["draft"], "words", "what was typed: {}", session["find"]);
+    assert_eq!(session["tabs"][0]["page"], 8, "and the place from the state");
+}
