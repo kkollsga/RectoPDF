@@ -913,3 +913,110 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     );
     assert!((rect.x - 100.0).abs() < 0.5 && (rect.width - 200.0).abs() < 0.5, "{rect:?}");
 }
+
+/// Tab 1 drawn at its top, moved far down with nothing drawn there and left for tab 2: a `goto` or a quick scroll and a change of tab before the renderer answers. Returns the engine with drawing let go again, and tab 1's pages owed a picture there.
+fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf) -> Vec<u32> {
+    let map = |file: &TempPdf| PageMap {
+        files: vec![file.0.clone()],
+        slots: None,
+        own: None,
+        turns: None,
+        expected: Vec::new(),
+        follows: None,
+    };
+    pump(engine, HANG);
+    assert!(settles(engine), "{}", engine.report().0);
+    engine.hold_drawing(true);
+    engine.set_viewport(view(30_000.0));
+    engine.activate(2, 3, 0, map(second), &[1], None, recto_reader::layout::Spread::Single);
+    engine.set_viewport(view(0.0));
+    let left = engine.sleep_material(1, None).expect("tab 1 is held off screen");
+    assert!(!left.in_view.is_empty() && !left.in_view.contains(&0), "{:?}", left.in_view);
+    assert!(
+        left.pictures.iter().all(|picture| !left.in_view.contains(&picture.page)),
+        "nothing's drawn at its place yet: a sleep file now would wake it bare"
+    );
+    engine.hold_drawing(false);
+    left.in_view
+}
+
+/// Failure (owner, 2026-11-13: "I think it makes sense, and extra draw is not costly right?"): a tab left at a place it has no picture of sleeps without one and wakes to bare paper until the renderer catches up. On a real worker: once the tab showing is drawn, the tab left has a picture of every page at its place, at the preview's scale, in what its sleep file takes, and its worker's still the one it had.
+#[test]
+fn a_tab_left_at_a_place_not_drawn_sleeps_with_a_picture_of_it() {
+    let (first, second) = (document(40), document(3));
+    let (engine, _events) = started(&first, 40);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let material = engine.sleep_material(1, None).expect("tab 1 is held off screen");
+    let pictured: Vec<u32> = material
+        .pictures
+        .iter()
+        .map(|picture| picture.page)
+        .filter(|page| owed.contains(page))
+        .collect();
+    assert_eq!(pictured, owed, "{}", engine.report().0["sleep_draws"]);
+    assert!(
+        material
+            .pictures
+            .iter()
+            .filter(|picture| owed.contains(&picture.page))
+            .all(|picture| picture.bgra.iter().any(|byte| *byte < 0x80)),
+        "with ink in them: really drawn"
+    );
+    let draws = engine.report().0["sleep_draws"].clone();
+    assert_eq!(draws["ended"]["done"], 1, "{draws}");
+    assert_eq!(draws["ended"]["no_worker"], 0, "{draws}");
+}
+
+/// Failure: a tab off screen whose worker has left (after 30 s with nothing to do, as a warm tab's does) gets one started again to draw its place, a process and its memory for a picture. Nothing's drawn and no worker is started: the asking ends.
+#[test]
+fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
+    let (first, second) = (document(40), document(3));
+    let events = Arc::new(Events::default());
+    let policy = recto_render_service::Policy {
+        idle_exit: Duration::from_millis(300),
+        ..recto_render_service::Policy::default()
+    };
+    let engine = Engine::new(
+        EngineConfig {
+            service: None,
+            policy: Some(policy),
+            keys: None,
+        },
+        events,
+    );
+    engine.set_viewport(view(0.0));
+    engine.activate(
+        1,
+        40,
+        0,
+        PageMap {
+            files: vec![first.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    engine.set_viewport(view(0.0));
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let deadline = Instant::now() + HANG;
+    // The list of workers is said again only when the engine next turns, so it's whether the process is still there that's looked at.
+    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert_eq!(engine.workers_footprint().0, 0, "tab 1's worker left by itself");
+    left_at_a_place_not_drawn(&engine, &first, &second);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let draws = engine.report().0["sleep_draws"].clone();
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+    assert_eq!(draws["pictures"], 0, "{draws}");
+    assert!(engine.worker_pids().len() <= 1, "tab 2's at most: {:?}", engine.worker_pids());
+}
