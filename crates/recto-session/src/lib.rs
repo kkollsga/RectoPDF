@@ -13,6 +13,7 @@ pub mod sleep;
 pub mod trail;
 
 mod contents;
+mod dirs;
 mod editing;
 mod files;
 mod journal;
@@ -772,8 +773,8 @@ pub struct Session<L = DiskLoader> {
     next_id: u32,
     /// Most recently used first, at most [`MAX_WARM`].
     warm: VecDeque<(TabId, Arc<Toc>)>,
-    dirs: Vec<Box<Path>>,
-    dir_ids: HashMap<Box<Path>, u32>,
+    /// The folders tabs' files are in.
+    dirs: dirs::Dirs,
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
     /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.

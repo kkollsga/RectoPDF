@@ -13,7 +13,6 @@ impl<L: DocLoader> Session<L> {
             next_id,
             warm: _,
             dirs: _,
-            dir_ids: _,
             edits,
             wake_failed: _,
             asleep,
@@ -184,7 +183,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
-            let dir = self.intern_dir(path.parent().unwrap_or(Path::new("")));
+            let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();

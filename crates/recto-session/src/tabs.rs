@@ -12,8 +12,7 @@ impl<L: DocLoader> Session<L> {
             next_id: 1,
             warm: VecDeque::new(),
             woken: Vec::new(),
-            dirs: Vec::new(),
-            dir_ids: HashMap::new(),
+            dirs: dirs::Dirs::default(),
             edits: HashMap::new(),
             wake_failed: Vec::new(),
             asleep: HashMap::new(),
@@ -64,7 +63,7 @@ impl<L: DocLoader> Session<L> {
     /// The tab's full path, rebuilt from its interned folder and name.
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
         let tab = self.tab(id)?;
-        Some(self.dirs.get(tab.dir as usize)?.join(&*tab.file_name))
+        Some(self.dirs.get(tab.dir)?.join(&*tab.file_name))
     }
 
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
@@ -174,7 +173,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The tab already showing this file, if there is one.
     pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
-        let dir = *self.dir_ids.get(path.parent().unwrap_or(Path::new("")))?;
+        let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
         self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
     }
@@ -192,7 +191,7 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
         }
-        let dir = self.intern_dir(dir_path);
+        let dir = self.dirs.intern(dir_path);
         if self.next_id >= MAX_TAB_ID {
             return Err(SessionError::TooManyTabs);
         }
@@ -312,7 +311,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
-        let dir = self.intern_dir(path.parent().unwrap_or(Path::new("")));
+        let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
         if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
             tab.dir = dir;
@@ -390,15 +389,5 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
         self.tabs.iter_mut().find(|t| t.id == id)
-    }
-
-    pub(crate) fn intern_dir(&mut self, dir: &Path) -> u32 {
-        if let Some(&id) = self.dir_ids.get(dir) {
-            return id;
-        }
-        let id = u32::try_from(self.dirs.len()).unwrap_or(u32::MAX);
-        self.dirs.push(dir.into());
-        self.dir_ids.insert(dir.into(), id);
-        id
     }
 }
