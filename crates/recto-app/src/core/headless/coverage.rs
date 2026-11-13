@@ -296,7 +296,7 @@ fn every_control_is_a_command_or_the_hosts_with_a_reason() {
         match (sent.is_empty(), why) {
             (true, None) => wrong.push(format!("{name} sends no command and isn't the host's")),
             (false, Some(why)) => wrong.push(format!("{name} is said to be the host's ({why}) and sends {sent:?}")),
-            (_, Some(why)) if why.is_empty() => wrong.push(format!("{name} needs its reason")),
+            (_, Some("")) => wrong.push(format!("{name} needs its reason")),
             _ => {}
         }
     }

@@ -19,16 +19,19 @@ enum Showing {
     Comparing,
     /// Find open with hits.
     FindOpen,
+    /// Find closed after something was found, which ⌘G finds again.
+    FindClosed,
     /// The owner's unsaved edits, one of them undone, and a step back made, so Undo, Redo, Forward, Save and Clear History can be chosen.
     Edited,
 }
 
-const GRID: [Showing; 6] = [
+const GRID: [Showing; 7] = [
     Showing::Reading,
     Showing::SidebarHidden,
     Showing::EditMode,
     Showing::Comparing,
     Showing::FindOpen,
+    Showing::FindClosed,
     Showing::Edited,
 ];
 
@@ -52,6 +55,11 @@ fn set_up(app: &HeadlessApp, showing: Showing) {
         Showing::EditMode => vec![r#"{"cmd":"edit_mode","set":"on"}"#],
         Showing::Comparing => vec![r##"{"cmd":"compare","toggle":"#1"}"##],
         Showing::FindOpen => vec![r#"{"cmd":"find","open":true}"#, r#"{"cmd":"find","query":"page"}"#],
+        Showing::FindClosed => vec![
+            r#"{"cmd":"find","open":true}"#,
+            r#"{"cmd":"find","query":"page"}"#,
+            r#"{"cmd":"find","close":true}"#,
+        ],
         Showing::Edited => vec![
             r#"{"cmd":"page_rotate","tab":"active","pages":"1","degrees":90}"#,
             r#"{"cmd":"page_rotate","tab":"active","pages":"2","degrees":90}"#,
@@ -83,16 +91,82 @@ fn palette_run(title: &str) -> String {
     serde_json::json!({ "cmd": "palette", "query": title, "run": true }).to_string()
 }
 
+/// **Where the actor rules decide that the two differ,** each stated once in its command and named here, so the test asserts the exception itself and it
+/// can't grow quietly (coordinator's rulings of 2026-11-13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActorRule {
+    /// Find's at-the-window rule (`at_the_window` in the `find` command): the person's ⌘G or ⇧⌘G with Find closed opens it with what was typed last; an
+    /// agent's is refused `nothing_found`, as there's no hit to go to.
+    FindStepWithFindClosed,
+    /// The same rule: the person's ⌘F shows the sidebar Find is in (A6); an agent's opens Find and leaves the sidebar as it is.
+    FindOpenWithTheSidebarHidden,
+    /// The close rule (`refuse_close_that_loses_something`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
+    CloseThatLosesEdits,
+}
+
+/// The actor rule that decides `id` on `app` as it is now, if one does.
+fn actor_rule(app: &HeadlessApp, id: &str) -> Option<ActorRule> {
+    let reader = app.reader();
+    let find_open = app.session_json()["find"]["open"] == true;
+    match id {
+        "find.next" | "find.previous" if !find_open => Some(ActorRule::FindStepWithFindClosed),
+        "find.open" if reader.sidebar_hidden => Some(ActorRule::FindOpenWithTheSidebarHidden),
+        "file.close" if reader.edited => Some(ActorRule::CloseThatLosesEdits),
+        _ => None,
+    }
+}
+
 /// How the id run by each actor differed with `showing`, said, or nothing.
 fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
     let twins = twins(showing);
-    twins.person.act(UiAction::Menu { id: id.into() });
+    let rule = actor_rule(&twins.person, id);
+    let (find_before, kept_before) = (twins.person.session_json()["find"].clone(), twins.agent.session_json());
+    let acted = twins.person.act(UiAction::Menu { id: id.into() });
     twins.person.settle();
-    let person_said = twins.person.heard_events();
+    let mut person_said = twins.person.heard_events();
     let (result, mut agent_said) = twins.agent.agent_heard(Level::Full, &palette_run(title));
     twins.agent.settle();
     agent_said.extend(twins.agent.heard_events());
     let mut found = Vec::new();
+    let refused = result.as_ref().err().map(|error| error.code.to_string());
+    let mut except = WHOSE.to_vec();
+    match rule {
+        Some(ActorRule::FindStepWithFindClosed) => {
+            let find = &twins.person.session_json()["find"];
+            let typed_last = if find_before["query"] == "" {
+                &find_before["draft"]
+            } else {
+                &find_before["query"]
+            };
+            if find["open"] != true || find["query"] != *typed_last {
+                found.push(format!("the person's step with Find closed didn't open it with what was typed last: {find}"));
+            }
+            if refused.as_deref() != Some("nothing_found") || twins.agent.session_json() != kept_before {
+                found.push(format!(
+                    "an agent's step with Find closed wasn't refused `nothing_found` with nothing changed: {result:?}"
+                ));
+            }
+            return found;
+        }
+        Some(ActorRule::FindOpenWithTheSidebarHidden) => {
+            if twins.person.reader().sidebar_hidden || !twins.agent.reader().sidebar_hidden {
+                found.push("the person's ⌘F didn't show the sidebar, or an agent's did".into());
+            }
+            person_said.retain(|event| event.name() != "view_changed");
+            except.push("sidebar_hidden");
+        }
+        Some(ActorRule::CloseThatLosesEdits) => {
+            if acted.host != crate::menus::HostAction::ConfirmClose || refused.as_deref() != Some("unsaved_changes") {
+                found.push(format!(
+                    "the person wasn't asked ({:?}), or an agent wasn't refused `unsaved_changes` ({result:?})",
+                    acted.host
+                ));
+            }
+            found.extend(twins.differences(&except));
+            return found;
+        }
+        None => {}
+    }
     match &result {
         Err(error) => found.push(format!("the agent's run was refused ({}: {})", error.code, error.message)),
         Ok(answer) if answer["ran"]["id"] != id => found.push(format!("the agent's palette ran {} for `{title}`", answer["ran"]["id"])),
@@ -105,7 +179,7 @@ fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
             super::twins::names(&agent_said)
         ));
     }
-    found.extend(twins.differences(WHOSE));
+    found.extend(twins.differences(&except));
     found
 }
 
@@ -173,4 +247,102 @@ fn every_menu_id_is_one_action_for_the_person_and_an_agent() {
     }
     assert!(ran > 100, "every row in every state: {ran}");
     assert!(wrong.is_empty(), "{} differences:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The code an agent's line at `level` is refused with, or `Ok` if it isn't.
+fn refusal(app: &HeadlessApp, level: Level, line: &str) -> Result<(), String> {
+    let result = app.agent(level, line).map(drop).map_err(|error| error.code.to_string());
+    app.settle();
+    result
+}
+
+/// The palette's title for `id` on `app` now.
+fn title_of(app: &HeadlessApp, id: &str) -> String {
+    rows_now(app)
+        .into_iter()
+        .find(|(row, _)| row == id)
+        .map(|(_, title)| title)
+        .unwrap_or_else(|| panic!("{id} is listed"))
+}
+
+/// Failure (R2.3, the coordinator's rulings of 2026-11-13): a row the palette now runs as the agent's command (File > Close, Find, Back, Forward, Leave Edit
+/// Mode, a layout) gets past a check that command has, or is refused another way: an agent goes Back on a document opened with its password, or closes over
+/// unsaved edits, through the palette. For each, where the command's own check refuses the agent, the palette's run is refused the same way, with the same
+/// code; and the close rule's three answers for an agent hold by the palette: unsaved edits refused at every level, the owner's undone steps refused below
+/// Full, and at Full the close goes ahead.
+#[test]
+fn a_rows_refusal_is_its_commands() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 6));
+    app.core().open_file(file);
+    app.settle();
+    let id = app.reader().password_prompt.expect("it asks for its password").id;
+    app.core().password_answered(id, Some("right".into()));
+    app.settle();
+    let tab = app.reader().shown_tab;
+    for line in [
+        r#"{"cmd":"goto","tab":"active","page":3}"#,
+        r#"{"cmd":"goto","tab":"active","page":4}"#,
+        r#"{"cmd":"back","tab":"active"}"#,
+        r#"{"cmd":"edit_mode","set":"on"}"#,
+    ] {
+        app.person(line);
+        app.settle();
+    }
+    let protected = Err("protected".to_string());
+    let layout = format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{tab}"}}"##);
+    for (id, line) in [
+        ("find.open", r#"{"cmd":"find","open":true}"#),
+        ("go.back", r#"{"cmd":"back"}"#),
+        ("go.forward", r#"{"cmd":"forward"}"#),
+        ("layout.two_up", layout.as_str()),
+    ] {
+        let title = title_of(&app, id);
+        assert_eq!(refusal(&app, Level::Full, line), protected, "{id}: `{line}` on a protected tab");
+        assert_eq!(
+            refusal(&app, Level::Full, &palette_run(&title)),
+            protected,
+            "{id} by the palette, as its command"
+        );
+    }
+    let title = title_of(&app, "edit_mode.done");
+    let below = Err("permission_denied".to_string());
+    assert_eq!(
+        refusal(&app, Level::ReadOnly, r#"{"cmd":"edit_mode","set":"off"}"#),
+        below,
+        "edit mode off below Control"
+    );
+    assert_eq!(
+        refusal(&app, Level::ReadOnly, &palette_run(&title)),
+        below,
+        "Leave Edit Mode by the palette below Control"
+    );
+    // The person's layout on the protected tab applies; the agent's was refused above.
+    app.act(UiAction::Menu { id: "layout.two_up".into() });
+    app.settle();
+    assert_eq!(app.reader().layout, "two-up", "the person's layout");
+
+    let app = HeadlessApp::start();
+    let file = app.disk().pdf("plain.pdf", 3);
+    app.open(&file);
+    app.person(r#"{"cmd":"page_rotate","tab":"active","pages":"1","degrees":90}"#);
+    app.settle();
+    let close = title_of(&app, "file.close");
+    for level in [Level::Control, Level::Full] {
+        let unsaved = Err("unsaved_changes".to_string());
+        assert_eq!(refusal(&app, level, r#"{"cmd":"close"}"#), unsaved, "close over unsaved edits at {level:?}");
+        assert_eq!(refusal(&app, level, &palette_run(&close)), unsaved, "File > Close by the palette at {level:?}");
+    }
+    app.person(r#"{"cmd":"undo","tab":"active"}"#);
+    app.settle();
+    assert!(!app.reader().edited && app.sidebar().undone_owner_steps, "only the owner's undone step left");
+    let undone = Err("would_clear_redo".to_string());
+    assert_eq!(
+        refusal(&app, Level::Control, r#"{"cmd":"close"}"#),
+        undone,
+        "below Full, the owner's undone steps"
+    );
+    assert_eq!(refusal(&app, Level::Control, &palette_run(&close)), undone, "the same by the palette");
+    assert_eq!(refusal(&app, Level::Full, &palette_run(&close)), Ok(()), "at Full it goes ahead");
+    assert!(app.tabs().is_empty(), "closed");
 }

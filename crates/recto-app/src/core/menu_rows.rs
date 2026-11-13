@@ -145,9 +145,6 @@ pub enum ForAgent {
 /// **An agent's palette run of `id`:** the row's command, resolved under `with_session` where it goes by the session when it runs, as the person's is on the
 /// session thread.
 pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun, Command) -> Command) -> ForAgent {
-    if let Some(before) = as_before(inner, id) {
-        return before;
-    }
     match row(inner, id) {
         Some(Row::Command {
             command,
@@ -158,13 +155,4 @@ pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun
         Some(Row::Window { .. }) => ForAgent::Window,
         Some(Row::Nothing) | None => ForAgent::Refused,
     }
-}
-
-/// **What an agent's palette run of these ids did before the one table,** kept until the commits that make each the agent's command: the rows the
-/// person's menu ran as a command refused.
-fn as_before(_: &Arc<Inner>, id: &str) -> Option<ForAgent> {
-    Some(match id {
-        "file.close" | "find.open" | "go.back" | "go.forward" | "edit_mode.done" => ForAgent::Refused,
-        _ => return None,
-    })
 }
