@@ -33,3 +33,10 @@ pub fn strays(registered: &[Registered], allowed: &[&Path]) -> Vec<Registered> {
         .cloned()
         .collect()
 }
+
+pub const DESCRIBED: &str = "registered in this checkout";
+
+#[must_use]
+pub fn describe(_all: &[Registered], _checkout: &Path, _temp: &Path) -> String {
+    format!("{DESCRIBED}: nothing is registered here\n")
+}
