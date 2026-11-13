@@ -12,12 +12,12 @@ pub fn link_json<L: DocLoader>(session: &Session<L>, id: TabId, from: u32, index
     let rect = [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]];
     let mut out = json!({ "link": index + 1, "rect": rect });
     match target {
-        LinkTarget::Page { page, within } => match session.position_in_same_file(id, from, *page) {
+        LinkTarget::Page { page, within } => match session.pages().position_in_same_file(id, from, *page) {
             Some(position) => {
                 out["goes_to"] = json!("page");
                 out["page"] = json!(position + 1);
                 out["within"] = json!(within);
-                if let Some(label) = session.page_label_differs(id, position) {
+                if let Some(label) = session.pages().label_differs(id, position) {
                     out["untrusted"] = json!({ "label": label });
                 }
             }
@@ -86,7 +86,7 @@ pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value
                 out
             })
             .collect();
-        let mut answer = json!({ "tab": id.0, "page": position + 1, "untrusted": { "label": s.page_label_differs(id, position) }, "links": links, "truncated": found.truncated, "note": "`rect` is x, y, width, height in points on the page as the file shows it, from its top left. `recto follow` follows one within the document." });
+        let mut answer = json!({ "tab": id.0, "page": position + 1, "untrusted": { "label": s.pages().label_differs(id, position) }, "links": links, "truncated": found.truncated, "note": "`rect` is x, y, width, height in points on the page as the file shows it, from its top left. `recto follow` follows one within the document." });
         if size.is_some() {
             answer["quarter_turns"] = json!(turns);
             answer["note"] = json!("`rect` is x, y, width, height in points on the page as the file shows it, from its top left, and `shown_rect` the same box on the page as it's seen with its unsaved turn of `quarter_turns` clockwise. `recto follow` follows one within the document.");
@@ -108,7 +108,7 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &str, page: u32, li
         let id = select(s, &format!("#{}", id.0)).map_err(|_| AgentError::new("no_such_tab", "That tab closed.", exit::NOT_FOUND))?;
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
-                let to = s.position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
+                let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
                 s.jump_as(id, to, within.map_or(0.0, f64::from), by)?;
                 "page"
             }
@@ -161,7 +161,7 @@ pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &str, back: bool, eve
 pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &str, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let page = s.page_for_typed(id, label).ok_or_else(|| {
+        let page = s.pages().for_typed(id, label).ok_or_else(|| {
             AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND)
                 .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
         })?;

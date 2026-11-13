@@ -37,7 +37,7 @@ fn what_was_read_ahead_stays_with_its_tab() {
     s.give_woken(ids[0], facts(11), None);
     s.give_woken(ids[1], facts(22), None);
     s.tap(ids[1]).unwrap();
-    assert_eq!(s.pages_in(ids[1]), 22);
+    assert_eq!(s.pages().count(ids[1]), 22);
     assert_eq!(loads.get(), base, "no read with the session held");
     // Closed mid-read: nothing's kept for it.
     s.give_woken(ids[2], facts(33), None);
@@ -49,7 +49,7 @@ fn what_was_read_ahead_stays_with_its_tab() {
     s.give_woken(ids[5], facts(55), None);
     assert!(!s.warm.holds_read_of(ids[5]));
     s.tap(ids[0]).unwrap();
-    assert_eq!(s.pages_in(ids[0]), 11, "the first's own");
+    assert_eq!(s.pages().count(ids[0]), 11, "the first's own");
     assert_eq!(loads.get(), base);
 }
 

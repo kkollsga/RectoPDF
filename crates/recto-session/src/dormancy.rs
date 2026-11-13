@@ -10,9 +10,10 @@ pub(crate) const MAX_LEFT_WARM: usize = 8;
 /// Tabs woken from sleep files whose files wait to be looked at, held at once. The same: the sleeper takes them as they come.
 pub(crate) const MAX_WOKEN_FROM_FILE: usize = 64;
 
-/// What going dormant and sleep files need of the session.
+/// The session's clock, the holds that keep a tab from going dormant, and what's on its way to and from the sleep files. What's public here reads the clock,
+/// holds a tab, turns sleep files on or off, or takes what's waiting; letting a hold go stays with the session, as it stamps the tab.
 #[derive(Debug)]
-pub(crate) struct Dormancy {
+pub struct Dormancy {
     /// What tabs' `touched` count from.
     started: std::time::Instant,
     /// Tabs being worked on now, once for each thing working on it. Next to none.
@@ -42,11 +43,12 @@ impl Default for Dormancy {
 
 impl Dormancy {
     /// Seconds of this session so far.
-    pub(crate) fn seconds_now(&self) -> u32 {
+    pub fn seconds_now(&self) -> u32 {
         u32::try_from(self.started.elapsed().as_secs()).unwrap_or(u32::MAX)
     }
 
-    pub(crate) fn hold(&mut self, id: TabId) {
+    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Session::let_go`].
+    pub fn hold(&mut self, id: TabId) {
         self.held.push(id);
     }
 
@@ -65,7 +67,8 @@ impl Dormancy {
         self.sleep_files
     }
 
-    pub(crate) fn set_sleep_files(&mut self, on: bool) {
+    /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`crate::Session::apply_file_status`] if it's not what it was, by [`crate::Session::take_woken_from_file`].
+    pub fn set_sleep_files(&mut self, on: bool) {
         self.sleep_files = on;
     }
 
@@ -94,11 +97,13 @@ impl Dormancy {
         self.woken_from_file.push(id);
     }
 
-    pub(crate) fn take_woken_from_file(&mut self) -> Vec<TabId> {
+    /// The tabs woken from sleep files, whose files nobody's looked at yet.
+    pub fn take_woken_from_file(&mut self) -> Vec<TabId> {
         std::mem::take(&mut self.woken_from_file)
     }
 
-    pub(crate) fn take_sleep_read(&mut self, id: TabId) -> Option<SleepFile> {
+    /// The sleep file a tab was just woken from, for its first frame.
+    pub fn take_sleep_read(&mut self, id: TabId) -> Option<SleepFile> {
         self.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
     }
 

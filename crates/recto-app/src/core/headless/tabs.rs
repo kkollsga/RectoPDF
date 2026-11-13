@@ -18,7 +18,7 @@ fn row(app: &HeadlessApp, tab: u32) -> UiAction {
 
 /// Without sleep files, and with this tab put to sleep, so waking it reads its PDF: the tap that wakes it waits for the read.
 fn cold(app: &HeadlessApp, tab: u32) {
-    app.core().host.session.with_session(|session| session.set_sleep_files(false));
+    app.core().host.session.with_session(|session| session.dormancy_mut().set_sleep_files(false));
     app.agent(Level::Full, &format!(r##"{{"cmd":"session_sleep","tab":"#{tab}"}}"##))
         .expect("put to sleep");
     app.settle();

@@ -8,12 +8,12 @@ fn tab_names_are_cleaned_and_paths_stay_exact() {
     let hidden: String = "ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
     let raw = format!("/d/Report{hidden}\n2026\u{202E}.pdf");
     let id = session.open(Path::new(&raw)).unwrap();
-    let tab = session.tab(id).unwrap();
+    let tab = session.tabs().tab(id).unwrap();
     assert_eq!(&*tab.name, "Report 2026");
-    assert_eq!(session.path_of(id).unwrap(), PathBuf::from(&raw));
+    assert_eq!(session.tabs().path_of(id).unwrap(), PathBuf::from(&raw));
     assert_eq!(session.sidebar().rows[0].text, "Report 2026");
     let invisible = session.open(Path::new("/d/\u{200B}.pdf")).unwrap();
-    assert_eq!(&*session.tab(invisible).unwrap().name, "Untitled", "a name of nothing still needs a row");
+    assert_eq!(&*session.tabs().tab(invisible).unwrap().name, "Untitled", "a name of nothing still needs a row");
 }
 
 struct NameLoader;
@@ -38,17 +38,24 @@ fn tab_record_stays_small() {
     assert!(std::mem::size_of::<TabRecord>() <= 224, "{} bytes", std::mem::size_of::<TabRecord>());
 }
 
+/// Failure: moving `Session`'s methods into its components (R3.5) brings state along with them, a cache or a copy kept beside a component, and the session grows. Held at its size today, 1,128 bytes with no tab.
+#[test]
+fn the_session_stays_its_size() {
+    let size = std::mem::size_of::<Session<DiskLoader>>();
+    assert!(size <= 1128, "{size} bytes");
+}
+
 /// Failure: tapping the active PDF switches tabs or does nothing, instead of folding its contents.
 #[test]
 fn tapping_the_active_pdf_toggles_contents() {
     let mut s = session(10);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
-    assert!(s.tab(id).unwrap().toc_open);
+    assert!(s.tabs().tab(id).unwrap().toc_open);
     s.tap(id).unwrap();
-    assert!(!s.tab(id).unwrap().toc_open);
-    assert_eq!(s.active(), Some(id));
+    assert!(!s.tabs().tab(id).unwrap().toc_open);
+    assert_eq!(s.tabs().active(), Some(id));
     s.tap(id).unwrap();
-    assert!(s.tab(id).unwrap().toc_open);
+    assert!(s.tabs().tab(id).unwrap().toc_open);
 }
 
 /// Failure: tapping another PDF folds the current one instead of switching, or forgets its folded state.
@@ -59,9 +66,9 @@ fn tapping_another_pdf_switches_and_keeps_each_fold_state() {
     s.tap(a).unwrap();
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.tap(a).unwrap();
-    assert_eq!(s.active(), Some(a));
-    assert!(!s.tab(a).unwrap().toc_open);
-    assert!(s.tab(b).unwrap().toc_open);
+    assert_eq!(s.tabs().active(), Some(a));
+    assert!(!s.tabs().tab(a).unwrap().toc_open);
+    assert!(s.tabs().tab(b).unwrap().toc_open);
 }
 
 /// Failure: opening the same file twice makes a second tab rather than going to the first.
@@ -72,7 +79,7 @@ fn opening_a_file_twice_reuses_its_tab() {
     s.open(Path::new("/d/b.pdf")).unwrap();
     assert_eq!(s.open(Path::new("/d/a.pdf")).unwrap(), a);
     assert_eq!(s.tabs().len(), 2);
-    assert_eq!(s.active(), Some(a));
+    assert_eq!(s.tabs().active(), Some(a));
 }
 
 /// Failure: closing the active tab leaves nothing active while others are open, or leaves its contents in memory.
@@ -82,10 +89,10 @@ fn closing_the_active_tab_activates_a_neighbour() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.close(b).unwrap();
-    assert_eq!(s.active(), Some(a));
+    assert_eq!(s.tabs().active(), Some(a));
     assert!(!s.warm.contains(b));
     s.close(a).unwrap();
-    assert_eq!(s.active(), None);
+    assert_eq!(s.tabs().active(), None);
     assert_eq!(s.sidebar().place, "");
 }
 
@@ -133,8 +140,8 @@ fn a_pdf_can_only_be_opened_once() {
     assert_ne!(a, other, "a copy is another file");
     assert_eq!(s.open(&link).unwrap(), a, "a link is the same PDF");
     assert_eq!(s.open(&hard).unwrap(), a, "so is a hard link");
-    assert_eq!(s.active(), Some(a), "and it goes there");
-    assert_eq!(s.path_of(a).unwrap(), file, "still there under its name, so that stays");
+    assert_eq!(s.tabs().active(), Some(a), "and it goes there");
+    assert_eq!(s.tabs().path_of(a).unwrap(), file, "still there under its name, so that stays");
     assert_eq!(s.tabs().len(), 2);
     // From facts read off the session, as the app's route has them.
     s.tap(other).unwrap();
@@ -147,13 +154,13 @@ fn a_pdf_can_only_be_opened_once() {
     std::fs::remove_file(&hard).unwrap();
     std::fs::rename(&file, &moved).unwrap();
     assert_eq!(s.open(&moved).unwrap(), a);
-    assert_eq!(s.path_of(a).unwrap(), moved);
-    assert_eq!(&*s.tab(a).unwrap().name, "moved");
+    assert_eq!(s.tabs().path_of(a).unwrap(), moved);
+    assert_eq!(&*s.tabs().tab(a).unwrap().name, "moved");
     // As pages of another document, it's allowed.
     let stamp = file_stamp(&moved).ok();
     let facts = FakeLoader { pages: 5, loads: Cell::new(0) }.load(&moved).unwrap();
     s.insert_pdf_with_facts(other, Author::Owner, 0, &moved, &facts, stamp).unwrap();
-    assert_eq!(s.pages_in(other), 10);
+    assert_eq!(s.pages().count(other), 10);
     assert_eq!(s.tabs().len(), 2);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -173,10 +180,10 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
     std::fs::write(&z, b"three, and longer than it was").unwrap();
     let opened = s.open(&z).unwrap();
     assert_ne!(opened, tab, "it's another PDF");
-    assert_eq!(s.path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
-    assert!(s.is_edited(tab));
-    assert_eq!(s.pages_in(opened), 6, "nothing of the edits on it");
-    assert!(!s.is_edited(opened));
+    assert_eq!(s.tabs().path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
+    assert!(s.lists().is_edited(tab));
+    assert_eq!(s.pages().count(opened), 6, "nothing of the edits on it");
+    assert!(!s.lists().is_edited(opened));
     // Changed in place under its own name, by a link: that's still the tab.
     let (own, link) = (dir.join("own.pdf"), dir.join("link.pdf"));
     std::fs::write(&own, b"before").unwrap();
@@ -216,7 +223,7 @@ fn no_folder_is_kept_without_a_tab() {
     let mut s = session(5);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.relocate(a, Path::new("/elsewhere/.."));
-    assert_eq!(s.path_of(a), Some(PathBuf::from("/d/a.pdf")), "a move to no file doesn't move it");
+    assert_eq!(s.tabs().path_of(a), Some(PathBuf::from("/d/a.pdf")), "a move to no file doesn't move it");
     assert_eq!(s.tabs.dirs_kept(), 1, "and keeps no other folder");
 }
 
@@ -237,7 +244,7 @@ fn a_protected_pdf_asks_again() {
     let mut back = Session::new(Protected);
     back.restore(&saved, HashMap::new()).unwrap();
     back.wake_active();
-    assert_eq!(back.tab(a).unwrap().problem, Some(OpenError::PasswordNeeded));
+    assert_eq!(back.tabs().tab(a).unwrap().problem, Some(OpenError::PasswordNeeded));
     assert!(back.tab_notice_message(a).unwrap().contains("password"));
 }
 
@@ -262,23 +269,23 @@ impl DocLoader for Locked {
 fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_gone() {
     let mut s = Session::new(Locked);
     let anyone = s.open(Path::new("/d/anyone.pdf")).unwrap();
-    assert!(!s.withheld_from_agents(anyone), "encrypted alone isn't protected from agents");
+    assert!(!s.tabs().withheld_from_agents(anyone), "encrypted alone isn't protected from agents");
     let locked = s
         .open_unlocked(Path::new("/d/locked.pdf"), Locked.load(Path::new("/d/locked.pdf")).unwrap(), None)
         .unwrap();
-    assert!(s.withheld_from_agents(locked));
+    assert!(s.tabs().withheld_from_agents(locked));
     let record = s.to_record();
     assert_eq!(record.tabs.iter().map(|tab| tab.password).collect::<Vec<_>>(), [false, true]);
     let mut again = Session::new(Locked);
     again.restore(&record, HashMap::new()).unwrap();
     assert!(
-        again.withheld_from_agents(TabId(locked.0)) && !again.withheld_from_agents(TabId(anyone.0)),
+        again.tabs().withheld_from_agents(TabId(locked.0)) && !again.tabs().withheld_from_agents(TabId(anyone.0)),
         "kept across a quit"
     );
-    assert!(!s.needs_password(locked));
+    assert!(!s.tabs().needs_password(locked));
     s.needs_password_again(locked);
-    assert!(s.needs_password(locked) && s.withheld_from_agents(locked));
-    assert!(!s.warm_tabs().any(|id| id == locked), "what was read with the password is let go");
+    assert!(s.tabs().needs_password(locked) && s.tabs().withheld_from_agents(locked));
+    assert!(!s.warm().ids().any(|id| id == locked), "what was read with the password is let go");
 }
 
 /// Failure: every folder a file was ever opened from stays in the session after its last tab has closed, so opening and closing files across many folders grows it for as long as it runs; or letting a folder go breaks the path of a tab still open in another.
@@ -291,18 +298,18 @@ fn folders_are_kept_only_while_a_tab_is_in_them() {
         let beside = s.open(Path::new(&format!("/folder-{n}/b.pdf"))).unwrap();
         s.close(id).unwrap();
         assert_eq!(
-            s.path_of(beside),
+            s.tabs().path_of(beside),
             Some(PathBuf::from(format!("/folder-{n}/b.pdf"))),
             "its folder stays while a tab's in it"
         );
         s.close(beside).unwrap();
     }
     assert_eq!(s.tabs.dirs_kept(), 1, "only the folder still in use");
-    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
-    assert_eq!(s.tab_for_path(Path::new("/folder-7/a.pdf")), None);
+    assert_eq!(s.tabs().path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
+    assert_eq!(s.tabs().for_path(Path::new("/folder-7/a.pdf")), None);
     let moved = s.open(Path::new("/before/moved.pdf")).unwrap();
     s.relocate(moved, Path::new("/after/moved.pdf"));
     assert_eq!(s.tabs.dirs_kept(), 2, "a tab moved out of its folder lets it go");
-    assert_eq!(s.path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
-    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
+    assert_eq!(s.tabs().path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
+    assert_eq!(s.tabs().path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
 }

@@ -23,7 +23,7 @@ impl HistorySource for MemorySource {
 /// A session with a list on tab `a`, in its journal, and another tab showing.
 fn with_a_list(files: &Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>) -> (Session<FakeLoader>, TabId, TabId) {
     let mut s = journaled(5);
-    s.set_history_source(Arc::new(MemorySource(Arc::clone(files))));
+    s.journals_mut().set_history(Arc::new(MemorySource(Arc::clone(files))));
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
     s.edit_pages_as(a, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
@@ -40,16 +40,16 @@ fn with_a_list(files: &Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>) -> (Sess
 fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, _b) = with_a_list(&files);
-    let as_it_was = s.edits_record(a).unwrap();
+    let as_it_was = s.lists().edits_record(a).unwrap();
     assert!(s.go_dormant(a));
-    assert!(s.list_is_asleep(a));
-    assert!(s.page_edits(a).is_none(), "out of memory");
+    assert!(s.lists().is_asleep(a));
+    assert!(s.lists().get(a).is_none(), "out of memory");
     // A look at it, with nothing read.
-    assert_eq!(s.pages_in(a), 4);
-    assert!(s.is_edited(a));
-    assert!(s.holds_owner_edits());
+    assert_eq!(s.pages().count(a), 4);
+    assert!(s.lists().is_edited(a));
+    assert!(s.lists().holds_owner_edits());
     assert_eq!(s.to_record().tabs[0].edits.unwrap().pages, 4);
-    assert_eq!(s.undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
+    assert_eq!(s.lists().undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
     assert!(s.to_record().tabs[0].journal.is_some());
     assert_eq!(
         s.close(a),
@@ -98,10 +98,10 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
         assert!(s.go_dormant(a));
         go(&mut s, a);
         go(&mut twin, a);
-        assert!(!s.list_is_asleep(a), "{route}");
-        assert_eq!(s.edits_record(a), twin.edits_record(a), "{route}");
-        assert_eq!(s.is_edited(a), twin.is_edited(a), "{route}");
-        assert_eq!(s.pages_in(a), twin.pages_in(a), "{route}");
+        assert!(!s.lists().is_asleep(a), "{route}");
+        assert_eq!(s.lists().edits_record(a), twin.lists().edits_record(a), "{route}");
+        assert_eq!(s.lists().is_edited(a), twin.lists().is_edited(a), "{route}");
+        assert_eq!(s.pages().count(a), twin.pages().count(a), "{route}");
     }
     // And what it goes on to write follows on from the journal, so a crash after that replays exactly.
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -112,7 +112,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     write_journal(&mut s, &mut plain);
     let parsed = record::parse_journal(plain.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
     let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
-    assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
+    assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
 }
 
 /// Failure: a list goes out of memory with some of it not on disk, or its journal's gone and it's lost in silence. It stays until it's all there, and if the journal can't be read the tab says so.
@@ -123,7 +123,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(s.list_to_sleep(a).is_none(), "a step hasn't gone out");
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some());
+    assert!(s.lists().get(a).is_some());
     let mut plain = files.lock().unwrap().clone();
     write_journal(&mut s, &mut plain);
     *files.lock().unwrap() = plain;
@@ -131,9 +131,12 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     // The journal can't be read just now. **It stays asleep, by its name, and nothing's laid on what can't be seen,** which would land on the wrong pages (review L3). The tab says so, and every look at it tries again.
     let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
     assert!(!s.wake_list(a));
-    assert!(s.list_is_asleep(a));
-    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
-    assert!(s.is_edited(a), "what's known of it stands");
+    assert!(s.lists().is_asleep(a));
+    assert_eq!(
+        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
+        Some("edits_unreadable")
+    );
+    assert!(s.lists().is_edited(a), "what's known of it stands");
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(0, 1, 1)),
         Err(SessionError::EditsUnreadable),
@@ -149,15 +152,15 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     // It's back.
     files.lock().unwrap().insert(name.clone(), bytes);
     assert!(s.wake_list(a));
-    assert!(s.page_edits(a).is_some());
-    assert_eq!(s.tab(a).unwrap().file.notice, None, "and it's stopped saying so");
+    assert!(s.lists().get(a).is_some());
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None, "and it's stopped saying so");
     // Gone for good, and given up on by saying so.
     assert!(s.go_dormant(a));
     files.lock().unwrap().clear();
     assert!(!s.wake_list(a));
     s.discard_edits(a);
-    assert!(!s.list_is_asleep(a) && !s.is_edited(a));
-    assert_eq!(s.tab(a).unwrap().file.notice, None);
+    assert!(!s.lists().is_asleep(a) && !s.lists().is_edited(a));
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
     assert!(s.journal_work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
     let mut s = session(5);
@@ -165,7 +168,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.open(Path::new("/d/b.pdf")).unwrap();
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some());
+    assert!(s.lists().get(a).is_some());
 }
 
 /// Failure (review): a sleep file's pictures match a list they're not about, as a count of edits starts again after a discard. What's compared is what's on the pages, so one order is one mark, however it was reached, and back at the file it's the mark of no list at all.
@@ -194,10 +197,10 @@ fn a_list_is_known_by_whats_on_its_pages() {
 fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.hold(a);
-    assert!(!s.can_go_dormant(a));
+    s.dormancy_mut().hold(a);
+    assert!(!s.dormant().may_go(a));
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some() && !s.list_is_asleep(a));
+    assert!(s.lists().get(a).is_some() && !s.lists().is_asleep(a));
     assert!(s.warm.contains(a), "its contents stay too");
     s.let_go(a);
     assert!(!s.go_dormant(b), "nor the one on screen");
@@ -242,7 +245,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     };
     s.wake_from_sleep(a, &forged(100));
     s.tap(a).unwrap();
-    assert_eq!(s.pages_in(a), 100, "believed for now");
+    assert_eq!(s.pages().count(a), 100, "believed for now");
     assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
     assert!(s.file_length_is(a, 3, 5), "it says to read the file");
     assert!(!s.warm.contains(a));
@@ -264,7 +267,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
         Some(stamp),
     );
     s.wake_active();
-    assert_eq!(s.pages_in(a), 3);
+    assert_eq!(s.pages().count(a), 3);
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(50, 1, 1)),
         Err(SessionError::Edit(EditError::OutOfRange)),
@@ -293,19 +296,19 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     const AFTER: u32 = 300;
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.touch_at(a, 100);
-    assert_eq!(s.next_dormant_at(AFTER), Some(400));
-    assert!(s.due_dormant(399, AFTER).is_empty());
-    assert_eq!(s.due_dormant(400, AFTER), [a]);
-    assert!(!s.due_dormant(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
-    s.touch_at(a, 200);
-    assert_eq!(s.next_dormant_at(AFTER), Some(500), "being used puts it off");
+    s.tabs_mut().touch_at(a, 100);
+    assert_eq!(s.dormant().next_at(AFTER), Some(400));
+    assert!(s.dormant().due(399, AFTER).is_empty());
+    assert_eq!(s.dormant().due(400, AFTER), [a]);
+    assert!(!s.dormant().due(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
+    s.tabs_mut().touch_at(a, 200);
+    assert_eq!(s.dormant().next_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
-    s.hold(a);
-    assert!(s.due_dormant(10_000, AFTER).is_empty());
-    assert!(s.dormant_oldest_first().is_empty(), "whatever's asking");
+    s.dormancy_mut().hold(a);
+    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().oldest_first().is_empty(), "whatever's asking");
     s.let_go(a);
-    assert_eq!(s.due_dormant(10_000, AFTER), [a]);
+    assert_eq!(s.dormant().due(10_000, AFTER), [a]);
     // A save under way.
     s.save_prepared(
         a,
@@ -317,14 +320,14 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
         },
         None,
     );
-    assert!(s.due_dormant(10_000, AFTER).is_empty());
+    assert!(s.dormant().due(10_000, AFTER).is_empty());
     // Cold tabs aren't candidates, however many there are.
     let mut s = session(5);
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
-    assert!(s.dormant_candidates().count() <= MAX_WARM + 1);
+    assert!(s.dormant().candidates().count() <= MAX_WARM + 1);
     s.go_dormant(ids[998]);
     assert!(!s.warm.contains(ids[998]), "its contents go");
-    assert!(s.dormant_oldest_first().len() < MAX_WARM);
+    assert!(s.dormant().oldest_first().len() < MAX_WARM);
 }
 
 /// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow way.
@@ -352,7 +355,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
         path
     };
     let mut s = Session::new(Protected);
-    s.set_sleep_files(true);
+    s.dormancy_mut().set_sleep_files(true);
     let open = s.open(&file("open.pdf")).unwrap();
     let locked = s.open(&file("locked.pdf")).unwrap();
     assert!(s.sleep_facts(open).is_some());
@@ -380,9 +383,9 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
         !s.sleep_facts(plain).unwrap().pictures_allowed,
         "a page from a protected file means no pictures"
     );
-    assert!(s.page_edits(plain).unwrap().added_sources()[0].protected);
+    assert!(s.lists().get(plain).unwrap().added_sources()[0].protected);
     // Carried through its journal, so it's known after a restart.
-    let record = s.edits_record(plain).unwrap();
+    let record = s.lists().edits_record(plain).unwrap();
     assert!(record.added[0].protected);
     assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
     assert!(s.undo_edit(plain));
@@ -410,9 +413,58 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
     s.warm.clear_contents();
     s.tap(a).unwrap();
-    assert!(s.page_edits(a).is_none(), "it's gone");
-    assert_eq!(s.pages_in(a), 5);
-    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+    assert!(s.lists().get(a).is_none(), "it's gone");
+    assert_eq!(s.pages().count(a), 5);
+    assert_eq!(
+        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
+        Some("edits_unreadable")
+    );
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Failure: which tabs go dormant, and when, depends on something other than the tabs, the warm ones, the lists, the holds and what's on screen, so the
+/// look needs the whole session (R3.5): built here from those alone. The tab on screen and a held one never go; a warm one goes once it's been left
+/// long enough, oldest touched first.
+#[test]
+fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
+    let mut tabs = registry::Tabs::default();
+    for (id, touched) in [(1, 0), (2, 50), (3, 10), (4, 0)] {
+        tabs.push(bare_tab(id, 5));
+        tabs.tab_mut(TabId(id)).unwrap().touched = touched;
+    }
+    tabs.set_active(Some(TabId(1)));
+    let mut warm = warm::Warm::default();
+    for id in [1, 2, 3] {
+        warm.push(TabId(id), Arc::new(Toc::default()), |_| {});
+    }
+    let lists = lists::Lists::default();
+    let mut dormancy = dormancy::Dormancy::default();
+    dormancy.hold(TabId(3));
+    let look = Dormant {
+        tabs: &tabs,
+        warm: &warm,
+        lists: &lists,
+        dormancy: &dormancy,
+        comparison: None,
+    };
+    assert!(!look.may_go(TabId(1)), "on screen");
+    assert!(!look.may_go(TabId(3)), "held");
+    assert!(look.may_go(TabId(2)));
+    assert_eq!(
+        look.next_at(30),
+        Some(80),
+        "the warm tab left, 30 after it was touched; tab 4 holds nothing to let go"
+    );
+    assert_eq!(look.due(79, 30), Vec::<TabId>::new());
+    assert_eq!(look.due(80, 30), vec![TabId(2)]);
+    dormancy.let_go(TabId(3));
+    let look = Dormant {
+        tabs: &tabs,
+        warm: &warm,
+        lists: &lists,
+        dormancy: &dormancy,
+        comparison: None,
+    };
+    assert_eq!(look.oldest_first(), vec![TabId(3), TabId(2)]);
 }

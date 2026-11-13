@@ -9,9 +9,10 @@ use std::sync::Arc;
 /// A read of a cold tab's file: what it found, and the version it found.
 pub(crate) type Read = (Result<DocFacts, OpenError>, Option<FileStamp>);
 
-/// The tabs that keep their contents, and the reads waiting for cold ones.
+/// The tabs that keep their contents, and reads of cold tabs' files made ahead of waking them. What's public here only reads; what's warm changes with
+/// activating and waking, which go with the tab and its list.
 #[derive(Debug, Default)]
-pub(crate) struct Warm {
+pub struct Warm {
     /// Most recently used first, at most [`MAX_WARM`].
     warm: VecDeque<(TabId, Arc<Toc>)>,
     /// Cold tabs' files, read ahead of waking them with the session free. Each is taken by the next activation of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
@@ -20,7 +21,7 @@ pub(crate) struct Warm {
 
 impl Warm {
     /// Most recently used first.
-    pub(crate) fn ids(&self) -> impl Iterator<Item = TabId> + '_ {
+    pub fn ids(&self) -> impl Iterator<Item = TabId> + '_ {
         self.warm.iter().map(|(tab, _)| *tab)
     }
 
@@ -29,7 +30,7 @@ impl Warm {
     }
 
     /// A warm tab's contents.
-    pub(crate) fn toc(&self, id: TabId) -> Option<&Arc<Toc>> {
+    pub fn toc(&self, id: TabId) -> Option<&Arc<Toc>> {
         self.warm.iter().find(|(tab, _)| *tab == id).map(|(_, toc)| toc)
     }
 
@@ -61,7 +62,7 @@ impl Warm {
     }
 
     /// Whether a read of this tab's file is held for its waking.
-    pub(crate) fn holds_read_of(&self, id: TabId) -> bool {
+    pub fn holds_read_of(&self, id: TabId) -> bool {
         self.woken.iter().any(|(tab, _, _)| *tab == id)
     }
 

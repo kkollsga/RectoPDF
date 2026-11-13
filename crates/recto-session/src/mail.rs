@@ -18,9 +18,10 @@ struct ViewWord {
     jump_on_its_way: Option<(Stop, u64)>,
 }
 
-/// Notes to and from the page view, each kept until it's taken or capped.
+/// What passes between the session and the page view outside a call. What's public here notes a draw, or takes or says what's waiting for the view;
+/// what makes a jump or forgets a tab's stays the crate's, as it goes with the tab's trail and place.
 #[derive(Debug, Default)]
-pub(crate) struct PageViewMail {
+pub struct PageViewMail {
     /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
     draws: VecDeque<DrawNote>,
     /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
@@ -34,7 +35,7 @@ pub(crate) struct PageViewMail {
 
 impl PageViewMail {
     /// Notes that a page finished drawing, or couldn't be.
-    pub(crate) fn note_drawn(&mut self, note: DrawNote) {
+    pub fn note_drawn(&mut self, note: DrawNote) {
         self.draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
         self.draws.push_back(note);
         while self.draws.len() > MAX_DRAWS_KEPT {
@@ -43,7 +44,7 @@ impl PageViewMail {
     }
 
     /// What's known about a page's latest draw, if it's still remembered.
-    pub(crate) fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
+    pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
         self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
     }
 
@@ -60,11 +61,12 @@ impl PageViewMail {
     }
 
     /// The jump waiting for a tab, if the page view hasn't taken it: where the session has sent the reader.
-    pub(crate) fn waiting_jump(&self, tab: TabId) -> Option<Stop> {
+    pub fn waiting_jump(&self, tab: TabId) -> Option<Stop> {
         self.jumps.iter().find(|(id, _)| *id == tab).map(|(_, stop)| *stop)
     }
 
-    pub(crate) fn take_jump(&mut self, id: TabId) -> Option<Stop> {
+    /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
+    pub fn take_jump(&mut self, id: TabId) -> Option<Stop> {
         let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
         Some(self.jumps.swap_remove(at).1)
     }
@@ -87,7 +89,7 @@ impl PageViewMail {
     /// **A jump has gone to the page view,** the send having come to `stamp` on the place clock: it's where the reader is until a read at or past `stamp`
     /// is taken in, which may have happened already, between the send and this. It's no longer waiting, unless a newer jump has taken its place there since,
     /// which stays waiting for the next look.
-    pub(crate) fn jump_sent(&mut self, tab: TabId, to: Stop, stamp: u64) {
+    pub fn jump_sent(&mut self, tab: TabId, to: Stop, stamp: u64) {
         if self.waiting_jump(tab) == Some(to) {
             self.take_jump(tab);
         }
@@ -134,7 +136,8 @@ impl PageViewMail {
         self.place_lost = lost;
     }
 
-    pub(crate) fn take_place_lost(&mut self) -> bool {
+    /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
+    pub fn take_place_lost(&mut self) -> bool {
         std::mem::take(&mut self.place_lost)
     }
 

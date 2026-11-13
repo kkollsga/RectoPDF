@@ -140,10 +140,14 @@ fn rotate_raced(app: &HeadlessApp, then_tab: u32) -> (Result<(), String>, Vec<u3
 
 /// The tabs with unsaved edits.
 fn edited_tabs(app: &HeadlessApp) -> Vec<u32> {
-    app.core()
-        .host
-        .session
-        .with_session(|session| session.tabs().iter().filter(|tab| session.is_edited(tab.id)).map(|tab| tab.id.0).collect())
+    app.core().host.session.with_session(|session| {
+        session
+            .tabs()
+            .iter()
+            .filter(|tab| session.lists().is_edited(tab.id))
+            .map(|tab| tab.id.0)
+            .collect()
+    })
 }
 
 /// Failure (review of R2.3, F2): edit mode's Rotate by an agent's palette is resolved under one hold of the session and run under another, its page from the

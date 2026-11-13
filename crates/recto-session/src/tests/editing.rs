@@ -7,21 +7,25 @@ fn the_place_follows_the_page_being_read() {
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     s.go_to(id, 3).unwrap();
     s.edit_pages(id, |e| e.move_pages(3, 1, 0)).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
-    assert!(!s.take_place_lost());
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
+    assert!(!s.mail_mut().take_place_lost());
     s.edit_pages(id, |e| e.move_pages(1, 1, 3)).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 0, "another page moved, so nothing changes");
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "another page moved, so nothing changes");
     s.edit_pages(id, |e| e.delete(0, 1)).unwrap();
-    assert!(s.take_place_lost(), "the page being read was deleted");
-    assert!(!s.take_place_lost(), "it's only said once");
-    assert_eq!(s.tab(id).unwrap().page, 0, "the nearest there is");
+    assert!(s.mail_mut().take_place_lost(), "the page being read was deleted");
+    assert!(!s.mail_mut().take_place_lost(), "it's only said once");
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "the nearest there is");
     s.go_to(id, 3).unwrap();
     s.edit_pages(id, |e| e.delete(3, 1)).unwrap();
-    assert!(s.take_place_lost());
-    assert_eq!(s.tab(id).unwrap().page, 2, "the last page, since that was the end");
-    let before = s.tab(id).unwrap().page;
+    assert!(s.mail_mut().take_place_lost());
+    assert_eq!(s.tabs().tab(id).unwrap().page, 2, "the last page, since that was the end");
+    let before = s.tabs().tab(id).unwrap().page;
     assert!(s.undo_edit(id));
-    assert_eq!(s.tab(id).unwrap().page, before, "undo keeps the page in view while one comes back behind it");
+    assert_eq!(
+        s.tabs().tab(id).unwrap().page,
+        before,
+        "undo keeps the page in view while one comes back behind it"
+    );
 }
 
 /// Failure: a tab back at its file through four quarter turns still reads as edited, and the sidebar's dot and the refusal to close stay with it. Its steps can still be undone, because the list isn't dropped while it has any. And a `page move` to where it already is must leave no list behind at all.
@@ -30,14 +34,14 @@ fn a_tab_back_at_its_file_isnt_edited() {
     let mut s = session(5);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(id, |e| e.move_pages(2, 1, 2)).unwrap();
-    assert!(s.page_edits(id).is_none() && !s.sidebar().edited, "nothing happened");
+    assert!(s.lists().get(id).is_none() && !s.sidebar().edited, "nothing happened");
     for _ in 0..4 {
         s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
     }
-    assert!(!s.is_edited(id) && !s.sidebar().edited);
-    assert!(s.page_edits(id).unwrap().can_undo(), "it can still step back through them");
+    assert!(!s.lists().is_edited(id) && !s.sidebar().edited);
+    assert!(s.lists().get(id).unwrap().can_undo(), "it can still step back through them");
     assert!(s.undo_edit(id));
-    assert!(s.is_edited(id));
+    assert!(s.lists().is_edited(id));
     assert!(s.redo_edit(id));
     assert!(s.close(id).is_ok(), "it matches the file, and nothing's been undone");
 }
@@ -48,15 +52,15 @@ fn a_refused_first_edit_leaves_no_list() {
     let mut s = session(5);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
-    assert!(s.page_edits(id).is_none(), "a tab with no edits must cost nothing here");
+    assert!(s.lists().get(id).is_none(), "a tab with no edits must cost nothing here");
     s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
     assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
-    assert!(s.page_edits(id).is_some(), "a real edit stays");
+    assert!(s.lists().get(id).is_some(), "a real edit stays");
     assert!(s.undo_edit(id));
-    assert!(s.page_edits(id).is_some(), "it can be redone");
+    assert!(s.lists().get(id).is_some(), "it can be redone");
     assert!(s.redo_edit(id));
     s.discard_edits(id);
-    assert!(s.page_edits(id).is_none());
+    assert!(s.lists().get(id).is_none());
 }
 
 /// Failure: a file replaced behind an edited tab, or behind an added PDF, is read at the old page numbers as if nothing happened. A tab with no edits has nothing to get wrong, and reads the file as it is.
@@ -103,7 +107,7 @@ fn waking_an_edited_tab_keeps_its_place_in_the_edited_length() {
     }
     assert_eq!(s.tier(a), Tier::Cold);
     s.tap(a).unwrap();
-    assert_eq!(s.tab(a).unwrap().page, 8);
+    assert_eq!(s.tabs().tab(a).unwrap().page, 8);
 }
 
 /// Failure: after a move or a delete, reading "page 2" reads the file's second page rather than the one now in that place.
@@ -150,10 +154,10 @@ impl DocLoader for RendererOnlyLoader {
 fn a_renderer_only_file_can_be_opened_but_not_edited_or_added() {
     let mut s = Session::new(RendererOnlyLoader);
     let id = s.open(Path::new("/d/damaged.pdf")).unwrap();
-    assert_eq!(s.pages_in(id), 4);
-    assert!(s.tab(id).unwrap().renderer_only);
+    assert_eq!(s.pages().count(id), 4);
+    assert!(s.tabs().tab(id).unwrap().renderer_only);
     assert_eq!(s.edit_pages(id, |e| e.rotate(0, 1, 1)), Err(SessionError::RendererOnly));
-    assert!(!s.is_edited(id));
+    assert!(!s.lists().is_edited(id));
     let mut other = session(3);
     let target = other.open(Path::new("/d/fine.pdf")).unwrap();
     let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
@@ -161,7 +165,7 @@ fn a_renderer_only_file_can_be_opened_but_not_edited_or_added() {
         other.insert_pdf_with_facts(target, Author::Owner, 0, Path::new("/d/damaged.pdf"), &facts, None),
         Err(SessionError::RendererOnly)
     );
-    assert!(!other.is_edited(target));
+    assert!(!other.lists().is_edited(target));
 }
 
 /// Failure: undone steps of an agent's own hold up the app's close, or read as the owner's. They're an agent's to lose.
@@ -171,7 +175,7 @@ fn an_agents_undone_steps_dont_stop_a_close() {
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages_as(id, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(s.undo_edit(id));
-    assert!(!s.has_undone_owner_steps(id) && !s.sidebar().undone_owner_steps);
+    assert!(!s.lists().has_undone_owner_steps(id) && !s.sidebar().undone_owner_steps);
     assert!(s.close(id).is_ok());
 }
 
@@ -191,8 +195,8 @@ fn a_dropped_pdf_that_cant_be_read_changes_nothing() {
     let mut s = session(5);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     assert_eq!(s.insert_pdf(id, 0, Path::new("/d/missing.pdf")), Err(SessionError::Open(OpenError::NotFound)));
-    assert!(!s.is_edited(id));
-    assert_eq!(s.pages_in(id), 5);
+    assert!(!s.lists().is_edited(id));
+    assert_eq!(s.pages().count(id), 5);
 }
 
 /// Failure: the panel's Rotate outside edit mode turns one page, or takes a step a page, so one undo doesn't take it back; or in edit mode it turns every page. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
@@ -202,18 +206,18 @@ fn the_panels_rotate_turns_every_page_as_one_step() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     assert!(s.can_edit_pages(a));
     s.rotate_from_panel(a, 1).unwrap();
-    assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
-    assert!(s.is_edited(a), "it's an unsaved edit, for Save to commit");
+    assert!(s.lists().get(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
+    assert!(s.lists().is_edited(a), "it's an unsaved edit, for Save to commit");
     assert!(s.undo_edit_as(a, Author::Owner).unwrap());
     assert!(
-        s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0),
+        s.lists().get(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0),
         "one undo takes it all back"
     );
-    assert!(!s.undo_and_redo(a).0, "it was one step");
-    s.set_edit_mode(true);
+    assert!(!s.lists().undo_and_redo(a).0, "it was one step");
+    s.viewing_mut().set_edit_mode(true);
     s.go_to(a, 3).unwrap();
     s.rotate_from_panel(a, -1).unwrap();
-    let turns: Vec<u8> = s.page_edits(a).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect();
+    let turns: Vec<u8> = s.lists().get(a).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect();
     assert_eq!(turns, [0, 0, 0, 3, 0], "edit mode turns the page being read");
 }
 
@@ -223,5 +227,5 @@ fn a_huge_claim_of_pages_makes_no_list() {
     let mut s = session(edit::MAX_PAGES as u32 + 1);
     let id = s.open(Path::new("/d/huge.pdf")).unwrap();
     assert_eq!(s.edit_pages(id, |e| e.rotate(0, 1, 1)), Err(SessionError::Edit(EditError::TooManyPages)));
-    assert!(s.page_edits(id).is_none());
+    assert!(s.lists().get(id).is_none());
 }

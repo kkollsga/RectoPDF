@@ -189,7 +189,7 @@ struct Counted {
 fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: &mut Counted) -> Result<Value, AgentError> {
     let (id, pages) = access.with(|s| {
         let id = select_tab(s, pick.tab)?;
-        Ok::<_, AgentError>((id, s.pages_in(id)))
+        Ok::<_, AgentError>((id, s.pages().count(id)))
     })?;
     let mut reading = Pages {
         access,

@@ -46,7 +46,7 @@ impl Inner {
 
     /// The page checks as they are now, gathered for [`showing::decide`]. The UI thread asks, and doesn't wait for the session.
     fn page_checks(&self) -> showing::PageChecks {
-        let active = self.host.session.try_with_session(|session| session.active().is_some());
+        let active = self.host.session.try_with_session(|session| session.tabs().active().is_some());
         showing::PageChecks {
             state_read: self.state_read(),
             holding_tab: lock(&self.life.holding_tab).is_some(),
