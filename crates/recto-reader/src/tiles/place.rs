@@ -128,6 +128,18 @@ impl Place {
         self.moved_page.is_some()
     }
 
+    /// **Tells where the view is again,** as a scroll of the reader's own does: the page it's on as the page the reader moved to, with the place clock
+    /// moved on. For a jump the session sent that a newer ask overtook before it got to the view ([`crate::Engine::jump_within`]): the session has the
+    /// jump's place, and takes the view's from its next read. Says whether there's a page to tell.
+    pub(crate) fn tell_again(&mut self) -> bool {
+        let Some(page) = self.last_view_page else {
+            return false;
+        };
+        self.moved_page = Some(page);
+        tick();
+        true
+    }
+
     /// A page the reader scrolled to, for the session to take as its place. Asking clears it.
     pub(crate) fn take_moved_page(&mut self) -> Option<u32> {
         self.moved_page.take()

@@ -366,6 +366,8 @@ fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
 
 /// What the page view lets other code reach, sorted. Each change to it is deliberate: see [`what_the_page_view_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r#"
+Applied (private struct, derives Default)
+Ask (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
 DocView (pub(crate) struct, derives Debug)
@@ -492,6 +494,7 @@ Place (pub(crate) struct, derives Debug)
 Place::pub(crate) fn has_moved_page(&self) -> bool
 Place::pub(crate) fn take_moved_page(&mut self) -> Option<u32>
 Place::pub(crate) fn take_user_scrolled(&mut self) -> bool
+Place::pub(crate) fn tell_again(&mut self) -> bool
 Placement (pub(super) struct, derives Clone, Copy, Debug, PartialEq)
 PlanKind (pub(super) enum, derives Debug)
 Pointer (pub(crate) struct, derives Debug)
@@ -515,7 +518,10 @@ Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 Qa (pub struct, derives Clone, Copy)
 Qa::pub fn follow_is_pending(&self) -> bool
+Qa::pub fn hold_asks(&self, ask: Ask, on: bool)
 Qa::pub fn hold_busy(&self, on: bool)
+Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool
+QaHolds (pub(super) struct, derives Default)
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>
 RawPicture.pub height: u32
