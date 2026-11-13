@@ -313,7 +313,7 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
-    let sleep = || app.record_json()["sleep"].clone();
+    let sleep_record = || app.record_json()["sleep"].clone();
     let mut bytes_before_dark = 0;
     for (cycle, paper) in ["white", "white", "dark"].into_iter().enumerate() {
         full(&app, &["view", "--paper", paper]);
@@ -321,7 +321,7 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
         host_turns(&app, &mut view, true);
         full(&app, &["tap", &format!("#{b}")]);
         host_turns(&app, &mut view, true);
-        bytes_before_dark = sleep()["sleep_bytes_written"].as_u64().expect("bytes");
+        bytes_before_dark = sleep_record()["sleep_bytes_written"].as_u64().expect("bytes");
         full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
         host_turns(&app, &mut view, true);
         let wake = woken_at_once(&app, a, &mut view);
@@ -336,7 +336,7 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
             "cycle {cycle} ({paper}): the first frame, drawing held, isn't covered: {wake}"
         );
     }
-    let written = sleep();
+    let written = sleep_record();
     assert_eq!(written["writes_for_paper"], 1, "the change of look, once: {written}");
     assert!(
         written["writes_put_off"].as_u64().unwrap() >= 1,
