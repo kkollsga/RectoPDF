@@ -132,7 +132,10 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             events.push(Event::FindOpened { page: None });
             return begin_keyed(access, typed, access.find_keys(self.actor)).map(drop).inspect_err(|_| {
                 self.finding.clear();
-                access.with(|s| s.viewing_mut().set_find(true, "", typed));
+                // Refused as the tab's edits don't fit its file: kept as the query, so the window keeps the refusal against what it was refused on, the line
+                // under the field says why, and it's found once they fit again. Any other refusal (too long, nothing to find) leaves only the draft.
+                let unfit = access.with(|s| s.tabs().active().is_some_and(|id| !basis(s, id).fit.fits()));
+                access.with(|s| s.viewing_mut().set_find(true, if unfit { typed } else { "" }, typed));
             });
         }
         let generation = begin(access, query)?;

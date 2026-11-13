@@ -5,7 +5,7 @@
 
 use super::{Inner, lock, person};
 use crate::find::{self as app, FindHandle};
-pub use crate::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
+pub use crate::find::{FIELD_HEIGHT, FindCall, Heights, ROW_HEIGHT, heights};
 pub use crate::find::{FindRow, FindRowKind, FindView};
 use recto_agent::Code;
 use recto_agent::commands::Move;
@@ -118,6 +118,13 @@ impl Inner {
 
 pub fn is_open(inner: &Inner) -> bool {
     app::is_open(&inner.tools.find_field)
+}
+
+/// Find's heights in the sidebar, for this much room: its line wrapped at the sidebar's width as the session has it.
+pub fn layout(inner: &Inner, room: f64) -> Heights {
+    let shown = view(inner);
+    let width = lock(&inner.window.app).sidebar_width;
+    heights(room, shown.open, shown.row_count, app::status_lines(&shown.status, width))
 }
 
 pub fn view(inner: &Inner) -> FindView {

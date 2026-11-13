@@ -1,5 +1,5 @@
 apptest crates/recto-cli/tests 201
-ffi crates/recto-ffi/src 2273
+ffi crates/recto-ffi/src 2272
 file crates/recto-core/src/save.rs 2105
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2219
@@ -22,7 +22,6 @@ fn crates/recto-render/src/pdfium/contents.rs::Walk::image 217
 fn crates/recto-render/src/pdfium/contents.rs::Walk::send_pending 180
 fn crates/recto-update/src/zip.rs::read_directory 182
 impl crates/recto-ffi/src/lib.rs::AppCore 112
-impl crates/recto-reader/src/engine.rs::Engine 41
 impl crates/recto-reader/src/layout.rs::PageLayout 49
 impl crates/recto-reader/src/selection.rs::Selecting 41
 impl crates/recto-render-service/src/host.rs::DocRenderer 61

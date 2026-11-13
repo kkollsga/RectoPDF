@@ -76,6 +76,8 @@ app.find.rows_on_screen[].untrusted.matched
 app.find.running
 app.find.shown
 app.find.status
+app.find.status_cut
+app.find.status_lines
 app.find.thumb.accessibility.label
 app.find.thumb.accessibility.orientation
 app.find.thumb.accessibility.role

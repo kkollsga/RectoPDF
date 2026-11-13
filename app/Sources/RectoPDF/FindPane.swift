@@ -120,7 +120,7 @@ final class FindRowCell: NSView {
         }
         (field.cell as? NSSearchFieldCell)?.cancelButtonCell?.setAccessibilityLabel(new.closeTooltip)
         field.toolTip = new.closeTooltip.isEmpty ? nil : new.closeTooltip
-        status.set(new.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns)
+        status.set(new.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns, wraps: true)
         list.rowHeight = heights.row
         // Laid out first, so bringing the current row into view goes by the list's real height.
         placeViews()
@@ -144,12 +144,14 @@ final class FindRowCell: NSView {
         let width = view.bounds.width
         field.frame = NSRect(x: 12, y: 0, width: max(width - 24, 0), height: heights.field)
         status.frame = NSRect(x: 18, y: heights.field + 3, width: max(width - 30, 0), height: heights.status - 3)
+        // Rust gives the line as many lines as it needs, up to its cap; past that it's cut with an ellipsis, and shown whole on hover.
+        status.toolTip = status.size(width: status.frame.width).height > status.frame.height + 1 ? model.status : nil
         listScroll.frame = NSRect(x: 0, y: heights.field + heights.status, width: width, height: heights.list)
         if let column = list.tableColumns.first { column.width = width }
     }
 
     func appearanceChanged() {
-        status.set(model.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns)
+        status.set(model.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns, wraps: true)
         list.enumerateAvailableRowViews { rowView, _ in
             (rowView.view(atColumn: 0) as? FindRowCell)?.applyLook()
         }
@@ -257,6 +259,8 @@ final class FindRowCell: NSView {
             "shown": !view.isHidden && view.superview != nil,
             "untrusted": ["field": field.stringValue],
             "status": model.status,
+            "status_lines": status.lineCount,
+            "status_cut": status.toolTip != nil,
             "rows": Int(model.rowCount),
             "current_row": model.currentRow.map { Int($0) as Any } ?? NSNull(),
             "running": model.running,

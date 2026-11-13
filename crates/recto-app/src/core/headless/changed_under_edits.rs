@@ -405,3 +405,60 @@ fn a_look_at_a_shown_or_other_tab_made_before_a_save_landed_changes_nothing() {
         assert_eq!(notice(&app), None, "{what}: and the tab says nothing changed");
     }
 }
+
+/// Another program's save that writes over the file where it is (`cp` onto it), so it keeps its number.
+fn rewrite_in_place(path: &Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).expect("written over");
+}
+
+/// Failure (the first worker's quiet run of 2026-11-13, `06-*-f-original-back`): the version the edits were made on, put back by writing it over the file in
+/// place (`cp`, then `touch -r`), is the same number, size and modification time as the stamp the edits keep, so the look the app makes on coming to the front
+/// found the file "as it was" against that stamp and told the session nothing: the notice stayed, and Save stayed refused, while the same bytes put back under a
+/// new number (the test above) fitted. Rewritten in place both ways, through the app-front look: the notice goes, and the edits save onto that version.
+#[test]
+fn edits_fit_again_when_their_version_is_written_back_over_the_file_in_place() {
+    let (app, file, original, modified) = edited();
+    let number = |path: &Path| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(path).expect("its facts"));
+    let before = number(&file);
+    rewrite_in_place(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    assert!(notice(&app).is_some_and(|said| said.contains("changed on disk")), "{:?}", notice(&app));
+    rewrite_in_place(&file, &original);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|open| open.set_modified(modified))
+        .expect("its time");
+    assert_eq!(number(&file), before, "the same file, as `cp` over it leaves it");
+    look(&app);
+    assert_eq!(notice(&app), None, "the version the edits were made on is back");
+    app.recto(Level::Full, &["save"]).expect("saved");
+    app.settle();
+    let saved = std::fs::read(&file).expect("the file");
+    assert!(
+        saved.len() > original.len() && saved.starts_with(&original),
+        "appended to the version they were made on"
+    );
+}
+
+/// Failure (the first worker's quiet run of 2026-11-13, `06-*-c-find-typed`): Find typed by the person after the file changed under the edits showed no hits
+/// and no words, while an agent's `find` was told why. The person's refused query left nothing for the line under the field: only a query typed before the
+/// change had its refusal kept against the change (the test above). Typed after: the window's Find says what the agent is told, and finds again once the
+/// version the edits were made on is back.
+#[test]
+fn find_typed_after_the_file_changed_under_the_edits_says_why_it_cant_search() {
+    let (app, file, original, modified) = edited();
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    app.act(crate::core::controls::UiAction::FindTyped { text: "page".into() });
+    app.settle();
+    let (rows, words, running) = find_shown(&app);
+    let refused = app.recto(Level::Full, &["find", "page"]).expect_err("refused");
+    assert_eq!((rows, running), (0, false), "{words}");
+    assert_eq!(words, refused.message, "the person's Find says what an agent's is told");
+    put_back(&file, &original, modified);
+    look(&app);
+    app.settle();
+    let (rows, status, _) = find_shown(&app);
+    assert!(rows > 0, "found again: {status}");
+}
