@@ -4,9 +4,13 @@
 //!
 //! A line of the list is a path, then a space, then pages from 1, as `1,5,20`. `RECTO_LOOK_EDGE` is the longest side of the picture each page is judged from, 512 by default as the look picture is drawn; a preview's is up to 1,144 and a lower resolution's a quarter.
 //!
-//! `sizes` judges each page with images from three pictures, the look picture's 512, the largest preview's 1,144 and the look picture's lower resolution's 128, and says where the looks differ: whether the page turns over, and which images on it turn over with it. Same list, no pictures written:
+//! `sizes` judges each page, with images or none, from three pictures, the look picture's 512, the largest preview's 1,144 and the look picture's lower resolution's 128, and says where the looks differ: whether the page turns over, and which images on it turn over with it. Same list, no pictures written:
 //!
 //!     RECTO_LOOK_LIST=list.txt cargo test --release -p recto-reader --test look_survey -- --ignored sizes --nocapture
+//!
+//! `pages` decides every page of the list from the look picture and prints a line for each, with its background's darkness at several lines, for comparing `main` with a branch:
+//!
+//!     RECTO_LOOK_LIST=list.txt cargo test --release -p recto-reader --test look_survey -- --ignored --exact pages --nocapture
 
 use recto_platform::surface::PixelSurface;
 use recto_proto::{TileRect, device_size};
@@ -52,7 +56,7 @@ fn sizes() {
     let list = std::fs::read_to_string(std::env::var("RECTO_LOOK_LIST").unwrap()).unwrap();
     // What a person sees of a look: dimmed or not, and which images are kept and which turn over. Not the gains a turned image's paper is brought to white by, which move a step with any picture.
     let seen = |look: &PageLook| (look.dim, look.keep.clone(), look.whiten.iter().map(|image| image.sides).collect::<Vec<_>>());
-    let (mut pages, mut with_images, mut draws) = (0, 0, Vec::new());
+    let (mut pages, mut with_images, mut draws) = (0, 0usize, Vec::new());
     let mut differ = [(0, 0); 2];
     for line in list.lines() {
         let Some((path, list)) = line.rsplit_once(' ') else { continue };
@@ -65,15 +69,13 @@ fn sizes() {
                 continue;
             }
             pages += 1;
+            // A page with no images is decided too, since 2026-11-13: its background may be dark.
             let Some(boxes) = doc.image_boxes(page, 1).ok().flatten() else { continue };
-            if boxes.is_empty() {
-                continue;
-            }
             let Some((w, h, look_picture, ms)) = picture_of(&mut doc, page, 512.0) else {
                 continue;
             };
             draws.push(ms);
-            with_images += 1;
+            with_images += usize::from(!boxes.is_empty());
             let look = seen(&PageLook::decide(Some(&boxes), &look_picture, w as usize * 4, w, h));
             for (index, edge) in [1144.0, 128.0].into_iter().enumerate() {
                 let Some((w, h, other, _)) = picture_of(&mut doc, page, edge) else { continue };
@@ -108,6 +110,76 @@ fn sizes() {
         at(0.99),
         at(1.0)
     );
+}
+
+/// The share of a picture's pixels outside `boxes` whose lightness, Rec. 601 luma as `paper.rs` turns over, is under each of `under`, read from every pixel: what a page's background's darkness would be at each line, for choosing it.
+fn dark_shares(pixels: &[u8], stride: usize, w: u32, h: u32, boxes: &[[u16; 4]], under: &[i32]) -> (Vec<f64>, f64) {
+    let place = |part: u16, whole: u32| (u64::from(part) * u64::from(whole)).div_ceil(65_535) as usize;
+    let holes: Vec<[usize; 4]> = boxes
+        .iter()
+        .map(|sides| {
+            [
+                (u64::from(sides[0]) * u64::from(w) / 65_535) as usize,
+                (u64::from(sides[1]) * u64::from(h) / 65_535) as usize,
+                place(sides[2], w),
+                place(sides[3], h),
+            ]
+        })
+        .collect();
+    let (mut counts, mut outside) = (vec![0usize; under.len()], 0usize);
+    for (y, row) in pixels.chunks(stride).enumerate().take(h as usize) {
+        for (x, pixel) in row.chunks(4).enumerate().take(w as usize) {
+            if holes.iter().any(|hole| (hole[0]..hole[2]).contains(&x) && (hole[1]..hole[3]).contains(&y)) {
+                continue;
+            }
+            outside += 1;
+            let luma = (77 * i32::from(pixel[2]) + 150 * i32::from(pixel[1]) + 29 * i32::from(pixel[0])) >> 8;
+            for (count, line) in counts.iter_mut().zip(under) {
+                *count += usize::from(luma < *line);
+            }
+        }
+    }
+    let share = |part: usize| if outside == 0 { 0.0 } else { part as f64 / outside as f64 };
+    (counts.into_iter().map(share).collect(), outside as f64 / (f64::from(w) * f64::from(h)))
+}
+
+/// `pages`: every page of the list, with images or none, decided from the look picture (512) as the engine decides it, one line each: whether it's dimmed, how many images are kept and turned, and the share of its background, outside every image's box, that's darker than each of several lines, to choose the line by. Run on `main` and on a branch, the lines say which pages a change moved. Same list, no pictures written:
+///
+///     RECTO_LOOK_LIST=list.txt cargo test --release -p recto-reader --test look_survey -- --ignored pages --nocapture
+#[test]
+#[ignore = "a measurement"]
+fn pages() {
+    let list = std::fs::read_to_string(std::env::var("RECTO_LOOK_LIST").unwrap()).unwrap();
+    let under = [64, 96, 112, 128, 144, 160];
+    for line in list.lines() {
+        let Some((path, list)) = line.rsplit_once(' ') else { continue };
+        let Ok(mut doc) = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()) else {
+            continue;
+        };
+        let name = Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        for page in list.split(',').filter_map(|page| page.parse::<u32>().ok()).map(|page| page - 1) {
+            if doc.page_size(page).is_err() {
+                continue;
+            }
+            let boxes = doc.image_boxes(page, 1).ok().flatten();
+            let Some((w, h, picture, _)) = picture_of(&mut doc, page, 512.0) else {
+                println!("PAGE {name} p{} undrawn", page + 1);
+                continue;
+            };
+            let look = PageLook::decide(boxes.as_deref(), &picture, w as usize * 4, w, h);
+            let (shares, background) = dark_shares(&picture, w as usize * 4, w, h, boxes.as_deref().unwrap_or_default(), &under);
+            let shares: Vec<String> = under.iter().zip(&shares).map(|(line, share)| format!("{line}:{share:.2}")).collect();
+            println!(
+                "PAGE {name} p{} images={} dim={} keep={} whiten={} background={background:.2} dark {}",
+                page + 1,
+                boxes.as_ref().map_or_else(|| "whole".to_string(), |boxes| boxes.len().to_string()),
+                look.dim,
+                look.keep.len(),
+                look.whiten.len(),
+                shares.join(" ")
+            );
+        }
+    }
 }
 
 #[test]
