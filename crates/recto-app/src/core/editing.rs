@@ -1,10 +1,10 @@
 //! **The window's edits:** the panel's Rotate, Edit > Undo and Redo are `page rotate`, `undo` and `redo`, the commands an agent sends, run for the person
-//! (R2.3, C5d), and so the owner's, as a person's edits always are; the panel's Done is `edit mode off`. Clear History is still the session thread's own.
+//! (R2.3, C5d), and so the owner's, as a person's edits always are; Edit > Clear History is `clear-history`, and the panel's Done `edit mode off`.
 
 use super::*;
 use recto_agent::commands::Edit;
 use recto_agent::commands::edit_mode::EditMode;
-use recto_agent::commands::editing::{PageRotate, Redo, Undo};
+use recto_agent::commands::editing::{ClearHistory, PageRotate, Redo, Undo};
 
 /// The panel's Rotate, a quarter turn each way: every page, or in edit mode the page being read, by the session as it is when it runs, so an edit mode
 /// turned on just before is the one it goes by. Its tab is the one being read.
@@ -64,23 +64,14 @@ impl Inner {
         );
     }
 
+    /// Edit > Clear History: `clear-history`, on the tab being read. The person's level is Full, so the owner's-edits rules never refuse it.
+    pub fn clear_history_for_person(self: &Arc<Self>) {
+        person::submit(self, ClearHistory { tab: "active".into() }.into());
+    }
+
     /// Edit > Undo, or Redo: `undo` or `redo`, on the tab being read.
     pub fn undo_or_redo_for_person(self: &Arc<Self>, undo: bool) {
         let tab = "active".to_string();
         person::submit(self, if undo { Undo { tab }.into() } else { Redo { tab }.into() });
     }
-}
-
-/// `CoreCall::ClearEditHistory`, on the session thread.
-pub fn clear_edit_history(inner: &Arc<Inner>, events: &mut Vec<Event>) {
-    inner.host.session.with_session(|session| {
-        if let Some(id) = session.active() {
-            let had_any = session.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
-            session.clear_history(id, recto_session::ClearReason::UserAsked);
-            // Announced when there was history to clear, and only then, as `clear-history` does (R2.3, by A2's rule).
-            if had_any {
-                events.push(recto_agent::edits_changed(session, id));
-            }
-        }
-    });
 }

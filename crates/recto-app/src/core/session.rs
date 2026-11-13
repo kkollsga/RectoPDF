@@ -272,7 +272,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
-            CoreCall::ClearEditHistory => clear_edit_history(inner, &mut events),
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),

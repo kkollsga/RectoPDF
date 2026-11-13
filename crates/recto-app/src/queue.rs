@@ -34,7 +34,6 @@ pub enum CoreCall {
     FocusPane(TabId),
     /// Synced scroll, or separate.
     SetSynced(bool),
-    ClearEditHistory,
     /// Those tabs go dormant.
     SleepTabs(Vec<TabId>, crate::sleeper::Why),
     /// The system's short of memory, and whether it's critical.
@@ -127,7 +126,6 @@ impl CoreCall {
             Self::CompareClick(_)
             | Self::FocusPane(_)
             | Self::SetSynced(_)
-            | Self::ClearEditHistory
             // The note over the contents, and a section's chevron: both kept in the record.
             | Self::ContentsAction(..)
             | Self::ToggleSection(..) => true,
@@ -433,7 +431,6 @@ mod tests {
             CoreCall::CompareClick(tab),
             CoreCall::FocusPane(tab),
             CoreCall::SetSynced(true),
-            CoreCall::ClearEditHistory,
             CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
             CoreCall::MemoryPressure(false),
             CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp)),
@@ -473,37 +470,36 @@ mod tests {
             CoreCall::CompareClick(_) => 3,
             CoreCall::FocusPane(_) => 4,
             CoreCall::SetSynced(_) => 5,
-            CoreCall::ClearEditHistory => 6,
-            CoreCall::SleepTabs(..) => 7,
-            CoreCall::MemoryPressure(_) => 8,
-            CoreCall::WokenFileIsOther(..) => 9,
-            CoreCall::FileLength(..) => 10,
-            CoreCall::LookAgain(_) => 11,
-            CoreCall::Page(..) => 12,
-            CoreCall::Read(_) => 13,
-            CoreCall::Flush(_) => 14,
-            CoreCall::Restored(_) => 15,
-            CoreCall::RestorePatienceOver => 16,
-            CoreCall::Events(_) => 17,
-            CoreCall::ContentsAction(..) => 18,
-            CoreCall::GeneratedFinished => 19,
-            CoreCall::GeneratedView(..) => 20,
-            CoreCall::ToggleSection(..) => 21,
+            CoreCall::SleepTabs(..) => 6,
+            CoreCall::MemoryPressure(_) => 7,
+            CoreCall::WokenFileIsOther(..) => 8,
+            CoreCall::FileLength(..) => 9,
+            CoreCall::LookAgain(_) => 10,
+            CoreCall::Page(..) => 11,
+            CoreCall::Read(_) => 12,
+            CoreCall::Flush(_) => 13,
+            CoreCall::Restored(_) => 14,
+            CoreCall::RestorePatienceOver => 15,
+            CoreCall::Events(_) => 16,
+            CoreCall::ContentsAction(..) => 17,
+            CoreCall::GeneratedFinished => 18,
+            CoreCall::GeneratedView(..) => 19,
+            CoreCall::ToggleSection(..) => 20,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 22,
-                crate::find::FindCall::Open => 23,
-                crate::find::FindCall::Close => 24,
-                crate::find::FindCall::Step(..) => 25,
-                crate::find::FindCall::Choose(_) => 26,
-                crate::find::FindCall::News => 27,
-                crate::find::FindCall::Reveal(..) => 28,
+                crate::find::FindCall::Typed(_) => 21,
+                crate::find::FindCall::Open => 22,
+                crate::find::FindCall::Close => 23,
+                crate::find::FindCall::Step(..) => 24,
+                crate::find::FindCall::Choose(_) => 25,
+                crate::find::FindCall::News => 26,
+                crate::find::FindCall::Reveal(..) => 27,
             },
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 29,
-                Origin::Finishing => 30,
+                Origin::Input => 28,
+                Origin::Finishing => 29,
             },
         };
-        (place, 31)
+        (place, 30)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -524,7 +520,6 @@ mod tests {
                     CoreCall::CompareClick(_)
                         | CoreCall::FocusPane(_)
                         | CoreCall::SetSynced(_)
-                        | CoreCall::ClearEditHistory
                         | CoreCall::ContentsAction(..)
                         | CoreCall::ToggleSection(..)
                         | CoreCall::Find(

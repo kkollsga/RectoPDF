@@ -33,11 +33,8 @@ fn place(action: &UiAction) -> (usize, usize) {
     (place, 19)
 }
 
-/// Failure (rule 3): a control the window has waits for the session's lock on the UI thread, so a command holding it (a save, a long read) freezes the window
-/// for as long: the zoom, now `view --zoom` run on the calling thread, would if it ran the session's part of `view`. Every kind of control, and every menu
-/// item, and a click on a link, called while another thread holds the session, each returns.
-#[test]
-fn every_control_returns_while_the_session_is_held() {
+/// An app with two files open, and one of every kind of control on it, every menu item among them.
+fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiAction>) {
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 4), disk.pdf("b.pdf", 4));
     let saved_as = disk.files().join("copy.pdf");
@@ -91,6 +88,9 @@ fn every_control_returns_while_the_session_is_held() {
         UiAction::Menu { id: "edit.undo".into() },
         UiAction::Menu { id: "edit.redo".into() },
         UiAction::Menu { id: "edit_mode.done".into() },
+        UiAction::Menu {
+            id: "edit.clear_history".into(),
+        },
         // Opening a file that isn't open, and Open Recent's file, are a person's `open` (C5c).
         UiAction::Open { path: not_open.clone() },
         UiAction::OpenRecent { key: recent_key },
@@ -117,6 +117,15 @@ fn every_control_returns_while_the_session_is_held() {
         },
         UiAction::Row { row, adding: false },
     ]);
+    (app, actions)
+}
+
+/// Failure (rule 3): a control the window has waits for the session's lock on the UI thread, so a command holding it (a save, a long read) freezes the window
+/// for as long: the zoom, now `view --zoom` run on the calling thread, would if it ran the session's part of `view`. Every kind of control, and every menu
+/// item, and a click on a link, called while another thread holds the session, each returns.
+#[test]
+fn every_control_returns_while_the_session_is_held() {
+    let (app, actions) = every_kind_of_control();
     let mut kinds: Vec<usize> = actions.iter().map(|action| place(action).0).collect();
     kinds.sort_unstable();
     kinds.dedup();

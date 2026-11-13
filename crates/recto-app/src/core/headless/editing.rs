@@ -36,6 +36,8 @@ fn the_windows_edits_are_the_agents_commands() {
         ("Undo", menu("edit.undo"), r#"{"cmd":"undo"}"#.into()),
         ("Redo", menu("edit.redo"), r#"{"cmd":"redo"}"#.into()),
         ("Undo again", menu("edit.undo"), r#"{"cmd":"undo"}"#.into()),
+        ("Clear History", menu("edit.clear_history"), r#"{"cmd":"clear_history"}"#.into()),
+        ("Rotate after the clear", menu("rotate.right"), rotate("all", 90)),
     ];
     for (what, action, line) in steps {
         let before = twins.person.session_json();
@@ -43,9 +45,17 @@ fn the_windows_edits_are_the_agents_commands() {
         assert_eq!(said, agent_said, "{what} and {line}: the same said");
         assert_eq!(names(&said), ["edits_changed"], "{what}");
         assert_ne!(twins.person.session_json(), before, "{what}: something changed");
+        // Whose the steps are, and so whether a step of the owner's was dropped, is the actor's; a journal's name is its disk's.
         twins.assert_same(
             &format!("{what} and {line}"),
-            &["by", "holds_owner_edits", "owner_steps_undone", "undone_owner_steps"],
+            &[
+                "by",
+                "holds_owner_edits",
+                "owner_steps_undone",
+                "undone_owner_steps",
+                "owner_step_dropped",
+                "journal",
+            ],
         );
     }
     assert!(
@@ -68,7 +78,14 @@ fn the_windows_edits_are_the_agents_commands() {
     assert_eq!(said, agent_said, "edit mode's Rotate: the same said");
     twins.assert_same(
         "edit mode's Rotate and page rotate 3",
-        &["by", "holds_owner_edits", "owner_steps_undone", "undone_owner_steps"],
+        &[
+            "by",
+            "holds_owner_edits",
+            "owner_steps_undone",
+            "undone_owner_steps",
+            "owner_step_dropped",
+            "journal",
+        ],
     );
     let runs = |app: &HeadlessApp| app.session_json()["edits_full"]["1"]["pages"].as_array().map_or(0, Vec::len);
     assert_eq!(
