@@ -22,6 +22,8 @@ const WATCHED: &[&str] = &[
     "Dormant",
     "Notices",
     "PartMut",
+    "Held",
+    "HeldGuard",
 ];
 
 /// The last path segment of a type, without its generic arguments, except the handle's, which says which component it's for: `PartMut<Tabs>`.
@@ -199,6 +201,14 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "Dormant: pub fn may_go",
         "Dormant: pub fn next_in",
         "Dormant: pub fn oldest_first",
+        "Held: impl in held.rs",
+        "Held: pub fn confinement",
+        "Held: pub fn lock",
+        "Held: pub fn new",
+        "Held: pub fn try_lock",
+        "HeldGuard: impl Deref",
+        "HeldGuard: impl DerefMut",
+        "HeldGuard: impl Drop",
         "Generated: derive Debug",
         "Generated: impl in generated.rs",
         "Generated: pub fn making",
@@ -255,7 +265,6 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "PartMut<Recent>: pub fn clear",
         "PartMut<Tabs>: impl in registry.rs",
         "PartMut<Tabs>: pub fn choose_generated",
-        "PartMut<Tabs>: pub fn keep_confinement",
         "PartMut<Tabs>: pub fn note_selection",
         "PartMut<Tabs>: pub fn note_password_used",
         "PartMut<Tabs>: pub fn set_spread",

@@ -6,19 +6,19 @@ use super::{kept_json, store_error};
 use crate::record_store::{Loaded, RecordStore, notice_for};
 use recto_agent::commands::record::{HandOff, Records, Restored, Saved, Slept};
 use recto_agent::{AgentError, exit};
+use recto_session::held::Held;
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::Value;
-use std::sync::Mutex;
 
 /// The session and the store it writes to.
 pub(super) struct OwnRecord<'a, L> {
-    pub session: &'a Mutex<Session<L>>,
+    pub session: &'a Held<L>,
     pub store: &'a RecordStore,
 }
 
 impl<L: DocLoader + Clone> OwnRecord<'_, L> {
-    fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
-        step(&mut self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    pub(super) fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        step(&mut self.session.lock())
     }
 }
 

@@ -173,3 +173,33 @@ fn sessions_swapped_between_hosts_leave_neither_free_where_it_was_confined() {
         assert!(session.confinement().folders().is_some_and(|theirs| std::sync::Arc::ptr_eq(theirs, &folders)));
     });
 }
+
+/// **Failure (R3.5b): a host's own record locks the session for its steps by a way of its own** (`OwnRecord::with`, for `session save`, `restore` and a
+/// sleep), which didn't put the host's cell back after the step as every other way does: a session replaced there stayed free while the host read itself
+/// confined, until the next command's step happened to mend it. Every way to the session out of the host's lock is the one, so it's put back there too.
+#[test]
+fn a_session_replaced_inside_the_hosts_own_record_stays_confined_as_its_host() {
+    let dir = recto_testpdf::TempDir::new("recto-cell-");
+    let host = confined_host(&dir);
+    let paths = crate::state::StatePaths::overridden(&dir.join("state")).unwrap();
+    let store = crate::record_store::RecordStore::open(&paths, crate::record_store::Flavor::Windowless);
+    let own = super::own_record::OwnRecord {
+        session: &host.session,
+        store: &store,
+    };
+    let replaced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        own.with(|session| *session = recto_session::Session::new(Fake))
+    }));
+    assert_eq!(
+        replaced.is_err(),
+        cfg!(debug_assertions),
+        "loud in a debug build, and no panic in a release one"
+    );
+    // Read straight from the lock, as nothing after the step has put it back yet.
+    let folders = host.confinement().expect("the host reads itself confined");
+    let session = host.session.lock();
+    assert!(
+        session.confinement().folders().is_some_and(|theirs| std::sync::Arc::ptr_eq(theirs, &folders)),
+        "the session goes by the host's own cell right after the record's step"
+    );
+}
