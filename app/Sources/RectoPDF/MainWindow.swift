@@ -437,11 +437,11 @@ final class BookMark: NSView {
     /// Shows the window as soon as what's on it is right: Rust says.
     func showIfReady() {
         guard !shown, delegate.core.readyToShow() else { return }
-        showNow()
+        showNow(why: "ready")
     }
 
-    /// Whatever's on it. In a quiet run, nothing is ever ordered in, and the rest is the same.
-    func showNow() {
+    /// Whatever's on it. `why` is told to Rust: `ready` when it said so, `patience` when the timer did. In a quiet run, nothing is ever ordered in, and the rest is the same.
+    func showNow(why: String) {
         guard !shown else { return }
         shown = true
         layout()
@@ -463,7 +463,7 @@ final class BookMark: NSView {
             }
         }
         applyFocus(placement.focusSidebar ? "sidebar" : delegate.core.focusView())
-        delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }))
+        delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }), why: why)
     }
 
     /// ⌘K: the palette's field takes the keyboard. Rust has opened it.

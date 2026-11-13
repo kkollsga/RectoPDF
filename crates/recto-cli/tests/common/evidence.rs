@@ -425,20 +425,17 @@ fn launch_services() -> String {
     let _ = std::thread::Builder::new().name("evidence-ls".into()).spawn(move || {
         let _ = sender.send(recto_platform::registry::registered());
     });
+    let began = Instant::now();
     let Ok(all) = receiver.recv_timeout(Duration::from_secs(30)) else {
-        return "Launch Services' dump didn't answer within 30 s\n".into();
+        return format!("{DUMP_TIMED_OUT} ({} s)\n", began.elapsed().as_secs());
     };
-    let (mine, elsewhere): (Vec<_>, Vec<_>) = all.iter().partition(|copy| copy.path.starts_with(&checkout) || copy.path.starts_with(&temp));
-    let mut text = format!("registered in this checkout ({}) or temp ({}):\n", checkout.display(), temp.display());
-    for copy in &mine {
-        text.push_str(&format!("  {} ({})\n", copy.path.display(), copy.identifier));
-    }
-    if mine.is_empty() {
-        text.push_str("  none\n");
-    }
-    text.push_str(&format!("registered elsewhere, not named: {}\n", elsewhere.len()));
-    text
+    recto_platform::registry::describe(&all, &checkout, &temp)
 }
+
+/// What the file says when the system's dump (seconds of work on a quiet machine) didn't answer in time: CI, 2026-11-13, five app tests dumping at once on a runner under load.
+pub const DUMP_TIMED_OUT: &str = "Launch Services' dump didn't answer within 30 s";
+/// What the file starts with when it did.
+pub const DUMP_ANSWERED: &str = recto_platform::registry::DESCRIBED;
 
 /// A command's output, or `None` if it didn't end within `limit` (it's killed then) or couldn't start.
 pub fn bounded(mut command: Command, limit: Duration) -> Option<std::process::Output> {
