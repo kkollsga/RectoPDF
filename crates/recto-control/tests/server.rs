@@ -27,6 +27,8 @@ struct Stand {
     looks_answer: std::sync::atomic::AtomicBool,
     stop_refused: std::sync::atomic::AtomicBool,
     told_off: AtomicUsize,
+    /// Every command that reached `run`, by its tag.
+    ran: Mutex<Vec<&'static str>>,
 }
 
 impl Stand {
@@ -38,6 +40,7 @@ impl Stand {
 
 impl Host for Stand {
     fn run(&self, _level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        self.ran.lock().unwrap().push(command.tag());
         match command {
             Command::Read(recto_agent::commands::Read::Facts(recto_agent::commands::reading::Facts { .. })) => panic!("a bug in a command"),
             Command::Read(recto_agent::commands::Read::Tabs(recto_agent::commands::reading::Tabs { .. })) => {
@@ -822,4 +825,48 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
         bytes < ALLOWANCE + 128 * 1024,
         "it should have been dropped at about its allowance of {ALLOWANCE} bytes, and {bytes} bytes came"
     );
+}
+
+/// Failure: the server answers a command itself that the host should run (a session command, the app's or a record's), so it never happens; or it sends the host one of its own (`status`, `wait`, `watch`, the permissions, the log, `stop`), which the host can only refuse as needing the long-running session it is. Where each goes is the command's declared route, and nothing else. One request of each command and route, from the registry's golden requests, at Full.
+#[test]
+fn the_server_answers_only_server_commands_and_sends_on_the_rest() {
+    const REQUESTS: &str = include_str!("../../recto-agent/tests/golden/requests.txt");
+    let running = Running::start(Limits::default());
+    // `tabs` waits for this here.
+    running.host.release();
+    let mut picked: Vec<(&str, Command)> = Vec::new();
+    for line in REQUESTS.lines() {
+        let Ok(command) = recto_agent::parse(line) else { continue };
+        // The stand answers `where` with 5 MB, for the cap's test, which takes a second here: it's a session command like the many others.
+        if !recto_agent::allowed(Level::Full, command.access()) || command.tag() == "where" {
+            continue;
+        }
+        // The quick form of a command that waits, so the test doesn't wait out a default.
+        match picked.iter().position(|(_, had)| had.tag() == command.tag() && had.route() == command.route()) {
+            Some(at) if line.contains("\"timeout_ms\":3") => picked[at] = (line, command),
+            Some(_) => {}
+            None => picked.push((line, command)),
+        }
+    }
+    // `stop` ends the session, so it goes last.
+    picked.sort_by_key(|(_, command)| command.tag() == "stop");
+    for (line, _) in &picked {
+        let mut stream = running.connect();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        assert!(read_line(&mut stream).is_some(), "{line} got no answer");
+    }
+    let ran = running.host.ran.lock().unwrap().clone();
+    for (line, command) in &picked {
+        let reached = ran.contains(&command.tag());
+        if command.route() == recto_agent::Runs::Server {
+            assert!(!reached, "{line} is the server's to answer (route Server), and reached the host");
+        } else {
+            assert!(
+                reached,
+                "{line} (route {:?}) never reached the host: the server answered it itself",
+                command.route()
+            );
+        }
+    }
+    assert!(picked.len() > 60, "only {} commands in the golden requests", picked.len());
 }

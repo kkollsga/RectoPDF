@@ -52,6 +52,11 @@ pub trait Cmd {
     fn human(data: &Value) -> String;
 }
 
+/// Whether a command only asks about the state, so an update needn't wait for it. Declared by each command the app or a host's record answers, with no default: one that forgot could be refused mid-hand-off, or be run past the hand-off's last look and lose what it did.
+pub trait OnlyAsks {
+    fn only_asks(&self) -> bool;
+}
+
 /// What a command runs with: the session, the level it was asked at, and the events it makes.
 pub struct Cx<'a, A> {
     pub access: &'a A,

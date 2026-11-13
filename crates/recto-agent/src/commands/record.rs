@@ -1,7 +1,7 @@
 //! **The state record's commands:** `session show`, `session sleep`, `session save`, `session restore` and `session check`. Each host keeps its own record and its own lifecycle, which it gives these through [`Records`]; every answer, and the refusal that keeps the owner's edits, is made here, once, for both. `execute` runs them right after the level check: before the protected check, as none reads a document, and before the hold, which would keep `session sleep`'s tab awake.
 
 #![allow(unused_imports)]
-use super::{Cmd, Cx, needs_server, row_access};
+use super::{Cmd, Cx, OnlyAsks, needs_server, row_access};
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -221,6 +221,49 @@ impl Cmd for SessionCheck {
             }
             out
         }
+    }
+}
+
+impl super::Record {
+    /// Whether it only asks: looking, writing the record and the hand-off check don't change the session an update carries across; sleeping and restoring do.
+    pub fn only_asks(&self) -> bool {
+        match self {
+            Self::SessionShow(command) => command.only_asks(),
+            Self::SessionSleep(command) => command.only_asks(),
+            Self::SessionSave(command) => command.only_asks(),
+            Self::SessionRestore(command) => command.only_asks(),
+            Self::SessionCheck(command) => command.only_asks(),
+        }
+    }
+}
+
+impl OnlyAsks for SessionShow {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+impl OnlyAsks for SessionSleep {
+    fn only_asks(&self) -> bool {
+        false
+    }
+}
+
+impl OnlyAsks for SessionSave {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+impl OnlyAsks for SessionRestore {
+    fn only_asks(&self) -> bool {
+        false
+    }
+}
+
+impl OnlyAsks for SessionCheck {
+    fn only_asks(&self) -> bool {
+        true
     }
 }
 

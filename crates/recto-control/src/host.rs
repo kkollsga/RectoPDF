@@ -13,6 +13,8 @@ use recto_agent::{
 };
 
 mod own_record;
+#[cfg(test)]
+mod route_tests;
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
 use std::path::PathBuf;
