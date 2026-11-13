@@ -3,9 +3,8 @@
 //! waiting on. Each is a plain function or a small type over times in milliseconds of the app's [`crate::clock::Clock`] (plus one, so zero means none): no lock, no thread, no
 //! callback, so they're tested on a fake clock.
 //!
-//! `recto-ffi`'s `Sleeper` keeps these in its own short locks and atomics, as before, and its `impl Inner` does what they say: the page views, the session, the writer thread
-//! and the real waits (the try-lock loop for the sleep files' lock, which waits on the real clock) stay there. **The intent** (restructuring step R1.4): the sleep writer becomes
-//! a state machine, `handle(input, now) -> intents`, and calls these unchanged.
+//! The sleep writer's machine, [`crate::sleep_writer::SleepWriter`], calls these unchanged and is tested over every order of its events; the tests here are
+//! of the rules that machine doesn't exercise at their edges.
 
 use recto_session::TabId;
 use std::collections::HashMap;
@@ -23,7 +22,7 @@ pub enum Why {
 pub const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 /// What the documents off screen may hold in all, their workers' memory and their histories', before the oldest goes dormant. SPEC section 2: "a byte budget frees the oldest first". What's on screen is another row.
 pub const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
-/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A quit and a hand-off don't wait, and neither does being asked. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of.
+/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A flush (a quit's, a hand-off's) doesn't wait; being asked does, as the queue's writer does. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of.
 pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
 /// What sleep files may come to in an hour, all told, for the same reason: this is about 8 MiB on a heavy day's eight hours, inside SPEC section 2's "About 10 MiB of state". A file that's text is about 8 KiB, and one of a photograph about 100.
 pub const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
@@ -146,50 +145,6 @@ pub fn hold_back_for_others(others_waiting: u32, waited_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::Clock;
-    use crate::testkit::FakeClock;
-
-    /// Failure: when each tab's sleep file was last written is kept for every tab that ever had one, closed tabs included, so a session that opens and closes tabs all day grows without a cap (the 24-hour soak of 2026-11-08 went through 3,068 tabs). Only those written within the gap are kept, and the gap still holds a tab back. (It slept 1.1 s in recto-ffi; here the clock moves.)
-    #[test]
-    fn last_written_keeps_only_writes_within_the_gap() {
-        let clock = FakeClock::at(0);
-        let gap = 1_000;
-        let mut written = Written::default();
-        for id in 0..500 {
-            written.note(TabId(id), gap, clock.now_ms() + 1);
-        }
-        assert!(written.soon(TabId(499), gap, clock.now_ms() + 1), "a tab just written waits for the gap");
-        clock.advance(1_100);
-        written.note(TabId(1_000), gap, clock.now_ms() + 1);
-        assert_eq!(written.len(), 1, "those older than the gap have gone");
-        assert!(!written.soon(TabId(499), gap, clock.now_ms() + 1), "a tab past the gap may write again");
-    }
-
-    /// Failure (the owner's SSD rule): sleep files keep being written past the hour's cap, or the cap never lifts, so after one busy hour no tab moving about ever gets a new file again. The cap holds within the hour and a new hour starts empty. The app tests that reach the gap and the cap today set the gap through QA in `crates/recto-cli/tests/long_session.rs` and `restore.rs`.
-    #[test]
-    fn the_hourly_cap_holds_and_lifts_with_the_hour() {
-        let clock = FakeClock::at(0);
-        let mut hour = Hour::starting(clock.now_ms() + 1);
-        assert!(hour.has_room(clock.now_ms() + 1));
-        hour.add(SLEEP_BYTES_PER_HOUR);
-        clock.advance(HOUR_MS - 1);
-        assert!(!hour.has_room(clock.now_ms() + 1), "full until the hour's up");
-        clock.advance(1);
-        assert!(hour.has_room(clock.now_ms() + 1), "a new hour");
-    }
-
-    /// Failure: the budget is looked at on every change (a call to the kernel per worker each time), or a change of tab, when a document comes to be off screen, waits out the second.
-    #[test]
-    fn the_budget_is_looked_at_each_second_or_at_a_change_of_tab() {
-        let clock = FakeClock::at(5_000);
-        let mut look = BudgetLook::default();
-        assert!(look.now(Some(TabId(1)), clock.now_ms()), "the first look");
-        clock.advance(500);
-        assert!(!look.now(Some(TabId(1)), clock.now_ms()), "within the second");
-        assert!(look.now(Some(TabId(2)), clock.now_ms()), "another tab showing");
-        clock.advance(BUDGET_LOOK_EVERY_MS);
-        assert!(look.now(Some(TabId(2)), clock.now_ms()), "the second's up");
-    }
 
     /// Failure (SPEC section 2: "a byte budget frees the oldest first"): over budget, the newest goes dormant, or more go than it takes, or one goes within budget. The app test that reaches it today: `restore.rs`'s `pressure_and_the_budget_do_what_being_left_alone_does`.
     #[test]
@@ -200,14 +155,6 @@ mod tests {
         assert_eq!(over_budget(&costs, 40), vec![TabId(1), TabId(2)]);
         assert_eq!(over_budget(&costs, 39), vec![TabId(1), TabId(2), TabId(3)]);
         assert_eq!(over_budget(&costs, 0), vec![TabId(1), TabId(2), TabId(3)]);
-    }
-
-    /// Failure: the queue's writer takes the sleep files' lock again before a flush waiting for it, every time, so a quit's flush runs out of its time; or it holds back for good when nobody's waiting, or past its second.
-    #[test]
-    fn the_writer_holds_back_only_for_someone_waiting_and_only_a_while() {
-        assert!(hold_back_for_others(1, 0));
-        assert!(!hold_back_for_others(0, 0), "nobody waiting");
-        assert!(!hold_back_for_others(2, OTHERS_FIRST_FOR_MS), "bounded");
     }
 
     /// Failure: nothing due still gives the session thread a deadline, so it wakes at rest; or a wait comes out longer than asked.

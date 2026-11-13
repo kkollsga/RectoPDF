@@ -228,13 +228,14 @@ fn a_copy_opened_and_dropped_at_once_is_forgotten() {
     let bundle = copy.bundle.clone();
     let state = super::common::State::new();
     copy.open_quietly(&state.root);
+    // The test's point, so it pays for the settling itself: the copy ended, forgotten, and the system's dump has none of it twice in a row.
+    assert!(
+        copy.end_settled(),
+        "{} is still registered or running after the copy was ended and forgotten",
+        bundle.display()
+    );
     drop(copy);
     assert!(!bundle.exists(), "the copy is still there");
-    let left: Vec<_> = recto_platform::registry::registered()
-        .into_iter()
-        .filter(|copy| copy.path.starts_with(&bundle))
-        .collect();
-    assert!(left.is_empty(), "still registered after the copy was dropped: {left:#?}");
 }
 
 /// Waits for a run's process to be gone, and fails with what it was waiting for.

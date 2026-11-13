@@ -319,7 +319,7 @@ fn a_killed_indexer_leaves_a_usable_state() {
             Instant::now() < deadline && child.try_wait().unwrap().is_none(),
             "the helper ended before it was killed"
         );
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
     child.kill().unwrap();
     child.wait().unwrap();
@@ -365,7 +365,7 @@ fn an_indexer_doesnt_outlive_its_session() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while pages_done(&state.paths.corpus, key) < 2 {
         assert!(Instant::now() < deadline, "it never started");
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
     drop(child.stdin.take());
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -374,7 +374,7 @@ fn an_indexer_doesnt_outlive_its_session() {
             break;
         }
         assert!(Instant::now() < deadline, "it's still there after its parent's end of stdin closed");
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
     assert!(pages_done(&state.paths.corpus, key) < 400, "it was meant to stop partway");
 }
@@ -471,7 +471,7 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while process_counters(serving.pid()).unwrap().threads > 1 {
         assert!(Instant::now() < deadline, "a thread stayed behind after indexing");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     for at in 0..200 {
         let _ = std::fs::remove_file(folder.join(format!("t{at}.pdf")));
@@ -966,7 +966,7 @@ fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while all_text_under(&root).contains("vanishingword") {
         assert!(Instant::now() < deadline, "a deleted file's text is still there, 100 days after its last use");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
     assert!(root.join(kept_key.hex()).exists(), "what's in use stays");
 }
@@ -1044,7 +1044,7 @@ fn clearing_stops_what_is_on_its_way() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while pages_done(&root, running_key) < 5 {
         assert!(Instant::now() < deadline, "it never started");
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
     state.json(&["open", path(&waiting)]);
     let (asked, _) = state.json(&["index"]);
@@ -1094,7 +1094,7 @@ fn lowering_to_off_stops_indexing() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while pages_done(&root, running_key) < 5 {
         assert!(Instant::now() < deadline, "it never started");
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
     state.json(&["open", path(&waiting)]);
     state.json(&["index"]);
@@ -1502,7 +1502,7 @@ fn the_old_corpus_folder_goes_at_startup() {
         let deadline = Instant::now() + Duration::from_secs(30);
         while old.exists() {
             assert!(Instant::now() < deadline, "the old folder's still there");
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
         }
         assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
     }

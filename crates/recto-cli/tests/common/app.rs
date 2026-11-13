@@ -122,7 +122,7 @@ impl OwnCopy {
         let folder = loop {
             let folder = built
                 .parent()?
-                .join(format!("own-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                .join(super::bed_folder::own_name(std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
             match std::fs::create_dir(&folder) {
                 Ok(()) => break folder,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -152,45 +152,66 @@ impl OwnCopy {
     }
 }
 
+impl OwnCopy {
+    /// Ends the copy and settles its forgetting here and now (`end_and_forget`: looks at the registry until two in a row are clean), and says whether it
+    /// stayed forgotten. For the test whose point is that a copy is forgotten; every other test pays nothing for it, as the `registrations` stage settles
+    /// what's left once for the run.
+    pub fn end_settled(&self) -> bool {
+        end_and_forget(&self.bundle, &[self.executable()])
+    }
+}
+
 impl Drop for OwnCopy {
-    /// Every run of this copy ended and the system made to forget it (`end_and_forget`), then the folder.
+    /// Every run of this copy ended and the system told once to forget it (`end_cheaply`), then the folder. No look at the registry: the `registrations` stage, which runs last, settles every copy this tree's tests made together.
     fn drop(&mut self) {
-        end_and_forget(&self.bundle, &[self.executable()]);
+        end_cheaply(&self.bundle, &[self.executable()]);
         if let Some(folder) = self.bundle.parent() {
             let _ = std::fs::remove_dir_all(folder);
         }
     }
 }
 
-/// Ends every run of these executables, as only the test that started them can reach them, and makes the system forget `root` and every bundle inside it until its dump says so twice in a row with no run left, both again until they hold, within 20 s. A copy launched a moment ago is registered as the launch goes on, so one forgetting before the system had finished, or before its run had quit, was undone (CI run 43101058944: `own-34946-0` left registered; 2026-11-13: an update test's `install/RectoPDF.app`, which forgot once and was registered after, in another tree's stage). Seen here: a copy killed 20 ms after its start was registered 2 s after its forgetting (1 of 18 kills at 0 to 400 ms). Call it before the folder goes.
-pub fn end_and_forget(root: &Path, executables: &[PathBuf]) {
+/// Ends every run of these executables, as only the test that started them can reach them: asked to quit, then killed, each within 5 s.
+fn end_runs(executables: &[PathBuf]) {
     let running = || {
         executables
             .iter()
             .flat_map(|executable| recto_platform::local::processes_running(executable))
             .collect::<Vec<_>>()
     };
+    for signal in ["-TERM", "-KILL"] {
+        if running().is_empty() {
+            break;
+        }
+        for pid in running() {
+            let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
+        }
+        let asked = Instant::now();
+        while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// **How a test's copy ends: cheaply.** Every run of these executables ended, and the system told once to forget `root` and the bundles inside it (`lsregister -u`; no dump and no look, as `Run::drop` does for the build folder). A copy launched a moment ago can be registered after that (a copy killed 20 ms after its start was registered 2 s after its forgetting, 1 of 18 kills), so this proves nothing about the registry: the `registrations` stage settles every copy this tree's tests made, together, once, after them. Settling in each test cost one dump per look, two or more per test, about twenty settlings a run: CI's app tiers took 200 test-seconds more for it (run 43408225244 against 43348992703). Call it before the folder goes.
+pub fn end_cheaply(root: &Path, executables: &[PathBuf]) {
+    end_runs(executables);
+    recto_platform::registry::forget_all_under(root);
+    recto_platform::registry::forget(root);
+}
+
+/// Ends every run of these executables, then makes the system forget `root` and every bundle inside it until its dump says so twice in a row with no run left (looks, not the clock: `Settling`). Whether it did. Dear: each look is a whole dump. For a test whose point is that a copy is forgotten (`OwnCopy::end_settled`); everything else ends with `end_cheaply`.
+pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
     let began = Instant::now();
     let mut settling = recto_platform::registry::Settling::default();
     loop {
-        for signal in ["-TERM", "-KILL"] {
-            if running().is_empty() {
-                break;
-            }
-            for pid in running() {
-                let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
-            }
-            let asked = Instant::now();
-            while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        // Twice in a row clean, as a registration still on its way can land after one clean look: seen once in six, the copy registered again after its
-        // first look said it had gone. Bounded by looks and not by the clock: a look is a whole dump of the registry, and a starved machine took longer over
-        // two of them than the 20 s this once allowed (CI run 43392356580).
-        let clean = recto_platform::registry::forget_and_look(root) && running().is_empty();
+        end_runs(executables);
+        let still_running = executables
+            .iter()
+            .any(|executable| !recto_platform::local::processes_running(executable).is_empty());
+        let clean = recto_platform::registry::forget_and_look(root) && !still_running;
         match settling.after_look(clean) {
-            recto_platform::registry::Settled::Gone => break,
+            recto_platform::registry::Settled::Gone => return true,
             recto_platform::registry::Settled::GaveUp => {
                 eprintln!(
                     "{} was still registered or running after {} looks and {:.1} s of ending and forgetting it",
@@ -198,7 +219,7 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) {
                     settling.looks(),
                     began.elapsed().as_secs_f64()
                 );
-                break;
+                return false;
             }
             recto_platform::registry::Settled::NotYet => std::thread::sleep(Duration::from_millis(250)),
         }

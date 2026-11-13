@@ -38,3 +38,16 @@ pub fn parse(name: &str) -> Option<Made> {
     let tree = parts.next().and_then(|part| part.strip_prefix("tree")).map(str::to_owned);
     Some(Made { pid, at_ms, tree })
 }
+
+/// The folder name of a test's own copy of the app (`OwnCopy`), beside the build: the test binary's process and a number.
+pub fn own_name(pid: u32, number: u32) -> String {
+    format!("own-{pid}-{number}")
+}
+
+/// The process that made an `own-*` folder, or none for a name that isn't one.
+pub fn parse_own(name: &str) -> Option<u32> {
+    let mut parts = name.strip_prefix("own-")?.split('-');
+    let pid = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next().is_none().then_some(pid)
+}

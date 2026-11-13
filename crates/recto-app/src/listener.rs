@@ -36,9 +36,9 @@ pub trait Listener: Send + Sync {
 
     /// The control socket's server has stopped: the host ends the app.
     ///
-    /// Once, from the socket's own thread, as its server returns: stopped over the socket by `recto stop`, or by anything else that ends it. **Today:** that includes the
-    /// app's own `shutdown` on the way out, so a host that's already quitting hears it too; it isn't a promise that someone asked over the socket. Harmless now, as
-    /// ending an app that's already ending does nothing more. R1.4's lifecycle machine should make it exactly once by construction.
+    /// At most once in the app's life, by construction (`lifecycle`'s `SocketEnded`), from the socket's own thread as its server returns: stopped over the socket
+    /// by `recto stop`, or by anything else that ends it. That includes the app's own `shutdown` on the way out, so a host that's already quitting hears it too:
+    /// it isn't a promise that someone asked over the socket, and ending an app that's already ending does nothing more.
     fn session_ended(&self);
 
     /// A copy is ready: the host takes it (`take_copied`) on its UI thread and puts it on the clipboard.
@@ -61,9 +61,8 @@ pub trait Listener: Send + Sync {
 
     /// A hand-off has written and read the state back, so the host quits now, with no prompt of any kind.
     ///
-    /// Only once the hand-off has got that far, from the thread that asked (the updater's, or a QA command's). **Today:** asking more than once (a QA run's
-    /// `hand_off_quit` and the answer's own thread) calls it more than once for one hand-off. Harmless now, as the host's first call starts its quit and a second
-    /// asks for the same. R1.4's lifecycle machine should make it exactly once by construction.
+    /// Only once the hand-off has got that far, from the thread that asked first (the updater's, or a QA command's), and at most once a hand-off, by construction
+    /// (`lifecycle`'s `HandOffQuit`): asking again, as a QA run's `hand_off_quit` does after the answer's own thread, tells the host nothing more.
     fn hand_off_quit(&self);
 }
 

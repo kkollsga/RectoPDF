@@ -105,15 +105,14 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         synced.map = shown.map.clone();
         synced.page = shown.page;
         synced.warm = shown.warm.clone();
+        send_jump(engine, shown);
         return;
     }
     if synced.spread != Some(shown.spread) {
         engine.set_spread(reader_spread(shown.spread));
         synced.spread = Some(shown.spread);
     }
-    // A jump lands where it says, on its page and as far down it, even on the page the reader's on already, as Back to a place higher up the same page does.
-    if let Some(stop) = shown.jump {
-        engine.jump_within(stop.page, f64::from(stop.within));
+    if send_jump(engine, shown) {
         synced.page = shown.page;
     } else if synced.page != shown.page {
         engine.jump_to(shown.page);
@@ -124,6 +123,15 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         engine.set_warm(&shown.warm);
         synced.warm = shown.warm.clone();
     }
+}
+
+/// **A jump lands where it says,** on its page and as far down it: even on the page the reader's on already, as Back to a place higher up the same page
+/// does, and on a tab shown anew in the same look, which is shown at its page and the place kept there, the jump being newer (the red `main` of CI run
+/// 43411305187: Forward to 0.8 of the way down page 5 landed at the 0.3 kept there). Says whether there was one.
+fn send_jump(engine: &Engine, shown: &PaneSnapshot) -> bool {
+    let Some(stop) = shown.jump else { return false };
+    engine.jump_within(stop.page, f64::from(stop.within));
+    true
 }
 
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.

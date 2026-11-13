@@ -143,6 +143,16 @@ fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
     agent(&app, r#"{"cmd":"back"}"#);
     drop(held);
     app.settle();
+    // What Back marked for Forward, and the place kept, said with a failure: a mark of 0.3 is Back's look at where the reader is, a mark of 0.8 with the
+    // page view at 0.3 is the jump lost on its way to the view.
+    let marked = app.core().host.session.with_session(|s| {
+        let id = s.active().expect("a tab");
+        format!(
+            "forward stops {:?}, place kept {:?}",
+            s.trail_of(id).map(|trail| trail.forward().to_vec()),
+            s.place_to_show(id)
+        )
+    });
     agent(&app, r#"{"cmd":"forward"}"#);
     app.settle();
     let inner = app.core();
@@ -150,6 +160,38 @@ fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
     assert_eq!(page, 4, "page 5");
     assert!(
         (within - 0.8).abs() < 0.01,
-        "Forward lands 0.8 of the way down page 5, where the jump went, not {within}"
+        "Forward lands 0.8 of the way down page 5, where the jump went, not {within}; after Back, {marked}"
     );
+}
+
+/// Failure (the red `main` of CI run 43411305187, `forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown` failing 4 runs in 5 there): a jump the
+/// session sends in the same look that shows its tab in the pane anew (another tab, or its pages or their map changed since the last look) lost how far
+/// down its page it goes: the pane was shown at the tab's saved place on that page, or the page's top, and the jump was dropped, so Forward to 0.8 of the way
+/// down page 5 landed at 0.3, the place the page view last told of there. Forced here: a's left 0.3 of the way down its page 5 for b, then a `tap` on a and
+/// a `goto` 0.8 of the way down that page, both before the session thread's look, so the look that shows a again is the one that sends the jump.
+#[test]
+fn a_jump_lands_where_it_says_on_a_tab_shown_anew() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 30), disk.pdf("b.pdf", 30));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    let (first, second) = (app.tabs()[0].tab, app.tabs()[1].tab);
+    for line in [
+        format!(r##"{{"cmd":"tap","tab":"#{first}"}}"##),
+        format!(r##"{{"cmd":"goto","tab":"#{first}","page":5,"within":0.3}}"##),
+        format!(r##"{{"cmd":"tap","tab":"#{second}"}}"##),
+    ] {
+        agent(&app, &line);
+        app.settle();
+    }
+    let held = app.hold_session_thread();
+    agent(&app, &format!(r##"{{"cmd":"tap","tab":"#{first}"}}"##));
+    agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{first}","page":5,"within":0.8}}"##));
+    drop(held);
+    app.settle();
+    let inner = app.core();
+    let (page, within) = inner.panes.reading_engine(&inner.engine).reading_anchor().expect("a place");
+    assert_eq!(page, 4, "page 5");
+    assert!((within - 0.8).abs() < 0.01, "0.8 of the way down page 5, where the jump went, not {within}");
 }
