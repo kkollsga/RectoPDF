@@ -60,10 +60,16 @@ pub enum Seam {
     Session,
     /// The launch, looked at on the restore thread before the state's read: what this copy is, its bundle and version, known late, as on a starved machine where the thread starts late.
     Launch,
+    /// A writer of the record with what it writes gathered and the record about to be written (the saver's pass and its flush): the moment between deciding
+    /// what's written and writing it, which a test holds to put something between them, and a busy disk makes late.
+    RecordWrite,
+    /// A late try at the record's lock, made on its own thread and not yet told to the session thread: the moment between the lock taken and the app deciding
+    /// whether to keep it, which a test holds to put a quit or the person's change between them, and a sleeping disk makes late.
+    RecordLock,
 }
 
 impl Seam {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::State,
         Self::Remake,
         Self::Worker,
@@ -75,6 +81,8 @@ impl Seam {
         Self::SleepWrite,
         Self::Session,
         Self::Launch,
+        Self::RecordWrite,
+        Self::RecordLock,
     ];
 
     /// Its name in the switch and the report.
@@ -91,6 +99,8 @@ impl Seam {
             Self::SleepWrite => "sleep_write",
             Self::Session => "session",
             Self::Launch => "launch",
+            Self::RecordWrite => "record_write",
+            Self::RecordLock => "record_lock",
         }
     }
 
@@ -116,6 +126,8 @@ impl Seam {
             Self::SleepWrite => 300,
             Self::Session => 300,
             Self::Launch => 300,
+            Self::RecordWrite => 50,
+            Self::RecordLock => 50,
         }
     }
 
