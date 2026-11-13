@@ -42,9 +42,7 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
     Some(super::menu_rows::Row::command(Compare::Sync(OnOff::from_bool(*on))))
 }
 
-impl Inner {
-    /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
-    pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {
-        person::submit(self, Compare::Toggle(TabRef::Id(tab)).into());
-    }
+/// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
+pub fn toggle(tab: TabId) -> Command {
+    Compare::Toggle(TabRef::Id(tab)).into()
 }

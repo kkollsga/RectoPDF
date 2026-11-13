@@ -56,7 +56,7 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back_when_the_state_is_late() {
     app.wait_until("the state's read to wait at its seam", || app.waiting(Seam::State) > 0);
     app.let_state_in();
     as_left(&app, "after a hand-off");
-    app.core().toggle_sidebar();
+    app.act(crate::core::controls::UiAction::ToggleSidebar);
     app.settle();
     assert!(!app.reader().sidebar_hidden, "its button shows it again");
 }

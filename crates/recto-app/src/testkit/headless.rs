@@ -483,7 +483,9 @@ impl HeadlessApp {
 
     /// Opens a file as the window's Open does, and settles.
     pub fn open(&self, path: &Path) {
-        self.core().open_file(path.to_path_buf());
+        self.act(crate::core::controls::UiAction::Open {
+            path: path.display().to_string(),
+        });
         self.settle();
     }
 

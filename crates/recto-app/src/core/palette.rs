@@ -72,7 +72,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         super::menu_rows::Agents::Never,
         move || {
             if lock(&inner.published).reader.sidebar_hidden {
-                inner.show_sidebar();
+                super::person::submit(inner, super::viewing::show_sidebar());
             }
             inner.tools.palette.open();
             inner.listener.model_changed();
@@ -98,11 +98,12 @@ pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
     let frozen = inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
     match app::route(id, super::find::is_open(inner), frozen) {
         app::Run::Tap(tab) => {
-            inner.tap_tab(TabId(tab));
+            super::person::submit(inner, super::opening::tap(TabId(tab)));
             HostAction::None
         }
         app::Run::OpenRecent(key) => {
-            inner.open_recent(key);
+            let recent = Arc::clone(&lock(&inner.published).recent);
+            super::opening::open_recent(&recent, &inner.life, &inner.core, &key);
             HostAction::None
         }
         app::Run::Perform { focus_find_if_nothing } => match inner.perform(id.to_string()) {

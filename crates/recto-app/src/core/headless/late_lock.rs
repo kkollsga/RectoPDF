@@ -755,7 +755,7 @@ fn a_try_held_on_the_disk_holds_up_nothing_and_what_comes_meanwhile_wins() {
         match between {
             Between::AnOpen => {
                 let c = app.disk().pdf("c.pdf", 2);
-                app.core().open_file(c);
+                let _ = app.act(crate::core::controls::UiAction::Open { path: c.display().to_string() });
                 app.wait_until("the person's open taken", || tab_names(&app) == ["c"]);
             }
             Between::AQuit => app.core().quit_requested(),
@@ -904,7 +904,7 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
             app.wait_until("the read held", || app.waiting(Seam::State) > 0);
             assert!(app.core().life.keeping().restoring());
             let c = app.disk().pdf("c.pdf", 2);
-            app.core().open_file(c);
+            let _ = app.act(crate::core::controls::UiAction::Open { path: c.display().to_string() });
             app.settle();
             assert!(tab_names(&app).is_empty(), "the person's open waits for the restore");
             app.advance(crate::lifecycle::keeping::RESTORING_PATIENCE_MS);

@@ -164,6 +164,50 @@ R --update >/dev/null; has "and update locks the lower number in" "apptest crate
 echo 'sleep 1' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?
 check "a sleep in a qa script fails" "1" "$rc"
 echo 'sleep 1 # ratchet: poll' > "$X/t/app/qa/x.sh"; out=$(R); rc=$?; check "and the marker exempts it there too" "0" "$rc"
+# Failure (R3.7): `Inner`'s methods move out to free functions that still take the whole of it, so the method count falls and the hub stays the same
+# size. Every function in recto-app's src/ with `Inner` named in a parameter's type counts, by any path, behind any reference or `Arc`, after generics with
+# a closure's `->` in a bound; and the count only goes down. One in a test module, a test module's folder, a comment, a `fn` type, or naming another type
+# doesn't count. What it doesn't see (said in ratchet.py's WHOLE): `Inner` only in a bound or a `where` clause, through a type alias, as `Self` in a trait
+# impl, captured by a closure, or held by another struct.
+fresh; mkdir -p "$X/t/crates/recto-app/src/headless"
+cat > "$X/t/crates/recto-app/src/lib.rs" <<'RS'
+pub struct Inner {
+    view: InnerView,
+}
+fn takes(inner: &Inner) {}
+fn generic<'a, T: Into<u8>>(_: &'a Arc<super::Inner>, x: T) -> u8 {
+    x.into()
+}
+fn multi(
+    a: u8,
+    inner: &crate::core::Inner,
+) {
+}
+fn bounded<F: Fn() -> u8>(inner: &Inner, f: F) {}
+fn not_it(view: &InnerView) {}
+fn alias() {
+    let f: fn(&Inner) = takes;
+    let s = "fn quoted(inner: &Inner)";
+}
+// fn commented(inner: &Inner) {}
+#[cfg(test)]
+mod tests {
+    fn helper(inner: &Inner) {}
+}
+#[cfg(test)]
+mod headless;
+RS
+echo 'fn helper(inner: &Inner) {}' > "$X/t/crates/recto-app/src/headless/x.rs"
+out=$(R); rc=$?
+check "functions that take the whole Inner with no baseline entry fail" "1" "$rc"; has "saying the line to add, four of them" 'whole crates/recto-app/src::Inner 4' "$out"
+echo "ffi crates/recto-ffi/src 0" > "$X/t/base.txt"; echo "whole crates/recto-app/src::Inner 4" >> "$X/t/base.txt"
+check "at the baseline it passes" "0" "$(R >/dev/null; echo $?)"
+echo 'fn another(inner: &std::sync::Arc<Inner>) {}' >> "$X/t/crates/recto-app/src/lib.rs"; out=$(R); rc=$?
+check "one more function that takes the whole Inner fails" "1" "$rc"; has "with old, new and what to do instead" "functions that take the whole Inner grew: 5 in crates/recto-app/src::Inner, baseline 4. Pass a function the parts it reads" "$out"
+R --update >/dev/null 2>&1; has "update refuses to raise it" "whole crates/recto-app/src::Inner 4" "$(cat "$X/t/base.txt")"
+sed -i '' -e 's/^fn takes(inner: &Inner) {}$/fn takes(view: \&InnerView) {}/' -e '/^fn another/d' "$X/t/crates/recto-app/src/lib.rs"; out=$(R); rc=$?
+check "fewer passes" "0" "$rc"; has "and says it shrank" "whole crates/recto-app/src::Inner: 4 -> 3" "$out"
+R --update >/dev/null; has "and update locks the lower number in" "whole crates/recto-app/src::Inner 3" "$(cat "$X/t/base.txt")"
 
 # a move
 fresh; { lines 30; echo 'fn s() { std::thread::sleep(D); }'; fn_of 10 long; } > "$X/t/crates/a/src/old.rs"

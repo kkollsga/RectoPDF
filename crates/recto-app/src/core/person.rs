@@ -49,7 +49,7 @@ fn on_its_own_thread(command: Command, counted: Running) {
     let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
         let inner = Arc::clone(&counted.0);
         let mut events = Vec::new();
-        sent(&inner, &command);
+        sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
@@ -79,9 +79,9 @@ impl Drop for Running {
 /// **A command run for the person, kept for a test that asked** ([`crate::testkit::headless::HeadlessApp::keep_sent`]): every way one reaches the executor
 /// as theirs says so here. Nothing outside a test.
 #[allow(unused_variables)]
-pub fn sent(inner: &Inner, command: &Command) {
+pub fn sent(serving: &super::Serving, command: &Command) {
     #[cfg(any(test, feature = "testkit"))]
-    if let Some(sent) = lock(&inner.serving.heard).sent.as_mut() {
+    if let Some(sent) = lock(&serving.heard).sent.as_mut() {
         sent.push(command.clone());
     }
 }
@@ -181,7 +181,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         None => command,
     };
     if origin == Origin::Input {
-        sent(inner, &command);
+        sent(&inner.serving, &command);
         for before in BEFORE {
             before(inner, reads, &command);
         }

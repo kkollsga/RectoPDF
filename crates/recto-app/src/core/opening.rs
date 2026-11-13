@@ -9,8 +9,8 @@ use recto_agent::TabRef;
 use recto_agent::commands::Move;
 use recto_agent::commands::tabs::{Open, RecentClear, Tap};
 
-/// The tab a person's tap is for, as the window names it: by its id.
-fn tap(tab: TabId) -> Command {
+/// The tab a person's tap is for, as the window names it: by its id. A tap on its row, or its row in the palette.
+pub fn tap(tab: TabId) -> Command {
     Tap { tab: TabRef::Id(tab) }.into()
 }
 
@@ -77,11 +77,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
     use menu_rows::Row;
     match (asked.action.as_ref()?, asked.id) {
         (menus::Action::OpenRecent(key), _) => {
-            let path = lock(&inner.published)
-                .recent
-                .iter()
-                .find(|file| file.key == *key)
-                .map(|file| PathBuf::from(&file.path));
+            let path = recent_path(&lock(&inner.published).recent, key);
             Some(path.map_or(Row::Nothing, |path| {
                 Row::own_way(
                     Open {
@@ -90,7 +86,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
                     },
                     "an open is read off the session thread, on its own queue, as every open the window makes is",
                     move || {
-                        open(&inner.core, path);
+                        open_for_person(&inner.life, &inner.core, path);
                         HostAction::None
                     },
                 )
@@ -167,40 +163,82 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
     }
 }
 
-/// **The window's side of opening and tapping,** as `AppCore` forwards it: each goes on the session thread, as waking a cold tab or reading a file can wait on a disk.
-impl Inner {
-    pub fn open_file(&self, path: PathBuf) {
-        // Asked for before the state's read: what a launch that goes back passes on.
-        if !self.life.state_read() {
-            updates::note_asked_to_open(std::slice::from_ref(&path));
-        }
-        open(&self.core, path);
+/// **A file the person opens:** the Open panel's, a drop, the Finder's, File > Open Recent's and the palette's recent file, all this one way. `open`, queued
+/// for the session thread, as [`open`]; and asked for before the state's read, it's what a launch that goes back passes on.
+pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
+    if !life.state_read() {
+        updates::note_asked_to_open(std::slice::from_ref(&path));
     }
+    open(core, path);
+}
 
-    /// A tab's row in the palette, run: `tap`, as a click on the row is.
-    pub fn tap_tab(self: &Arc<Self>, tab: TabId) {
-        person::submit(self, tap(tab));
+/// **Opens a file from the files opened lately by its key,** as File > Open Recent and the palette's row do: the very file that was offered, however the
+/// list has moved since, and nothing if it's left the list. `recent` is the list the session thread last published: it never waits.
+pub fn open_recent(recent: &[RecentFile], life: &Lifecycle, core: &CoreQueue, key: &str) {
+    if let Some(path) = recent_path(recent, key) {
+        open_for_person(life, core, path);
     }
+}
 
-    /// A row was tapped: a tab's is `tap`.
-    pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
-        match (row.kind, row.page) {
-            (crate::RowKind::Tab, _) => person::submit(self, tap(TabId(row.tab))),
-            (crate::RowKind::Contents, Some(page)) => self.contents_tapped(TabId(row.tab), page),
-            (crate::RowKind::Contents, None) => {}
-            (crate::RowKind::Note, _) => {
-                if let Some(action) = row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
-                    self.contents_note_for_person(TabId(row.tab), action);
-                }
-            }
-        }
+/// The file opened lately that a menu row or palette row offered, by its key: `None` once it's left the list.
+fn recent_path(recent: &[RecentFile], key: &str) -> Option<PathBuf> {
+    recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path))
+}
+
+/// **What a row of the sidebar comes to, tapped** (`adding` for a ⌘- or ⌃-click): a tab's is `tap`, or with `adding` `compare --toggle`; a contents row's
+/// is `goto` its page, and the note over a tab's contents is its action, whichever the click. A contents row with no page does nothing.
+pub fn row_command(row: SidebarRow, adding: bool, panes: &panes::Panes, engine: &Engine) -> Option<Command> {
+    match (row.kind, row.page) {
+        (crate::RowKind::Tab, _) if adding => Some(super::comparison::toggle(TabId(row.tab))),
+        (crate::RowKind::Tab, _) => Some(tap(TabId(row.tab))),
+        (crate::RowKind::Contents, Some(page)) => Some(super::navigation::contents_tapped(panes, engine, TabId(row.tab), page)),
+        (crate::RowKind::Contents, None) => None,
+        (crate::RowKind::Note, _) => row
+            .action
+            .as_deref()
+            .and_then(recto_session::ContentsAction::from_id)
+            .map(|action| super::contents::note_command(TabId(row.tab), action)),
     }
+}
 
-    /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
-    pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow) {
-        match row.kind {
-            crate::RowKind::Tab => self.compare_toggle_for_person(TabId(row.tab)),
-            crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recto_update::updater::Host as _;
+
+    /// Failure (R3.7): a way a person opens a file goes around [`open_for_person`], the one function every open a person makes goes through (the Open
+    /// panel's, a drop and the Finder's directly; File > Open Recent's and the palette's recent row by [`open_recent`]), so what it does for each open isn't
+    /// done for that one. Seen here by what it does before the state's read: it notes the file for a launch that goes back, besides queuing the open. A key
+    /// that's left the list opens nothing. The note is a process-wide list other tests may write to as well, so this asks only that its own files are in it.
+    #[test]
+    fn every_way_a_person_opens_a_file_goes_through_one_function() {
+        let life = Lifecycle::new(Arc::new(crate::clock::SystemClock::new()));
+        assert!(!life.state_read(), "a launch's life, before the state's read");
+        let core = CoreQueue::default();
+        let (panel, recent, gone) = (
+            PathBuf::from("/files/one-way/panel.pdf"),
+            PathBuf::from("/files/one-way/recent.pdf"),
+            PathBuf::from("/files/one-way/gone.pdf"),
+        );
+        let file = |key: &str, path: &PathBuf| RecentFile {
+            key: key.into(),
+            name: "recent".into(),
+            folder: "/files/one-way".into(),
+            path: path.display().to_string(),
+            open: false,
+        };
+        let list = [file("k1", &recent)];
+        open_for_person(&life, &core, panel.clone());
+        open_recent(&list, &life, &core, "k1");
+        open_recent(&[file("k2", &gone)], &life, &core, "a key that's left the list");
+        let asked = super::updates::Hooks::new(Arc::new(super::updates::RealInstaller)).documents_asked_for();
+        assert!(asked.contains(&panel), "the Open panel's file noted: {asked:?}");
+        assert!(asked.contains(&recent), "Open Recent's file noted, as the Open panel's is: {asked:?}");
+        assert!(!asked.contains(&gone), "nothing for a key that's left the list: {asked:?}");
+        let mut opened = Vec::new();
+        while let Some(CoreCall::Run(run)) = core.next_or_due(|| Some(Duration::ZERO)) {
+            opened.push(run.command.wire());
         }
+        assert_eq!(opened.len(), 2, "each queued its open, and a key that's left the list nothing: {opened:?}");
     }
 }

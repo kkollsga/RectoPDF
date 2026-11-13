@@ -223,7 +223,7 @@ fn the_updater_told_while_a_try_holds_the_lock_hears_a_second_copy() {
     app.advance(TRY_EVERY_MS);
     app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
     let c = app.disk().pdf("c.pdf", 2);
-    app.core().open_file(c);
+    let _ = app.act(crate::core::controls::UiAction::Open { path: c.display().to_string() });
     app.wait_until("the updater's look at the launch held", || app.waiting(Seam::Launch) > 0);
     app.let_through(Seam::Launch, 1);
     a_second_copy_that_started(&app, &plan);
