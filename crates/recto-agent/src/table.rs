@@ -1430,10 +1430,14 @@ mod tests {
         parse(&wire).map(|_| wire)
     }
 
+    /// The switches that only go with another, each with its refusal when it's given alone: `find --jump` needs a step.
+    const SWITCHES_THAT_GO_WITH_ANOTHER: &[(&str, &str, &str)] = &[("find", "jump", crate::commands::finding::JUMP_WITH_A_STEP)];
+
     /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field; or a word a row
-    /// offers is refused by its command's type (R2.5). Each argument of every row alone, with each word it offers, makes a command with no refusal at all
-    /// (a switch that only goes with another is refused alone only for that); every argument at once does too, or is refused only for flags that can't go
-    /// together.
+    /// offers is refused by its command's type (R2.5); or a switch alone is refused for some other switch's combination (second review of R2.5, S3: a
+    /// `compare --off` refused alone with `--off`'s own words passed). Each argument of every row alone, with each word it offers, makes a command with no
+    /// refusal at all (a switch that only goes with another is refused alone only with its own refusal); every argument at once does too, or is refused only
+    /// for flags that can't go together.
     #[test]
     fn every_argument_of_every_row_reaches_the_command() {
         for spec in TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.hidden) {
@@ -1445,7 +1449,10 @@ mod tests {
                 for value in values {
                     // A switch that only goes with another (`find --jump` needs a step) is refused alone for that, and only for that.
                     match line_of(spec, &[(arg, value)]) {
-                        Err(error) if arg.kind == Kind::Switch && crate::commands::refused_for_its_combination(spec.tag, &error) => {}
+                        Err(error)
+                            if arg.kind == Kind::Switch
+                                && error.code == Code::USAGE
+                                && SWITCHES_THAT_GO_WITH_ANOTHER.contains(&(spec.tag, arg.key, error.message.as_str())) => {}
                         Err(error) => panic!("{} --{} {value}: refused, {:?}: {}", spec.name, arg.key, error.code, error.message),
                         Ok(_) => {}
                     }
