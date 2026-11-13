@@ -38,7 +38,7 @@ fn an_update_changes_nothing_when_every_wait_is_late() {
     assert_eq!(shown["page"], before["reader"]["page"]);
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
     assert_eq!(after["record"]["remade"], false, "an update's launch waited for its state");
-    run.ok(&["qa", "owner-edit", "redo"]);
+    run.ok(&["qa", "as-person", "redo"]);
     run.quit();
 }
 

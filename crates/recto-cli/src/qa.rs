@@ -41,18 +41,9 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
     Err(failed("app_missing", "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
 }
 
-/// A quiet run's state must be a folder someone set on purpose, because the level there goes straight to Full.
+/// A quiet run's state: a new folder in a temp folder, because the level there goes straight to Full ([`StatePaths::for_quiet_run`]).
 fn quiet_paths() -> Result<StatePaths, AgentError> {
-    let paths = StatePaths::from_env()?;
-    if !paths.overridden {
-        return Err(AgentError::new(
-            "needs_temp_state",
-            "A QA run needs its own state folder, and won't use the real one.",
-            exit::PERMISSION,
-        )
-        .then(format!("Set {STATE_ENV} to a new folder in a temp folder.")));
-    }
-    Ok(paths)
+    StatePaths::for_quiet_run()
 }
 
 /// What a quiet run is started with, past `--qa`.
@@ -179,44 +170,10 @@ fn owner(given: Option<u64>, from_env: Option<&str>) -> Result<Option<u32>, Agen
     }
 }
 
-/// Splits a line of a script as a shell would for the simple cases there are: spaces, double quotes, and `$NAME` from the environment.
+/// Splits a line of a script as a shell would for the simple cases there are: spaces, double quotes, and `$NAME` from the environment
+/// ([`recto_agent::commands::qa::line_words`], the one splitter).
 fn script_words(line: &str) -> Result<Vec<String>, String> {
-    let (mut words, mut word, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                quoted = !quoted;
-                any = true;
-            }
-            '$' => {
-                let mut name = String::new();
-                while let Some(next) = chars.peek().filter(|next| next.is_ascii_alphanumeric() || **next == '_') {
-                    name.push(*next);
-                    chars.next();
-                }
-                word.push_str(&std::env::var(&name).map_err(|_| format!("${name} isn't set."))?);
-                any = true;
-            }
-            ' ' | '\t' if !quoted => {
-                if any {
-                    words.push(std::mem::take(&mut word));
-                    any = false;
-                }
-            }
-            other => {
-                word.push(other);
-                any = true;
-            }
-        }
-    }
-    if quoted {
-        return Err("A quote isn't closed.".to_string());
-    }
-    if any {
-        words.push(word);
-    }
-    Ok(words)
+    recto_agent::commands::qa::line_words(line, Some(&|name: &str| std::env::var(name).ok()))
 }
 
 /// Follows `reader.tiles.attached` into an answer.
@@ -805,7 +762,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.call(json!({ "cmd": "goto", "page": (pages / 2).max(1) }))?;
     run.settled()?;
     run.drive("scroll", "120")?;
-    run.drive("owner_edit", "rotate:1")?;
+    run.drive("as_person", "page rotate 1 --by 90")?;
     run.settled()?;
     let mut gaps = Vec::new();
     let mut first_frames = Vec::new();
@@ -832,7 +789,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let store_before = run.call(json!({ "cmd": "session_show" }))?["record"]["wrote_bytes"].as_u64().unwrap_or(0);
     let before = written(run.pid);
     for page in 0..200 {
-        run.drive("owner_edit", &format!("rotate:{}", page % pages + 1))?;
+        run.drive("as_person", &format!("page rotate {} --by 90", page % pages + 1))?;
     }
     std::thread::sleep(Duration::from_secs(6));
     let _ = Command::new("/bin/sync").status();

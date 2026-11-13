@@ -249,15 +249,15 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     run.ok(&["qa", "scroll", "137"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    run.ok(&["qa", "as-person", "page rotate 2 --by 90"]);
     run.ok(&["page", "delete", "5"]);
     // A move and a PDF added, which a list has to hold too.
     run.ok(&["page", "move", "6", "--to", "2"]);
     run.ok(&["page", "insert", files[1].0.to_str().unwrap(), "--at", "3"]);
-    run.ok(&["qa", "owner-edit", "delete:9"]);
+    run.ok(&["qa", "as-person", "page delete 9"]);
     run.ok(&["page", "rotate", "3", "--by", "90"]);
     run.ok(&["undo"]);
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "undo"]);
     run.settled();
     // The second: another zoom, and folded.
     run.ok(&["tap", "#2"]);
@@ -298,12 +298,12 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["settings", "--auto-update", "off"]);
     run.ok(&["qa", "settings", "open"]);
     run.ok(&["qa", "full-screen", "on"]);
-    run.ok(&["qa", "find", "open"]);
-    run.ok(&["qa", "find-query", "ran this"]);
+    run.ok(&["qa", "as-person", "find --open"]);
+    run.ok(&["qa", "as-person", "find \"ran this\""]);
     run.ok(&["qa", "find-draft", "typed but not run"]);
     run.ok(&["qa", "focus", "find"]);
     run.ok(&["qa", "frontmost", "off"]);
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["edit", "mode", "on"]);
     run.ok(&["qa", "view-rotation", "1"]);
     run.settled();
 }
@@ -425,7 +425,7 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twic
             run
         };
         // It's all still there to use: undo and redo with whose each is.
-        run.ok(&["qa", "owner-edit", "redo"]);
+        run.ok(&["qa", "as-person", "redo"]);
         run.quit();
     }
 }
@@ -449,11 +449,11 @@ fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let file = long_document("findable", 30);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "find-type", "findable page 1"]);
     run.settled();
     for _ in 0..3 {
-        run.ok(&["qa", "find-key", "return"]);
+        run.ok(&["qa", "as-person", "find --next --jump"]);
     }
     run.settled();
     let before = run.report();
@@ -485,7 +485,7 @@ fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
         "the hit's still selected"
     );
     // And it goes on from there.
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     assert_eq!(run.report()["app"]["find"]["current_row"], 7);
     run.quit();
@@ -680,7 +680,7 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     run.settled();
     run.ok(&["goto", "6"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     run.settled();
     let place = |run: &Run<'_>| run.report()["reader"]["scroll_y"].as_f64().unwrap();
     let at_page_6 = place(&run);
@@ -743,9 +743,9 @@ fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
     let (asleep, showing) = (text_document(&folder, "asleep.pdf", 8), text_document(&folder, "showing.pdf", 3));
     run.ok(&["open", asleep.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
+    run.ok(&["qa", "as-person", "undo"]);
     run.settled();
     run.ok(&["open", showing.to_str().unwrap()]);
     run.settled();
@@ -1095,7 +1095,7 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
     let (file, other) = (text_document(&folder, "doc.pdf", 4), text_document(&folder, "other.pdf", 2));
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     run.settled();
     run.ok(&["open", other.to_str().unwrap()]);
     run.settled();
@@ -1222,7 +1222,7 @@ fn a_kept_file_gone_while_asleep_doesnt_stop_a_save() {
     let (file, other) = (text_document(&folder, "doc.pdf", 3), text_document(&folder, "other.pdf", 2));
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     run.settled();
     let written = folder.join("written.pdf");
     written_without(&file, &[2], &written);
@@ -1444,7 +1444,7 @@ fn undo_goes_past_a_save_in_the_real_app() {
     let edited = |run: &Run<'_>| run.ok(&["edits"])["edited"].as_bool().unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     run.settled();
     assert!(edited(&run));
     let written = folder.join("written.pdf");
@@ -1475,7 +1475,7 @@ fn undo_goes_past_a_save_in_the_real_app() {
     wait_until("the new journal goes at once", || journal_bytes() > 0);
     let before_undo = journal_bytes();
     // Past the saved point.
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "undo"]);
     run.settled();
     assert!(edited(&run), "unsaved again");
     assert_eq!(run.ok(&["edits"])["pages"], 3);
@@ -1488,7 +1488,7 @@ fn undo_goes_past_a_save_in_the_real_app() {
     run.settled();
     assert!(edited(&run), "still past it");
     assert!(text_of(&run, "2").contains("Bravo"));
-    run.ok(&["qa", "owner-edit", "redo"]);
+    run.ok(&["qa", "as-person", "redo"]);
     run.settled();
     assert!(!edited(&run), "back at the saved point, it reads as saved");
     assert_eq!(run.ok(&["edits"])["pages"], 2);
@@ -1551,7 +1551,7 @@ fn a_first_edit_then_a_kill_keeps_one_tab() {
     run.quit();
     let run = Run::on(&state).unwrap();
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    run.ok(&["qa", "as-person", "page rotate 2 --by 90"]);
     let lists = wait_for_journal(&run);
     run.kill();
     let run = Run::on(&state).unwrap();
@@ -1570,7 +1570,7 @@ fn a_kill_before_any_record_keeps_the_edits() {
     let file = long_document("no-record", 9);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:3"]);
+    run.ok(&["qa", "as-person", "page delete 3"]);
     let lists = wait_for_journal(&run);
     assert!(
         !state.root.join("session/record.a.json").exists() && !state.root.join("session/record.b.json").exists(),
@@ -1628,7 +1628,7 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     for _ in 0..4 {
-        run.ok(&["qa", "owner-edit", "rotate:1"]);
+        run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     }
     run.ok(&["close"]);
     run.quit();
@@ -1641,7 +1641,7 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
     let run = Run::on(&state).unwrap();
     run.settled();
     // By the app's own route: a drop, the menu, a launch argument.
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     run.settled();
     let list = run.report()["session"]["edits_full"]
         .as_object()
@@ -1662,7 +1662,7 @@ fn opening_by_either_route_picks_up_the_history() {
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     for _ in 0..4 {
-        run.ok(&["qa", "owner-edit", "rotate:1"]);
+        run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     }
     run.ok(&["close"]);
     run.quit();
@@ -1670,7 +1670,7 @@ fn opening_by_either_route_picks_up_the_history() {
     run.settled();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:5"]);
+    run.ok(&["qa", "as-person", "page delete 5"]);
     let list = run.report()["session"]["edits_full"]
         .as_object()
         .unwrap()
@@ -1707,7 +1707,7 @@ fn a_pdf_can_only_be_opened_once_by_any_route() {
     assert_eq!(again["tab"], first["tab"]);
     assert_eq!(again["already_open"], true, "{again}");
     // The app's own route: a drop, the menu, a launch argument.
-    run.ok(&["qa", "open-file", link.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", link.to_str().unwrap())]);
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 1);
     let other = run.ok(&["open", copy.to_str().unwrap()]);
@@ -1762,7 +1762,7 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
         .unwrap();
     run.ok(&["tap", &format!("#{on_copy}")]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:3"]);
+    run.ok(&["qa", "as-person", "page delete 3"]);
     wait_for_journal(&run);
     run.kill();
     let run = Run::on(&state).unwrap();
@@ -1795,7 +1795,7 @@ fn history_is_only_taken_up_after_a_good_read() {
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
     for _ in 0..4 {
-        run.ok(&["qa", "owner-edit", "rotate:1"]);
+        run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     }
     run.ok(&["close"]);
     run.ok(&["session", "save"]);
@@ -1809,13 +1809,13 @@ fn history_is_only_taken_up_after_a_good_read() {
         std::thread::sleep(Duration::from_millis(20));
     }
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.to_str().unwrap())]);
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 0, "it couldn't be read");
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.to_str().unwrap())]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:3"]);
+    run.ok(&["qa", "as-person", "page delete 3"]);
     let list = run.report()["session"]["edits_full"]
         .as_object()
         .unwrap()
@@ -1904,7 +1904,7 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
     assert_eq!(run.ok(&["session", "check"])["safe"], true);
     // A file being opened by the app's own route, held back here.
     run.ok(&["qa", "hold-reads", "on"]);
-    run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", other.0.to_str().unwrap())]);
     let began = Instant::now();
     let check = loop {
         let check = run.ok(&["session", "check"]);
@@ -2029,7 +2029,7 @@ fn a_moved_file_and_its_notice_come_back() {
     .unwrap();
     run.ok(&["open", path.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    run.ok(&["qa", "as-person", "page rotate 2 --by 90"]);
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.quit();
     std::fs::rename(&path, folder.join("there/b.pdf")).unwrap();
@@ -2061,7 +2061,7 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     run.settled();
     run.ok(&["tap", "#1"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     run.ok(&["page", "delete", "2"]);
     // Nothing forces the record out here: a kill has to work from the first edit on, within a place's minute.
     let lists = wait_for_journal(&run);
@@ -2155,7 +2155,7 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
     for path in [&moved, &changed, &deleted] {
         run.ok(&["open", path.to_str().unwrap()]);
         run.settled();
-        run.ok(&["qa", "owner-edit", "rotate:2"]);
+        run.ok(&["qa", "as-person", "page rotate 2 --by 90"]);
     }
     run.quit();
     let new_home = folder.join("elsewhere/renamed.pdf");
@@ -2223,7 +2223,7 @@ fn it_writes_only_what_happened() {
     // A scripted burst: each is a line of about 25 bytes, and they go out together in one append.
     let before = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap();
     for at in 0..50 {
-        run.ok(&["qa", "owner-edit", &format!("rotate:{}", at % 60 + 1)]);
+        run.ok(&["qa", "as-person", &format!("page rotate {} --by 90", at % 60 + 1)]);
     }
     let began = Instant::now();
     let wrote = loop {
@@ -2429,7 +2429,7 @@ fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
     std::fs::write(&locked, common::locked_with("open sesame", 1)).unwrap();
-    run.ok(&["qa", "open-file", locked.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.to_str().unwrap())]);
     let until = |run: &Run, holds: &dyn Fn(&Value) -> bool| {
         for _ in 0..500 {
             let state = run.report();

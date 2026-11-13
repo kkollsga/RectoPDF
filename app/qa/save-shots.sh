@@ -142,7 +142,7 @@ for look in light dark; do
     cp "$reader" "$copy"
     r open "$copy"
     settle
-    r qa owner-edit delete:2
+    r qa as-person "page delete 2"
     until_state "a['document_edited'] and a['save_button']['visible']"
     r goto 2
     settle
@@ -151,7 +151,7 @@ for look in light dark; do
     until_state "not a['document_edited'] and not a['save_button']['visible']"
     settle
     shot "delete-saved-$look"
-    r qa owner-edit undo
+    r qa as-person "undo"
     until_state "a['document_edited']"
     r goto 2
     settle
@@ -165,7 +165,7 @@ for look in light dark; do
         sign "$kind" "$reader" "$signed"
         r open "$signed"
         settle
-        if [ "$kind" = certified ]; then r qa owner-edit rotate:1; else r qa owner-edit delete:2; fi
+        if [ "$kind" = certified ]; then r qa as-person "page rotate 1 --by 90"; else r qa as-person "page delete 2"; fi
         until_state "a['save_button']['visible'] and not a['save_button']['enabled']"
         settle
         shot "$kind-save-off-$look"
@@ -185,7 +185,7 @@ for look in light dark; do
     sign usage_rights "$reader" "$rights"
     r open "$rights"
     settle
-    r qa owner-edit delete:2
+    r qa as-person "page delete 2"
     until_state "a['save_button']['visible'] and a['save_button']['enabled']"
     r qa button save
     until_state "not a['document_edited'] and a.get('copy_notice')"
@@ -198,7 +198,7 @@ for look in light dark; do
     damaged "$broken"
     r open "$broken"
     settle
-    r qa owner-edit rotate:1
+    r qa as-person "page rotate 1 --by 90"
     until_state "a['save_button']['visible'] and not a['save_button']['enabled'] and 'differently' in a['save_button']['tooltip']"
     settle
     shot "damaged-save-off-$look"

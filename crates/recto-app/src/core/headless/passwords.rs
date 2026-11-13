@@ -79,3 +79,29 @@ fn two_protected_files_opened_together_each_get_their_own_password() {
     let notice = app.reader().selection_notice.map(|notice| notice.text).unwrap_or_default();
     assert!(!notice.contains("didn't open"), "{notice}");
 }
+
+/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in the
+/// temp folders. Since 2026-11-13 a protected file outside them doesn't even open in a quiet run (the session's wall, `recto_session::confined`), so no
+/// sheet asks for its password and the QA wall's refusal of an outside file's sheet is a second line nothing reaches; with no sheet the verb is refused, and a
+/// test's own sheet is taken. (The app test `qa_password_is_only_for_a_tests_own_file` keeps only that the password never comes on the command line.)
+#[test]
+fn qa_password_types_only_into_a_tests_own_sheet() {
+    let app = HeadlessApp::start();
+    let refused = crate::core::qa::password_sheet_is_a_tests(app.core()).expect_err("no sheet");
+    assert!(refused.message.contains("No password sheet"), "{refused:?}");
+    let Some(outside) = crate::testkit::headless::outside_the_tests_folders("recto-qa-password.pdf") else {
+        return;
+    };
+    std::fs::write(&outside, locked_with("open sesame", 1)).expect("a file outside the test's folders");
+    open(&app, &outside);
+    assert!(
+        sheet(&app).is_none() && app.tabs().is_empty(),
+        "a file outside the run's folders opened and asked for its password"
+    );
+    assert!(crate::core::qa::password_sheet_is_a_tests(app.core()).is_err(), "no sheet to type into");
+    let own = app.disk().file("own-locked.pdf", &locked_with("open sesame", 1));
+    open(&app, &own);
+    assert!(sheet(&app).is_some());
+    assert!(crate::core::qa::password_sheet_is_a_tests(app.core()).is_ok(), "a test's own file's sheet");
+    let _ = std::fs::remove_file(&outside);
+}

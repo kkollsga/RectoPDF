@@ -258,6 +258,7 @@ mod tests {
                 paper: PaperKind::White,
                 bgra,
             }],
+            in_view: vec![0],
         }
     }
 

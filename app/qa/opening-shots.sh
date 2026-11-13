@@ -33,7 +33,7 @@ for look in light dark; do
     r qa appearance "$look"
     locked="$root/locked-$look.pdf"
     qpdf --encrypt shots owner 128 --use-aes=y -- "$plain" "$locked"
-    r qa open-file "$locked"
+    r qa as-person "open \"$locked\""
     until_state "a['sheet'].get('kind') == 'password'"
     settle
     shot "password-$look"
