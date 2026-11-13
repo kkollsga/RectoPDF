@@ -371,8 +371,8 @@ impl Engine {
     }
 
     /// What a tab's sleep file gets from here.
-    pub fn sleep_material(&self, tab: u32, own: Option<recto_platform::FileStamp>) -> Option<crate::tiles::SleepMaterial> {
-        lock(&self.shared.reader).sleep_material(tab, own)
+    pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial> {
+        lock(&self.shared.reader).sleep_material(tab, now)
     }
 
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.

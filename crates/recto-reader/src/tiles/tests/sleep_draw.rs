@@ -80,7 +80,7 @@ fn draws(reader: &Reader) -> serde_json::Value {
 #[test]
 fn a_tab_left_at_an_undrawn_place_has_it_drawn_after_the_tab_showing() {
     let mut reader = left_undrawn();
-    let owed = reader.sleep_material(1, None).unwrap().in_view;
+    let owed = reader.sleep_material(1, &map()).unwrap().in_view;
     assert!(!owed.is_empty() && !owed.contains(&0), "{owed:?}");
     let did = run_jobs(&mut reader, &[]);
     let first_for_left = did.iter().position(|job| job.tab == 1).expect("something's drawn for the tab left");
@@ -99,7 +99,7 @@ fn a_tab_left_at_an_undrawn_place_has_it_drawn_after_the_tab_showing() {
     assert!(for_left.iter().filter(|job| job.kind == "preview").all(|job| job.scale == preview_scale));
     // What a tab off screen has drawn is discardable, and the system takes it back whenever it likes: its sleep file has its place all the same.
     assert!(reader.empty_discardable() > 0);
-    let material = reader.sleep_material(1, None).unwrap();
+    let material = reader.sleep_material(1, &map()).unwrap();
     let pictured: Vec<u32> = material
         .pictures
         .iter()
@@ -215,7 +215,7 @@ fn one_tab_at_a_time_the_one_left_last() {
 #[test]
 fn a_heavy_page_and_memory_pressure_get_nothing_drawn() {
     let mut reader = left_undrawn();
-    let owed = reader.sleep_material(1, None).unwrap().in_view;
+    let owed = reader.sleep_material(1, &map()).unwrap().in_view;
     let heavy: Vec<(u32, u32)> = owed.iter().map(|page| (1, *page)).collect();
     let did = run_jobs(&mut reader, &heavy);
     assert!(!did.iter().any(|job| job.tab == 1 && job.kind == "preview"), "{did:?}");
@@ -395,7 +395,11 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
     settle(&mut reader);
     let page = reader.docs.get(&1).unwrap().layout.rect(20);
     reader.set_viewport(view(page.y + page.height * 0.92));
-    assert_eq!(reader.sleep_material(1, None).unwrap().in_view, vec![20, 21], "both owed as it was taken to be");
+    assert_eq!(
+        reader.sleep_material(1, &map()).unwrap().in_view,
+        vec![20, 21],
+        "both owed as it was taken to be"
+    );
     let left_on = reader.place.last_view_page.expect("a page it's on");
     reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
     reader.set_viewport(view(0.0));
@@ -542,7 +546,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
     reader.set_viewport(view(page.y + page.height - 450.0));
     reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
     reader.set_viewport(view(0.0));
-    let owed = reader.sleep_material(1, None).unwrap().in_view;
+    let owed = reader.sleep_material(1, &map()).unwrap().in_view;
     assert!(owed.len() >= 2, "{owed:?}");
     let mut drawn = Vec::new();
     for _ in 0..10_000 {

@@ -914,23 +914,27 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     assert!((rect.x - 100.0).abs() < 0.5 && (rect.width - 200.0).abs() < 0.5, "{rect:?}");
 }
 
-/// Tab 1 drawn at its top, moved far down with nothing drawn there and left for tab 2: a `goto` or a quick scroll and a change of tab before the renderer answers. Returns the engine with drawing let go again, and tab 1's pages owed a picture there.
-fn left_at_a_place_not_drawn(engine: &Engine, second: &TempPdf, second_pages: u32) -> Vec<u32> {
-    let map = |file: &TempPdf| PageMap {
+/// A tab's pages, all of its one file's.
+fn tab_map(file: &TempPdf) -> PageMap {
+    PageMap {
         files: vec![file.0.clone()],
         slots: None,
         own: None,
         turns: None,
         expected: Vec::new(),
         follows: None,
-    };
+    }
+}
+
+/// Tab 1 drawn at its top, moved far down with nothing drawn there and left for tab 2: a `goto` or a quick scroll and a change of tab before the renderer answers. Returns the engine with drawing let go again, and tab 1's pages owed a picture there.
+fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf, second_pages: u32) -> Vec<u32> {
     pump(engine, HANG);
     assert!(settles(engine), "{}", engine.report().0);
     engine.hold_drawing(true);
     engine.set_viewport(view(30_000.0));
-    engine.activate(2, second_pages, 0, map(second), &[1], None, recto_reader::layout::Spread::Single);
+    engine.activate(2, second_pages, 0, tab_map(second), &[1], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
-    let left = engine.sleep_material(1, None).expect("tab 1 is held off screen");
+    let left = engine.sleep_material(1, &tab_map(first)).expect("tab 1 is held off screen");
     assert!(!left.in_view.is_empty() && !left.in_view.contains(&0), "{:?}", left.in_view);
     assert!(
         left.pictures.iter().all(|picture| !left.in_view.contains(&picture.page)),
@@ -945,11 +949,11 @@ fn left_at_a_place_not_drawn(engine: &Engine, second: &TempPdf, second_pages: u3
 fn a_tab_left_at_a_place_not_drawn_sleeps_with_a_picture_of_it() {
     let (first, second) = (document(40), document(3));
     let (engine, _events) = started(&first, 40);
-    let owed = left_at_a_place_not_drawn(&engine, &second, 3);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 3);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     sleep_draws_end(&engine);
-    let material = engine.sleep_material(1, None).expect("tab 1 is held off screen");
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
     let pictured: Vec<u32> = material
         .pictures
         .iter()
@@ -1013,7 +1017,7 @@ fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
     assert_eq!(engine.workers_footprint().0, 0, "tab 1's worker left by itself");
-    left_at_a_place_not_drawn(&engine, &second, 3);
+    left_at_a_place_not_drawn(&engine, &first, &second, 3);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let draws = sleep_draws_end(&engine);
@@ -1110,7 +1114,7 @@ fn a_worker_waiting_to_retire_is_not_replaced_to_draw_a_place_left() {
     assert!(settles(&engine), "{}", engine.report().0);
     let before = engine.worker_pids();
     assert_eq!(before.len(), 1, "tab 1's, waiting to retire: {before:?}");
-    left_at_a_place_not_drawn(&engine, &second, 1);
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
     let draws = sleep_draws_end(&engine);
     let new: Vec<u32> = engine.worker_pids().into_iter().filter(|pid| !before.contains(pid)).collect();
     assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
@@ -1141,7 +1145,7 @@ fn a_page_that_needs_a_heavy_worker_gets_none_for_a_place_left() {
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     assert_eq!(slot.times_taken(), 0, "the pages at the top are light");
-    left_at_a_place_not_drawn(&engine, &second, 1);
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
     let draws = sleep_draws_end(&engine);
     pump(&engine, HANG);
     assert_eq!(slot.times_taken(), 0, "the slot was taken for a tab nobody's looking at: {draws}");
@@ -1161,7 +1165,7 @@ fn a_worker_killed_drawing_a_place_left_is_not_started_again() {
     assert!(settles(&engine), "{}", engine.report().0);
     let before = engine.worker_pids();
     assert_eq!(before.len(), 1, "{before:?}");
-    left_at_a_place_not_drawn(&engine, &second, 1);
+    left_at_a_place_not_drawn(&engine, &first, &second, 1);
     // Once its first page's size and weight are in, its preview's being drawn, slowly.
     let deadline = Instant::now() + HANG;
     while engine.report().0["sleep_draws"]["jobs"].as_u64().unwrap_or(0) < 3 && Instant::now() < deadline {

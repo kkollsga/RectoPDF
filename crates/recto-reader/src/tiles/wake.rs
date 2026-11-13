@@ -1,9 +1,9 @@
 //! **Waking and sleep pictures:** what a tab's first frame shows from its sleep file, how its wake goes until it's sharp, and the pictures of its pages that go into the sleep file, from its previews or put together from its tiles.
 
+use super::PageMap;
 use super::{DocView, DrawKind, MAX_PREVIEW_BYTES, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
-use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TileRect, device_size};
 use recto_render_service::TileKind;
@@ -350,11 +350,20 @@ impl Reader {
 
     /// **What a tab's sleep file gets from what's here.** Sizes, and a picture for each page at its place: its preview, if the system has left it, or else put together from whatever of its tiles are here, so a heavy page, which has no preview, has one too. A short lock: a picture's a few milliseconds at the worst.
     ///
-    /// `own` is what the session says the tab's file is now. If that's not what this is a view of, what's here is of another file, and nothing goes in its sleep file.
-    pub fn sleep_material(&mut self, tab: u32, own: Option<FileStamp>) -> Option<SleepMaterial> {
+    /// `now` is what the session says the tab's pages are now. If its file isn't what this is a view of, what's here is of another file, and nothing goes in its sleep file. **If its pages aren't the pages here** (deleted, moved, added or turned while it was off screen, which a view held warm hears of only when it's shown again), what's here is filed under places that are other pages now, and a picture of the wrong page is worse than bare paper: its facts go, and no picture or size.
+    pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial> {
         let doc = self.docs.get(&tab)?;
-        if doc.map.own != own {
+        if doc.map.own != now.own {
             return None;
+        }
+        if !doc.map.same_pages(now) || doc.map.turns != now.turns {
+            return Some(SleepMaterial {
+                version: None,
+                usual: None,
+                sizes: Vec::new(),
+                pictures: Vec::new(),
+                in_view: Vec::new(),
+            });
         }
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();

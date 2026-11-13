@@ -539,13 +539,13 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
     assert!(reader.cache.entries.values().any(|entry| entry.preview), "there's a preview");
-    let material = reader.sleep_material(1, version(1)).unwrap();
+    let material = reader.sleep_material(1, &on(version(1))).unwrap();
     assert!(!material.pictures.is_empty());
     // Told it's another file: nothing of the old one's left, and the old one's not offered to the sleep file under the new name.
-    assert!(reader.sleep_material(1, version(2)).is_none());
+    assert!(reader.sleep_material(1, &on(version(2))).is_none());
     reader.activate(1, 5, 0, on(version(2)), &[], None, Spread::Single);
     assert!(reader.cache.entries.is_empty(), "every picture and tile of it goes");
-    assert!(reader.sleep_material(1, version(2)).unwrap().pictures.is_empty());
+    assert!(reader.sleep_material(1, &on(version(2))).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert_eq!(
         reader.take_reopen_files(),
@@ -575,12 +575,12 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         "nothing of it goes back on a layer"
     );
     assert!(
-        reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+        reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
         "and nothing's offered for a sleep file till it's drawn again"
     );
     settle(&mut reader);
     assert!(reader.cache.entries.values().all(|entry| entry.version == Some(2)));
-    assert!(!reader.sleep_material(1, None).unwrap().pictures.is_empty());
+    assert!(!reader.sleep_material(1, &map()).unwrap().pictures.is_empty());
     // Something kept whose version is stale is refused at the moment it would go on a layer, however it got there.
     let stale = *reader.cache.entries.keys().next().unwrap();
     if let Some(entry) = reader.cache.entries.get_mut(&stale) {

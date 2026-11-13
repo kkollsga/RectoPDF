@@ -218,3 +218,95 @@ fn a_tab_moved_and_left_before_its_place_is_drawn_wakes_with_a_picture_of_it() {
     assert_eq!(c_woke["had"], "nothing", "as it was before: {c_woke}");
     drop(app.quit());
 }
+
+/// Failure (review 1 of drawing a tab's place before it sleeps, F9): a warm tab off screen whose pages are deleted keeps the pictures it was left with, filed by where they were, so its sleep file would wake it with a picture of another page where one was deleted, which is worse than bare paper. Tab a, left drawn at its top, has its first page deleted while it's off screen and is put to sleep; woken, nothing from its sleep file is in view. Tab c, the same with no edit, wakes from its sleep file, so the look isn't empty for want of one.
+#[test]
+fn a_tab_whose_pages_change_off_screen_wakes_with_no_picture_of_another_page() {
+    let disk = Disk::new();
+    let (a, b, c) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 6));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&c, &a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
+    full(&app, &["page", "delete", "1", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    for tab in [a, c] {
+        full(&app, &["session", "sleep", "--tab", &format!("#{tab}")]);
+    }
+    host_turns(&app, &mut view, true);
+    let mut woke = |tab: u64| {
+        full(&app, &["tap", &format!("#{tab}")]);
+        host_turns(&app, &mut view, true);
+        engine.report().0["last_wake"].clone()
+    };
+    let c_woke = woke(c);
+    assert_eq!(c_woke["had"], "sleep_file", "unedited, it wakes from its sleep file: {c_woke}");
+    let a_woke = woke(a);
+    assert_eq!(a_woke["tab"], a, "{a_woke}");
+    assert_eq!(a_woke["sleep_in_view"], 0, "a picture from before its pages changed, of another page: {a_woke}");
+    drop(app.quit());
+}
+
+/// Failure, the same rule from the other side: a tab already asleep, with a sleep file on disk of its pages as they were, has its first page deleted while it's off screen (an agent's edit), and is shown: its first frame comes from the old file, a picture of the deleted page where page 2 now is. The wake takes no picture from a sleep file of another list of pages than the session's now.
+#[test]
+fn a_tab_asleep_whose_pages_change_wakes_with_no_picture_from_before() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let a = tab_named(&app, "a.pdf");
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["page", "delete", "1", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    let woke = engine.report().0["last_wake"].clone();
+    assert_eq!(woke["tab"], a, "{woke}");
+    assert_eq!(woke["sleep_in_view"], 0, "a picture from before its pages changed: {woke}");
+    drop(app.quit());
+}
+
+/// Failure: a warm tab whose pages change while it's off screen is come back to without sleeping, and the previews it was left with (those drawn for its place before it sleeps among them) go up for a frame under the page numbers they had, pictures of other pages. With drawing held, so only what's kept could show: nothing of it is on a layer. Tab c, unedited, shows what it kept, so the look isn't empty for want of anything kept.
+#[test]
+fn a_warm_tab_whose_pages_change_off_screen_shows_nothing_kept_from_before() {
+    let disk = Disk::new();
+    let (a, b, c) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 6));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&c, &a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
+    full(&app, &["page", "delete", "1", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    engine.hold_drawing(true);
+    let mut back = |tab: u64| {
+        full(&app, &["tap", &format!("#{tab}")]);
+        host_turns(&app, &mut view, false);
+        engine.report().0["tiles"].clone()
+    };
+    let c_tiles = back(c);
+    assert!(c_tiles["attached"].as_u64().unwrap() > 0, "unedited, what it kept goes up: {c_tiles}");
+    let a_tiles = back(a);
+    assert_eq!(a_tiles["attached"], 0, "kept from before its pages changed: {a_tiles}");
+    engine.hold_drawing(false);
+    drop(app.quit());
+}
