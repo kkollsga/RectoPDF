@@ -18,6 +18,8 @@
 
 The scroll's path was `(step % 25) * 280` points: it fell from 6,720 to 0 every 25th step, which is a jump over the whole document and not a scroll step, and with 4 steps in 100 it sat inside p90 and p99. It is now a scroll down and back up (24 steps of 280 points, then 24 up, a period of 48 with no repeated place). On 2026-11-13 at 73a6385d (the same page view code as `main`'s), load 8 to 19 on 10 cores, three runs of five rounds, the ranges over all fifteen rounds: with the jump, p50 6.33 to 6.42 µs, p90 9.67 to 9.88 µs, p99 11.71 to 11.88 µs; as a scroll both ways, p50 6.42 to 6.54 µs, p90 8.54 to 8.67 µs, p99 9.96 to 10.25 µs (the first round of the second run was 9.38 µs at p90 and 15.12 µs at p99, which the load made). The wrap was worth about 1.2 µs at p90 and 1.7 µs at p99; the step itself, p50, is the same.
 
+**QA seams.** `Engine::hold_busy` (and the `qa_busy` flag it sets, read where the UI thread's calls try the lock) exist only with the crate's `qa` feature, which `recto-app`'s `testkit` and its tests turn on; a release app has no such field or method (without the feature a call to it fails to compile, 2026-11-13). `Engine::hold_drawing` stays in every build: `recto qa hold-drawing` uses it and release builds accept `--qa`.
+
 ## Per-item sizes
 
 | Struct | Held per | Limit |

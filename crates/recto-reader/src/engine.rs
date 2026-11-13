@@ -74,7 +74,8 @@ struct Shared {
     stopping: AtomicBool,
     /// What a comparison's other panes asked of this view from the UI thread while its own thread held it: the latest of each, taken by that thread the next time it holds its lock. See [`Engine::follow_soon`].
     pending: Mutex<Pending>,
-    /// For QA ([`Engine::hold_busy`]): this view acts as though its own thread held it at every call from the UI thread and hadn't come round since.
+    /// For QA ([`Engine::hold_busy`]): this view acts as though its own thread held it at every call from the UI thread and hadn't come round since. Only with the `qa` feature (or in this crate's tests): a release app has no such field.
+    #[cfg(any(test, feature = "qa"))]
     qa_busy: AtomicBool,
 }
 
@@ -119,6 +120,7 @@ impl Engine {
             config,
             stopping: AtomicBool::new(false),
             pending: Mutex::new(Pending::default()),
+            #[cfg(any(test, feature = "qa"))]
             qa_busy: AtomicBool::new(false),
         });
         Self {
@@ -229,7 +231,7 @@ impl Engine {
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
     fn now_or_soon(&self, leave: impl FnOnce(&mut Pending), now: impl FnOnce(&mut Reader, &mut Pending)) -> bool {
         // Held busy for QA, it's as though the lock were taken.
-        let tried = if self.shared.qa_busy.load(Ordering::Relaxed) {
+        let tried = if self.shared.held_busy() {
             Err(std::sync::TryLockError::WouldBlock)
         } else {
             self.shared.reader.try_lock()
@@ -512,7 +514,7 @@ fn read_place<T>(shared: &Shared, read: impl FnOnce(&Reader) -> T) -> T {
 
 /// The view's own thread takes what the UI thread left for this view, with the lock held. Says whether there was any. Held off by [`Engine::hold_busy`].
 fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
-    !shared.qa_busy.load(Ordering::Relaxed) && apply_pending(shared, reader)
+    !shared.held_busy() && apply_pending(shared, reader)
 }
 
 /// Applies what the UI thread left for this view, with the lock held. Says whether there was any.

@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# QA seams that force an ordering a window meets only now and then (`Engine::hold_busy`). A release build of the app doesn't have them; `recto-app`'s test builds turn it on.
+qa = []
+
 [lints]
 workspace = true
 

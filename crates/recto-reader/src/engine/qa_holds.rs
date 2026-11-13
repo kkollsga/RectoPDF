@@ -1,8 +1,24 @@
 //! **Holds on a page view, for QA:** a first frame kept to be looked at, and a busy page view made to last, so a test can force an ordering the window
 //! meets only now and then.
 
-use super::{Engine, lock};
+use super::{Engine, Shared, lock};
+#[cfg(any(test, feature = "qa"))]
 use std::sync::atomic::Ordering;
+
+impl Shared {
+    /// Whether QA holds this view busy ([`Engine::hold_busy`]). Never, in a build without the `qa` feature.
+    #[inline]
+    pub(super) fn held_busy(&self) -> bool {
+        #[cfg(any(test, feature = "qa"))]
+        {
+            self.qa_busy.load(Ordering::Relaxed)
+        }
+        #[cfg(not(any(test, feature = "qa")))]
+        {
+            false
+        }
+    }
+}
 
 impl Engine {
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
@@ -15,6 +31,7 @@ impl Engine {
     /// a selection taken elsewhere) is left pending as though its own thread held its lock, and that thread leaves it there as though it hadn't come round:
     /// what a pane's thread does for as long as a drawing job takes when the UI thread's call met it holding the lock. A read of the view still counts what's
     /// pending ([`Self::places`]). Let go, the thread takes it.
+    #[cfg(any(test, feature = "qa"))]
     pub fn hold_busy(&self, on: bool) {
         self.shared.qa_busy.store(on, Ordering::SeqCst);
         if !on {
