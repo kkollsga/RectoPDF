@@ -135,14 +135,14 @@ fn go_dormant<L: DocLoader>(s: &mut Session<L>, store: &Store, tabs: &[TabId]) -
     store.write_journals(s);
     let mut gone = 0;
     for &id in tabs {
-        if let Some(facts) = s.sleep_facts(id) {
+        if let Some(facts) = s.dormant().sleep_facts(id) {
             store.write_sleep(&facts);
         }
-        let _ = s.list_to_sleep(id);
-        if s.go_dormant(id) {
+        let _ = s.dormant().list_to_sleep(id);
+        if s.sleeper().go_dormant(id) {
             gone += 1;
         } else {
-            s.touch(id);
+            s.sleeper().touch(id);
         }
     }
     gone
@@ -152,7 +152,7 @@ fn go_dormant<L: DocLoader>(s: &mut Session<L>, store: &Store, tabs: &[TabId]) -
 fn show<L: DocLoader>(s: &mut Session<L>, id: TabId) {
     if let Some((tab, path)) = s.wake_for_tap(id) {
         let read = s.loader().load(&path);
-        s.give_woken(tab, read, file_stamp(&path).ok());
+        s.sleeper().give_woken(tab, read, file_stamp(&path).ok());
     }
     s.tap(id).unwrap();
 }
@@ -181,7 +181,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
     // its way for it any more.
     show(&mut s, a);
     holds(&s, &store, &[], "a shown again before its sleep file was taken");
-    let left: Vec<TabId> = s.take_left_warm().iter().map(|facts| facts.id).collect();
+    let left: Vec<TabId> = s.sleeper().take_left_warm().iter().map(|facts| facts.id).collect();
     assert!(!left.contains(&a), "no sleep file is written for the tab on screen: {left:?}");
     holds(&s, &store, &[], "what's left taken");
 
@@ -209,7 +209,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
 
     // At quit: the tab on screen's sleep file, and nothing goes dormant.
     let active = s.tabs().active().unwrap();
-    if let Some(facts) = s.sleep_facts(active) {
+    if let Some(facts) = s.dormant().sleep_facts(active) {
         store.write_sleep(&facts);
     }
     holds(&s, &store, &[], "at quit");
@@ -224,7 +224,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
     holds(&s, &store, &[], "a asleep again");
 
     // Woken by a command that reads pages, as the executor wakes every tab it's about first.
-    assert!(s.wake_list(a));
+    assert!(s.sleeper().wake_list(a));
     holds(&s, &store, &[], "a woken to read its pages");
     go_dormant(&mut s, &store, &[a]);
     holds(&s, &store, &[], "a asleep once more");
@@ -232,7 +232,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
     // A wake that fails: its journal's gone from the disk. It stays asleep, under its name, and the tab says so; showing it doesn't change that.
     let name = s.journals().name_of(a).unwrap().to_string();
     store.journals.lock().unwrap().remove(&name);
-    assert!(!s.wake_list(a));
+    assert!(!s.sleeper().wake_list(a));
     assert!(s.lists().is_asleep(a));
     assert!(matches!(s.tabs().tab_notice(a), Some(FileNotice::EditsUnreadable)));
     holds(&s, &store, &[a], "a's journal unreadable");
@@ -251,7 +251,7 @@ fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_
 
 /// **Failure: what was read of a file found to be another version is written into a new sleep file** (a correctness fault, not only wear). A tab woken
 /// from its sleep file and pushed out of the warm ones before the worker opens its file: the worker says it's another version, so what the sleep file
-/// said goes and the PDF's to be read ([`Session::file_length_is`]). Before 2026-11-13 the contents it was pushed out with were still on their way to a
+/// said goes and the PDF's to be read ([`crate::Sleeper::file_length_is`]). Before 2026-11-13 the contents it was pushed out with were still on their way to a
 /// sleep file, and went into a new one under the same stamp, so the next wake showed the old version's contents again.
 #[test]
 fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_sleep_file() {
@@ -277,7 +277,7 @@ fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_
     for path in &paths[1..=MAX_WARM] {
         s.open(path).unwrap();
     }
-    s.take_left_warm();
+    s.sleeper().take_left_warm();
     // Woken from its sleep file, and shown.
     show(&mut s, x);
     assert!(s.tabs().tab(x).unwrap().from_sleep.is_some(), "woken from the sleep file");
@@ -287,10 +287,10 @@ fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_
     }
     assert!(!s.warm.contains(x));
     // The worker: another version.
-    assert!(s.file_length_is(x, 5, 8), "the file's to be read");
+    assert!(s.sleeper().file_length_is(x, 5, 8), "the file's to be read");
     holds(&s, &store, &[], "x found to be another version");
     let title = |facts: &SleepFacts| facts.sleep.toc.entries().first().map(|entry| facts.sleep.toc.title(entry).to_string());
-    for facts in s.take_left_warm() {
+    for facts in s.sleeper().take_left_warm() {
         assert!(
             facts.id != x,
             "a sleep file's on its way for x with what was read of the old version: {:?}",
@@ -383,24 +383,24 @@ fn sleeper_run() -> String {
         writeln!(out, "== {what}").unwrap();
         for id in tabs(s) {
             writeln!(out, "{}", state_of(s, id)).unwrap();
-            match s.sleep_facts(id) {
+            match s.dormant().sleep_facts(id) {
                 Some(facts) => writeln!(out, "  facts {}", facts_said(&names, &facts)).unwrap(),
                 None => writeln!(out, "  facts none").unwrap(),
             }
             writeln!(
                 out,
                 "  to read {}  awake {}",
-                names.say(s.sleep_to_read(id)),
-                names.say(s.sleep_to_read_awake(id))
+                names.say(s.dormant().sleep_to_read(id)),
+                names.say(s.dormant().sleep_to_read_awake(id))
             )
             .unwrap();
         }
-        let mut asleep: Vec<(String, EditsSummary)> = s.asleep_by_journal().into_iter().collect();
+        let mut asleep: Vec<(String, EditsSummary)> = s.dormant().asleep_by_journal().into_iter().collect();
         asleep.sort_by(|x, y| x.0.cmp(&y.0));
         writeln!(out, "asleep by journal {}", names.say(&asleep)).unwrap();
     };
     let take_left = |s: &mut Session<Titled>, out: &mut String| {
-        for facts in s.take_left_warm() {
+        for facts in s.sleeper().take_left_warm() {
             writeln!(out, "left warm: {}", facts_said(&names, &facts)).unwrap();
             store.write_sleep(&facts);
         }
@@ -415,9 +415,9 @@ fn sleeper_run() -> String {
     take_left(&mut s, &mut out);
     step(&s, &mut out, "a pushed out of the warm ones");
 
-    let to_sleep = s.list_to_sleep(a);
+    let to_sleep = s.dormant().list_to_sleep(a);
     writeln!(out, "list to sleep {}", names.say(&to_sleep)).unwrap();
-    writeln!(out, "a goes dormant: {}", s.go_dormant(a)).unwrap();
+    writeln!(out, "a goes dormant: {}", s.sleeper().go_dormant(a)).unwrap();
     step(&s, &mut out, "a dormant");
 
     writeln!(out, "wake for tap {}", names.say(s.wake_for_tap(a))).unwrap();
@@ -427,20 +427,20 @@ fn sleeper_run() -> String {
     writeln!(out, "sleep read {read:?}, woken from files {:?}", s.dormancy_mut().take_woken_from_file()).unwrap();
     take_left(&mut s, &mut out);
     step(&s, &mut out, "a shown");
-    writeln!(out, "file length is 5, version 0: {}", s.file_length_is(a, 5, 0)).unwrap();
+    writeln!(out, "file length is 5, version 0: {}", s.sleeper().file_length_is(a, 5, 0)).unwrap();
     step(&s, &mut out, "a's file as its sleep file said");
 
     s.dormancy_mut().hold(others[1]);
     let due = s.dormant().due_at(1_000, 300);
     writeln!(out, "due with c held {due:?}").unwrap();
     writeln!(out, "gone {}", go_dormant(&mut s, &store, &due)).unwrap();
-    s.let_go(others[1]);
+    s.sleeper().let_go(others[1]);
     writeln!(out, "due once let go {:?}", s.dormant().due_at(1_000, 300)).unwrap();
     step(&s, &mut out, "left alone, c held then let go");
 
     writeln!(out, "wake for tap {}", names.say(s.wake_for_tap(others[0]))).unwrap();
     s.tap(others[0]).unwrap();
-    writeln!(out, "file length is 4, version 3: {}", s.file_length_is(others[0], 4, 3)).unwrap();
+    writeln!(out, "file length is 4, version 3: {}", s.sleeper().file_length_is(others[0], 4, 3)).unwrap();
     take_left(&mut s, &mut out);
     step(&s, &mut out, "b woken and found another length");
 
@@ -448,9 +448,10 @@ fn sleeper_run() -> String {
     writeln!(out, "oldest first {oldest:?}, gone {}", go_dormant(&mut s, &store, &oldest)).unwrap();
     step(&s, &mut out, "the budget");
 
-    s.forget_read(others[0]);
+    s.sleeper().forget_read(others[0]);
     let e = s.open(&paths[MAX_WARM + 1]).unwrap();
-    s.give_woken(others[2], s.loader().load(&paths[3]), file_stamp(&paths[3]).ok());
+    let read = s.loader().load(&paths[3]);
+    s.sleeper().give_woken(others[2], read, file_stamp(&paths[3]).ok());
     take_left(&mut s, &mut out);
     step(&s, &mut out, "b's read forgotten, e opened, d's read given");
 
@@ -460,8 +461,8 @@ fn sleeper_run() -> String {
     writeln!(out, "gone {}", go_dormant(&mut s, &store, &[a])).unwrap();
     let name = s.journals().name_of(a).unwrap().to_string();
     store.journals.lock().unwrap().remove(&name);
-    writeln!(out, "a's list wakes with its journal gone: {}", s.wake_list(a)).unwrap();
-    s.touch(e);
+    writeln!(out, "a's list wakes with its journal gone: {}", s.sleeper().wake_list(a)).unwrap();
+    s.sleeper().touch(e);
     step(&s, &mut out, "a's journal unreadable");
     out
 }

@@ -49,7 +49,7 @@ fn panes_on_screen_dont_go_dormant() {
     assert!(!s.dormant().may_go(ids[1]), "a pane not being read is still on screen");
     assert!(!s.dormant().oldest_first().contains(&ids[1]));
     assert!(s.dormant().oldest_first().contains(&ids[2]), "the tab off screen can");
-    assert!(!s.go_dormant(ids[1]));
+    assert!(!s.sleeper().go_dormant(ids[1]));
 }
 
 /// Failure: closing a pane's tab leaves a pane for a tab that's gone, or a comparison of one, or the reader on a tab that's off screen rather than a pane that's left.
@@ -129,7 +129,7 @@ fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
     );
     for (id, _) in cold {
         let facts = s.loader().load(Path::new("/d/x.pdf"));
-        s.give_woken(id, facts, None);
+        s.sleeper().give_woken(id, facts, None);
     }
     let loads = s.loader().loads.get();
     s.compare(&panes, None).unwrap();
@@ -169,7 +169,7 @@ fn the_pane_read_next_is_read_ahead() {
     let loads = back.loader().loads.get();
     let (next, _) = back.wake_for_compare_click(ids[1]).unwrap();
     let facts = back.loader().load(Path::new("/d/a.pdf"));
-    back.give_woken(next, facts, None);
+    back.sleeper().give_woken(next, facts, None);
     let read_ahead = back.loader().loads.get();
     back.toggle_compare(ids[1]).unwrap();
     assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
