@@ -22,7 +22,7 @@ fn threads_at_rest(pid: u32) -> u32 {
         if threads <= 1 || started.elapsed() > Duration::from_secs(10) {
             return threads;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
 }
 
@@ -204,7 +204,7 @@ fn after_drawing_nothing_is_left_running() {
             process_counters(serving.pid()),
             children()
         );
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
 }
 
@@ -309,6 +309,7 @@ fn an_export_holds_nothing_of_the_page() {
         .spawn()
         .unwrap();
     let mut peak = 0;
+    let started = std::time::Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -316,7 +317,11 @@ fn an_export_holds_nothing_of_the_page() {
         if let Some(memory) = process_memory(child.id()) {
             peak = peak.max(memory.footprint_bytes);
         }
-        std::thread::sleep(Duration::from_millis(5));
+        if started.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            panic!("the export was still running after 60 s, at a peak of {peak} bytes");
+        }
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     };
     assert!(status.success());
     assert!(peak > 0, "the process was never measured, so this would prove nothing");
@@ -351,7 +356,7 @@ fn an_index_leaves_nothing_in_the_session() {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while process_counters(serving.pid()).unwrap().threads > 1 {
         assert!(std::time::Instant::now() < deadline, "a thread stayed behind");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     let after = footprint(&mut raw);
     println!("session before {before}, after indexing 300 pages {after}");
