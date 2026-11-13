@@ -136,9 +136,9 @@ fn on(disk: &Disk) -> Session<FakeLoader> {
 
 /// The session's journal work written, and the outcome given back.
 fn write(s: &mut Session<FakeLoader>, disk: &mut Disk) {
-    let work = s.journal_work();
+    let work = s.journal_desk().work();
     let outcome = disk.write(&work);
-    s.journal_outcome(outcome);
+    s.journal_desk().outcome(outcome);
 }
 
 const SAVED: FileStamp = FileStamp {
@@ -160,14 +160,14 @@ fn scripted_run() -> String {
     s.edit_pages(b, |e| e.delete(4, 1)).unwrap();
     assert!(s.undo_edit(a));
     assert!(s.redo_edit(a));
-    writeln!(out, "has work: {}", s.has_journal_work()).unwrap();
+    writeln!(out, "has work: {}", s.journal_look().has_work()).unwrap();
     write(&mut s, &mut disk);
     disk.take_step("edits, undo and redo on two tabs", &mut out);
 
     // The disk refuses: nothing's said written, and it all goes again, once.
     s.edit_pages_as(b, Author::Agent, |e| e.rotate(0, 2, 3)).unwrap();
-    let refused = s.journal_work();
-    s.journal_outcome(JournalOutcome {
+    let refused = s.journal_desk().work();
+    s.journal_desk().outcome(JournalOutcome {
         written: Vec::new(),
         not_retired: refused.retired.clone(),
     });
@@ -220,7 +220,7 @@ fn scripted_run() -> String {
         disk.files.lock().unwrap().insert(name.clone(), bytes);
         let back = MemorySource(Arc::clone(&disk.files)).read_list(&name).unwrap();
         disk.through.insert(name.clone(), back.seq);
-        s.take_up_history(c, &name, back.edits, back.seq);
+        s.journal_desk().take_up_history(c, &name, back.edits, back.seq);
         writeln!(out, "taken up: {name}").unwrap();
     }
     s.edit_pages(c, |e| e.rotate(3, 1, 1)).unwrap();
@@ -233,14 +233,14 @@ fn scripted_run() -> String {
     disk.take_step("b discarded", &mut out);
 
     // What's read back by name, and what a session that keeps no journal as it goes writes when told to save.
-    let mut lists: Vec<(String, record::EditsRecord)> = s.lists_by_journal().into_iter().collect();
+    let mut lists: Vec<(String, record::EditsRecord)> = s.journal_look().lists_by_journal().into_iter().collect();
     lists.sort_by(|x, y| x.0.cmp(&y.0));
     writeln!(out, "lists by journal: {lists:?}").unwrap();
-    writeln!(out, "has work: {}", s.has_journal_work()).unwrap();
+    writeln!(out, "has work: {}", s.journal_look().has_work()).unwrap();
     let mut plain = session(5);
     let p = plain.open(Path::new("/d/p.pdf")).unwrap();
     plain.edit_pages(p, |e| e.rotate(0, 1, 1)).unwrap();
-    let mut checkpoints = plain.checkpoints();
+    let mut checkpoints = plain.journal_desk().checkpoints();
     checkpoints.sort_by(|x, y| x.0.cmp(&y.0));
     for (name, header, list) in checkpoints {
         writeln!(out, "checkpoint {name}").unwrap();
@@ -314,15 +314,15 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
                 }
             }
         }
-        let work = s.journal_work();
+        let work = s.journal_desk().work();
         match round % 3 {
             // Refused whole: what was to go goes again, and what was to be removed is asked again, once.
             0 => {
-                s.journal_outcome(JournalOutcome {
+                s.journal_desk().outcome(JournalOutcome {
                     written: Vec::new(),
                     not_retired: work.retired.clone(),
                 });
-                let again = s.journal_work();
+                let again = s.journal_desk().work();
                 let mut retired = again.retired.clone();
                 retired.sort();
                 retired.dedup();
@@ -331,7 +331,7 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
                     assert!(again.retired.contains(name), "{name}, not removed, is asked again");
                 }
                 let outcome = disk.write(&again);
-                s.journal_outcome(outcome);
+                s.journal_desk().outcome(outcome);
             }
             // Only the first journal got there.
             1 => {
@@ -340,15 +340,15 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
                     appends: work.appends.iter().take(1).cloned().collect(),
                 });
                 outcome.not_retired.clear();
-                s.journal_outcome(outcome);
+                s.journal_desk().outcome(outcome);
                 write(&mut s, &mut disk);
             }
             _ => {
                 let outcome = disk.write(&work);
-                s.journal_outcome(outcome);
+                s.journal_desk().outcome(outcome);
             }
         }
-        let after = s.journal_work();
+        let after = s.journal_desk().work();
         assert!(after.retired.is_empty(), "a name removed isn't asked for again: {:?}", after.retired);
         assert!(after.appends.is_empty(), "nothing written is sent again");
         reads_back(&s, &disk);

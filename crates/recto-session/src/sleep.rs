@@ -356,7 +356,7 @@ impl<L: DocLoader> Session<L> {
         if !self.journals.kept_and_readable() {
             return None;
         }
-        let (header, base) = self.checkpoint_if_caught_up(id)?;
+        let (header, base) = self.journal_look().checkpoint_if_caught_up(id)?;
         Some((self.journals.name_of(id)?.to_string(), header, base))
     }
 
@@ -530,7 +530,7 @@ impl<L: DocLoader> Session<L> {
         if tab.page_count == pages && (said == 0 || said == version) {
             return false;
         }
-        self.retire_sleep_file(id);
+        self.journal_desk().retire_sleep_file(id);
         self.forget_read(id);
         true
     }

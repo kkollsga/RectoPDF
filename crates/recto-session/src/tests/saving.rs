@@ -285,7 +285,7 @@ fn copies_kept_stay_within_the_limit() {
         [KEPT_B]
     );
     assert_eq!(list.summary().undo, 1);
-    assert!(s.journal_work().retired.iter().any(|name| name == KEPT_A), "and its file goes");
+    assert!(s.journal_desk().work().retired.iter().any(|name| name == KEPT_A), "and its file goes");
 }
 
 /// Failure: Save As loses the history, or its way back names the new file, or the tab's not on the new file. The old file is still where it was, so that's where the pages come from, with no copy.
@@ -336,11 +336,11 @@ fn a_save_of_something_else_ends_the_history() {
     assert!(s.lists().get(a).is_none());
     assert_eq!(s.pages().count(a), 3);
     assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("history_rolled_off"));
-    assert_eq!(s.journal_work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
+    assert_eq!(s.journal_desk().work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
     // A tab with no list has nothing to carry, and a file kept for it goes.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     assert_eq!(s.saved(b, target, 5, None, Some(kept(KEPT_B, 100))), 0);
-    assert_eq!(s.journal_work().retired, [KEPT_B]);
+    assert_eq!(s.journal_desk().work().retired, [KEPT_B]);
 }
 
 /// Failure (decision 25): clearing only forgets a history, so its file stays on disk and what was removed can be got back; or unsaved work goes with it; or an agent or a changed file takes what shouldn't go. Each reason does what it's for, and the files go.
@@ -371,7 +371,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         assert!(s.clear_history(a, reason));
         assert!(s.lists().get(a).is_none(), "{reason:?}");
         assert!(s.journals().has_pending());
-        let work = s.journal_work();
+        let work = s.journal_desk().work();
         assert_eq!(
             work.retired.iter().filter(|name| !record::is_sleep_name(name)).count(),
             2,
@@ -458,7 +458,7 @@ fn a_file_changed_under_a_history_clears_it_on_waking() {
     assert!(s.lists().get(a).is_none());
     assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("file_changed"));
     assert_eq!(
-        s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
+        s.journal_desk().work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
         1,
         "and its file goes"
     );
@@ -486,7 +486,7 @@ fn clearing_takes_a_copy_kept_for_an_unconfirmed_save() {
         let keeping = kept(KEPT_A, 100);
         s.save_prepared(a, target, Some(&keeping));
         assert!(s.clear_history(a, ClearReason::UserAsked));
-        assert!(s.journal_work().retired.iter().any(|name| name == KEPT_A), "unsaved: {unsaved}");
+        assert!(s.journal_desk().work().retired.iter().any(|name| name == KEPT_A), "unsaved: {unsaved}");
         // Once it's gone, the next journal's first line doesn't name it either.
         if let Some(list) = s.lists().get(a) {
             assert!(list.keeping().is_none());
