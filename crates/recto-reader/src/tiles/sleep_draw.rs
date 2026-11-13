@@ -407,8 +407,14 @@ impl SleepDraws {
         }
     }
 
-    /// **A preview's been drawn and kept, as `id`:** if it's one asked here, a copy goes into what the tab was left with, under that's cap, and its page is done with whichever way it went. The copy in the cache is kept, so a return while the tab's still warm shows it, but as the oldest preview there: it's the first to go when there are too many, never one of the tab showing's.
+    /// **A preview's been drawn and kept, as `id`:** if it's one asked here, a copy goes into what the tab was left with, under that's cap, and its page is done with whichever way it went. Kept for a tab off screen, the copy in the cache stays, so a return while the tab's still warm shows it, but as the oldest preview there, whether it went into what the tab was left with or not (its asking over as it landed, its copy not made): it's the first to go when there are too many, never one of the tab showing's.
     pub(super) fn drawn(reader: &mut Reader, tab: u32, page: u32, id: u64) {
+        if reader.hot == Some(tab) {
+            return;
+        }
+        if let Some(entry) = reader.cache.entries.get_mut(&id) {
+            entry.last_used = 0;
+        }
         if !Self::is_for(reader, tab) || !reader.wake.draws.owed.as_ref().is_some_and(|owed| owed.pages.contains(&page)) {
             return;
         }
@@ -416,9 +422,6 @@ impl SleepDraws {
             owed.pages.retain(|owed| *owed != page);
         }
         let Some(picture) = reader.copy_preview(id) else { return };
-        if let Some(entry) = reader.cache.entries.get_mut(&id) {
-            entry.last_used = 0;
-        }
         let Some(doc) = reader.docs.get_mut(&tab) else { return };
         let left = doc.drawing.left_pictures.get_or_insert_with(Vec::new);
         let held: usize = left.iter().map(|picture| picture.bgra.len()).sum();

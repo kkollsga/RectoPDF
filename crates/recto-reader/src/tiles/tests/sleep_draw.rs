@@ -516,6 +516,73 @@ fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
     assert_eq!(previews_of(&reader, 2), before, "tab 2's previews all kept");
 }
 
+/// Tab 2 shown with its fill of previews in a cache at an eighth's share, then tab 1 drawn at its top and left far down for tab 2: the start of a test of what tab 1's previews push out. Says how many previews tab 2 has.
+fn tab_showing_full_of_previews_and_tab_left(reader: &mut Reader) -> usize {
+    reader.set_share(8);
+    reader.set_viewport(view(0.0));
+    reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
+    reader.note_version(Path::new("/d/2.pdf"), 1);
+    for step in 0..30 {
+        reader.set_viewport(view(f64::from(step) * 1_200.0));
+        settle(reader);
+    }
+    let filled = reader.cache.entries.values().filter(|entry| entry.tab == 2 && entry.preview).count();
+    assert!(filled >= MAX_KEPT_PREVIEWS / 8, "tab 2 has its fill: {filled}");
+    reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(reader);
+    reader.set_viewport(view(20_000.0));
+    reader.activate(2, 40, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    reader.cache.entries.values().filter(|entry| entry.tab == 2 && entry.preview).count()
+}
+
+/// Failure (review round 2, F11): a preview drawn for a tab left that lands after its asking ended (memory pressure, here), or whose copy for the sleep file can't be made (one drawn at a lower resolution), was kept in the cache as the newest preview, pushing one of the tab showing's out, so a page the person scrolls back to comes back blank. Kept for a tab off screen, it's the oldest, whichever way it went.
+#[test]
+fn a_preview_for_a_tab_left_that_goes_nowhere_never_pushes_out_the_tab_showing_s() {
+    let landed_late = |reader: &mut Reader| reader.memory_pressure(false);
+    let not_copied = |_: &mut Reader| {};
+    for (how, before_landing, low_res) in [
+        ("after its asking ended", &landed_late as &dyn Fn(&mut Reader), None),
+        (
+            "not copied",
+            &not_copied,
+            Some((
+                TileRect {
+                    x: 0,
+                    y: 0,
+                    width: 10,
+                    height: 10,
+                },
+                LowResWhy::TooHeavy,
+            )),
+        ),
+    ] {
+        let mut reader = Reader::new();
+        let before = tab_showing_full_of_previews_and_tab_left(&mut reader);
+        let mut job = settle_tab(&mut reader, 2).expect("a job for the tab left");
+        while !matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) {
+            let outcome = answer(&job, |_| letter());
+            reader.finish(job, outcome);
+            job = reader.next_job().expect("the tab left's next job");
+            reader.note_started(&job, None);
+        }
+        assert_eq!(job.tab, 1);
+        before_landing(&mut reader);
+        reader.finish(
+            job,
+            Outcome::Drawn {
+                kind: TileKind::Colour,
+                low_res,
+            },
+        );
+        let previews = reader.cache.entries.values().filter(|entry| entry.tab == 2 && entry.preview).count();
+        assert_eq!(draws(&reader)["pictures"], 0, "{how}: {}", draws(&reader));
+        assert_eq!(previews, before, "{how}: tab 2's previews all kept");
+    }
+}
+
 /// Failure: a left tab's asking keeps its worker from its idle exit for as long as it goes on. It's held to [`ASKING_FOR`] from its first job: a job at the limit is asked, one past it isn't.
 #[test]
 fn a_tab_left_is_asked_for_no_longer_than_its_time() {
