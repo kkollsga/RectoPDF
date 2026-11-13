@@ -368,15 +368,16 @@ fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
         }
         assert!(!bed.files.plan().exists(), "{step}: nothing's left to confuse the next one");
     }
-    // The way back: the new version's failed, and the installer's killed putting things right.
+    // The way back: the new version's failed, and the installer's killed putting things right. It fails by coming up having emptied the record, which is known at once and leaves a process to stop; one that ends is only known to have after a grace of seconds, and the way back is the same.
     for (step, expected, record) in [
-        ("going_back", "0.2.0", "damaged by the new version"),
-        ("new_app_stopped", "0.2.0", "damaged by the new version"),
+        ("going_back", "0.2.0", "emptied by the new version"),
+        ("new_app_stopped", "0.2.0", "emptied by the new version"),
         ("record_restored", "0.2.0", "the state"),
         ("swapped_back", "0.1.0", "the state"),
         ("outcome_written", "0.1.0", "the state"),
     ] {
-        let mut bed = Bed::new(&format!("back-{step}"), "exits");
+        let mut bed = Bed::new(&format!("back-{step}"), "misreads");
+        bed.plan.handed_off_tabs = Some(2);
         let ended = bed.run(Some(step));
         assert!(!ended.success(), "{step}");
         assert_eq!(bed.installed(), expected, "{step}: a whole app");
