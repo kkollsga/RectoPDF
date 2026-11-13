@@ -1895,9 +1895,18 @@ impl DocRenderer {
     /// What's known about opening this file, if that still holds. The app shouldn't have to remember to ask again: a file that's been replaced gets a fresh try, opened anew, and so does one whose moment has passed. Costs a `stat` only once something has failed, and nothing for a file that opens.
     fn known_open_failure(&mut self) -> Option<RenderFailure> {
         let known = self.open_failure?;
-        // A file seen to change while it was open is what that failure says. The page numbers it went by are no good, and someone has to start again.
+        // A file seen to change while it was open is what that failure says, until whoever holds things about it has taken that (`take_file_changed`): the page
+        // numbers it went by are no good. Once taken, it's started again: the next open is of what's there now, with nothing known of the old one to hold it to.
         if matches!(known.failure, RenderFailure::SourceChanged) {
-            return Some(known.failure);
+            if self.file_changed {
+                return Some(known.failure);
+            }
+            self.forget_failures();
+            self.traits.clear();
+            self.image_places.clear();
+            self.page_count = None;
+            self.version = None;
+            return None;
         }
         if file_stamp(&self.path).ok() != self.opened_stamp {
             self.file_changed = true;
