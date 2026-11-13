@@ -32,7 +32,7 @@ impl Dormant<'_> {
         self.warm.ids().chain(self.lists.ids()).filter(move |id| self.may_go(*id))
     }
 
-    /// How long from now until the next tab comes due to go dormant, in seconds, by the session's own clock: [`Self::next_at`] less the time now.
+    /// How long from now until the next tab comes due to go dormant, in seconds, by the session's own clock.
     pub fn next_in(&self, after: u32) -> Option<u32> {
         self.next_at(after).map(|at| at.saturating_sub(self.dormancy.seconds_now()))
     }

@@ -157,7 +157,7 @@ struct TabFile {
     notice: Option<Box<FileNotice>>,
     /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
     encrypted: bool,
-    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
+    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Tabs::withheld_from_agents`].
     password: bool,
 }
 

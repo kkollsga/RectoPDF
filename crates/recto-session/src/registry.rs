@@ -273,7 +273,7 @@ impl crate::parts::PartMut<'_, Tabs> {
 
     /// **The host's confinement cell, put back if a step it ran with the session in hand swapped another session in** (R3.5a): the host's cell is the
     /// authority, as it's what the host reads with no lock. Says whether it was the session's already, which is always so unless something replaced the
-    /// whole session. Never widens: a cell that would let the session use more than it may now isn't taken ([`Confinement::may_replace`]), and the
+    /// whole session. Never widens: a cell that would let the session use more than it may now isn't taken (`Confinement::may_replace`), and the
     /// session keeps its own.
     pub fn keep_confinement(&mut self, host: &Confinement) -> bool {
         if self.0.confinement.is(host) {
@@ -295,12 +295,13 @@ impl crate::parts::PartMut<'_, Tabs> {
         self.0.set_selection(showing, selection);
     }
 
-    /// [`Tabs::choose_generated`], which the session's own operations call too.
+    /// Shows a tab's generated contents, or its own: the tabs' own `choose_generated`, which the session's operations call too.
     pub fn choose_generated(&mut self, id: TabId, generated: bool) {
         self.0.choose_generated(id, generated);
     }
 
-    /// [`Tabs::note_password_used`], which the session's own unlocking calls too.
+    /// A tab's facts were, or are about to be, read with a password the person typed: the tabs' own `note_password_used`, which the session's
+    /// unlocking calls too.
     pub fn note_password_used(&mut self, id: TabId) {
         self.0.note_password_used(id);
     }

@@ -3,7 +3,7 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
+    /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Lists::edits_record`](crate::Lists::edits_record) gives them whole.
     pub fn to_record(&self) -> SessionRecord {
         let Self {
             loader: _,

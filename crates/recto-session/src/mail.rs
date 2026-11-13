@@ -29,7 +29,7 @@ pub struct PageViewMail {
     /// **What the session knows of each page view's word on a tab,** one per tab a view has told of or been sent a jump on, gone when the tab goes dormant
     /// or closes: see [`ViewWord`].
     words: Vec<ViewWord>,
-    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`crate::Session::take_place_lost`].
+    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`PartMut::take_place_lost`](crate::PartMut::take_place_lost).
     place_lost: bool,
 }
 
