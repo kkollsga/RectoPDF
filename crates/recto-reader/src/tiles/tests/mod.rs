@@ -11,6 +11,7 @@ use std::path::Path;
 mod cache;
 mod host;
 mod jobs;
+mod look_again;
 mod place;
 mod pointer;
 mod sleep_draw;

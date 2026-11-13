@@ -519,6 +519,11 @@ impl PageLook {
         Self::default()
     }
 
+    /// **What a page gets whose picture can't be had** (no size, a draw that failed for good, or one that kept failing for a reason that may pass): one with no images a page of text's look, as before 2026-11-13, as nothing on it can come out a negative and most such pages are text, so a dark slide among them is the one that turns over; one with images, or whose images aren't known, [`Self::unknown`], as an image turned over is a negative and a page dimmed is only brighter than it might have been.
+    pub fn undecided(image_less: bool) -> Self {
+        if image_less { Self::text() } else { Self::unknown() }
+    }
+
     /// A page whose own background is dark: shown as it is, dimmed as a picture page is, never turned over.
     pub fn dark_page() -> Self {
         Self { dim: true, ..Self::default() }

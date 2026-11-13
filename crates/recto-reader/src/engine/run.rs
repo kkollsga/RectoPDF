@@ -3,12 +3,10 @@
 //! place's) is the engine's own.
 
 use crate::layout::PageBox;
-use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
+use crate::paper::{DarkTile, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
 use crate::tiles::sleep_draw::SleepDraws;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use recto_index::select::PageText;
-use recto_platform::surface::PixelSurface;
-use recto_proto::TileRect;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult, Workers};
 use std::collections::HashMap;
 use std::fs::File;
@@ -18,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
+use super::look::{Looks, NoLook, page_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -297,7 +296,7 @@ struct OpenDoc {
     length_told: bool,
     doc: DocRenderer,
     /// Of the file that's open now. A replacement clears them before anything goes by them: see [`seen_replaced`].
-    looks: HashMap<u32, Arc<PageLook>>,
+    looks: Looks,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
     replaced: bool,
 }
@@ -310,115 +309,6 @@ fn seen_replaced(open: &mut OpenDoc) -> bool {
     open.looks.clear();
     open.replaced = true;
     true
-}
-
-/// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
-const MAX_LOOKS: usize = 4096;
-/// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
-const LOOK_PICTURE_EDGE: f32 = 512.0;
-/// The same, for a page with no images, when nothing drawn so far covers the page (a wake onto a sleep picture, zoomed out past a preview, looks forgotten): all that's asked of it is whether its background is dark, which a picture this small answers as the look picture does (the survey's `sizes`, 0 pages apart at 128), for a fraction of the draw.
-const IMAGELESS_LOOK_EDGE: f32 = 128.0;
-
-/// Why there's no look for a page from this job, and nothing's kept: neither is about the page.
-enum NoLook {
-    /// The job went stale on the way.
-    Stale,
-    /// What it's decided from wasn't asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't, a heavy one if `heavy`.
-    Unstarted { heavy: bool },
-}
-
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long; if that can't be drawn it takes a page of text's look, as before. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't.
-fn page_look(
-    open: &mut OpenDoc,
-    page: u32,
-    generation: u64,
-    whole: Option<(&PixelSurface, TileRect)>,
-    tile: Option<(&PixelSurface, TileRect, f32)>,
-) -> Result<Arc<PageLook>, NoLook> {
-    // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
-    if open.doc.take_image_places_cleared() {
-        open.looks.clear();
-    }
-    if let Some(known) = open.looks.get(&page) {
-        return Ok(Arc::clone(known));
-    }
-    let boxes = open.doc.image_boxes(page, generation).map_err(unstarted)?;
-    if open.doc.is_stale(generation) {
-        return Err(NoLook::Stale);
-    }
-    let image_less = boxes.as_ref().is_some_and(Vec::is_empty);
-    // What a picture that can't be had gives: a page of text's look for a page with no images, as it always had, and dimmed for one with.
-    let undecided = || if image_less { PageLook::text() } else { PageLook::unknown() };
-    // A tile that is the whole page, as one zoomed out past a preview is, is as good a picture of a page with no images. Its size is asked only when it would decide.
-    let covering = || {
-        tile.filter(|&(_, rect, scale)| image_less && covers_page(&mut open.doc, page, scale, rect))
-            .map(|(surface, rect, _)| (surface, rect))
-    };
-    let look = if let Some((surface, rect)) = whole.or_else(covering) {
-        let stride = surface.stride() as usize;
-        surface
-            .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, rect.width, rect.height))
-            .unwrap_or_else(|_| undecided())
-    } else {
-        let doc = &mut open.doc;
-        let size = match doc.page_size(page) {
-            Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
-            size => size.ok(),
-        };
-        let picture = size.and_then(|(width, height)| {
-            let edge = if image_less { IMAGELESS_LOOK_EDGE } else { LOOK_PICTURE_EDGE };
-            let scale = (edge / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
-            let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
-            let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
-            Some((
-                scale,
-                TileRect {
-                    x: 0,
-                    y: 0,
-                    width: pixel_width,
-                    height: pixel_height,
-                },
-                surface,
-            ))
-        });
-        match picture {
-            Some((scale, rect, surface)) => match doc.render_tile(
-                &TileRequest {
-                    page,
-                    rect,
-                    scale,
-                    stride: surface.stride(),
-                    generation,
-                },
-                &surface,
-            ) {
-                Ok(TileResult::Done(tile)) => {
-                    let drawn = tile.low_res.map_or(rect, |low| low.rect);
-                    let stride = surface.stride() as usize;
-                    surface
-                        .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height))
-                        .unwrap_or_else(|_| undecided())
-                }
-                Ok(TileResult::Cancelled { .. }) => return Err(NoLook::Stale),
-                Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
-                Err(_) => undecided(),
-            },
-            None => undecided(),
-        }
-    };
-    if open.looks.len() >= MAX_LOOKS {
-        open.looks.clear();
-    }
-    let look = Arc::new(look);
-    open.looks.insert(page, Arc::clone(&look));
-    Ok(look)
-}
-
-/// A refusal for want of a worker, as [`page_look`] says it. Only [`RenderFailure::WouldStart`] comes here.
-fn unstarted(failure: RenderFailure) -> NoLook {
-    NoLook::Unstarted {
-        heavy: matches!(failure, RenderFailure::WouldStart { heavy: true }),
-    }
 }
 
 /// Why there's no renderer for a job, for now or for good.
@@ -486,7 +376,7 @@ fn renderer_for<'a>(
             OpenDoc {
                 length_told: false,
                 doc,
-                looks: HashMap::new(),
+                looks: Looks::default(),
                 replaced: false,
             },
         );
@@ -570,9 +460,17 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
                         // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
-                        let look = match page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)), tile) {
+                        let look = match page_look(
+                            &mut open.doc,
+                            &mut open.looks,
+                            job.source_page,
+                            job.generation,
+                            whole.map(|rect| (surface, rect)),
+                            tile,
+                        ) {
                             Ok(look) => Some(look),
-                            Err(NoLook::Stale) => None,
+                            // A look to be tried again at the page's next job goes nowhere either, as one gone stale doesn't: the tile isn't handed on, and what's shown of the page stays.
+                            Err(NoLook::Stale | NoLook::Again) => None,
                             Err(NoLook::Unstarted { heavy }) => return Outcome::Unstarted { heavy },
                         };
                         let size = match look.as_ref().map(|_| open.doc.page_size(job.source_page)) {
@@ -606,17 +504,6 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             }
         }
     }
-}
-
-/// Whether `rect`, drawn at `scale`, is the whole of a page: from its top left corner, and the page's size at that scale. A size that can't be had now is no.
-fn covers_page(doc: &mut DocRenderer, page: u32, scale: f32, rect: TileRect) -> bool {
-    rect.x == 0
-        && rect.y == 0
-        && doc
-            .page_size(page)
-            .ok()
-            .and_then(|(width, height)| recto_proto::device_size(width, height, scale).ok())
-            == Some((rect.width, rect.height))
 }
 
 /// Puts one tile on dark paper, as the rule says, and says what it is now. With `colour_only` a tile of one colour needs nothing done to its pixels, as it won't keep them.
