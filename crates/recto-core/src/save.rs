@@ -130,6 +130,15 @@ fn file_label(path: &Path) -> String {
     crate::clean_line(&path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
+/// Why a save couldn't open a file: one that needs a password (the save is given none) says so, as its words must; anything else is damage the writer
+/// won't build on. A file that opens with no password and is encrypted all the same is refused after opening, as anyone may open it.
+fn refused_on_open(error: lopdf::IndexedReaderError) -> SaveError {
+    match error {
+        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => SaveError::Protected { password: true },
+        _ => SaveError::Damaged,
+    }
+}
+
 /// Opens a file the way a save reads it: with the 1 MiB limit on an object. One that can't be opened can't be read.
 pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
     let source = FileSource::open(path).map_err(|_| SaveError::Unreadable)?;
@@ -137,9 +146,9 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
     };
-    let reader = IndexedReader::open_with_options(source, options).map_err(|_| SaveError::Damaged)?;
+    let reader = IndexedReader::open_with_options(source, options).map_err(refused_on_open)?;
     if reader.is_encrypted() {
-        return Err(SaveError::Protected);
+        return Err(SaveError::Protected { password: false });
     }
     Ok(reader)
 }
@@ -699,9 +708,9 @@ fn open_bytes_for_save(bytes: &[u8]) -> Result<(IndexedReader, lopdf::PageMap), 
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
     };
-    let reader = IndexedReader::open_with_options(lopdf::BytesSource::new(std::sync::Arc::from(bytes)), options).map_err(|_| SaveError::Damaged)?;
+    let reader = IndexedReader::open_with_options(lopdf::BytesSource::new(std::sync::Arc::from(bytes)), options).map_err(refused_on_open)?;
     if reader.is_encrypted() {
-        return Err(SaveError::Protected);
+        return Err(SaveError::Protected { password: false });
     }
     let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
     Ok((reader, map))
@@ -894,7 +903,7 @@ fn open_added(request: &SaveRequest<'_>) -> Result<Vec<Opened>, SaveError> {
         }
         let reader = match open_for_save(added.path) {
             Ok(reader) => reader,
-            Err(SaveError::Protected) => return Err(SaveError::AddedFileProtected { name }),
+            Err(SaveError::Protected { password }) => return Err(SaveError::AddedFileProtected { name, password }),
             Err(_) => return Err(SaveError::AddedFileUnreadable { name }),
         };
         let map = reader.page_map().map_err(|_| SaveError::AddedFileUnreadable { name: name.clone() })?;
