@@ -368,6 +368,7 @@ fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
 const SURFACE: &str = r#"
 Applied (private struct, derives Default)
 Ask (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
+Changed (private struct)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
 DocView (pub(crate) struct, derives Debug)

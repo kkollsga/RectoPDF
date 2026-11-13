@@ -188,17 +188,8 @@ impl Engine {
         }
     }
 
-    fn after(&self, mut reader: MutexGuard<'_, Reader>) {
-        let has_ops = reader.host.has_ops();
-        let note = reader.note().map(str::to_string);
-        let selecting = selecting_news(&mut reader);
-        drop(reader);
-        self.shared.settled.notify_all();
-        note_change(&self.shared, note);
-        tell_selecting(&self.shared, selecting);
-        if has_ops {
-            signal_ops(&self.shared);
-        }
+    fn after(&self, reader: MutexGuard<'_, Reader>) {
+        tell_what_changed(&self.shared, reader);
         self.unpark_thread();
     }
 
@@ -558,18 +549,55 @@ pub struct ViewportOutcome {
     pub anchor: Option<(u32, f64)>,
 }
 
-/// A read of where the view is, with what's pending applied first ([`Engine::places`]): the host is told of the scroll that sends it there. Off the UI
-/// thread's scroll path, which leaves what's pending and never reads the place this way.
+/// A read of where the view is, with what's pending applied first ([`Engine::places`]). Off the UI thread's scroll path, which leaves what's pending and
+/// never reads the place this way.
+///
+/// **What applying it changed is told, as by every other way it's applied:** the ops (the scroll that sends the view there, a selection's highlight gone),
+/// a note, and the selection's notice (a stopped copy's that doesn't fade went with a selection another pane took, and the window kept it till something
+/// else changed on the pane), with whoever waits for the view settled woken. The page the reader moved to isn't said here, as the UI thread's own follow
+/// doesn't say it either: the host hears it when it arrives at the scroll it's sent ([`Engine::set_viewport_scrolled`]), and the session thread's look,
+/// which reads this way, takes the page in the same look.
 fn read_place<T>(shared: &Shared, read: impl FnOnce(&Reader) -> T) -> T {
     let mut reader = lock(&shared.reader);
     let applied = apply_pending(shared, &mut reader);
     let value = read(&reader);
-    let has_ops = applied && reader.host.has_ops();
-    drop(reader);
-    if has_ops {
-        signal_ops(shared);
+    if applied {
+        tell_what_changed(shared, reader);
     }
     value
+}
+
+/// Tells the host and whoever waits what's changed of the view, its lock let go first: the ops, a note, the selection's notice and a copy that's ready.
+fn tell_what_changed(shared: &Shared, mut reader: MutexGuard<'_, Reader>) {
+    let changed = Changed::of(&mut reader);
+    drop(reader);
+    changed.tell(shared);
+}
+
+/// What's changed of the view that the host is told of, taken with its lock held, to tell with it let go ([`tell_what_changed`]).
+struct Changed {
+    has_ops: bool,
+    note: Option<String>,
+    selecting: SelectingNews,
+}
+
+impl Changed {
+    fn of(reader: &mut Reader) -> Self {
+        Self {
+            has_ops: reader.host.has_ops(),
+            note: reader.note().map(str::to_string),
+            selecting: selecting_news(reader),
+        }
+    }
+
+    fn tell(self, shared: &Shared) {
+        shared.settled.notify_all();
+        note_change(shared, self.note);
+        tell_selecting(shared, self.selecting);
+        if self.has_ops {
+            signal_ops(shared);
+        }
+    }
 }
 
 /// The view's own thread takes what the UI thread left for this view, with the lock held, by [`apply_pending`]'s rule. Says whether any was applied. Held
@@ -1156,6 +1184,28 @@ mod tests {
             zooming.join().unwrap();
         });
         assert_eq!(engine.magnification(), Some(2.0), "the older zoom isn't applied after the newer");
+    }
+
+    /// Failure (review round 1 of the page view follow-ups, note 7): a read of where the view is (as the session thread's look and every command make)
+    /// applies a selection cleared by another pane that was left pending, and the host isn't told: the window kept the notice of a selection that was gone
+    /// ("This file changed on disk, so the copy stopped.", one that doesn't fade) until something else on that pane changed. A read that applies what's
+    /// pending tells what changed, as every other way it's applied does.
+    #[test]
+    fn a_read_that_applies_a_pending_clear_tells_the_host_the_notice_went() {
+        let counted = Arc::new(Counted::default());
+        let engine = without_its_thread_telling(counted.clone());
+        engine.selection().select_all();
+        engine.selection().copy(false);
+        lock(&engine.shared.reader).file_changed(1);
+        engine.set_margins(0.0, 0.0);
+        assert!(engine.selection().notice().is_some(), "the copy that stopped says so");
+        engine.qa().hold_busy(true);
+        assert!(!engine.selection().clear_soon(), "left pending");
+        engine.qa().hold_busy(false);
+        let told = counted.note_changed.load(Ordering::SeqCst);
+        drop(engine.places());
+        assert!(engine.selection().notice().is_none(), "the read applied the clear");
+        assert!(counted.note_changed.load(Ordering::SeqCst) > told, "and the host heard the notice went");
     }
 
     /// Failure (review 1): another pane's zoom or a selection taken in another pane makes the UI thread wait on this pane's lock while its thread holds it. Both are left for that thread instead, and taken when it next holds its lock.
