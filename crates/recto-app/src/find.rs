@@ -376,11 +376,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     /// The person's step or click went to a hit: selected on the page, and heard.
     fn went(&self, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
         self.reveal(tab, hit);
-        // What watchers hear: no page for a document opened with a password.
-        events.push(
-            self.session
-                .with_session(|session| recto_agent::page_changed(session, recto_session::TabId(tab), hit.page + 1)),
-        );
+        self.session.with_session(|session| find::heard_going_to(session, tab, hit, events));
     }
 
     /// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change. A query in the field is found again when its hits are about something else: another document being read (after a tap, a move into another pane or a restart), pages moved, added or taken away, the file replaced, or the page count learnt.

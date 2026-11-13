@@ -75,3 +75,28 @@ fn return_in_find_is_heard_with_one_page_changed() {
         assert_eq!(pages, [Some(to)], "{heard:?}");
     }
 }
+
+/// Failure (R2.3, C5g, difference 2): the person's step to a hit (⌘G, Return in the field, a click on a hit's row) is heard as `page_changed` alone, while
+/// an agent's is heard with `find_changed` at the hit's page too: a watcher can't tell the hit gone to changed. Each is heard as `page_changed` and then
+/// `find_changed` with the hit's page.
+#[test]
+fn a_persons_step_is_heard_as_an_agents() {
+    let app = findable();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    drop(app.heard_events());
+    for (what, action) in [
+        ("⌘G", UiAction::Menu { id: "find.next".into() }),
+        ("Return", UiAction::FindReturn { forward: true }),
+        ("a hit's row", UiAction::FindChoose { row: 1 }),
+    ] {
+        app.act(action);
+        app.settle();
+        let heard = app.heard_events();
+        assert_eq!(names(&heard), ["page_changed", "find_changed"], "{what}: {heard:?}");
+        let recto_agent::Event::PageChanged { page, .. } = &heard[0] else {
+            unreachable!()
+        };
+        assert_eq!(heard[1], recto_agent::Event::FindOpened { page: *page }, "{what}: Find at the hit's page");
+    }
+}

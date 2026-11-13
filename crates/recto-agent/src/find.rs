@@ -662,6 +662,16 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
     });
 }
 
+/// **What watchers hear when a hit is gone to,** whoever went (R2.3, C5g): the page the hit's on, and Find at that page, as the hit gone to changed. No page
+/// for a document the person opened with its password.
+pub fn heard_going_to<L: DocLoader>(session: &Session<L>, tab: u32, hit: &Hit, events: &mut Vec<crate::Event>) {
+    let id = TabId(tab);
+    events.push(crate::page_changed(session, id, hit.page + 1));
+    events.push(crate::Event::FindOpened {
+        page: (!session.withheld_from_agents(id)).then_some(hit.page + 1),
+    });
+}
+
 /// Closes Find: what's running stops, the hits go, and what was typed stays for next time, as a Mac's Find keeps it.
 pub fn close<A: crate::SessionAccess>(access: &A) {
     if let Some(finding) = access.finding() {
@@ -735,8 +745,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
         let Some((tab, hit)) = step_waiting(access, finding, asked.next, Going::Step, deadline.saturating_duration_since(Instant::now())) else {
             return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
         };
-        events.push(access.with(|s| crate::page_changed(s, recto_session::TabId(tab), hit.page + 1)));
-        events.push(crate::Event::FindOpened { page: Some(hit.page + 1) });
+        access.with(|s| heard_going_to(s, tab, &hit, events));
         // The page view selects it, as ⌘G's does, whoever asked.
         access.effect(crate::Effect::Reveal {
             tab: TabId(tab),
