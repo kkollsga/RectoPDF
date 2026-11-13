@@ -853,7 +853,7 @@ impl AppCore {
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        self.inner.password_answered(id, password);
+        self.inner.tools.prompts().password_answered(id, password, &self.inner.core, &self.inner.window);
     }
 
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
@@ -1012,7 +1012,7 @@ impl AppCore {
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        self.inner.link_prompt_answered(id, open)
+        self.inner.tools.prompts().link_answered(id, open, &self.inner.core)
     }
 
     /// What the go-to field starts with, and its tooltip.

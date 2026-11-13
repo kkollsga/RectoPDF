@@ -121,7 +121,6 @@ Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn has_setting(&self, id: &str) -> bool
-Inner::pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String>
 Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
@@ -129,7 +128,6 @@ Inner::pub fn note_input(&self)
 Inner::pub fn note_nearby(&self)
 Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
-Inner::pub fn password_answered(&self, id: u64, password: Option<String>)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
 Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
@@ -229,10 +227,10 @@ Tools::pub fn chrome(&self) -> &crate::chrome::Chrome
 Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
 Tools::pub fn printing(&self) -> &printing::Printing
+Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub fn tool(&self) -> &snapshot_tool::Tool
 Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
-Tools::pub(crate) fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord

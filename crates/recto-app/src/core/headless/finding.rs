@@ -231,7 +231,10 @@ fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
     });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
-    app.core().password_answered(id, Some("right".into()));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(id, Some("right".into()), &app.core().core, &app.core().window);
     app.settle();
     app.hear_events();
     app.act(UiAction::FindTyped { text: "locked page".into() });

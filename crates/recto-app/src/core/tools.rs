@@ -42,7 +42,7 @@ impl Tools {
     }
 
     /// The sheets that ask: a password, or whether to open a link.
-    pub(crate) fn prompts(&self) -> &crate::prompts::Prompts {
+    pub fn prompts(&self) -> &crate::prompts::Prompts {
         &self.prompts
     }
 

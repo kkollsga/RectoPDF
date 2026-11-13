@@ -11,7 +11,10 @@ fn sheet(app: &HeadlessApp) -> Option<(u64, String)> {
 
 /// The sheet's answer, as the host gives it, and what comes of it settled.
 fn answer(app: &HeadlessApp, id: u64, password: Option<&str>) {
-    app.core().password_answered(id, password.map(str::to_string));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(id, password.map(str::to_string), &app.core().core, &app.core().window);
     app.settle();
 }
 

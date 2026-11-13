@@ -50,38 +50,39 @@ pub fn unlocked(
 }
 
 /// **The password sheet's answer, as the window gives it,** before the session thread takes what comes of it: for the prompt with this id, with what was typed, or
-/// nothing for Cancel. Tried on a thread of its own, as reading a file can wait on its disk.
-impl Inner {
-    pub fn password_answered(&self, id: u64, password: Option<String>) {
-        let mut asks = lock(&self.tools.prompts().passwords);
+/// nothing for Cancel. Tried on a thread of its own, as reading a file can wait on its disk. The prompts' own, with the session thread's queue and the window,
+/// whose notice says when the asking has stopped.
+impl crate::prompts::Prompts {
+    pub fn password_answered(&self, id: u64, password: Option<String>, core: &Arc<CoreQueue>, window: &Window) {
+        let mut asks = lock(&self.passwords);
         let Some(typed) = password else {
             asks.cancel(id);
             drop(asks);
-            self.core.push(CoreCall::Reconcile);
+            core.push(CoreCall::Reconcile);
             return;
         };
         let password = recto_core::Password::take(typed);
         let Some(password) = password else {
             // Not something a password could be, which counts as a wrong one.
             if asks.wrong(id) == passwords::Wrong::Stopped {
-                *lock(&self.window.action_notice) = Some(passwords::stopped_asking());
+                *lock(&window.action_notice) = Some(passwords::stopped_asking());
             }
             drop(asks);
-            self.core.push(CoreCall::Reconcile);
+            core.push(CoreCall::Reconcile);
             return;
         };
         let Some(asked) = asks.start_trying(id) else { return };
         drop(asks);
-        let core = Arc::clone(&self.core);
+        let core_for_try = Arc::clone(core);
         let password = Arc::new(password);
         let spawned = std::thread::Builder::new().name("recto-unlock".into()).stack_size(512 * 1024).spawn(move || {
             let stamp = recto_platform::file_stamp(&asked.path).ok();
             let loaded = recto_core::inspect_with_password(&asked.path, &password);
-            core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
+            core_for_try.push(CoreCall::Unlocked(asked, loaded, stamp, password));
         });
         if spawned.is_err() {
-            lock(&self.tools.prompts().passwords).failed(id);
+            lock(&self.passwords).failed(id);
         }
-        self.core.push(CoreCall::Reconcile);
+        core.push(CoreCall::Reconcile);
     }
 }
