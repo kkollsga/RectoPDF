@@ -140,6 +140,24 @@ pub fn parse_dump(dump: &str) -> Vec<Registered> {
     found
 }
 
+/// What a Launch Services file in a failure's evidence starts with when the dump answered.
+pub const DESCRIBED: &str = "registered in this checkout";
+
+/// The text of a failure's Launch Services file for a dump: the copies in this checkout and in temp by path, and only a count of every other copy, so no other tree's path is named.
+#[must_use]
+pub fn describe(all: &[Registered], checkout: &Path, temp: &Path) -> String {
+    let (mine, elsewhere): (Vec<_>, Vec<_>) = all.iter().partition(|copy| copy.path.starts_with(checkout) || copy.path.starts_with(temp));
+    let mut text = format!("{DESCRIBED} ({}) or temp ({}):\n", checkout.display(), temp.display());
+    for copy in &mine {
+        text.push_str(&format!("  {} ({})\n", copy.path.display(), copy.identifier));
+    }
+    if mine.is_empty() {
+        text.push_str("  none\n");
+    }
+    text.push_str(&format!("registered elsewhere, not named: {}\n", elsewhere.len()));
+    text
+}
+
 /// What's registered and shouldn't be: anything that isn't one of the copies allowed, or inside one (the one install's own renderer helper is registered too).
 #[must_use]
 pub fn strays(registered: &[Registered], allowed: &[&Path]) -> Vec<Registered> {
@@ -153,6 +171,35 @@ pub fn strays(registered: &[Registered], allowed: &[&Path]) -> Vec<Registered> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: the Launch Services file names a copy from another tree (the owner's `/Applications`, another checkout), or leaves out one in this tree or in temp, or loses the count. In-process, so it doesn't depend on what the machine has registered or on the dump answering in time (CI, 2026-11-13).
+    #[test]
+    fn the_evidence_file_names_this_tree_and_counts_the_rest() {
+        let copy = |path: &str| Registered {
+            path: PathBuf::from(path),
+            identifier: ID_PREFIX.into(),
+        };
+        let (checkout, temp) = (Path::new("/work/tree"), Path::new("/var/tmp1"));
+        let all = [
+            copy("/work/tree/target/RectoPDF.app"),
+            copy("/var/tmp1/a/RectoPDF.app"),
+            copy("/Applications/RectoPDF.app"),
+            copy("/work/other/RectoPDF.app"),
+        ];
+        let text = describe(&all, checkout, temp);
+        assert!(text.starts_with(DESCRIBED), "{text}");
+        assert!(
+            text.contains("/work/tree/target/RectoPDF.app") && text.contains("/var/tmp1/a/RectoPDF.app"),
+            "{text}"
+        );
+        assert!(!text.contains("/Applications") && !text.contains("/work/other"), "{text}");
+        assert!(text.contains("registered elsewhere, not named: 2"), "{text}");
+        let none = describe(&[copy("/Applications/RectoPDF.app")], checkout, temp);
+        assert!(
+            none.contains("  none\n") && none.contains("not named: 1") && !none.contains("/Applications"),
+            "{none}"
+        );
+    }
 
     const DUMP: &str = "\
 --------------------------------------------------------------------------------

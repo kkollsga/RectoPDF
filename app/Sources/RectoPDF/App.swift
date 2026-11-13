@@ -364,7 +364,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         modelChanged()
         controller.showIfReady()
         // Past this it shows, whatever's on it: a slow page, or a file not answering, says so itself.
-        DispatchQueue.main.asyncAfter(deadline: .now() + limits.showPatienceSeconds) { [weak controller] in controller?.showNow() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + limits.showPatienceSeconds) { [weak controller] in controller?.showNow(why: "patience") }
     }
 
     /// What the window's closing does, whoever closed it.

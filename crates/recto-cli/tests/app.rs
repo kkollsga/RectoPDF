@@ -386,6 +386,16 @@ fn the_watchdog_catches_a_stall_and_it_fails_the_script() {
     let hangs = run.report()["hangs"].clone();
     assert_eq!(hangs["over_2s"], 1, "{hangs}");
     assert!(hangs["worst_ms"].as_u64().unwrap() >= 2000, "{hangs}");
+    // Failure (CI, 2026-11-13: a 2.3 s stall nothing could explain): the record says what the thread did. A sleep is waiting, with next to no CPU time, in the verb that asked for it.
+    let worst = &hangs["worst"];
+    assert!(worst["wall_ms"].as_u64().unwrap() >= 2000, "{hangs}");
+    assert_eq!(worst["state"], "waiting", "{hangs}");
+    assert_eq!(worst["verb"], "stall", "{hangs}");
+    assert!(
+        worst["cpu_ms"].as_u64().unwrap() < worst["window_ms"].as_u64().unwrap() / 2,
+        "a sleep isn't CPU: {hangs}"
+    );
+    eprintln!("hangs after a 2.3 s sleep: {hangs}");
 }
 
 /// Failure: a shot needs the screen or a permission, comes out at the wrong size, or is blank. Run quietly, so a screen isn't involved. The picture must have ink in it: a real PNG, of the window at 2x, and larger than the same window with no page.
