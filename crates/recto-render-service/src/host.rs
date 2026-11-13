@@ -1895,21 +1895,13 @@ impl DocRenderer {
     /// What's known about opening this file, if that still holds. The app shouldn't have to remember to ask again: a file that's been replaced gets a fresh try, opened anew, and so does one whose moment has passed. Costs a `stat` only once something has failed, and nothing for a file that opens.
     fn known_open_failure(&mut self) -> Option<RenderFailure> {
         let known = self.open_failure?;
-        // A file seen to change while it was open is what that failure says, until whoever holds things about it has taken that (`take_file_changed`): the page
-        // numbers it went by are no good. Once taken, it's started again: the next open is of what's there now, with nothing known of the old one to hold it to.
-        if matches!(known.failure, RenderFailure::SourceChanged) {
-            if self.file_changed {
-                return Some(known.failure);
-            }
-            self.forget_failures();
-            self.traits.clear();
-            self.image_places.clear();
-            self.page_count = None;
-            self.version = None;
-            return None;
+        // A file seen to change while it was open fails until that's been taken (`take_file_changed`), then is opened afresh, as a file replaced since is.
+        let seen_changed = matches!(known.failure, RenderFailure::SourceChanged);
+        if seen_changed && self.file_changed {
+            return Some(known.failure);
         }
-        if file_stamp(&self.path).ok() != self.opened_stamp {
-            self.file_changed = true;
+        if seen_changed || file_stamp(&self.path).ok() != self.opened_stamp {
+            self.file_changed |= !seen_changed;
             self.forget_failures();
             self.traits.clear();
             self.image_places.clear();
@@ -1924,10 +1916,9 @@ impl DocRenderer {
                 // It's not there to open, or not now. That holds in the same way, and this renderer's old file isn't what anyone's asking about.
                 Err(error) => {
                     self.opened_stamp = None;
-                    let failure = if error.kind() == io::ErrorKind::NotFound {
-                        RenderFailure::NotFound
-                    } else {
-                        RenderFailure::Unavailable
+                    let failure = match error.kind() {
+                        io::ErrorKind::NotFound => RenderFailure::NotFound,
+                        _ => RenderFailure::Unavailable,
                     };
                     self.note_open_failure(failure);
                     Some(failure)
