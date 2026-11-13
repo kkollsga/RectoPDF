@@ -297,13 +297,17 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 events.push(Event::FindOpened { page: None });
             }
             FindCall::Open => {
+                let before = session.with_session(|s| s.find().clone());
                 self.open_find(events);
                 // What was typed last is found again, as it would be on a Mac: it's been closed, so its hits went.
                 let (query, draft) = session.with_session(|s| (s.find().query.clone(), s.find().draft.clone()));
                 if query.is_empty() && !draft.is_empty() {
                     self.find_typed(&draft);
                 }
-                events.push(Event::FindOpened { page: None });
+                // Announced when Find changed, and only then: ⌘F with it open already only gives its field the keyboard.
+                if session.with_session(|s| *s.find() != before) {
+                    events.push(Event::FindOpened { page: None });
+                }
             }
             FindCall::Close => {
                 session.find_close();
