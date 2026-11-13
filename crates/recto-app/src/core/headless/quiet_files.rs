@@ -6,11 +6,14 @@ use recto_agent::Level;
 use recto_platform::fresh::FreshDir;
 use std::path::Path;
 
-/// A private folder outside every temp folder, holding a real PDF: the checkout's own `target`.
+/// A private folder outside every temp folder, holding a real PDF: in `/var/tmp`, which no quiet run's rule counts as a temp folder (only the system's own
+/// and `/tmp` are), and whose name isn't hidden, so what refuses a file there is the quiet run's rule and not a file name's.
 fn outside(app: &HeadlessApp) -> FreshDir {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    std::fs::create_dir_all(&target).unwrap();
-    let dir = FreshDir::new_in(&target, "recto-quiet-outside-", "").unwrap();
+    let dir = FreshDir::new_in(Path::new("/private/var/tmp"), "recto-quiet-outside-", "").unwrap();
+    assert!(
+        !recto_control::quiet::temp_folders().iter().any(|temp| dir.path().starts_with(temp)),
+        "/var/tmp is outside the temp folders"
+    );
     let inside = app.disk().pdf("secret.pdf", 2);
     std::fs::copy(&inside, dir.path().join("secret.pdf")).unwrap();
     dir
@@ -76,5 +79,42 @@ fn the_apps_own_commands_are_held_to_the_run() {
         .map(|entry| entry.file_name())
         .collect();
     assert_eq!(left, ["secret.pdf"]);
+    drop(app.quit());
+}
+
+/// Failure: the save Save As's sheet makes (`qa save-as` drives it, behind QA's own wall) writes outside the run's folders when it's given a path there,
+/// the session's wall being the line that holds it whatever route the sheet's answer came by. Sent as the window's action, past QA's wall: nothing is
+/// written outside.
+#[test]
+fn save_as_outside_the_run_writes_nothing() {
+    let app = HeadlessApp::start();
+    app.open(&app.disk().pdf("own.pdf", 2));
+    let outside = outside(&app);
+    let tab = app.session_json()["active"].as_u64().expect("a tab") as u32;
+    app.act(crate::core::controls::UiAction::SaveAs {
+        tab,
+        path: outside.path().join("copy.pdf").to_string_lossy().into_owned(),
+    });
+    app.wait_until("the save to be over", || {
+        app.core().tools.save_ui.running.load(std::sync::atomic::Ordering::SeqCst) == 0
+    });
+    app.settle();
+    assert!(!outside.path().join("copy.pdf").exists(), "a save was written outside the run's folders");
+    drop(app.quit());
+}
+
+/// Failure: `qa save-as` writes outside the run's folders through a link in a temp folder that leads out, as the path's name is what's checked and not
+/// where it leads. Refused, and nothing is written where the link leads.
+#[test]
+fn qa_save_as_through_a_link_out_is_refused() {
+    let app = HeadlessApp::start();
+    app.open(&app.disk().pdf("own.pdf", 2));
+    let outside = outside(&app);
+    let link = app.disk().files().join("leads-out");
+    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+    let refused = app.recto(Level::Full, &["qa", "save-as", link.join("copy.pdf").to_str().unwrap()]).unwrap_err();
+    assert_eq!(refused.code, "outside_quiet_run", "{refused:?}");
+    app.settle();
+    assert!(!outside.path().join("copy.pdf").exists(), "a save was written where the link leads");
     drop(app.quit());
 }

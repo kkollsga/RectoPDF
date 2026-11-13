@@ -1,5 +1,5 @@
 # Running heads, footers and page numbers stay out of a copy of body text, and selecting only a running head copies it (owner, 2026-11-07). No event is posted: these go through what a real press, drag and release call.
-# recto qa run app/qa/chrome.qa, with RECTO_QA_PDF set to a PDF of at least 3 pages, each with "Annual report" as a running head about 38 points down, body text from about 98 points down and its page number at the foot: the made report in `the_chrome_script_passes` is one.
+# recto qa run <a copy of app/qa/chrome.qa in a temp folder, where a quiet run reads scripts>, with RECTO_QA_PDF set to a PDF of at least 3 pages, each with "Annual report" as a running head about 38 points down, body text from about 98 points down and its page number at the foot: the made report in `the_chrome_script_passes` is one.
 open "$RECTO_QA_PDF"
 qa wait-settled --timeout 30s
 qa zoom 0.5

@@ -1,5 +1,5 @@
 # The reader, from the home state to a document and around it, on what the app reports.
-# recto qa run app/qa/reader.qa, with RECTO_QA_PDF set to a PDF of at least 12 pages.
+# recto qa run <a copy of app/qa/reader.qa in a temp folder, where a quiet run reads scripts>, with RECTO_QA_PDF set to a PDF of at least 12 pages.
 qa state
 expect app.home true
 expect app.is_active false
