@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod keys;
 mod links;
 mod points;
+mod qa_holds;
 mod run;
 mod selection;
 mod waking;
@@ -73,6 +74,8 @@ struct Shared {
     stopping: AtomicBool,
     /// What a comparison's other panes asked of this view from the UI thread while its own thread held it: the latest of each, taken by that thread the next time it holds its lock. See [`Engine::follow_soon`].
     pending: Mutex<Pending>,
+    /// For QA ([`Engine::hold_busy`]): this view acts as though its own thread held it at every call from the UI thread and hadn't come round since.
+    qa_busy: AtomicBool,
 }
 
 /// What's waiting for a page view that was busy when the UI thread asked. Only the latest of each counts.
@@ -116,6 +119,7 @@ impl Engine {
             config,
             stopping: AtomicBool::new(false),
             pending: Mutex::new(Pending::default()),
+            qa_busy: AtomicBool::new(false),
         });
         Self {
             shared,
@@ -195,9 +199,9 @@ impl Engine {
         lock(&self.shared.reader).docs.shown().map(|doc| doc.magnification())
     }
 
-    /// Where the reader is in the tab showing, as a page and how far down it.
+    /// Where the reader is in the tab showing, as a page and how far down it, counting what's pending ([`Self::places`]).
     pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        lock(&self.shared.reader).docs.shown().map(|doc| doc.reading_anchor())
+        read_place(&self.shared, |reader| reader.docs.shown().map(|doc| doc.reading_anchor()))
     }
 
     /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
@@ -224,7 +228,13 @@ impl Engine {
 
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
     fn now_or_soon(&self, leave: impl FnOnce(&mut Pending), now: impl FnOnce(&mut Reader, &mut Pending)) -> bool {
-        let reader = match self.shared.reader.try_lock() {
+        // Held busy for QA, it's as though the lock were taken.
+        let tried = if self.shared.qa_busy.load(Ordering::Relaxed) {
+            Err(std::sync::TryLockError::WouldBlock)
+        } else {
+            self.shared.reader.try_lock()
+        };
+        let reader = match tried {
             Ok(reader) => reader,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
@@ -274,12 +284,6 @@ impl Engine {
         self.after(reader);
     }
 
-    /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
-    pub fn hold_drawing(&self, on: bool) {
-        lock(&self.shared.reader).work.hold_drawing(on);
-        self.wake();
-    }
-
     /// The system wants memory back, so what's off screen goes, and workers with nothing to do.
     pub fn memory_pressure(&self, critical: bool) {
         lock(&self.shared.reader).memory_pressure(critical);
@@ -294,9 +298,12 @@ impl Engine {
 
     /// Exactly where each tab it holds is, with the place clock as it was read ([`crate::tiles::place_stamp`]): what's read is of that moment, and a jump
     /// this view was sent that came to the clock at or before the stamp is in it. A short lock.
+    ///
+    /// **What the UI thread has already asked of this view counts:** a follow synced scroll left pending for its own thread, which takes it only as it
+    /// next comes round (after a drawing job, say), is applied first, under the same lock, so the read says where the person's scroll in another pane has
+    /// sent this one, and the follow's tick is before the stamp. Read before it, a command marked where the view was before the person moved it on.
     pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>) {
-        let reader = lock(&self.shared.reader);
-        (crate::tiles::place_stamp(), reader.places())
+        read_place(&self.shared, |reader| (crate::tiles::place_stamp(), reader.places()))
     }
 
     /// Zooms, wherever it's asked from. Says what to.
@@ -340,6 +347,8 @@ impl Engine {
 
     pub fn jump_to(&self, page: u32) {
         let mut reader = lock(&self.shared.reader);
+        // Newer than any place synced scroll left for this view, which would otherwise land after it.
+        lock(&self.shared.pending).follow = None;
         reader.jump_to(page, 0.0);
         self.after(reader);
     }
@@ -349,9 +358,8 @@ impl Engine {
     /// one and every read before it an earlier one; `None` if it wasn't sent, with no tab showing.
     pub fn jump_within(&self, page: u32, within: f64) -> Option<u64> {
         let mut reader = lock(&self.shared.reader);
-        if within.is_finite() && within > 0.0 {
-            lock(&self.shared.pending).follow = None;
-        }
+        // Newer than any place synced scroll left for this view, to a page's top as much as a way down it.
+        lock(&self.shared.pending).follow = None;
         let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
         self.after(reader);
         sent
@@ -488,8 +496,27 @@ pub struct ViewportOutcome {
     pub anchor: Option<(u32, f64)>,
 }
 
-/// Takes what the UI thread left for this view, with the lock held. Says whether there was any.
+/// A read of where the view is, with what's pending applied first ([`Engine::places`]): the host is told of the scroll that sends it there. Off the UI
+/// thread's scroll path, which leaves what's pending and never reads the place this way.
+fn read_place<T>(shared: &Shared, read: impl FnOnce(&Reader) -> T) -> T {
+    let mut reader = lock(&shared.reader);
+    let applied = apply_pending(shared, &mut reader);
+    let value = read(&reader);
+    let has_ops = applied && reader.host.has_ops();
+    drop(reader);
+    if has_ops {
+        signal_ops(shared);
+    }
+    value
+}
+
+/// The view's own thread takes what the UI thread left for this view, with the lock held. Says whether there was any. Held off by [`Engine::hold_busy`].
 fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
+    !shared.qa_busy.load(Ordering::Relaxed) && apply_pending(shared, reader)
+}
+
+/// Applies what the UI thread left for this view, with the lock held. Says whether there was any.
+fn apply_pending(shared: &Shared, reader: &mut Reader) -> bool {
     let pending = std::mem::take(&mut *lock(&shared.pending));
     if let Some(value) = pending.zoom {
         reader.zoom(Zoom::To(value));
@@ -694,6 +721,32 @@ mod tests {
         });
         assert!(outcome.scrolled);
         assert!(lock(&engine.shared.pending).follow.is_none());
+    }
+
+    /// Failure: a place synced scroll left for a busy pane lands after a jump the session sent the pane since to a page's top (an agent's `goto`, Back to
+    /// where a page began, the session's own page for the pane), and takes the pane back to where the other pane's scroll had it, undoing the newer jump;
+    /// a jump a way down a page already dropped it. The jump is newer, as a newer follow is.
+    #[test]
+    fn a_jump_to_a_pages_top_drops_a_place_left_for_the_pane() {
+        for by_page in [true, false] {
+            let engine = without_its_thread();
+            let held = engine.shared.reader.lock().unwrap();
+            assert!(!engine.follow_soon(60, 0.5));
+            drop(held);
+            if by_page {
+                engine.jump_to(12);
+            } else {
+                assert!(engine.jump_within(12, 0.0).is_some());
+            }
+            // Its own thread comes round.
+            let mut reader = lock(&engine.shared.reader);
+            take_pending_follow(&engine.shared, &mut reader);
+            assert_eq!(
+                reader.docs.shown().map(|doc| doc.reading_anchor()),
+                Some((12, 0.0)),
+                "by the page alone: {by_page}"
+            );
+        }
     }
 
     /// Failure (review 1): with a middle pane gone, the tab that moves into its page view gets the place synced scroll left for the one before.
