@@ -233,27 +233,27 @@ pub fn hold_or_tell(inner: &Inner, keeps: bool) -> recto_update::updater::AtLaun
         }
         return recto_update::updater::AtLaunch::GoOn;
     }
-    tell_launch(inner)
+    tell_launch(&inner.life, &inner.updates)
 }
 
 /// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]) with what the host knows, once: the facts are taken, so a second telling
 /// has nothing to tell. Whether this copy keeps the record is the store's answer as it stands ([`Hooks::keeps_the_record`]). On a thread that can wait.
-pub fn tell_launch(inner: &Inner) -> recto_update::updater::AtLaunch {
-    let Some(facts) = lock(&inner.life.update_facts).facts.take() else {
+pub fn tell_launch(life: &super::Lifecycle, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch {
+    let Some(facts) = lock(&life.update_facts).facts.take() else {
         return recto_update::updater::AtLaunch::GoOn;
     };
-    inner.updates.launched(facts)
+    updates.launched(facts)
 }
 
 /// The updater's been told of a launch that was held back, and the tabs are read: a first frame shown meanwhile is told now. On a thread that can wait.
-pub fn first_frame_after_launch(inner: &Inner) {
+pub fn first_frame_after_launch(life: &super::Lifecycle, updates: &recto_update::updater::Updater) {
     let held = {
-        let mut launch = lock(&inner.life.update_facts);
+        let mut launch = lock(&life.update_facts);
         launch.held = false;
         launch.first_frame_at.take()
     };
     if let Some(at) = held {
-        tell_first_frame(&inner.updates, at);
+        tell_first_frame(updates, at);
     }
 }
 
@@ -313,21 +313,21 @@ pub fn note_asked_to_open(paths: &[PathBuf]) {
 }
 
 /// **Back from a version that kept ending,** the record's as it left it, as that holds whatever was done since. If this version can't read it, damaged or of a newer kind, the record from before the update is put back, where this version reads, and read instead. Only at that one launch.
-pub fn fall_back_if_unreadable(inner: &Inner, loaded: Loaded) -> Loaded {
-    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
+pub fn fall_back_if_unreadable(updates: &recto_update::updater::Updater, store: &recto_control::record_store::RecordStore, loaded: Loaded) -> Loaded {
+    let Some(before) = updates.take_record_to_fall_back_on() else {
         return loaded;
     };
     let into = match loaded {
         // Damaged, whether or not anything could be brought back from its journals beside it.
-        Loaded::Damaged => inner.saver.store.main_folder(),
-        Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => inner.saver.store.main_folder(),
+        Loaded::Damaged => store.main_folder(),
+        Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => store.main_folder(),
         // A newer kind is never written over: this version's own folder beside it is where it reads.
-        Loaded::Newer => inner.saver.store.own_folder(),
+        Loaded::Newer => store.own_folder(),
         other => return other,
     };
     recto_update::install::restore_record(&before, &into);
-    inner.updates.fell_back();
-    inner.saver.store.load()
+    updates.fell_back();
+    store.load()
 }
 
 /// How long a launch an update opened waits for the state before it shows anything without it, from the launch. Whether its window is closed, in the Dock or hidden, and where it goes, are in the state, and nobody's watching it come up, so it waits; a launch someone asked for waits a second, as a person is looking for it.

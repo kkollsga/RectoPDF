@@ -56,7 +56,7 @@ impl Records for AppRecords {
     /// Taken in on the session thread, as a launch's is, whatever was found: nothing found is the session as it was.
     fn restore(&self) -> Result<Restored, AgentError> {
         let host = self.host()?;
-        if host.saver.inner().is_some_and(|inner| keeping::refuses_a_restore(&inner)) {
+        if host.saver.inner().is_some_and(|inner| keeping::refuses_a_restore(&inner.life)) {
             return Err(AgentError::new(
                 Code::BUSY,
                 "RectoPDF is still letting go of its saved session, so this wasn't done.",

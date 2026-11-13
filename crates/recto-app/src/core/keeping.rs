@@ -152,10 +152,10 @@ fn read_late(inner: &Arc<Inner>, appearance_then: record::Appearance) {
     if !inner.life.keeping().claims() {
         return;
     }
-    if updates::tell_launch(inner) == recto_update::updater::AtLaunch::Exit {
+    if updates::tell_launch(&inner.life, &inner.updates) == recto_update::updater::AtLaunch::Exit {
         std::process::exit(0);
     }
-    let loaded = updates::fall_back_if_unreadable(inner, loaded);
+    let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
     updates::note_tabs_read(&loaded);
     out.1 = true;
     inner.core.push(CoreCall::LateRead(Some(Box::new((loaded, appearance_then)))));
@@ -212,7 +212,7 @@ pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back: TryBack) {
     }
     let appearance_then = lock(&inner.window.app).appearance;
     // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
-    let out = inner.life.tried(back.got, || busy(inner));
+    let out = inner.life.tried(back.got, || busy(&inner.life, &inner.host));
     let _ = carried(
         inner,
         out,
@@ -227,8 +227,8 @@ pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back: TryBack) {
 
 /// Something under way that a late try's restore would replace or lose: a person's command on its own thread (its change isn't in to be looked at), or a
 /// hand-off.
-fn busy(inner: &Inner) -> bool {
-    inner.life.persons_running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst)
+fn busy(life: &Lifecycle, host: &AppHost) -> bool {
+    life.persons_running.load(Ordering::SeqCst) > 0 || host.handing_off.load(Ordering::SeqCst)
 }
 
 /// **Whether an agent's command is answered while keeping the record is settling** (trying or restoring, [`crate::lifecycle::keeping::Keeping::refuses_agents_changes`]):
@@ -242,8 +242,8 @@ pub(crate) fn answers_agents(command: &recto_agent::Command) -> bool {
 
 /// **Whether a `session restore` is refused now, for anyone:** while a late keep's read whose patience ran out is still inside its own read, which holds the
 /// record's lock; a second read of the same folder beside it isn't made. Busy for a moment: refused as busy, to try again.
-pub(crate) fn refuses_a_restore(inner: &Inner) -> bool {
-    inner.life.keeping() == Keeping::LettingGo
+pub(crate) fn refuses_a_restore(life: &Lifecycle) -> bool {
+    life.keeping() == Keeping::LettingGo
 }
 
 /// **A late try's saved session, come in from its thread:** what's taken in; or, with nothing (the read's thread ended without it: a panic, or its patience ran
@@ -321,7 +321,7 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
     /// On a thread of its own; a try that didn't get the lock with a person's command or a hand-off under way, or with no thread to be had, coming back through
     /// the queue as any try does.
     fn ask(&mut self) {
-        if busy(self.inner) {
+        if busy(&self.inner.life, &self.inner.host) {
             self.inner.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
             return;
         }
@@ -400,7 +400,7 @@ fn tell(inner: &Inner, facts: Option<recto_update::updater::Facts>) {
     {
         std::process::exit(0);
     }
-    updates::first_frame_after_launch(inner);
+    updates::first_frame_after_launch(&inner.life, &inner.updates);
 }
 
 /// **The window as it is, kept until it's made again** from a late keep's restore (`apply_restored`): its frame, focus, sidebar width and Settings, which the

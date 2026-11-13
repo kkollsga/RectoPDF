@@ -207,7 +207,7 @@ pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
     } else {
         inner.saver.store.load()
     };
-    let loaded = updates::fall_back_if_unreadable(inner, loaded);
+    let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
     updates::note_tabs_read(&loaded);
     loaded
 }
