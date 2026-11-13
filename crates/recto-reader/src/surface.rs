@@ -267,56 +267,29 @@ Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
 Engine::pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread)
 Engine::pub fn applied(&self)
-Engine::pub fn clear_selection_soon(&self) -> bool
-Engine::pub fn copy_selection(&self, anyway: bool)
 Engine::pub fn deactivate(&self)
-Engine::pub fn dismiss_selection_notice(&self)
-Engine::pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 Engine::pub fn drain(&self) -> Vec<Op>
 Engine::pub fn empty_discardable(&self) -> usize
 Engine::pub fn fit(&self) -> Option<f64>
 Engine::pub fn follow(&self, page: u32, within: f64) -> Option<u32>
 Engine::pub fn follow_soon(&self, page: u32, within: f64) -> bool
-Engine::pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView)
-Engine::pub fn has_document(&self) -> bool
-Engine::pub fn has_selection(&self) -> bool
 Engine::pub fn has_thread(&self) -> bool
 Engine::pub fn hold_drawing(&self, on: bool)
-Engine::pub fn holds(&self, tab: u32) -> bool
-Engine::pub fn hot_selection(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 Engine::pub fn hot_tab(&self) -> Option<u32>
-Engine::pub fn is_on_place(&self) -> bool
-Engine::pub fn is_showable(&self) -> bool
 Engine::pub fn jump_to(&self, page: u32)
 Engine::pub fn jump_within(&self, page: u32, within: f64) -> Option<u64>
 Engine::pub fn key_given(&self, path: &Path)
+Engine::pub fn links(&self) -> Links<'_>
 Engine::pub fn magnification(&self) -> Option<f64>
 Engine::pub fn memory_pressure(&self, critical: bool)
 Engine::pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self
 Engine::pub fn note(&self) -> Option<String>
-Engine::pub fn note_wake(&self, tab: u32, began: Instant)
-Engine::pub fn own_file_page(&self, position: u32) -> Option<u32>
-Engine::pub fn page_count(&self) -> u32
-Engine::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
-Engine::pub fn page_turns(&self, page: u32) -> u8
 Engine::pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>)
-Engine::pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint>
-Engine::pub fn point_on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))>
-Engine::pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool
-Engine::pub fn pointer_link(&self, x: f64, y: f64) -> Option<crate::links::LinkHit>
-Engine::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
+Engine::pub fn points(&self) -> Points<'_>
 Engine::pub fn reading_anchor(&self) -> Option<(u32, f64)>
 Engine::pub fn report(&self) -> ReaderReport
-Engine::pub fn restore_selection(&self, from: (u32, u32), to: (u32, u32))
-Engine::pub fn reveal(&self, page: u32, start: u32, end: u32)
 Engine::pub fn same_as(&self, other: &Self) -> bool
-Engine::pub fn select_all(&self)
-Engine::pub fn selection_can_be_sent(&self) -> bool
-Engine::pub fn selection_drag(&self, x: f64, y: f64) -> Vec<Op>
-Engine::pub fn selection_notice(&self) -> Option<Notice>
-Engine::pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<Op>
-Engine::pub fn selection_release(&self) -> Vec<Op>
-Engine::pub fn selection_text_now(&self) -> Option<String>
+Engine::pub fn selection(&self) -> Selection<'_>
 Engine::pub fn set_margins(&self, left: f64, right: f64)
 Engine::pub fn set_paper(&self, paper: PaperKind)
 Engine::pub fn set_share(&self, views: usize)
@@ -325,19 +298,13 @@ Engine::pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op>
 Engine::pub fn set_viewport_scrolled(&self, viewport: Viewport) -> ViewportOutcome
 Engine::pub fn set_warm(&self, warm: &[u32])
 Engine::pub fn shut_down(&self)
-Engine::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
-Engine::pub fn take_clicked_link(&self) -> Option<crate::links::LinkHit>
-Engine::pub fn take_copied(&self) -> Option<recto_index::select::CopiedText>
 Engine::pub fn take_keyless(&self) -> Vec<PathBuf>
 Engine::pub fn take_moved_page(&self) -> Option<u32>
 Engine::pub fn wait_settled(&self, limit: Duration) -> bool
-Engine::pub fn walled_workers(&self) -> u32
+Engine::pub fn waking(&self) -> Wake<'_>
 Engine::pub fn window_closed(&self)
 Engine::pub fn window_opened(&self)
-Engine::pub fn window_up(&self)
-Engine::pub fn worker_bytes(&self, tab: u32) -> u64
-Engine::pub fn worker_pids(&self) -> Vec<u32>
-Engine::pub fn workers_footprint(&self) -> (u64, u64)
+Engine::pub fn workers(&self) -> Workers<'_>
 Engine::pub fn zoom(&self, zoom: Zoom) -> Option<f64>
 Engine::pub fn zoom_soon(&self, value: f64) -> bool
 EngineConfig (pub struct, derives Clone, Debug, Default)
@@ -358,6 +325,11 @@ Keyring::pub fn is_empty(&self) -> bool
 Keyring::pub fn keep_only(&self, open: &[(u64, u64)])
 Keyring::pub fn len(&self) -> usize
 Keyring::pub fn set(&self, identity: (u64, u64), password: Arc<recto_core::Password>)
+Links (pub struct, derives Clone, Copy)
+Links::pub fn at(&self, x: f64, y: f64) -> Option<crate::links::LinkHit>
+Links::pub fn own_file_page(&self, position: u32) -> Option<u32>
+Links::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
+Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
 LowResNote (pub(super) struct, derives Debug)
 Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NoLook (private enum)
@@ -385,6 +357,14 @@ Pointer::pub(crate) fn selection_text_now(&self, pages: u32) -> Option<String>
 Pointer::pub(crate) fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit>
 Pointer::pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::CopiedText>
 Pointer::pub(crate) fn take_copy_signal(&mut self) -> bool
+Points (pub struct, derives Clone, Copy)
+Points::pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
+Points::pub fn has_document(&self) -> bool
+Points::pub fn on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint>
+Points::pub fn on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))>
+Points::pub fn page_count(&self) -> u32
+Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
+Points::pub fn page_turns(&self, page: u32) -> u8
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 Reader (pub struct)
 Reader.pub(crate) cache: TileCache
@@ -447,6 +427,23 @@ Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
 Scratch (pub(super) struct, derives Debug, Default)
 SelectingNews (private struct)
+Selection (pub struct, derives Clone, Copy)
+Selection::pub fn can_be_sent(&self) -> bool
+Selection::pub fn clear_soon(&self) -> bool
+Selection::pub fn copy(&self, anyway: bool)
+Selection::pub fn dismiss_notice(&self)
+Selection::pub fn drag(&self, x: f64, y: f64) -> Vec<Op>
+Selection::pub fn has_any(&self) -> bool
+Selection::pub fn hot(&self) -> Option<(u32, Option<recto_index::select::Range>)>
+Selection::pub fn is_over_text(&self, x: f64, y: f64) -> bool
+Selection::pub fn notice(&self) -> Option<Notice>
+Selection::pub fn press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<Op>
+Selection::pub fn release(&self) -> Vec<Op>
+Selection::pub fn restore(&self, from: (u32, u32), to: (u32, u32))
+Selection::pub fn reveal(&self, page: u32, start: u32, end: u32)
+Selection::pub fn select_all(&self)
+Selection::pub fn take_copied(&self) -> Option<recto_index::select::CopiedText>
+Selection::pub fn text_now(&self) -> Option<String>
 Shared (private struct)
 SleepDrawCounts (pub struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 SleepDraws (pub struct, derives Debug, Default)
@@ -464,6 +461,14 @@ TileKey (pub(super) struct, derives Clone, Copy, Debug, PartialEq, Eq, Hash)
 Unopened (private enum)
 Viewport (pub struct, derives Clone, Copy, Debug, Default, PartialEq)
 ViewportOutcome (pub struct)
+Wake (pub struct, derives Clone, Copy)
+Wake::pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView)
+Wake::pub fn holds(&self, tab: u32) -> bool
+Wake::pub fn is_on_place(&self) -> bool
+Wake::pub fn is_showable(&self) -> bool
+Wake::pub fn note_wake(&self, tab: u32, began: Instant)
+Wake::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
+Wake::pub fn window_up(&self)
 WakeReport (pub struct, derives Clone, Copy, Debug, Default)
 WakeStock (pub enum, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 WakeStock::pub fn covered_the_view(self) -> bool
@@ -480,6 +485,11 @@ Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
+Workers (pub struct, derives Clone, Copy)
+Workers::pub fn bytes(&self, tab: u32) -> u64
+Workers::pub fn footprint(&self) -> (u64, u64)
+Workers::pub fn pids(&self) -> Vec<u32>
+Workers::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>

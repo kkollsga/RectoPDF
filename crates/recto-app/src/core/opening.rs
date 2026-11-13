@@ -23,7 +23,7 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
         Command::Move(Move::Tap(Tap { tab })) => {
             reads.wanted_tab = None;
             if let Some(id) = tab.strip_prefix('#').and_then(|id| id.parse().ok()) {
-                inner.engine.note_wake(id, Instant::now());
+                inner.engine.waking().note_wake(id, Instant::now());
             }
         }
         Command::Move(Move::Open(Open { path, .. })) => {

@@ -4,7 +4,6 @@ use crate::{AppCore, lock};
 use recto_agent::extract::{self, ClipItem};
 pub use recto_app::core::snapshot_tool::ClipboardOffer;
 use recto_app::core::snapshot_tool::Data;
-use recto_reader::Engine;
 use std::sync::atomic::Ordering;
 
 /// What the clipboard is offered: its types in the order to offer them, which of those are made only when a paste asks, and the number that names this offer for [`AppCore::clipboard_data`].
@@ -27,7 +26,7 @@ impl AppCore {
                 .panes
                 .engines(&self.inner.engine)
                 .iter()
-                .find_map(Engine::take_copied)
+                .find_map(|engine| engine.selection().take_copied())
                 .map(|copied| tool.offer_text(copied.text))
         })?;
         offered.serial = tool.serial.fetch_add(1, Ordering::SeqCst) + 1;

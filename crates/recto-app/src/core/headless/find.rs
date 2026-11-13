@@ -13,7 +13,7 @@ fn shown(app: &HeadlessApp) -> (u32, String, Option<u32>, bool) {
 
 /// The selection on the page, as the page view has it: a hit gone to is selected there.
 fn selected(app: &HeadlessApp) -> Option<recto_index::select::Range> {
-    app.core().panes.reading_engine(&app.core().engine).hot_selection()?.1
+    app.core().panes.reading_engine(&app.core().engine).selection().hot()?.1
 }
 
 /// Failure (slow mode, 2026-11-11; the slow stage's `find_comes_back_with_its_hits_and_the_hit_gone_to`): Find came back with its hits and not the hit gone

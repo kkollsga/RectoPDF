@@ -3,7 +3,6 @@
 use crate::paper::PaperKind;
 use crate::selection::Notice;
 use crate::tiles::{MAX_ATTACH_PER_TURN, Op, PageMap, Reader, ReaderReport, SavedPlace, Viewport, Zoom};
-use recto_platform::isolate;
 use recto_render_service::{Policy, ServiceConfig};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -12,10 +11,20 @@ use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 mod keys;
+mod links;
+mod points;
 mod run;
+mod selection;
+mod waking;
+mod workers;
 
 pub use keys::{FileIdentity, Keyring, MAX_KEYS};
+pub use links::Links;
+pub use points::Points;
 use run::run_guarded;
+pub use selection::Selection;
+pub use waking::Wake;
+pub use workers::Workers;
 
 /// What the engine tells whoever's drawing. Called off the UI thread, and must return at once.
 pub trait EngineEvents: Send + Sync {
@@ -213,17 +222,6 @@ impl Engine {
         )
     }
 
-    /// Another pane took the selection, from the UI thread, the same way.
-    pub fn clear_selection_soon(&self) -> bool {
-        self.now_or_soon(
-            |pending| pending.clear_selection = true,
-            |reader, pending| {
-                pending.clear_selection = false;
-                reader.clear_selection();
-            },
-        )
-    }
-
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
     fn now_or_soon(&self, leave: impl FnOnce(&mut Pending), now: impl FnOnce(&mut Reader, &mut Pending)) -> bool {
         let reader = match self.shared.reader.try_lock() {
@@ -276,42 +274,10 @@ impl Engine {
         self.after(reader);
     }
 
-    /// What a tab's first frame shows, for its next [`Self::activate`].
-    pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView) {
-        lock(&self.shared.reader).wake.give_sleep(tab, view);
-    }
-
-    /// The window's gone up.
-    pub fn window_up(&self) {
-        lock(&self.shared.reader).wake.window_up();
-    }
-
-    /// A tab's being woken, as of now.
-    pub fn note_wake(&self, tab: u32, began: Instant) {
-        let mut reader = lock(&self.shared.reader);
-        let hot = reader.hot_tab();
-        reader.wake.note_wake(hot, tab, began);
-    }
-
-    /// Whether a view of this tab's held.
-    pub fn holds(&self, tab: u32) -> bool {
-        lock(&self.shared.reader).holds(tab)
-    }
-
-    /// What a tab's sleep file gets from here.
-    pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial> {
-        lock(&self.shared.reader).sleep_material(tab, now)
-    }
-
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
     pub fn hold_drawing(&self, on: bool) {
         lock(&self.shared.reader).work.hold_drawing(on);
         self.wake();
-    }
-
-    /// Whether a window can go up with what's on the layers.
-    pub fn is_showable(&self) -> bool {
-        lock(&self.shared.reader).is_showable()
     }
 
     /// The system wants memory back, so what's off screen goes, and workers with nothing to do.
@@ -326,27 +292,11 @@ impl Engine {
         lock(&self.shared.reader).cache.empty_discardable()
     }
 
-    /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
-    pub fn worker_bytes(&self, tab: u32) -> u64 {
-        let files = lock(&self.shared.reader).files_of(tab);
-        lock(&self.shared.workers_by_file)
-            .iter()
-            .filter(|(path, _)| files.contains(path))
-            .filter_map(|(_, pid)| isolate::process_memory(*pid))
-            .map(|memory| memory.footprint_bytes)
-            .sum()
-    }
-
     /// Exactly where each tab it holds is, with the place clock as it was read ([`crate::tiles::place_stamp`]): what's read is of that moment, and a jump
     /// this view was sent that came to the clock at or before the stamp is in it. A short lock.
     pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>) {
         let reader = lock(&self.shared.reader);
         (crate::tiles::place_stamp(), reader.places())
-    }
-
-    /// Whether the place is on the layers, and nothing's on its way. A short lock, asked only until the window is showing.
-    pub fn is_on_place(&self) -> bool {
-        lock(&self.shared.reader).is_on_place()
     }
 
     /// Zooms, wherever it's asked from. Says what to.
@@ -405,30 +355,6 @@ impl Engine {
         let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
         self.after(reader);
         sent
-    }
-
-    /// The link under the pointer, if its page's links are here. A page not read yet is read next. A short lock, on the UI thread.
-    pub fn pointer_link(&self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
-        let mut reader = lock(&self.shared.reader);
-        let hit = reader.pointer_link(x, y);
-        drop(reader);
-        self.wake();
-        hit
-    }
-
-    /// The link the last click landed on, taken once.
-    pub fn take_clicked_link(&self) -> Option<crate::links::LinkHit> {
-        lock(&self.shared.reader).pointer.take_clicked_link()
-    }
-
-    /// Where a link's page is now: see [`crate::tiles::DocView::position_in_same_file`].
-    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
-        lock(&self.shared.reader).doc()?.position_in_same_file(from, file_page)
-    }
-
-    /// Which page of the tab's own file a page of the view is, if it's one.
-    pub fn own_file_page(&self, position: u32) -> Option<u32> {
-        lock(&self.shared.reader).doc()?.own_file_page(position)
     }
 
     pub fn set_paper(&self, paper: PaperKind) {
@@ -491,136 +417,6 @@ impl Engine {
         ops
     }
 
-    pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<Op> {
-        self.pointer_did(|reader| reader.selection_press(x, y, clicks, shift))
-    }
-
-    pub fn selection_drag(&self, x: f64, y: f64) -> Vec<Op> {
-        self.pointer_did(|reader| reader.selection_drag(x, y))
-    }
-
-    pub fn selection_release(&self) -> Vec<Op> {
-        self.pointer_did(|reader| reader.pointer.selection_release())
-    }
-
-    /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.
-    pub fn selection_can_be_sent(&self) -> bool {
-        let reader = lock(&self.shared.reader);
-        reader.doc().is_some_and(|doc| reader.pointer.selection_can_be_sent(doc.page_count()))
-    }
-
-    /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
-    pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool {
-        let mut reader = lock(&self.shared.reader);
-        let over = reader.pointer_is_over_text(x, y);
-        drop(reader);
-        self.wake();
-        over
-    }
-
-    pub fn select_all(&self) {
-        let mut reader = lock(&self.shared.reader);
-        reader.select_all();
-        self.after(reader);
-    }
-
-    /// Which tab is showing, and what's selected on it. A short lock, for the state record.
-    pub fn hot_selection(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
-        let reader = lock(&self.shared.reader);
-        reader.hot_tab().map(|tab| (tab, reader.pointer.selection_range()))
-    }
-
-    /// Puts back what was selected, from the state record.
-    pub fn restore_selection(&self, from: (u32, u32), to: (u32, u32)) {
-        let mut reader = lock(&self.shared.reader);
-        reader.restore_selection(recto_index::select::Range {
-            start: recto_index::select::Place { page: from.0, at: from.1 },
-            end: recto_index::select::Place { page: to.0, at: to.1 },
-        });
-        self.after(reader);
-    }
-
-    pub fn has_selection(&self) -> bool {
-        lock(&self.shared.reader).pointer.has_selection()
-    }
-
-    /// Selects Find's hit and brings it into view: characters `start..end` of a page, from 0. Off the UI thread.
-    pub fn reveal(&self, page: u32, start: u32, end: u32) {
-        let mut reader = lock(&self.shared.reader);
-        reader.reveal_range(recto_index::select::Range {
-            start: recto_index::select::Place { page, at: start },
-            end: recto_index::select::Place { page, at: end },
-        });
-        self.after(reader);
-    }
-
-    pub fn has_document(&self) -> bool {
-        lock(&self.shared.reader).doc().is_some_and(|doc| doc.has_document())
-    }
-
-    /// Starts the selection on its way to the clipboard. It goes page by page on the engine's thread, and `EngineEvents::copy_ready` says when.
-    pub fn copy_selection(&self, anyway: bool) {
-        let mut reader = lock(&self.shared.reader);
-        reader.start_copy(anyway);
-        self.after(reader);
-    }
-
-    pub fn take_copied(&self) -> Option<recto_index::select::CopiedText> {
-        let mut reader = lock(&self.shared.reader);
-        let copied = reader.pointer.take_copied();
-        drop(reader);
-        self.shared.settled.notify_all();
-        copied
-    }
-
-    pub fn selection_text_now(&self) -> Option<String> {
-        let reader = lock(&self.shared.reader);
-        reader.pointer.selection_text_now(reader.doc()?.page_count())
-    }
-
-    pub fn selection_notice(&self) -> Option<Notice> {
-        lock(&self.shared.reader).pointer.selection_notice()
-    }
-
-    pub fn dismiss_selection_notice(&self) {
-        let mut reader = lock(&self.shared.reader);
-        reader.pointer.dismiss_selection_notice();
-        self.after(reader);
-    }
-
-    /// Where a point in the document is on a page as it's shown, with that page's size, for the snapshot tool. A short lock and some sums.
-    pub fn point_on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))> {
-        let reader = lock(&self.shared.reader);
-        let doc = reader.doc()?;
-        let point = doc.point_on_page(x, y)?;
-        Some((point, doc.page_size_shown(point.page)?))
-    }
-
-    /// Where a point in the document is on `page`, whichever page it's over, past its edges if it must: a snapshot's box stays on the page it was pressed on. A short lock and some sums.
-    pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint> {
-        lock(&self.shared.reader).doc()?.point_on_given_page(page, x, y)
-    }
-
-    /// How many pages the tab shown has, edits and all. A short lock, for what can't wait, as the print panel can't.
-    pub fn page_count(&self) -> u32 {
-        lock(&self.shared.reader).doc().map_or(0, |doc| doc.page_count())
-    }
-
-    /// A page's size as it's shown, in its own coordinates. A short lock.
-    pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
-        lock(&self.shared.reader).doc()?.page_size_shown(page)
-    }
-
-    /// How far a page is shown turned, in quarter turns clockwise. A short lock.
-    pub fn page_turns(&self, page: u32) -> u8 {
-        lock(&self.shared.reader).doc().map_or(0, |doc| doc.page_turns(page))
-    }
-
-    /// Where a point on a page is in the document.
-    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
-        lock(&self.shared.reader).doc()?.document_point(page, x, y)
-    }
-
     pub fn take_moved_page(&self) -> Option<u32> {
         lock(&self.shared.reader).place.take_moved_page()
     }
@@ -680,24 +476,6 @@ impl Engine {
             }
             reader = self.shared.settled.wait_timeout(reader, left).unwrap_or_else(PoisonError::into_inner).0;
         }
-    }
-
-    /// Every worker running now.
-    pub fn worker_pids(&self) -> Vec<u32> {
-        lock(&self.shared.worker_pids).clone()
-    }
-
-    /// How many of the workers running now said their walls were up: the App Sandbox on and their Mach rights dropped.
-    pub fn walled_workers(&self) -> u32 {
-        self.shared.walled_workers.load(Ordering::Relaxed)
-    }
-
-    /// The footprint of every worker running now, from outside.
-    pub fn workers_footprint(&self) -> (u64, u64) {
-        let pids = lock(&self.shared.worker_pids).clone();
-        pids.iter()
-            .filter_map(|pid| isolate::process_memory(*pid))
-            .fold((0, 0), |(now, peak), memory| (now + memory.footprint_bytes, peak + memory.peak_footprint_bytes))
     }
 }
 
@@ -955,7 +733,7 @@ mod tests {
         let held = engine.shared.reader.lock().unwrap();
         let started = Instant::now();
         assert!(!engine.zoom_soon(2.0));
-        assert!(!engine.clear_selection_soon());
+        assert!(!engine.selection().clear_soon());
         assert!(started.elapsed() < Duration::from_millis(50));
         drop(held);
         let mut reader = lock(&engine.shared.reader);

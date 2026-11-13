@@ -122,7 +122,7 @@ fn a_real_page_reaches_the_host_as_surfaces() {
     let report = engine.report().0;
     assert_eq!(report["settled"], true);
     assert_eq!(report["low_res_pages"].as_array().unwrap().len(), 0);
-    assert!(engine.workers_footprint().0 > 0, "a worker is running, and can be measured");
+    assert!(engine.workers().footprint().0 > 0, "a worker is running, and can be measured");
 }
 
 /// Failure: a document held in the page view spins or polls with nothing to do. Budget: idle CPU about 0%, and no more than 1 wake-up a second. Runs in its own process via nextest, and uses this process's own counters.
@@ -440,14 +440,14 @@ fn a_closed_window_lets_the_worker_go() {
     let file = document(1);
     let (engine, _events) = started(&file, 1);
     pump(&engine, HANG);
-    assert!(engine.workers_footprint().0 > 0);
+    assert!(engine.workers().footprint().0 > 0);
     engine.window_closed();
     engine.applied();
     let deadline = Instant::now() + HANG;
-    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+    while engine.workers().footprint().0 > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(engine.workers_footprint().0, 0, "the worker should be gone");
+    assert_eq!(engine.workers().footprint().0, 0, "the worker should be gone");
     assert_eq!(engine.report().0["tiles"]["attached"], 0);
     engine.window_opened();
     engine.set_viewport(view(0.0));
@@ -494,10 +494,10 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let deadline = Instant::now() + HANG;
-    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+    while engine.workers().footprint().0 > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(engine.workers_footprint().0, 0, "it should have gone by now");
+    assert_eq!(engine.workers().footprint().0, 0, "it should have gone by now");
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
 }
 
@@ -537,20 +537,20 @@ fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
     // The first line's baseline, from the top of a page 792 tall.
     let (press_x, press_y) = at(74.0, 792.0 - 720.0 - 4.0);
     // Had this waited for the worker, it would have the answer. It's the host's next look that does.
-    let ops = engine.selection_press(press_x, press_y, 2, false);
+    let ops = engine.selection().press(press_x, press_y, 2, false);
     assert_eq!(highlight_on(&ops, 0), None, "its page hasn't been read, so it can't be known");
-    let mut later = engine.selection_release();
+    let mut later = engine.selection().release();
     engine.applied();
     later.extend(pump(&engine, HANG));
     let rects = highlight_on(&later, 0).expect("a double-click takes a word, once its page is read");
     assert_eq!(rects.len(), 1);
     assert!(rects[0].width > 10.0 && rects[0].width < 60.0, "one word: {:?}", rects[0]);
-    assert!(engine.has_selection());
+    assert!(engine.selection().has_any());
     // A click elsewhere clears it, on the UI thread, with no job.
-    let ops = engine.selection_press(press_x, press_y, 1, false);
+    let ops = engine.selection().press(press_x, press_y, 1, false);
     assert_eq!(highlight_on(&ops, 0), Some(Vec::new()), "cleared at once, from the text that's here");
-    engine.selection_release();
-    assert!(!engine.has_selection());
+    engine.selection().release();
+    assert!(!engine.selection().has_any());
 }
 
 /// Failure: what's selected is drawn in document points, so it's wrong at any zoom, or a click at a zoom hits a different word. The host's points are the document's whatever the magnification, so the same point must take the same word.
@@ -572,8 +572,8 @@ fn a_click_takes_the_same_word_at_any_zoom() {
         });
         engine.applied();
         pump(&engine, HANG);
-        let mut ops = engine.selection_press(press_x, press_y, 2, false);
-        ops.extend(engine.selection_release());
+        let mut ops = engine.selection().press(press_x, press_y, 2, false);
+        ops.extend(engine.selection().release());
         engine.applied();
         ops.extend(pump(&engine, HANG));
         let report = engine.report().0;
@@ -595,14 +595,14 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
     let file = document(COUNT as usize);
     let (engine, events) = started(&file, COUNT);
     settled_on_page(&engine, 0);
-    engine.select_all();
-    assert!(engine.has_selection());
+    engine.selection().select_all();
+    assert!(engine.selection().has_any());
     let ops = pump(&engine, HANG);
     assert!(highlight_on(&ops, 0).is_some_and(|rects| !rects.is_empty()), "what's showing is highlighted");
     let report = engine.report().0;
     let read = report["selection"]["text_reads"].as_u64().unwrap();
     assert!(read <= 12, "read {read} pages of {COUNT} just to select them");
-    engine.copy_selection(false);
+    engine.selection().copy(false);
     let mut held_most = 0;
     let deadline = Instant::now() + Duration::from_secs(60);
     while events.copies.load(Ordering::SeqCst) == 0 {
@@ -611,7 +611,7 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(held_most as usize <= recto_reader::selection::MAX_TEXT_PAGES, "{held_most} pages held");
-    let copied = engine.take_copied().expect("the copy is ready");
+    let copied = engine.selection().take_copied().expect("the copy is ready");
     assert_eq!(copied.pages_read, COUNT);
     assert_eq!(copied.text.matches("Page number").count(), COUNT as usize);
     assert!(
@@ -638,7 +638,7 @@ impl EngineEvents for PullsInCopyReady {
         if !self.pulled.swap(true, Ordering::SeqCst)
             && let Some(engine) = self.engine.get()
         {
-            engine.select_all();
+            engine.selection().select_all();
             self.returned.store(true, Ordering::SeqCst);
         }
     }
@@ -669,9 +669,9 @@ fn copy_ready_comes_with_no_lock_of_the_page_views_held() {
         recto_reader::layout::Spread::Single,
     );
     settled_on_page(&engine, 0);
-    engine.select_all();
+    engine.selection().select_all();
     pump(&engine, Duration::from_secs(20));
-    engine.copy_selection(false);
+    engine.selection().copy(false);
     let deadline = Instant::now() + Duration::from_secs(30);
     while !events.returned.load(Ordering::SeqCst) {
         assert!(
@@ -681,7 +681,7 @@ fn copy_ready_comes_with_no_lock_of_the_page_views_held() {
         );
         std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
-    assert!(engine.take_copied().is_some(), "the copy is there to take");
+    assert!(engine.selection().take_copied().is_some(), "the copy is there to take");
 }
 
 /// Failure: a page with no text keeps being read, holding the settled state open for ever, or says it has a selection. A page that fails has to come to rest too.
@@ -691,14 +691,14 @@ fn a_page_with_no_text_comes_to_rest_with_nothing_selected() {
     let file = TempPdf::new("scan.pdf", &pages(&[scan]));
     let (engine, _events) = started(&file, 1);
     let (x, y, fit) = settled_on_page(&engine, 0);
-    engine.selection_press(x + 200.0 * fit, y + 300.0 * fit, 2, false);
-    engine.selection_drag(x + 300.0 * fit, y + 400.0 * fit);
-    engine.selection_release();
+    engine.selection().press(x + 200.0 * fit, y + 300.0 * fit, 2, false);
+    engine.selection().drag(x + 300.0 * fit, y + 400.0 * fit);
+    engine.selection().release();
     let ops = pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     assert_eq!(highlight_on(&ops, 0).unwrap_or_default().len(), 0);
-    assert!(!engine.has_selection());
-    assert!(!engine.pointer_is_over_text(x + 200.0 * fit, y + 300.0 * fit), "no I-beam on a scan");
+    assert!(!engine.selection().has_any());
+    assert!(!engine.selection().is_over_text(x + 200.0 * fit, y + 300.0 * fit), "no I-beam on a scan");
 }
 
 /// Failure: the I-beam shows in the margin or between lines, or never shows, because the pointer's page is never read. It's read when there's nothing better to do, and only then says yes.
@@ -708,11 +708,11 @@ fn the_pointer_asks_for_its_page_and_goes_to_an_i_beam_only_over_text() {
     let (engine, _events) = started(&file, 1);
     let (x, y, fit) = settled_on_page(&engine, 0);
     let (on_x, on_y) = (x + 80.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
-    assert!(!engine.pointer_is_over_text(on_x, on_y), "not read yet");
+    assert!(!engine.selection().is_over_text(on_x, on_y), "not read yet");
     pump(&engine, HANG);
-    assert!(engine.pointer_is_over_text(on_x, on_y), "{}", engine.report().0);
-    assert!(!engine.pointer_is_over_text(x + 80.0 * fit, y + 600.0 * fit), "the blank part of the page");
-    assert!(!engine.pointer_is_over_text(x - 30.0, on_y), "the margin");
+    assert!(engine.selection().is_over_text(on_x, on_y), "{}", engine.report().0);
+    assert!(!engine.selection().is_over_text(x + 80.0 * fit, y + 600.0 * fit), "the blank part of the page");
+    assert!(!engine.selection().is_over_text(x - 30.0, on_y), "the margin");
 }
 
 /// Failure: the thread that draws dies, and no page draws again, with nothing said: the page just stays blank. It comes back, and pages draw.
@@ -761,16 +761,16 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
     let file = TempPdf::new("dying.pdf", &pages(&list));
     let (engine, events) = started(&file, COUNT);
     settled_on_page(&engine, 0);
-    engine.select_all();
+    engine.selection().select_all();
     pump(&engine, HANG);
-    engine.copy_selection(false);
+    engine.selection().copy(false);
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut killed = 0;
     while events.copies.load(Ordering::SeqCst) == 0 {
         assert!(Instant::now() < deadline, "the copy didn't finish: {}", engine.report().0);
         if killed < 3
             && engine.report().0["selection"]["copying"] == true
-            && let Some(pid) = engine.worker_pids().first()
+            && let Some(pid) = engine.workers().pids().first()
         {
             let _ = std::process::Command::new("/bin/kill").arg("-9").arg(pid.to_string()).status();
             killed += 1;
@@ -778,7 +778,7 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
         std::thread::sleep(Duration::from_millis(30));
     }
     assert!(killed > 0, "the worker never got killed, so this tested nothing");
-    let copied = engine.take_copied().expect("the copy is ready");
+    let copied = engine.selection().take_copied().expect("the copy is ready");
     assert_eq!(copied.pages_read, COUNT);
     assert_eq!(
         copied.text.matches("Page words").count() as u32 + copied.pages_failed,
@@ -803,25 +803,25 @@ fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
     );
     let (engine, _events) = started(&file, 3);
     settled_on_page(&engine, 0);
-    engine.select_all();
+    engine.selection().select_all();
     pump(&engine, HANG);
-    assert!(engine.has_selection());
+    assert!(engine.selection().has_any());
     std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Only this now"]))])).unwrap();
-    for pid in engine.worker_pids() {
+    for pid in engine.workers().pids() {
         let _ = std::process::Command::new("/bin/kill").arg("-9").arg(pid.to_string()).status();
     }
     std::thread::sleep(Duration::from_millis(50));
-    engine.copy_selection(false);
+    engine.selection().copy(false);
     let deadline = Instant::now() + HANG;
-    while engine.has_selection() {
+    while engine.selection().has_any() {
         assert!(Instant::now() < deadline, "still selected: {}", engine.report().0);
         pump(&engine, Duration::from_millis(50));
     }
-    assert!(engine.take_copied().is_none(), "none of it is about this file");
+    assert!(engine.selection().take_copied().is_none(), "none of it is about this file");
     assert!(
-        engine.selection_notice().is_some_and(|notice| notice.text.contains("changed")),
+        engine.selection().notice().is_some_and(|notice| notice.text.contains("changed")),
         "{:?}",
-        engine.selection_notice()
+        engine.selection().notice()
     );
 }
 
@@ -891,18 +891,18 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     let file = document(2);
     let (engine, _events) = started(&file, 2);
     settled_on_page(&engine, 0);
-    let (press_x, press_y) = engine.document_point(0, 100.0, 700.0).unwrap();
-    let (drag_x, drag_y) = engine.document_point(1, 300.0, 50.0).unwrap();
+    let (press_x, press_y) = engine.points().document_point(0, 100.0, 700.0).unwrap();
+    let (drag_x, drag_y) = engine.points().document_point(1, 300.0, 50.0).unwrap();
     assert_eq!(
-        engine.point_on_page(drag_x, drag_y).map(|(point, _)| point.page),
+        engine.points().on_page(drag_x, drag_y).map(|(point, _)| point.page),
         Some(1),
         "the drag really is over the next page"
     );
     let mut tool = SnapshotTool::default();
     tool.set_on(true);
-    let (pressed, size) = engine.point_on_page(press_x, press_y).unwrap();
+    let (pressed, size) = engine.points().on_page(press_x, press_y).unwrap();
     tool.press(pressed, size);
-    let point = engine.point_on_given_page(tool.pressed_page().unwrap(), drag_x, drag_y).unwrap();
+    let point = engine.points().on_given_page(tool.pressed_page().unwrap(), drag_x, drag_y).unwrap();
     assert!(point.y > size.1, "past the pressed page's bottom: {point:?}");
     tool.drag(point);
     let Taken::Box { page, rect } = tool.release() else { panic!("a box") };
@@ -934,7 +934,7 @@ fn left_at_a_place_not_drawn(engine: &Engine, first: &TempPdf, second: &TempPdf,
     engine.set_viewport(view(30_000.0));
     engine.activate(2, second_pages, 0, tab_map(second), &[1], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
-    let left = engine.sleep_material(1, &tab_map(first)).expect("tab 1 is held off screen");
+    let left = engine.waking().sleep_material(1, &tab_map(first)).expect("tab 1 is held off screen");
     assert!(!left.in_view.is_empty() && !left.in_view.contains(&0), "{:?}", left.in_view);
     assert!(
         left.pictures.iter().all(|picture| !left.in_view.contains(&picture.page)),
@@ -953,7 +953,7 @@ fn a_tab_left_at_a_place_not_drawn_sleeps_with_a_picture_of_it() {
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     sleep_draws_end(&engine);
-    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let material = engine.waking().sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
     let pictured: Vec<u32> = material
         .pictures
         .iter()
@@ -1013,17 +1013,17 @@ fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
     assert!(settles(&engine), "{}", engine.report().0);
     let deadline = Instant::now() + HANG;
     // The list of workers is said again only when the engine next turns, so it's whether the process is still there that's looked at.
-    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+    while engine.workers().footprint().0 > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
-    assert_eq!(engine.workers_footprint().0, 0, "tab 1's worker left by itself");
+    assert_eq!(engine.workers().footprint().0, 0, "tab 1's worker left by itself");
     left_at_a_place_not_drawn(&engine, &first, &second, 3);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let draws = sleep_draws_end(&engine);
     assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
     assert_eq!(draws["pictures"], 0, "{draws}");
-    assert!(engine.worker_pids().len() <= 1, "tab 2's at most: {:?}", engine.worker_pids());
+    assert!(engine.workers().pids().len() <= 1, "tab 2's at most: {:?}", engine.workers().pids());
 }
 
 /// An engine on tab 1, a document of `count` pages, whose workers go by `policy` and share `slot`.
@@ -1114,19 +1114,19 @@ fn a_worker_waiting_to_retire_is_not_replaced_to_draw_a_place_left() {
     let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
-    let before = engine.worker_pids();
+    let before = engine.workers().pids();
     assert_eq!(before.len(), 1, "tab 1's, waiting to retire: {before:?}");
     left_at_a_place_not_drawn(&engine, &first, &second, 1);
     let draws = sleep_draws_end(&engine);
-    let new: Vec<u32> = engine.worker_pids().into_iter().filter(|pid| !before.contains(pid)).collect();
+    let new: Vec<u32> = engine.workers().pids().into_iter().filter(|pid| !before.contains(pid)).collect();
     assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
     assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
     let deadline = Instant::now() + HANG;
-    while engine.worker_pids().contains(&before[0]) && Instant::now() < deadline {
+    while engine.workers().pids().contains(&before[0]) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
     assert!(
-        !engine.worker_pids().contains(&before[0]),
+        !engine.workers().pids().contains(&before[0]),
         "tab 1's worker went at rest, long before its idle exit"
     );
 }
@@ -1165,7 +1165,7 @@ fn a_worker_killed_drawing_a_place_left_is_not_started_again() {
     let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
-    let before = engine.worker_pids();
+    let before = engine.workers().pids();
     assert_eq!(before.len(), 1, "{before:?}");
     left_at_a_place_not_drawn(&engine, &first, &second, 1);
     // Once its first page's size and weight are in, its preview's being drawn, slowly.
@@ -1183,7 +1183,7 @@ fn a_worker_killed_drawing_a_place_left_is_not_started_again() {
     let killed = std::process::Command::new("/bin/kill").arg("-9").arg(before[0].to_string()).status().unwrap();
     assert!(killed.success());
     let draws = sleep_draws_end(&engine);
-    let new: Vec<u32> = engine.worker_pids().into_iter().filter(|pid| !before.contains(pid)).collect();
+    let new: Vec<u32> = engine.workers().pids().into_iter().filter(|pid| !before.contains(pid)).collect();
     assert!(new.len() <= 1, "only tab 2's is new: {new:?}, {draws}");
     assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
 }
@@ -1301,7 +1301,7 @@ fn a_page_drawn_for_a_tab_left_by_a_worker_past_its_line_keeps_its_look_on_dark_
     engine.set_paper(PaperKind::Dark);
     let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
     let draws = sleep_draws_end(&engine);
-    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let material = engine.waking().sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
     let pictured: Vec<u32> = material
         .pictures
         .iter()
@@ -1333,7 +1333,7 @@ fn a_look_refused_for_want_of_a_worker_is_kept_for_nothing() {
     engine.set_paper(PaperKind::Dark);
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
-    let tab_1s = engine.worker_pids();
+    let tab_1s = engine.workers().pids();
     assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
     gate::hold(&[Seam::Worker]);
     let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
@@ -1377,7 +1377,7 @@ fn a_look_refused_for_want_of_a_worker_is_kept_for_nothing() {
         draws["pictures"], 0,
         "a picture put on dark paper by a look decided without the page's images: {draws}"
     );
-    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    let material = engine.waking().sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
     assert!(material.pictures.iter().all(|picture| !owed.contains(&picture.page)), "{draws}");
     let fresh = drawn_fresh_at_the_place(&first, &owed[..1]);
     assert!(turned_over_around_the_photo(&fresh), "the control: {}", said(&fresh));
@@ -1406,7 +1406,7 @@ fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
     let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
-    let tab_1s = engine.worker_pids();
+    let tab_1s = engine.workers().pids();
     assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
     gate::hold(&[Seam::Worker]);
     // Tab 1 moved far down with nothing drawn there and left for tab 2, shown at its photographs.
@@ -1424,7 +1424,7 @@ fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
         let waiting = gate::waiting(Seam::Worker);
         // Tab 2's had everything, and the first job for tab 1 has its answer waiting.
         if draws["jobs"].as_u64().unwrap_or(0) >= 1 && waiting > 0 {
-            break engine.worker_pids().into_iter().filter(|pid| !tab_1s.contains(pid)).collect::<Vec<_>>();
+            break engine.workers().pids().into_iter().filter(|pid| !tab_1s.contains(pid)).collect::<Vec<_>>();
         }
         if waiting > 0 {
             gate::let_through(Seam::Worker, 1);
@@ -1434,8 +1434,8 @@ fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     };
     assert_eq!(tab_2s.len(), 1, "tab 2's, big: {tab_2s:?} beside tab 1's {tab_1s:?}");
-    let footprint = engine.workers_footprint().0;
-    while engine.worker_pids().contains(&tab_2s[0]) {
+    let footprint = engine.workers().footprint().0;
+    while engine.workers().pids().contains(&tab_2s[0]) {
         let draws = engine.report().0["sleep_draws"].clone();
         assert_eq!(
             draws["under_way"], true,
@@ -1451,7 +1451,7 @@ fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
     gate::open(Seam::Worker);
-    assert!(engine.worker_pids().contains(&tab_1s[0]), "tab 1's worker isn't big, and stays");
+    assert!(engine.workers().pids().contains(&tab_1s[0]), "tab 1's worker isn't big, and stays");
 }
 
 /// **Input to first frame, a tab switch while another tab is owed pages, measured** (R3.6; the numbers in `docs/engineering/sleep.md` before it came
@@ -1473,7 +1473,7 @@ fn tab_switch_input_to_first_frame() {
         let (engine, _events) = started(&first, 40);
         left_at_a_place_not_drawn(&engine, &first, &second, 3);
         let began = Instant::now();
-        engine.note_wake(3, began);
+        engine.waking().note_wake(3, began);
         engine.activate(3, 3, 0, tab_map(&third), &[1, 2], None, recto_reader::layout::Spread::Single);
         engine.set_viewport(view(0.0));
         let owed = engine.report().0["sleep_draws"]["owed_tab"].clone();

@@ -68,6 +68,11 @@ impl Panes {
         }
     }
 
+    /// Where a point on a page of a pane is in that pane's document, for QA to go through what the mouse goes through: `None` with no such pane or page.
+    pub fn document_point(&self, primary: &Engine, pane: usize, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.engine(primary, pane)?.points().document_point(page, x, y)
+    }
+
     /// Every page view there is, pane 0 first.
     pub fn engines(&self, primary: &Engine) -> Vec<Engine> {
         std::iter::once(primary.clone()).chain(lock(&self.extra).iter().cloned()).collect()
