@@ -10,6 +10,7 @@
 use crate::listener::Listener;
 use crate::lock;
 use crate::panes::Panes;
+use recto_agent::commands::finding::FindAsk;
 use recto_agent::find::{self, Finding, Going, Row};
 use recto_agent::{DrawableLoader, Event};
 use recto_control::host::SessionHost;
@@ -41,7 +42,7 @@ const MAX_ROWS_FETCH: u32 = 256;
 const HIDDEN_NOTE: &str = "hidden text";
 
 /// What the Find field shows, from the session thread, for the UI thread, which never waits on the session.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Field {
     open: bool,
     text: String,
@@ -49,17 +50,38 @@ pub struct Field {
     pending_step: Option<(bool, Going)>,
     /// What was typed can't be found, in Rust's words, as when it's too long.
     note: Option<String>,
+    /// **What the host was last told Find draws,** as [`Field::drawn`]'s fingerprint: 8 bytes, so it's told again only when that's changed ([`FindHandle::tell`]).
+    /// At launch, what a Find nobody has used draws, which is what the host has.
+    told: u64,
+}
+
+impl Default for Field {
+    fn default() -> Self {
+        Self {
+            open: false,
+            text: String::new(),
+            pending_step: None,
+            note: None,
+            told: Self::drawn(false, "", None, 0),
+        }
+    }
 }
 
 impl Field {
-    /// A step kept for its hit, forgotten: Find's closed.
-    pub fn clear_pending(&mut self) {
-        self.pending_step = None;
+    /// **A fingerprint of what the host draws of Find** ([`FindView`]), from what it's made of: whether it's open, the field's text, the note under it, and the
+    /// hits' version, which goes up with every change to the hits, the line under the field, whether a query's running and the hit gone to (`find::Results`).
+    /// The rest of the view is fixed words. Hashed, so nothing is copied or kept but the number.
+    fn drawn(open: bool, text: &str, note: Option<&str>, version: u64) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (open, text, note, version).hash(&mut hasher);
+        hasher.finish()
     }
 
-    /// Why what was typed can't be found, in Rust's words, or nothing.
-    pub fn set_note(&mut self, note: Option<String>) {
-        self.note = note;
+    /// Whether what's drawn now, with the hits at `version`, differs from what the host was last told; and it's taken as told.
+    fn tells(&mut self, version: u64) -> bool {
+        let now = Self::drawn(self.open, &self.text, self.note.as_deref(), version);
+        std::mem::replace(&mut self.told, now) != now
     }
 }
 
@@ -317,6 +339,33 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         }
     }
 
+    /// **What the window does with how the person's `find` went:** a step kept for its hit forgotten when Find closes, and for a query, ⌘F or a step, why
+    /// what they typed can't be found on the line under the field (`too_long`), or nothing. Then the host's told, as Find's view isn't in what `reconcile`
+    /// compares.
+    pub fn answered(&self, ask: &FindAsk, too_long: bool) {
+        {
+            let mut field = lock(self.field);
+            if *ask == FindAsk::Close {
+                field.pending_step = None;
+            } else if matches!(ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
+                field.note = too_long.then(|| find::too_long().message);
+            }
+        }
+        self.tell();
+    }
+
+    /// **The host told Find changed, if what it draws of Find did** since it was last told, and only then: what the session thread does after each change to
+    /// Find, so the window pulls and draws Find once for each change and never for none. A short lock on the hits for their version, then on the field, each
+    /// let go before the next and before the host's told.
+    fn tell(&self) {
+        let mut version = 0;
+        self.session.finder().with_results(&mut |results| version = results.version);
+        let changed = lock(self.field).tells(version);
+        if changed {
+            self.listener.model_changed();
+        }
+    }
+
     /// Does what the queue holds for Find, on the session thread.
     pub fn act(&self, call: FindCall, events: &mut Vec<Event>) {
         let session = self.session;
@@ -344,7 +393,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             FindCall::Effect(effect) => self.carry_out(effect),
         }
         self.keep_up();
-        self.listener.model_changed();
+        self.tell();
     }
 
     /// Selects a hit on the page and brings it into view, in the pane being read if it's that tab's. Announces nothing: what watchers hear of a hit gone to
@@ -377,7 +426,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         };
         // The host is told, as Find's view isn't in what `reconcile` compares: a draft or an open that came from the record, as from an agent or a restore, would otherwise wait for something else to change.
         if moved {
-            self.listener.model_changed();
+            self.tell();
         }
         if !record.open || record.query.is_empty() {
             return;
@@ -415,7 +464,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             finder.clear();
             finder.with_results(&mut |results| results.refused(active.0, query, basis, refused.message.clone()));
             self.session.with_session(|s| s.viewing_mut().set_find_current(None, None));
-            self.listener.model_changed();
+            self.tell();
         }
         None
     }

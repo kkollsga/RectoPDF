@@ -1,5 +1,6 @@
 use super::*;
 use crate::testkit::{FakeListener, Heard, QuietEngine};
+use recto_agent::commands::finding::FindAsk;
 use recto_reader::EngineConfig;
 use std::sync::Arc;
 
@@ -148,8 +149,48 @@ fn the_host_is_told_with_the_field_let_go() {
     rig.session.with_session(|session| session.viewing_mut().set_find(true, "", "word"));
     rig.with(&listener, |find| {
         find.keep_up();
+        // The Finder's news, with something new in the hits, as it has when it comes: the host's told only of a change.
+        rig.session.finder().with_results(&mut |results| results.version += 1);
         find.act(FindCall::News, &mut events);
     });
-    assert!(listener.count(&Heard::ModelChanged) >= 2, "{:?}", listener.heard());
+    assert_eq!(listener.count(&Heard::ModelChanged), 2, "{:?}", listener.heard());
     assert!(is_open(&rig.field));
+}
+
+/// Failure (found by R3.7's control golden, 2026-11-13): Find tells the host the model changed when nothing it draws of Find did, so the window pulls and
+/// draws for nothing, against "an announcement is made when something changed, and only then": ⌘F with Find already open, ⌘G with nothing to find, each
+/// told once; and ⌘G with no query, which opens Find, told twice. The person's `find` as the session thread follows it: the command's change to the record,
+/// then what the window does with how it went ([`FindHandle::answered`]), then Find kept up with the session, as every call on that thread ends.
+#[test]
+fn find_tells_the_host_only_what_changed_what_it_draws() {
+    let rig = Rig::new();
+    let listener = FakeListener::default();
+    let ran = |ask: FindAsk| {
+        rig.with(&listener, |find| {
+            find.answered(&ask, false);
+            find.keep_up();
+        });
+        listener.take().len()
+    };
+    // ⌘G with no query and Find closed opens it: one change, told once.
+    rig.session.with_session(|session| session.viewing_mut().set_find(true, "", ""));
+    let before = rig.with(&listener, |find| find.view());
+    assert_eq!(ran(FindAsk::Step { forward: true, jump: false }), 1, "⌘G that opens Find");
+    assert_ne!(rig.with(&listener, |find| find.view()), before, "it did change what's drawn");
+    // ⌘F with Find open: nothing changed, nothing told.
+    let open = rig.with(&listener, |find| find.view());
+    assert_eq!(ran(FindAsk::Open), 0, "⌘F with Find open");
+    // ⌘G and ⇧⌘G with nothing to find: nothing changed, nothing told.
+    assert_eq!(ran(FindAsk::Step { forward: true, jump: false }), 0, "⌘G with nothing to find");
+    assert_eq!(ran(FindAsk::Step { forward: false, jump: false }), 0, "⇧⌘G with nothing to find");
+    assert_eq!(rig.with(&listener, |find| find.view()), open, "and what's drawn is as it was");
+    // A query too long says so under the field: a change, told.
+    assert_eq!(
+        rig.with(&listener, |find| {
+            find.answered(&FindAsk::Open, true);
+            listener.take().len()
+        }),
+        1,
+        "a note is a change"
+    );
 }

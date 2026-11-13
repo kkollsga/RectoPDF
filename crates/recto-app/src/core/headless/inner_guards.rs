@@ -35,13 +35,14 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 }
 
 /// The budgets, in bytes: the sizes on 2026-11-13, before the moves, with Inner's 16 bytes more from main's merge that evening (`Panes`' plan keeping when
-/// its zoom was asked, R3.6a).
+/// its zoom was asked, R3.6a), and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it draws (`find::Field`, R3.7 S2's fix:
+/// Find announced with nothing changed).
 const BUDGETS: [(&str, usize); 7] = [
-    ("Inner", 4880),
+    ("Inner", 4888),
     ("Lifecycle", 296),
     ("Serving", 1064),
     ("WindowParts", 464),
-    ("Tools", 1440),
+    ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
 ];
