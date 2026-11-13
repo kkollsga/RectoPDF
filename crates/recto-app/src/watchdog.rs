@@ -27,7 +27,7 @@ pub struct Stall {
     pub cpu_ms: u64,
     pub window_ms: u64,
     pub state: &'static str,
-    /// The QA verb that was running at the latest look, or empty.
+    /// The QA verb that was running when the stretch was first seen past a second, or empty.
     pub verb: String,
     /// Whether the stretch had ended when this was written.
     pub ended: bool,
@@ -228,8 +228,10 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
         (true, Some(before)) => before.state,
         _ => sample.map_or(RunState::Other.name(), |sample| sample.state.name()),
     };
-    let verb = match (verb.is_empty(), before) {
-        (true, Some(before)) => before.verb.clone(),
+    // The verb the stretch passed a second in is the one that stalled it, and it's kept: a stretch can run on into the next verb without the thread sleeping
+    // between them (a 2.3 s stall read as `state`'s, 2026-11-13, at load 12), and the channel clears the slot as each answers.
+    let verb = match before {
+        Some(before) if !before.verb.is_empty() || verb.is_empty() => before.verb.clone(),
         _ => verb,
     };
     let stall = Stall {
@@ -396,5 +398,24 @@ mod tests {
         assert_eq!(dog.worst_stall().unwrap().verb, "a_verb_name_longer_than_");
         let kept = dog.worst_stall().unwrap().verb.len();
         assert!(kept <= VERB_MAX);
+    }
+
+    /// Failure (main's full check, 2026-11-13, load 12): a 2.3 s stall in `qa stall` was written down as `state`'s, as the UI thread went from one verb
+    /// straight to the next without sleeping, so both were one stretch and the later look saw the later verb. The verb a stretch passed a second in stays.
+    #[test]
+    fn a_stretch_that_runs_on_into_the_next_verb_keeps_the_verb_that_stalled_it() {
+        let dog = Watchdog::new();
+        let began = 1;
+        dog.0.busy_since.store(began, Ordering::Release);
+        dog.note_verb(Some("stall"));
+        dog.look_at(1_500);
+        assert_eq!(dog.worst_stall().unwrap().verb, "stall");
+        dog.note_verb(None);
+        dog.note_verb(Some("state"));
+        dog.look_at(2_250);
+        assert_eq!(dog.worst_stall().unwrap().verb, "stall", "the next verb, in the same stretch, isn't the one that stalled it");
+        dog.note_verb(None);
+        dog.look_at(2_300);
+        assert_eq!(dog.worst_stall().unwrap().verb, "stall");
     }
 }
