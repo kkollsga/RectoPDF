@@ -14,7 +14,7 @@ fn crates/recto-app/src/core/reconcile.rs::reconcile 229
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187
-fn crates/recto-core/src/save.rs::save 213
+fn crates/recto-core/src/save.rs::save 209
 fn crates/recto-fuzz/src/targets/pdf.rs::build_tree 250
 fn crates/recto-index/src/select.rs::PageText::find_edges 181
 fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162
