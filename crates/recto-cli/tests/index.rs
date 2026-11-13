@@ -487,18 +487,25 @@ fn waiting_for_the_index_starts_it_and_hears_it_finish() {
     let file = doc("waited.pdf", 5);
     state.json(&["open", path(&file)]);
     let (watch_tx, watch_rx) = std::sync::mpsc::channel();
+    let (watching_tx, watching_rx) = std::sync::mpsc::channel();
     let mut watch = state.command();
-    let output = watch
+    let mut output = watch
         .args(["watch", "--events", "indexing", "--count", "2", "--timeout", "60s", "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let stdout = output.stdout.take().unwrap();
     std::thread::spawn(move || {
-        let out = output.wait_with_output().unwrap();
-        let _ = watch_tx.send(String::from_utf8(out.stdout).unwrap());
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout)).map_while(Result::ok);
+        // Its first line says it's watching, so nothing the build says is missed.
+        let _ = watching_tx.send(lines.next().unwrap_or_default());
+        let said: Vec<String> = lines.collect();
+        let _ = output.wait();
+        let _ = watch_tx.send(said.join("\n"));
     });
-    std::thread::sleep(Duration::from_millis(300));
+    let watching = watching_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(watching.contains("\"watching\":true"), "{watching}");
     let started = Instant::now();
     let done = wait_done(&state, "active");
     assert!(started.elapsed() < Duration::from_secs(120));
