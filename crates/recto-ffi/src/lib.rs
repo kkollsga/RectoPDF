@@ -1352,7 +1352,7 @@ impl AppCore {
 
     /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
     pub fn frontmost_changed(&self, app: bool, window_key: bool) {
-        self.inner.frontmost_changed(app, window_key);
+        self.inner.window.frontmost_changed(app, window_key, &self.inner.saver, &self.inner.core);
     }
 
     /// Light or dark as chosen, or `system`.

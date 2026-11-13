@@ -4,6 +4,7 @@
 
 use super::saver::Saver;
 use crate::lock;
+use crate::queue::{CoreCall, CoreQueue};
 use crate::watchdog::Watchdog;
 use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, SettingsWindow, WindowRecord};
 use recto_session::{ContentsFollow, TabId};
@@ -89,6 +90,25 @@ impl Window {
         let mut app = lock(&self.app);
         app.window_decided = true;
         !(app.window_closed && reopened)
+    }
+
+    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
+    pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue) {
+        let mut state = lock(&self.app);
+        let went_back = state.focus.app_frontmost && !app;
+        let came_back = !state.focus.app_frontmost && app;
+        state.focus.app_frontmost = app;
+        state.focus.window_key = window_key;
+        drop(state);
+        if went_back {
+            saver.write_soon()
+        } else {
+            saver.view_changed()
+        }
+        // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
+        if came_back {
+            core.push(CoreCall::LookAtShown);
+        }
     }
 
     /// Where the Settings window was, if it was open.

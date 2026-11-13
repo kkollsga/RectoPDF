@@ -227,11 +227,11 @@ const STEPS: &[(&str, Step)] = &[
     }),
     ("the system went dark", |inner| done(bridge::set_dark_appearance(inner, true))),
     ("to the background", |inner| {
-        inner.frontmost_changed(false, false);
+        inner.window.frontmost_changed(false, false, &inner.saver, &inner.core);
         said(bridge::opens_in_background(inner))
     }),
     ("to the front", |inner| {
-        inner.frontmost_changed(true, true);
+        inner.window.frontmost_changed(true, true, &inner.saver, &inner.core);
         said(bridge::opens_in_background(inner))
     }),
     ("contents scrolled by the person", |inner| {

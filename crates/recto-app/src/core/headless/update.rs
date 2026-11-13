@@ -108,7 +108,7 @@ fn a_development_build_waits_for_five_quiet_minutes() {
 #[test]
 fn an_automatic_update_waits_for_thirty_quiet_minutes() {
     let (app, bed) = running_with_a_document(11);
-    app.core().frontmost_changed(false, false);
+    app.core().window.frontmost_changed(false, false, &app.core().saver, &app.core().core);
     assert_eq!(
         full(&app, r#"{"cmd":"settings"}"#)["auto_update"],
         true,

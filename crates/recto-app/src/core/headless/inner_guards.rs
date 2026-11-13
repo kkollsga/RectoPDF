@@ -111,7 +111,6 @@ Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
 Inner::pub fn forget_a_quiet_copy(&self)
-Inner::pub fn frontmost_changed(&self, app: bool, window_key: bool)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
@@ -244,6 +243,7 @@ Window.pub(crate) action_notice: Mutex<Option<String>>
 Window.pub(crate) notice_tab: AtomicU32
 Window.pub(crate) open_failure: Mutex<Option<String>>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
+Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
 Window::pub fn new(watchdog: Watchdog) -> Self
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
