@@ -19,6 +19,9 @@ pub enum QaKind {
     Condition,
     /// Does what a command does, by another path. The guide's §2.9 says the command is what a test sends; each of these is on its way out.
     StandIn,
+    /// A `recto` command run as the person at the window, for what only a person may do: the owner's edits, the window's Find, an action that doesn't
+    /// wait for its read. One verb, `as_person`, at Full, on a test's own files.
+    Person,
     /// Rust's own step on the way to a verb that has a row, never sent by a client: no row.
     Internal,
 }
@@ -154,6 +157,23 @@ mod tests {
                 _ => assert!(row.is_some(), "`{}` is in the table with no row", line.verb),
             }
         }
+    }
+
+    /// Failure: a QA verb is let in at the level of the first row of its command, not its own, so a verb that needs Full (`as-person`) is let through at
+    /// Control, or a look needs more than Read-only. Every row's verb, sent as its command, needs what its row says.
+    #[test]
+    fn each_qa_verb_needs_its_own_rows_level() {
+        for spec in super::super::ROWS_QA.iter().flat_map(|rows| rows.iter()) {
+            let Some(verb) = row_verb(spec) else { continue };
+            let line = serde_json::json!({ "cmd": spec.tag, "verb": verb, "value": "x" });
+            let mut line = line;
+            if spec.tag == "qa_read" {
+                line.as_object_mut().unwrap().remove("value");
+            }
+            let command = crate::parse(&line.to_string()).unwrap_or_else(|error| panic!("{}: {error:?}", spec.name));
+            assert_eq!(command.access(), spec.access, "{}", spec.name);
+        }
+        assert_eq!(row_of("as_person").map(|row| row.access), Some(crate::Access::At(crate::Level::Full)));
     }
 
     /// The Swift sources the host's QA is in.

@@ -1,5 +1,6 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
+mod as_person;
 mod levers;
 mod values;
 
@@ -409,20 +410,13 @@ impl QaBridge {
         match verb {
             // What ends the app answers first, as nothing can after.
             "quit" => return self.ask(verb, value),
-            "handoff" => {
+            "handoff" => return self.handoff(),
+            // A person's command, as the window sends it, for what only a person may do. Checked there: its level is its row's, Full.
+            "as_person" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let report = inner
-                    .hand_off(ANSWER_AFTER_CLICK)
-                    .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
-                // The answer gets out first. An updater has no one to answer, and doesn't wait.
-                let quitting = Arc::clone(&inner);
-                let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
-                    std::thread::sleep(HANDOFF_ANSWER_WAIT);
-                    quitting.hand_off_quit_now();
-                });
-                return Ok(
-                    json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }),
-                );
+                as_person::run(&inner, value)?;
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
             }
             "hand_off_quit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
@@ -531,6 +525,23 @@ impl QaBridge {
         // A click goes to the session thread and comes back as a model. The answer is what's true once that's happened, so nobody has to sleep and hope.
         self.core.flush(ANSWER_AFTER_CLICK);
         self.ask("state", "")
+    }
+
+    /// `qa handoff`: what an update does with the state before it quits, measured, then the quit, after the answer has had time to get out.
+    fn handoff(&self) -> Result<Value, AgentError> {
+        let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+        let report = inner
+            .hand_off(ANSWER_AFTER_CLICK)
+            .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
+        // The answer gets out first. An updater has no one to answer, and doesn't wait.
+        let quitting = Arc::clone(&inner);
+        let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
+            std::thread::sleep(HANDOFF_ANSWER_WAIT);
+            quitting.hand_off_quit_now();
+        });
+        Ok(
+            json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }),
+        )
     }
 
     fn state(&self) -> Result<Value, AgentError> {

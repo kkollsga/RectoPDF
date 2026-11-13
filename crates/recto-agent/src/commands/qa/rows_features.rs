@@ -250,6 +250,25 @@ pub(crate) const ROWS: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa as-person",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Full),
+        summary: "Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait. It exists so a test can do what a person does, in a quiet run on a test's own files, and nowhere else: only what a person's control sends, and only while every file open and every file named is in the run's state folder or a temp folder.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Text,
+            required: true,
+            help: "The command's words, as one: `page rotate 2 --by 90`, or `save-as --out \"/tmp/a b.pdf\"`.",
+        }],
+        fixed: &[("verb", "as_person")],
+        data: "`qa state`'s `app`, once the command has gone to the session.",
+        examples: &["recto qa as-person \"page rotate 2 --by 90\"", "recto qa as-person \"find --next --jump\""],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa owner-edit",
         tag: "qa_drive",
         group: GROUP_QA,
@@ -622,6 +641,7 @@ pub(super) const VERBS: &[QaVerb] = &[
     verb("save_as", StandIn, None),
     // A save with the writing done by the test.
     verb("save_from", Condition, None),
+    verb("as_person", Person, None),
     verb("owner_edit", StandIn, None),
     verb("note_input", Condition, None),
     verb("open_file", StandIn, Some(Dialogs)),
