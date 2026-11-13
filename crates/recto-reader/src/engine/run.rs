@@ -316,6 +316,8 @@ fn seen_replaced(open: &mut OpenDoc) -> bool {
 const MAX_LOOKS: usize = 4096;
 /// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
 const LOOK_PICTURE_EDGE: f32 = 512.0;
+/// The same, for a page with no images, when nothing drawn so far covers the page (a wake onto a sleep picture, zoomed out past a preview, looks forgotten): all that's asked of it is whether its background is dark, which a picture this small answers as the look picture does (the survey's `sizes`, 0 pages apart at 128), for a fraction of the draw.
+const IMAGELESS_LOOK_EDGE: f32 = 128.0;
 
 /// Why there's no look for a page from this job, and nothing's kept: neither is about the page.
 enum NoLook {
@@ -325,8 +327,14 @@ enum NoLook {
     Unstarted { heavy: bool },
 }
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't.
-fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Result<Arc<PageLook>, NoLook> {
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long; if that can't be drawn it takes a page of text's look, as before. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't.
+fn page_look(
+    open: &mut OpenDoc,
+    page: u32,
+    generation: u64,
+    whole: Option<(&PixelSurface, TileRect)>,
+    tile: Option<(&PixelSurface, TileRect, f32)>,
+) -> Result<Arc<PageLook>, NoLook> {
     // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
     if open.doc.take_image_places_cleared() {
         open.looks.clear();
@@ -338,13 +346,19 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
     if open.doc.is_stale(generation) {
         return Err(NoLook::Stale);
     }
-    let look = if boxes.as_ref().is_some_and(Vec::is_empty) {
-        PageLook::text()
-    } else if let Some((surface, rect)) = whole {
+    let image_less = boxes.as_ref().is_some_and(Vec::is_empty);
+    // What a picture that can't be had gives: a page of text's look for a page with no images, as it always had, and dimmed for one with.
+    let undecided = || if image_less { PageLook::text() } else { PageLook::unknown() };
+    // A tile that is the whole page, as one zoomed out past a preview is, is as good a picture of a page with no images. Its size is asked only when it would decide.
+    let covering = || {
+        tile.filter(|&(_, rect, scale)| image_less && covers_page(&mut open.doc, page, scale, rect))
+            .map(|(surface, rect, _)| (surface, rect))
+    };
+    let look = if let Some((surface, rect)) = whole.or_else(covering) {
         let stride = surface.stride() as usize;
         surface
             .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, rect.width, rect.height))
-            .unwrap_or_else(|_| PageLook::unknown())
+            .unwrap_or_else(|_| undecided())
     } else {
         let doc = &mut open.doc;
         let size = match doc.page_size(page) {
@@ -352,7 +366,8 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
             size => size.ok(),
         };
         let picture = size.and_then(|(width, height)| {
-            let scale = (LOOK_PICTURE_EDGE / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
+            let edge = if image_less { IMAGELESS_LOOK_EDGE } else { LOOK_PICTURE_EDGE };
+            let scale = (edge / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
             let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
             let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
             Some((
@@ -382,13 +397,13 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
                     let stride = surface.stride() as usize;
                     surface
                         .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height))
-                        .unwrap_or_else(|_| PageLook::unknown())
+                        .unwrap_or_else(|_| undecided())
                 }
                 Ok(TileResult::Cancelled { .. }) => return Err(NoLook::Stale),
                 Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
-                Err(_) => PageLook::unknown(),
+                Err(_) => undecided(),
             },
-            None => PageLook::unknown(),
+            None => undecided(),
         }
     };
     if open.looks.len() >= MAX_LOOKS {
@@ -551,10 +566,11 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         let drawn_scale = low_res_scale.unwrap_or(*scale);
                         // A preview is a picture of the whole page, as drawn for white paper, which is what's wanted to judge it: no extra draw.
                         let whole = (*what == DrawKind::Preview && low_res.is_none()).then_some(*rect);
+                        let tile = (whole.is_none() && low_res.is_none()).then_some((surface, *rect, *scale));
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
                         // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
-                        let look = match page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect))) {
+                        let look = match page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)), tile) {
                             Ok(look) => Some(look),
                             Err(NoLook::Stale) => None,
                             Err(NoLook::Unstarted { heavy }) => return Outcome::Unstarted { heavy },
@@ -590,6 +606,17 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             }
         }
     }
+}
+
+/// Whether `rect`, drawn at `scale`, is the whole of a page: from its top left corner, and the page's size at that scale. A size that can't be had now is no.
+fn covers_page(doc: &mut DocRenderer, page: u32, scale: f32, rect: TileRect) -> bool {
+    rect.x == 0
+        && rect.y == 0
+        && doc
+            .page_size(page)
+            .ok()
+            .and_then(|(width, height)| recto_proto::device_size(width, height, scale).ok())
+            == Some((rect.width, rect.height))
 }
 
 /// Puts one tile on dark paper, as the rule says, and says what it is now. With `colour_only` a tile of one colour needs nothing done to its pixels, as it won't keep them.

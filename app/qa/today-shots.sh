@@ -246,7 +246,7 @@ fi
 
 
 if want darkimg; then
-    note "== 4b dark paper on real embedded images: p1 photo 39% of the page with text, p2 photo 53%, p3 a JPEG photo 45%, p4 a vector drawing 56% with text, p5 small photo, p6 white-backed scan, p7 photo 75% with a caption, p8 a full-bleed photo, p9 a photo 39% on a coloured background, which is under half a picture and so turns over with its page whatever its background, p10 a photo 60% on a coloured background, which is dimmed whole; then p2, p4, p7, p8 and p9 again from the sleep picture as the tab wakes, and settled"
+    note "== 4b dark paper on real embedded images: p1 photo 39% of the page with text, p2 photo 53%, p3 a JPEG photo 45%, p4 a vector drawing 56% with text, p5 small photo, p6 white-backed scan, p7 photo 75% with a caption, p8 a full-bleed photo, p9 a photo 39% on a navy background, p10 a photo 60% on a navy background, both dimmed whole and never turned over, as their background is dark; then p2, p4, p7, p8 and p9 again from the sleep picture as the tab wakes, and settled"
     /usr/bin/python3 -I - "$root/in/photo.bmp" <<'BMP'
 import sys, struct
 w, h = 360, 300

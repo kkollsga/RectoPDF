@@ -3,8 +3,9 @@
 use recto_platform::surface::PixelSurface;
 use recto_proto::{TileRect, device_size};
 use recto_reader::engine::EngineEvents;
+use recto_reader::layout::PageBox;
 use recto_reader::paper::{DARK_PAPER, PageLook};
-use recto_reader::tiles::{Op, PageMap, Viewport};
+use recto_reader::tiles::{Op, PageMap, SleepShot, SleepView, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileRequest, TileResult};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages_with, text_lines};
@@ -66,8 +67,20 @@ impl Shown {
 }
 
 /// The tiles of `page` the engine has the host attach, on dark paper, shown from its top at `viewport`, and the engine's report once it's settled.
-#[allow(unsafe_code)]
 fn shown_on_dark_paper(file: &Path, pages: u32, page: u32, policy: Policy, viewport: Viewport) -> (Vec<Shown>, serde_json::Value) {
+    shown_on_dark_paper_after(file, pages, page, policy, viewport, |_| {})
+}
+
+/// The same, with `prepare` done to the engine before the tab's activated, as giving it a sleep picture is.
+#[allow(unsafe_code)]
+fn shown_on_dark_paper_after(
+    file: &Path,
+    pages: u32,
+    page: u32,
+    policy: Policy,
+    viewport: Viewport,
+    prepare: impl FnOnce(&Engine),
+) -> (Vec<Shown>, serde_json::Value) {
     let engine = Engine::new(
         EngineConfig {
             service: None,
@@ -79,6 +92,7 @@ fn shown_on_dark_paper(file: &Path, pages: u32, page: u32, policy: Policy, viewp
     let at = |y: f64| Viewport { y, ..viewport };
     engine.set_viewport(at(0.0));
     engine.set_paper(PaperKind::Dark);
+    prepare(&engine);
     engine.activate(
         1,
         pages,
@@ -240,7 +254,7 @@ fn the_real_sheet_judged_by_its_images_turns_over_and_judged_whole_is_dimmed() {
     assert!(!look_of(&mut scan, 2, 512.0, false).0 && !look_of(&mut scan, 2, 512.0, true).0, "the scan");
 }
 
-/// Made pages, each with a photo, an image shaded through many colours, drawn on it: over 59% of a white page with text, over 59% of a navy page, and over 30% of a white page under a coloured band.
+/// Made pages, each with a photo, an image shaded through many colours, drawn on it: over 59% of a white page with text, over 59% of a navy page, over 30% of a white page under a coloured band, and over 30% of a navy page with text; and a black page of white text with no picture.
 fn photo_pages() -> TempPdf {
     let (w, h) = (120usize, 90usize);
     let mut photo = Vec::with_capacity(w * h * 3);
@@ -262,10 +276,17 @@ fn photo_pages() -> TempPdf {
         [b"0.12 0.2 0.4 rg 0 0 612 792 re f\n".to_vec(), b"q 459 0 0 620 76 86 cm /Im0 Do Q".to_vec()].concat(),
         [
             b"0.8 0.3 0.1 rg 0 700 612 92 re f\n".to_vec(),
-            text,
+            text.clone(),
             b"q 400 0 0 360 150 150 cm /Im0 Do Q".to_vec(),
         ]
         .concat(),
+        [
+            b"0.12 0.2 0.4 rg 0 0 612 792 re f\n1 g\n".to_vec(),
+            text.clone(),
+            b"q 400 0 0 360 150 150 cm /Im0 Do Q".to_vec(),
+        ]
+        .concat(),
+        [b"0 0 0 rg 0 0 612 792 re f\n1 g\n".to_vec(), text].concat(),
     ];
     let list: Vec<Page> = pages.into_iter().map(Page::new).collect();
     let image = first_extra_object(list.len());
@@ -282,12 +303,12 @@ fn photo_pages() -> TempPdf {
     )
 }
 
-/// Failure: a page's look on dark paper hangs on the size of the picture it's decided from: the largest preview's 1,144, the look picture's 512, or the look picture at a lower resolution's 128, as a page too heavy for its limit gets. A renderer dropped and made again, as a sleeping tab's is, decides from whichever of those is drawn first (review of 2026-11-13: the USGS sheet turned over, then went light grey after a wake), so a look that changed with the size would change across a sleep. Each made page, decided from the real worker's pictures at the three sizes and the boxes it gives, comes out the same: turned over with its photo kept on white, dimmed on navy, turned over under half on white with a band. One renderer draws all three sizes: what a fresh one would answer is the same walk and the same picture, so a renderer each (nine workers) held nothing more. That a page drawn at a lower resolution is decided with its images known, through the engine, is held by `a_page_at_a_lower_resolution_keeps_its_picture_and_turns_its_paper_over`.
+/// Failure: a page's look on dark paper hangs on the size of the picture it's decided from: the largest preview's 1,144, the look picture's 512, or the look picture at a lower resolution's 128, as a page too heavy for its limit gets. A renderer dropped and made again, as a sleeping tab's is, decides from whichever of those is drawn first (review of 2026-11-13: the USGS sheet turned over, then went light grey after a wake), so a look that changed with the size would change across a sleep. Each made page, decided from the real worker's pictures at the three sizes and the boxes it gives, comes out the same: turned over with its photo kept on white, dimmed on navy, turned over under half on white with a band, and, as its background is dark (owner, 2026-11-13), dimmed under half on navy and with no picture on black. One renderer draws all three sizes: what a fresh one would answer is the same walk and the same picture, so a renderer each (nine workers) held nothing more. That a page drawn at a lower resolution is decided with its images known, through the engine, is held by `a_page_at_a_lower_resolution_keeps_its_picture_and_turns_its_paper_over`.
 #[test]
 fn a_page_has_the_same_look_from_any_size_of_picture_of_it() {
     let file = photo_pages();
     let mut doc = renderer(&file.0);
-    let expected = [(false, 1), (true, 0), (false, 1)];
+    let expected = [(false, 1), (true, 0), (false, 1), (true, 0), (true, 0)];
     for (page, (dim, kept)) in expected.into_iter().enumerate() {
         let looks: Vec<_> = [1144.0, 512.0, 128.0]
             .into_iter()
@@ -392,4 +413,120 @@ fn a_page_at_a_lower_resolution_keeps_its_picture_and_turns_its_paper_over() {
         inside > 0 && outside > 0,
         "at a lower resolution, {inside} looked at inside and {outside} outside; sharpest {sharpest}: {report}"
     );
+}
+
+/// A black slide with white text and no picture, and a white page of text, letter size.
+fn slide_and_text_pages() -> TempPdf {
+    let lines: Vec<String> = (0..30).map(|at| format!("Line {at} of the text on the page.")).collect();
+    let text = text_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>());
+    let pages = [[b"0 0 0 rg 0 0 612 792 re f\n1 g\n".to_vec(), text.clone()].concat(), text];
+    let list: Vec<Page> = pages.into_iter().map(Page::new).collect();
+    TempPdf::new("slide-and-text.pdf", &pages_with(&list, "", Vec::new()))
+}
+
+/// What's shown of a page at points clear of its text, on every tile drawn of it: its top left corner, the middle of its right margin and its foot.
+fn background_shown(shown: &[Shown], page: u32, sharper_than: f64) -> Vec<u32> {
+    let mut found = Vec::new();
+    for tile in shown.iter().filter(|tile| tile.page == page && tile.density() > sharper_than) {
+        for (x, y) in [(4.0, 4.0), (590.0, 400.0), (300.0, 780.0)] {
+            found.extend(tile.at(x, y));
+        }
+    }
+    found
+}
+
+fn luma(rgb: u32) -> u32 {
+    (((rgb >> 16) & 0xFF) * 77 + ((rgb >> 8) & 0xFF) * 150 + (rgb & 0xFF) * 29) >> 8
+}
+
+/// Failure: a black slide with no picture is shown turned over, a white page, on a tile drawn before any picture of the whole page, because a page with no images was given a page of text's look without a look at its pixels, or was decided from one tile of it (owner, 2026-11-13: a page already dark is never turned over). Zoomed out past where a preview is drawn, the first job for a page is a tile: with the page in one tile its look is decided from that tile, and with it in several from a small picture of it. Either way every tile of the slide shown is dark, and every tile of a white page of text is turned over to the dark paper's tone as before. That no preview was drawn is checked, so these are the paths without one.
+#[test]
+fn zoomed_out_past_a_preview_a_dark_page_is_never_shown_light() {
+    let file = slide_and_text_pages();
+    // 0.12 puts a letter page in one tile at a backing of 2; 0.3 puts it in two across.
+    for magnification in [0.12, 0.3] {
+        let viewport = Viewport { magnification, ..view(0.0) };
+        for (page, dark) in [(0, true), (1, false)] {
+            let (shown, report) = shown_on_dark_paper(&file.0, 2, page, Policy::default(), viewport);
+            assert_eq!(report["tiles"]["previews_attached"], 0, "at {magnification}: {report}");
+            let seen = background_shown(&shown, page, 0.0);
+            assert!(!seen.is_empty(), "page {} at {magnification}: nothing shown: {report}", page + 1);
+            for rgb in seen {
+                if dark {
+                    assert!(luma(rgb) < 40, "the slide at {magnification}: {rgb:06x}");
+                } else {
+                    assert_eq!(rgb, DARK_PAPER, "the page of text at {magnification}: {rgb:06x}");
+                }
+            }
+        }
+    }
+}
+
+/// Failure: a tab woken onto its sleep picture, where the slide shows dark, then turns the slide light on the first sharp tile, as a page with no images got a page of text's look when no picture of the whole page was at hand: the sleep picture stands for the page's preview, so the first job is a tile, on a renderer that has decided nothing. Every sharper tile of the slide shown after the sleep picture is dark, and the white page of text turns over as before.
+#[test]
+fn woken_onto_a_sleep_picture_a_dark_page_stays_dark() {
+    let file = slide_and_text_pages();
+    // The version a worker says the file is, as a sleep file keeps it: a picture of no known version gives way to a preview.
+    let version = {
+        let mut doc = renderer(&file.0);
+        doc.page_size(0).unwrap();
+        doc.known_version()
+    };
+    assert!(version.is_some());
+    for (page, dark) in [(0, true), (1, false)] {
+        let picture = PixelSurface::create(306, 396).unwrap();
+        let colour = if dark { [0u8, 0, 0, 0xFF] } else { [0x23, 0x20, 0x1E, 0xFF] };
+        picture
+            .with_pixels(|pixels| pixels.chunks_mut(4).for_each(|pixel| pixel.copy_from_slice(&colour)))
+            .unwrap();
+        let view_of_sleep = SleepView {
+            version,
+            usual: Some(PageBox { width: 612.0, height: 792.0 }),
+            sizes: Vec::new(),
+            pictures: vec![SleepShot {
+                page,
+                scale: 0.5,
+                paper: PaperKind::Dark,
+                surface: picture,
+            }],
+        };
+        let (shown, report) = shown_on_dark_paper_after(&file.0, 2, page, Policy::default(), view(0.0), |engine| {
+            engine.waking().note_wake(1, Instant::now());
+            engine.waking().give_sleep(1, view_of_sleep);
+        });
+        assert_eq!(report["last_wake"]["from_sleep"], true, "{report}");
+        // No preview was drawn, at about 1 a point here: the sleep picture stood for it, so the first job was a tile.
+        assert!(
+            !shown.iter().any(|tile| tile.density() > 0.6 && tile.density() < 1.5),
+            "a preview was drawn: {:?}",
+            shown.iter().map(Shown::density).collect::<Vec<_>>()
+        );
+        // Sharper than the sleep picture's 0.5 a point: what was drawn after it.
+        let seen = background_shown(&shown, page, 0.6);
+        assert!(!seen.is_empty(), "page {}: nothing sharp shown: {report}", page + 1);
+        for rgb in seen {
+            if dark {
+                assert!(luma(rgb) < 40, "the slide: {rgb:06x}");
+            } else {
+                assert_eq!(rgb, DARK_PAPER, "the page of text: {rgb:06x}");
+            }
+        }
+    }
+}
+
+/// Failure: the real USGS cover `70278165`, a photo under half of a black page, turns over on dark paper and comes out a white page round its photo (owner, 2026-11-13: a page already dark is never turned over). Decided from the look picture, with its images known and judged whole, it's shown as it is, dimmed.
+#[test]
+fn the_real_black_cover_is_never_turned_over() {
+    let Some(cover) = file("gov_usgs_usgs70278165.pdf") else {
+        eprintln!("skipped: the benchmark files aren't here");
+        return;
+    };
+    let mut cover = renderer(&cover);
+    for whole in [false, true] {
+        let (dim, keep, whiten) = look_of(&mut cover, 0, 512.0, whole);
+        assert!(
+            dim && keep.is_empty() && whiten.is_empty(),
+            "judged whole {whole}: dim {dim}, kept {keep:?}, turned {whiten:?}"
+        );
+    }
 }
