@@ -994,26 +994,16 @@ mod tests {
         assert_eq!(reader.docs.shown().map(|doc| doc.magnification()), Some(value));
     }
 
-    /// Waits, bounded, until something on another thread has taken a tick of [`asked`] past `was`. The count is the process's, so this holds under
-    /// nextest, which runs each test in a process of its own.
-    fn wait_for_an_ask_past(was: u64) {
-        let began = Instant::now();
-        while ASKED.load(Ordering::SeqCst) <= was {
-            assert!(began.elapsed() < Duration::from_secs(10), "the other thread never asked");
-            std::thread::yield_now();
-        }
-    }
-
     /// Failure: a jump drops a follow the person asked for after it, because the jump took its turn when it got the lock and not when it was asked: the jump
     /// waits on the lock while the person's scroll in another pane leaves a newer follow, and then clears it. And the same through either way a jump is
     /// sent: [`Engine::jump_to`] (a page's top) was a second copy of [`Engine::jump_within`], so one could take its tick after the lock and the other not.
-    /// Forced: the jump has asked and waits on the lock the test holds when the follow is asked.
+    /// Forced: the jump is held between its tick and the lock, this view's own hold, when the follow is asked with the view held busy; the process-wide
+    /// count another test's ask moves on (review round 2) isn't watched.
     #[test]
     fn a_jump_takes_its_turn_when_it_was_asked_by_either_way_it_is_sent() {
         for by_page in [true, false] {
             let engine = without_its_thread();
-            let held = engine.shared.reader.lock().unwrap();
-            let was = ASKED.load(Ordering::SeqCst);
+            engine.qa().hold_asks(Ask::Jump, true);
             std::thread::scope(|scope| {
                 let jumping = scope.spawn(|| {
                     if by_page {
@@ -1022,9 +1012,11 @@ mod tests {
                         assert!(engine.jump_within(12, 0.0).is_some());
                     }
                 });
-                wait_for_an_ask_past(was);
-                assert!(!engine.follow_soon(60, 0.5), "the view's held: the follow is left");
-                drop(held);
+                assert!(engine.qa().wait_for_held_asks(1), "the jump asked");
+                engine.qa().hold_busy(true);
+                assert!(!engine.follow_soon(60, 0.5), "the view's busy: the follow is left");
+                engine.qa().hold_busy(false);
+                engine.qa().hold_asks(Ask::Jump, false);
                 jumping.join().unwrap();
             });
             let mut reader = lock(&engine.shared.reader);
@@ -1151,36 +1143,36 @@ mod tests {
         }
     }
 
-    /// Failure (the same review): a follow asked before a jump, by a UI thread preempted between taking its tick and the lock, or a follow left pending,
-    /// lands after the newer jump and takes the view back. The jump's place stands, and nothing tells the session of a move.
+    /// Failure (the same review): a follow asked before a jump, by a UI thread preempted between taking its tick and the lock, lands after the newer jump
+    /// and takes the view back: now, with the lock free when it gets there, or (review round 2) left pending for a busy view after the jump, and applied by
+    /// whichever route takes it next. The jump's place stands, and nothing tells the session of a move.
     #[test]
     fn a_follow_asked_before_a_jump_is_not_applied_after_it() {
-        for by_page in [true, false] {
-            let engine = without_its_thread();
-            engine.qa().hold_asks(Ask::Follow, true);
-            std::thread::scope(|scope| {
-                let following = scope.spawn(|| engine.follow_soon(60, 0.5));
-                assert!(engine.qa().wait_for_held_asks(1), "the follow asked");
-                if by_page {
-                    engine.jump_to(12);
-                } else {
-                    assert!(engine.jump_within(12, 0.0).is_some());
-                }
-                engine.qa().hold_asks(Ask::Follow, false);
-                following.join().unwrap();
-            });
-            let mut reader = lock(&engine.shared.reader);
-            take_pending_follow(&engine.shared, &mut reader);
-            drop(reader);
-            assert_eq!(
-                engine.reading_anchor(),
-                Some((12, 0.0)),
-                "the jump's place stands (by the page alone: {by_page})"
-            );
-            assert!(
-                engine.take_moved_page().is_none_or(|page| page == 12),
-                "no move to tell of (by the page alone: {by_page})"
-            );
+        for busy in [false, true] {
+            for by_page in [true, false] {
+                let engine = without_its_thread();
+                engine.qa().hold_asks(Ask::Follow, true);
+                std::thread::scope(|scope| {
+                    let following = scope.spawn(|| engine.follow_soon(60, 0.5));
+                    assert!(engine.qa().wait_for_held_asks(1), "the follow asked");
+                    if by_page {
+                        engine.jump_to(12);
+                    } else {
+                        assert!(engine.jump_within(12, 0.0).is_some());
+                    }
+                    engine.qa().hold_busy(busy);
+                    engine.qa().hold_asks(Ask::Follow, false);
+                    assert_eq!(following.join().unwrap(), !busy, "left pending only when busy");
+                });
+                let case = format!("busy: {busy}, by the page alone: {by_page}");
+                assert_eq!(engine.qa().follow_is_pending(), busy, "{case}");
+                engine.qa().hold_busy(false);
+                let mut reader = lock(&engine.shared.reader);
+                take_pending_follow(&engine.shared, &mut reader);
+                drop(reader);
+                assert_eq!(engine.reading_anchor(), Some((12, 0.0)), "the jump's place stands ({case})");
+                assert!(engine.take_moved_page().is_none_or(|page| page == 12), "no move to tell of ({case})");
+            }
         }
     }
 
@@ -1244,16 +1236,26 @@ mod tests {
             assert_eq!(said, Some(1.5), "the zoom says the zoom the view has (left pending: {pending})");
             assert_eq!(engine.magnification(), Some(1.5), "the newer zoom stands (left pending: {pending})");
         }
-        let engine = without_its_thread();
-        engine.qa().hold_asks(Ask::ZoomSoon, true);
-        std::thread::scope(|scope| {
-            let zooming = scope.spawn(|| engine.zoom_soon(1.5));
-            assert!(engine.qa().wait_for_held_asks(1), "the pinch's zoom asked");
-            assert_eq!(engine.zoom(Zoom::To(2.0)), Some(2.0));
-            engine.qa().hold_asks(Ask::ZoomSoon, false);
-            zooming.join().unwrap();
-        });
-        assert_eq!(engine.magnification(), Some(2.0), "the older zoom isn't applied after the newer");
+        // And a pinch's zoom asked before the agent's lands after it neither now nor (review round 2) left pending for a busy view.
+        for pending in [false, true] {
+            let engine = without_its_thread();
+            engine.qa().hold_asks(Ask::ZoomSoon, true);
+            std::thread::scope(|scope| {
+                let zooming = scope.spawn(|| engine.zoom_soon(1.5));
+                assert!(engine.qa().wait_for_held_asks(1), "the pinch's zoom asked");
+                assert_eq!(engine.zoom(Zoom::To(2.0)), Some(2.0));
+                engine.qa().hold_busy(pending);
+                engine.qa().hold_asks(Ask::ZoomSoon, false);
+                assert_eq!(zooming.join().unwrap(), !pending, "left pending only when busy");
+            });
+            assert_eq!(lock(&engine.shared.pending).zoom.is_some(), pending);
+            engine.qa().hold_busy(false);
+            assert_eq!(
+                engine.magnification(),
+                Some(2.0),
+                "the older zoom isn't applied after the newer (left pending: {pending})"
+            );
+        }
     }
 
     /// Failure (review round 2 of the page view follow-ups): a zoom left pending overwrites a newer one left before it. The person's ⌘+ on the UI thread
