@@ -110,9 +110,9 @@ fn file(name: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Failure: a scanned page shows as a bright dimmed page beside text pages turned over, as the owner saw, or a map goes negative, its band mint and its white margins black: on a real scan and a real map. Sharp, and at a lower resolution where the images aren't asked about and the page is judged whole, as the two must agree. The scan's paper lands on the dark paper's own tone, and the map's white margin is only dimmed.
+/// Failure: a scanned page shows as a bright dimmed page beside text pages turned over, as the owner saw, or a map goes negative, its band mint, or a map sheet whose map sits on white paper among its legends and tables is dimmed whole to light grey with black text, as the owner was shown of a photo over 53% of a page (2026-11-13: "The image should flip if the background is mostly white"). On a real scan and a real USGS sheet. Sharp, the scan's paper and the sheet's white margin both land on the dark paper's own tone, the sheet's map kept as a picture. At a lower resolution, where the images aren't asked about and the page is judged whole, a scan still turns over, and the sheet, whose map can't be told from its paper, is dimmed as before: the one place the two differ, and each page has one look in a session, from whichever way it was first judged.
 #[test]
-fn a_real_scan_turns_over_and_a_real_map_is_dimmed() {
+fn a_real_scan_and_a_real_map_sheet_on_white_turn_over() {
     let (Some(scan), Some(map)) = (file("gov_nasa_ntrs20150023275.pdf"), file("gov_usgs_usgs70277338.pdf")) else {
         eprintln!("skipped: the benchmark files aren't here");
         return;
@@ -129,10 +129,10 @@ fn a_real_scan_turns_over_and_a_real_map_is_dimmed() {
 
     let (corner, low_res) = corner_on_dark_paper(&map, 1, 0, Policy::default());
     assert!(!low_res);
-    assert_eq!(corner, dim_rgb(0xFF_FF_FF), "the map's margin, true and dimmed: {corner:06x}");
+    assert_eq!(corner, DARK_PAPER, "the sheet's white margin turns over round its map: {corner:06x}");
     let (corner, low_res) = corner_on_dark_paper(&map, 1, 0, low(350));
     assert!(low_res, "at this limit it's a lower-resolution page");
-    assert_eq!(corner, dim_rgb(0xFF_FF_FF), "the same, judged whole: {corner:06x}");
+    assert_eq!(corner, dim_rgb(0xFF_FF_FF), "judged whole, its margin true and dimmed: {corner:06x}");
 
     // A made scan's lower-resolution version goes the same way: this one's image needs little, so a small limit does it.
     let (corner, low_res) = corner_on_dark_paper(&scan, 8, 2, low(48));
