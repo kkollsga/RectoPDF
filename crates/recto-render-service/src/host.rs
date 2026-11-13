@@ -1,6 +1,7 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
 pub mod contents;
+mod images;
 mod slot;
 
 pub use slot::HeavySlot;
@@ -622,9 +623,6 @@ impl CancelHandle {
     }
 }
 
-/// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
-const MAX_IMAGE_PLACES: usize = 4096;
-
 /// One tile to draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRequest {
@@ -703,8 +701,30 @@ struct PageMemory {
 /// Busy reads of a page in a row past which it's remembered as unreadable after all: a worker that hangs looks starved too, and this bounds what a hostile page can cost to that many deadlines.
 const MAX_BUSY_READS: u8 = 3;
 
-/// Workers the hidden-text check may have killed in one document, past which pages go unchecked. They don't count towards `max_kills_per_document`, so a copy of a file of slow pages can't stop it drawing, and this keeps them from costing a respawn each for ever.
-const MAX_CHECK_KILLS: u32 = 16;
+/// Workers the hidden-text check may have killed in one document, past which pages go unchecked, and the same for the walk for where a page's images are, past which pages go unasked and are judged whole. They don't count towards `max_kills_per_document`, so a copy of a file of slow pages can't stop it drawing, and this keeps them from costing a respawn each for ever.
+const MAX_ASKING_KILLS: u32 = 16;
+
+/// Workers killed since [`CountedFrom`] that say nothing about drawing the document, so don't count towards stopping it.
+#[derive(Clone, Copy, Debug, Default)]
+struct LeftOut {
+    /// By the hidden-text check.
+    check: u32,
+    /// By the walk for where a page's images are, which decodes nothing: a heavy page's walk killed is no reason to stop drawing the rest (second review of 2026-11-13).
+    walk: u32,
+    /// Deadlines the Mac was too busy for the worker to meet.
+    busy: u32,
+}
+
+impl LeftOut {
+    fn total(self) -> u32 {
+        self.check.saturating_add(self.walk).saturating_add(self.busy)
+    }
+
+    /// Of `killed` during a job that began with `busy` busy kills, the ones not already left out as busy.
+    fn since(self, killed: u32, busy: u32) -> u32 {
+        killed.saturating_sub(self.busy.saturating_sub(busy))
+    }
+}
 
 /// How far below the scale a page's state was learned at before a zoom counts as different. So that small changes in zoom don't each run the kills again.
 const LOWER_ZOOM_RATIO: f32 = 0.7;
@@ -750,10 +770,8 @@ pub struct DocRenderer {
     slot_wait_total: Duration,
     /// Where the caps start from, moved by `forget_failures`.
     counted_from: CountedFrom,
-    /// Of those since then, what the hidden-text check took.
-    check_kills: u32,
-    /// Of those since then, deadlines the Mac was too busy for the worker to meet: nothing about the document, so they don't count towards stopping it.
-    busy_kills: u32,
+    /// Of those since then, the ones that don't count towards stopping the document.
+    left_out: LeftOut,
     /// `image_places` has been forgotten, past its cap, and nobody's been told.
     image_places_cleared: bool,
     /// Whether the job under way may start a worker: [`Self::with_workers`].
@@ -832,8 +850,7 @@ impl DocRenderer {
             traits: Vec::new(),
             image_places: HashMap::new(),
             image_places_cleared: false,
-            check_kills: 0,
-            busy_kills: 0,
+            left_out: LeftOut::default(),
             file_changed: false,
             waited_ticket: None,
             open_failure: None,
@@ -868,11 +885,6 @@ impl DocRenderer {
 
     pub fn take_file_changed(&mut self) -> bool {
         std::mem::take(&mut self.file_changed)
-    }
-
-    /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
-    pub fn take_image_places_cleared(&mut self) -> bool {
-        std::mem::take(&mut self.image_places_cleared)
     }
 
     /// Leaves the running worker's surface link broken, as a worker having gone in the moment since it was last looked at leaves it. That moment can't be hit from outside.
@@ -929,8 +941,7 @@ impl DocRenderer {
         self.remembered.clear();
         self.open_failure = None;
         self.counted_from.kills = self.kills();
-        self.check_kills = 0;
-        self.busy_kills = 0;
+        self.left_out = LeftOut::default();
         self.counted_from.heavy_pages = self.stats.heavy_pages;
     }
 
@@ -1062,55 +1073,6 @@ impl DocRenderer {
         }
         self.traits.push((page, pixels));
         Ok(pixels)
-    }
-
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. `Err` is only [`RenderFailure::WouldStart`]: not asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't. That's no answer about the page either, and a caller mustn't decide anything from it and keep it, as it would from `None`.
-    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
-        if let Some(known) = self.image_places.get(&page) {
-            return Ok(known.clone());
-        }
-        // Stale says nothing about the page, so nothing's remembered.
-        if self.control.is_stale(generation) {
-            return Ok(None);
-        }
-        // Only a page that fails at every zoom goes unasked. Asking walks its objects and decodes nothing, so one needing the larger limit, or drawn lower, or failed at a high zoom, is asked as any page, and its look doesn't hang on which draw went first.
-        let state = self.page_draw_state(page);
-        let boxes = if matches!(self.page_draw_state_at(page, 0.0), PageDrawState::Failed(_)) || self.stopped() {
-            None
-        } else {
-            // The worker that's there, which has just drawn it. With none, one that can hold the page.
-            let class = if self.worker.is_none() && state == PageDrawState::NeedsHeavy {
-                WorkerClass::Heavy
-            } else {
-                WorkerClass::Normal
-            };
-            let job_id = self.next_job_id();
-            let frame = proto::encode_images_request(job_id, page);
-            let reply = self.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
-                Kind::Images => {
-                    let images = proto::PageImages::decode(&reply.payload)?;
-                    if images.job_id == job_id {
-                        Ok(images.boxes)
-                    } else {
-                        Err(ProtoError("image boxes answer a different job"))
-                    }
-                }
-                _ => Err(ProtoError("the wrong kind of reply to an images request")),
-            });
-            // Stale, or not asked for want of a worker: neither is about the page, so nothing's remembered.
-            match reply {
-                _ if self.control.is_stale(generation) => return Ok(None),
-                Err(JobFailure::Failed(failure @ RenderFailure::WouldStart { .. })) => return Err(failure),
-                reply => reply.ok(),
-            }
-        };
-        // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
-        if self.image_places.len() >= MAX_IMAGE_PLACES {
-            self.image_places.clear();
-            self.image_places_cleared = true;
-        }
-        self.image_places.insert(page, boxes.clone());
-        Ok(boxes)
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
@@ -1253,10 +1215,7 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        (self.kills() - self.counted_from.kills)
-            .saturating_sub(self.check_kills)
-            .saturating_sub(self.busy_kills)
-            >= self.policy.max_kills_per_document
+        (self.kills() - self.counted_from.kills).saturating_sub(self.left_out.total()) >= self.policy.max_kills_per_document
     }
 
     fn kills(&self) -> u32 {
@@ -1419,12 +1378,11 @@ impl DocRenderer {
             return Err(RenderFailure::DocumentStopped);
         }
         let may_check = hidden_check
-            && self.check_kills < MAX_CHECK_KILLS
+            && self.left_out.check < MAX_ASKING_KILLS
             && !self.remembered(page).is_some_and(|memory| memory.check_stopped)
             && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
         if may_check {
-            let kills = self.kills();
-            let busy_before = self.busy_kills;
+            let (kills, busy) = (self.kills(), self.left_out.busy);
             match self.text_job(page, boxes, true, generation) {
                 // A worker that breaks the protocol is that worker's doing, whatever it was asked.
                 Err(JobFailure::Stopped(reason @ KillReason::Rejected(_))) => {
@@ -1432,9 +1390,7 @@ impl DocRenderer {
                     return Err(RenderFailure::PageReadFailed { page, reason });
                 }
                 Err(JobFailure::Stopped(_)) => {
-                    // A busy kill's already left out of the count; it isn't left out twice.
-                    let busy = self.busy_kills - busy_before;
-                    self.check_kills = self.check_kills.saturating_add((self.kills() - kills).saturating_sub(busy));
+                    self.left_out.check = self.left_out.check.saturating_add(self.left_out.since(self.kills() - kills, busy));
                     self.remember(page).check_stopped = true;
                 }
                 other => return other.map_err(RenderFailure::from),
@@ -1655,7 +1611,7 @@ impl DocRenderer {
                     // Out of time with too little of the processor to have been the cause: the Mac was busy, as `open_in` reckons it, and it says nothing about the page.
                     if matches!(reason, KillReason::Deadline) && cpu_ns.is_some_and(|cpu| was_starved(cpu, self.policy.page_deadline)) {
                         self.stats.too_busy += 1;
-                        self.busy_kills = self.busy_kills.saturating_add(1);
+                        self.left_out.busy = self.left_out.busy.saturating_add(1);
                     }
                     match reason {
                         KillReason::MemoryLimit => self.stats.memory_kills += 1,

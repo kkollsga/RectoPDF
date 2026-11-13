@@ -368,6 +368,35 @@ fn a_walk_for_images_that_overruns_is_stopped_once_and_the_page_still_draws() {
     );
 }
 
+/// Failure: workers killed walking pages for where their images are count towards stopping the document, as a draw's do, so a heavy atlas whose pages' walks overrun stops drawing about three times sooner than its draws alone would stop it (second review of 2026-11-13). With the stop set at 2, three walks killed leave the document drawing, and two draws killed still stop it. The walk's kills have a cap of their own, as the hidden-text check's do: past 16, pages go unasked, judged whole, and cost no worker.
+#[test]
+fn walk_kills_never_stop_a_document_and_draw_kills_still_do() {
+    let policy = Policy {
+        max_kills_per_document: 2,
+        ..policy()
+    };
+    let (mut doc, _file) = doc_with("low_res_walk_overruns", policy, &HeavySlot::new());
+    for page in 0..3 {
+        assert_eq!(doc.image_boxes(page, 1), Ok(None), "page {page}'s walk killed, so not known");
+    }
+    assert_eq!(doc.stats().memory_kills, 3, "one each, in a fresh worker");
+    assert!(doc.render_tile(&request(1), &surface()).is_ok(), "drawing goes on after three walks killed");
+    // Page 0 fits only at a lower resolution: drawing it sharp kills a worker at the normal limit, and the larger.
+    let _ = doc.render_tile(&request(0), &surface());
+    assert_eq!(
+        doc.render_tile(&request(2), &surface()),
+        Err(RenderFailure::DocumentStopped),
+        "two draws killed stop it"
+    );
+    doc.forget_failures();
+    for page in 3..20 {
+        let _ = doc.image_boxes(page, 1);
+    }
+    let (kills, spawns) = (doc.stats().memory_kills, doc.stats().spawns);
+    assert_eq!(doc.image_boxes(20, 1), Ok(None), "past the walk's cap");
+    assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (kills, spawns), "unasked, at no cost");
+}
+
 /// Failure: the lower-resolution rectangle runs off the page's smaller size at its edge, and the worker refuses the very tile that should have been saved.
 #[test]
 fn step_3_stays_on_the_page_at_its_edges() {
