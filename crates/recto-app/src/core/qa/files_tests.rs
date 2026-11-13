@@ -167,7 +167,7 @@ fn no_qa_value_reaches_a_file_outside_the_run() {
         }
         let bridge = answering_bridge(&app);
         let there = bridge.run(asked);
-        std::fs::rename(&file, &gone).unwrap();
+        std::fs::rename(&file, &gone).unwrap_or_else(|_| panic!("{} moved or removed the outside file", spec.name));
         let missing = bridge.run(asked);
         std::fs::rename(&gone, &file).unwrap();
         assert_eq!(
