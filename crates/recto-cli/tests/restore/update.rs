@@ -320,10 +320,15 @@ impl Bed {
 
     /// Waits for `update status` to say this.
     fn wait_status(&self, run: &Run<'_>, wanted: &str) -> Value {
+        self.wait_status_where(run, wanted, |status| status["status"] == wanted)
+    }
+
+    /// Waits for `update status` to be as `done` says, `wanted` naming it.
+    fn wait_status_where(&self, run: &Run<'_>, wanted: &str, done: impl Fn(&Value) -> bool) -> Value {
         let began = Instant::now();
         loop {
             let status = self.status(run);
-            if status["status"] == wanted {
+            if done(&status) {
                 return status;
             }
             assert!(began.elapsed() < Duration::from_secs(60), "waited for {wanted}: {status}\n{}", self.said());
@@ -831,9 +836,15 @@ fn the_launch_guard_goes_back_by_itself() {
     run.quit();
 }
 
-/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run. It waits for the lock as long as reading the record does. Held for 300 ms by someone else, as a process that's just ended can, and then let go.
+/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run; or (owner, 2026-11-13: it tries again quietly for about ten seconds) one let go after the launch's wait keeps the record late but stays a second copy to the updater, so an install it arrived by would be sent back (review, 2026-11-13). Held by someone else for 300 ms, inside the wait, and then for 1.5 s, past it: each time it keeps the record, isn't a second copy, has its timer, and says nothing.
 #[test]
 fn a_quick_reopen_isnt_a_second_copy() {
+    for held_ms in [300, 1_500] {
+        a_quick_reopen_held_for(held_ms);
+    }
+}
+
+fn a_quick_reopen_held_for(held_ms: u64) {
     let Some(bed) = Bed::new() else { return };
     bed.state.paths.prepare().unwrap();
     let lock = std::fs::OpenOptions::new()
@@ -844,14 +855,20 @@ fn a_quick_reopen_isnt_a_second_copy() {
         .unwrap();
     lock.try_lock().unwrap();
     let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(held_ms));
         drop(lock);
     });
     let run = bed.start();
     releaser.join().unwrap();
-    let status = bed.status(&run);
-    assert_eq!(status["second_copy"], false, "{status}");
-    assert!(status["next_wake_in_ms"].is_u64(), "it has its timer: {status}");
+    let status = bed.wait_status_where(&run, "the record kept and the updater told", |status| {
+        status["second_copy"] == false && status["next_wake_in_ms"].is_u64()
+    });
+    assert_eq!(status["second_copy"], false, "held {held_ms} ms: {status}");
+    assert!(
+        run.report()["session"]["app"]["notice"].is_null(),
+        "held {held_ms} ms: nothing said: {}",
+        run.report()["session"]["app"]
+    );
     run.quit();
 }
 
