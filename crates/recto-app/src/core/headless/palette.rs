@@ -3,8 +3,8 @@
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::Level;
 
-/// Failure: `recto palette --run` runs a row at the palette's own level rather than the command's, so an agent at Control installs an update through it, or one
-/// at Read-only changes something; or the row's step is the owner's, not the agent's. (The app test `the_palettes_run_keeps_to_each_commands_level`, which this
+/// Failure: `recto palette --run` runs a row at the palette's own level rather than the command's, so one at Read-only changes something, or the row's step is
+/// the owner's, not the agent's. The update's row is held by [`the_palettes_update_is_the_updaters_command_at_the_agents_level`]. (The app test `the_palettes_run_keeps_to_each_commands_level`, which this
 /// replaces.)
 #[test]
 fn the_palettes_run_keeps_to_each_commands_level() {
@@ -15,10 +15,6 @@ fn the_palettes_run_keeps_to_each_commands_level() {
         .agent(Level::Control, r#"{"cmd":"palette","query":"zoom in","run":true}"#)
         .expect("zoom in at Control");
     assert_eq!(zoomed["ran"]["id"], "view.zoom_in", "{zoomed}");
-    let update = app
-        .agent(Level::Control, r#"{"cmd":"palette","query":"check for updates","run":true}"#)
-        .expect_err("an update's install needs Full");
-    assert_eq!(update.code, "permission_denied", "{update:?}");
     let rotated = app
         .agent(Level::Control, r#"{"cmd":"palette","query":"rotate all pages right","run":true}"#)
         .expect("rotate at Control");
@@ -32,6 +28,40 @@ fn the_palettes_run_keeps_to_each_commands_level() {
     assert!(listed["items"].as_array().is_some_and(|items| !items.is_empty()), "{listed}");
     app.agent(Level::ReadOnly, r#"{"cmd":"palette","query":"zoom in","run":true}"#)
         .expect_err("running is doing");
+}
+
+/// Failure (R2.3, the coordinator's ruling of 2026-11-13): the palette's update item runs as something other than the command the updater's state gives it, at the
+/// agent's level: an agent at Control installs an update through it, as `update install --now` needs Full, or is refused the check `update check` lets it
+/// make, or one at Read-only does either. *Check for Updates…* is `update check` (Control), *Update to X…* `update install --now` (Full).
+#[test]
+fn the_palettes_update_is_the_updaters_command_at_the_agents_level() {
+    use crate::testkit::update_bed::{NEW, OLD, UpdateBed};
+    let disk = crate::testkit::headless::Disk::new();
+    disk.install_app(OLD);
+    let bed = UpdateBed::new();
+    let file = disk.pdf("alpha.pdf", 3);
+    let app = disk.builder().update(&bed).start();
+    app.open(&file);
+    let run = |level: Level, query: &str| app.agent(level, &format!(r#"{{"cmd":"palette","query":"{query}","run":true}}"#));
+    let refused = |result: Result<serde_json::Value, recto_agent::AgentError>| result.map(drop).map_err(|error| error.code.to_string());
+    assert_eq!(
+        refused(run(Level::ReadOnly, "check for updates")),
+        Err("permission_denied".into()),
+        "below Control"
+    );
+    let checked = run(Level::Control, "check for updates").expect("the check at Control");
+    assert_eq!(checked["ran"]["id"], "app.update", "{checked}");
+    bed.releases.offer(NEW);
+    app.agent(Level::Full, r#"{"cmd":"update_check"}"#).expect("checked");
+    app.settle();
+    let direct = refused(app.agent(Level::Control, r#"{"cmd":"update_install","zip":null,"now":true}"#));
+    assert_eq!(direct, Err("permission_denied".into()), "`update install --now` needs Full");
+    assert_eq!(
+        refused(run(Level::Control, "update to")),
+        direct,
+        "the palette's Update to X… is refused as that command is"
+    );
+    assert_eq!(refused(run(Level::ReadOnly, "update to")), Err("permission_denied".into()), "below Control");
 }
 
 /// Failure (rule 6 and the levels, review of 2026-11-13): an agent's `palette --run` of a row with no command of its own ran as the person, through the

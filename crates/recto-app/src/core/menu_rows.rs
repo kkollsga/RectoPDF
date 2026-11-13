@@ -164,7 +164,7 @@ pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun
 /// person's menu ran as a command refused.
 fn as_before(_: &Arc<Inner>, id: &str) -> Option<ForAgent> {
     Some(match id {
-        "app.update" | "file.close" | "find.open" | "go.back" | "go.forward" | "edit_mode.done" => ForAgent::Refused,
+        "file.close" | "find.open" | "go.back" | "go.forward" | "edit_mode.done" => ForAgent::Refused,
         _ => return None,
     })
 }
