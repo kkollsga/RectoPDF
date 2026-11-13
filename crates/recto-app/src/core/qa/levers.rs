@@ -5,6 +5,7 @@
 use crate::core::{Inner, save_from_signature_check, saving};
 use crate::queue::CoreCall;
 use recto_agent::AgentError;
+use recto_agent::Code;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use std::time::Duration;
 impl Inner {
     /// A QA verb that needs no window. `None` if it's for the host. Calls what the UI will.
     pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>> {
-        let usage = |words: String| AgentError::new("usage", words, recto_agent::exit::USAGE);
+        let usage = |words: String| AgentError::new(Code::USAGE, words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {
             // What a record brings back that no one action makes: text in Find's field that wasn't found for.
@@ -94,7 +95,7 @@ impl Inner {
 
     /// **What a Save does around its writing, with the writing done by the test,** for crash and restore tests: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step but the writing is the real one, and it's refused where Save would be.
     pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError> {
-        let failed = |what: &str| AgentError::new("save_failed", format!("{what} failed."), recto_agent::exit::FAILED);
+        let failed = |what: &str| AgentError::new(Code::SAVE_FAILED, format!("{what} failed."), recto_agent::exit::FAILED);
         let written = PathBuf::from(written);
         // The second line behind the table's (its value is a file to the table): a file outside the run's folders is refused before anything is looked
         // at, so its being there or not says nothing, and it's never moved into a tab (2026-11-13).
@@ -112,13 +113,13 @@ impl Inner {
                     .active()
                     .and_then(|id| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.saves().is_saving(id))))
             })
-            .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+            .ok_or_else(|| AgentError::new(Code::NO_ACTIVE_TAB, "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         if saving {
-            return Err(AgentError::new("saving", "That document is being saved.", recto_agent::exit::FAILED));
+            return Err(AgentError::new(Code::SAVING, "That document is being saved.", recto_agent::exit::FAILED));
         }
         if known.is_none_or(|known| recto_platform::file_stamp(&path).ok() != Some(known)) {
             return Err(AgentError::new(
-                "file_changed",
+                Code::FILE_CHANGED,
                 recto_core::save::SaveError::FileChanged.message(),
                 recto_agent::exit::FAILED,
             ));
@@ -133,7 +134,7 @@ impl Inner {
                 let needed = session.lists().own_pages_needed(id);
                 Some((id, session.tabs().path_of(id)?, session.pages().count(id), needed))
             })
-            .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+            .ok_or_else(|| AgentError::new(Code::NO_ACTIVE_TAB, "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         let kept = self.saver.store.keep_pages_of(&path, target, &needed);
         self.host.session.with_session(|session| session.save_prepared(id, target, kept.as_ref()));
         self.saver

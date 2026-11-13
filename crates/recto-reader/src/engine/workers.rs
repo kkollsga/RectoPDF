@@ -9,22 +9,22 @@ use std::sync::atomic::Ordering;
 
 /// This page view's render workers, from outside.
 #[derive(Clone, Copy)]
-pub struct Workers<'a> {
+pub struct WorkerFigures<'a> {
     engine: &'a Engine,
 }
 
 // size: one reference, so taking it costs what calling a method of `Engine` did.
-const _: () = assert!(size_of::<Workers<'static>>() <= size_of::<usize>(), "a facade of the engine grew");
+const _: () = assert!(size_of::<WorkerFigures<'static>>() <= size_of::<usize>(), "a facade of the engine grew");
 
 impl Engine {
     /// This page view's render workers, from outside.
     #[inline]
-    pub fn workers(&self) -> Workers<'_> {
-        Workers { engine: self }
+    pub fn workers(&self) -> WorkerFigures<'_> {
+        WorkerFigures { engine: self }
     }
 }
 
-impl Workers<'_> {
+impl WorkerFigures<'_> {
     /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
     pub fn bytes(&self, tab: u32) -> u64 {
         let files = lock(&self.engine.shared.reader).docs.files_of(tab);

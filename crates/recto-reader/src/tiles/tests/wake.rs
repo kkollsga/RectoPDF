@@ -32,7 +32,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
             pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())],
         },
     );
-    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
+    reader.note_wake(1, Instant::now());
     reader.wake.give_sleep(
         1,
         SleepView {
@@ -68,7 +68,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     let mut bare = Reader::new();
     bare.wake.window_up();
     bare.set_viewport(view(0.0));
-    bare.wake.note_wake(bare.docs.hot, 1, Instant::now());
+    bare.note_wake(1, Instant::now());
     bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     bare.host.take_ops();
     let scrolled = bare.place.jump.unwrap_or(0);
@@ -337,7 +337,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
     let mut reader = Reader::new();
     reader.wake.window_up();
     reader.set_viewport(view(0.0));
-    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
+    reader.note_wake(1, Instant::now());
     let saved = SavedPlace {
         page: 0,
         anchor: (0, 0.0),

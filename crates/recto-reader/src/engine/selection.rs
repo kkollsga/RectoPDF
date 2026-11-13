@@ -48,7 +48,7 @@ impl Selection<'_> {
         let mut reader = lock(&self.engine.shared.reader);
         let over = reader.pointer_is_over_text(x, y);
         drop(reader);
-        self.engine.wake();
+        self.engine.unpark_thread();
         over
     }
 

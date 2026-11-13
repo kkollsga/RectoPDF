@@ -10,7 +10,7 @@
 //! - `<seam>=<ms>`, for one seam, by [`Seam::name`];
 //! - `jitter=<seed>`: each delay is drawn from half to one and a half times its own, from that seed, so a run can be repeated exactly.
 //!
-//! **A hold.** `RECTO_QA_SLOW_HOLD=<seam>:<path>` holds that seam until the file at the path is there, not for a time, so a test that has to act while the app waits there can't run out of time on a slow machine (CI, 2026-11-12: a 10 s wait at the launch was over before the test acted). A hang is all its bound of [`HOLD_LIMIT`] is for.
+//! **A hold.** `RECTO_QA_SLOW_HOLD=<seam>:<path>` holds that seam until the file at the path is there, not for a time, so a test that has to act while the app waits there can't run out of time on a slow machine (CI, 2026-11-12: a 10 s wait at the launch was over before the test acted). `<seam>:window` holds it until the app says its window is up ([`window_up`]), for what a test can't look at while it's held: the state, as the socket answers only once that's in, held until the window has gone up without it however fast its patience runs out (CI, 2026-11-13: a state 1.05 s late against a 1 s patience came in first on a starved runner). A seam's delay, if it has one, comes after its hold. A hang is all its bound of [`HOLD_LIMIT`] is for.
 //!
 //! `RECTO_QA_RESTORE_DELAY_MS` and `RECTO_QA_REMAKE_DELAY_MS`, the first two seams' own switches from before this one, still work, and win over the list for their seam. What can't be read refuses the launch, so a slow run can't quietly be a fast one.
 
@@ -197,34 +197,68 @@ impl Profile {
     }
 }
 
-/// A seam held until a file's there.
+/// A seam held until a file's there, or the window's up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hold {
     pub seam: Seam,
-    pub until: std::path::PathBuf,
+    pub until: Until,
+}
+
+/// What a hold waits for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Until {
+    /// A file at this path, made by the test.
+    File(std::path::PathBuf),
+    /// The app's word that its window is up ([`window_up`]): `window` in the switch.
+    Window,
+}
+
+/// A hold's word for [`Until::Window`].
+pub const UNTIL_WINDOW: &str = "window";
+
+/// Whether the app has said its window is up.
+static WINDOW_UP: AtomicBool = AtomicBool::new(false);
+
+/// **The app's window is up,** with the state or without it: a hold [`Until::Window`] lets go. One relaxed store of an atomic, from the UI thread or anywhere, whether or not anything's slow.
+pub fn window_up() {
+    WINDOW_UP.store(true, Ordering::Relaxed);
 }
 
 impl Hold {
-    /// From [`HOLD_SWITCH`]'s value: `None` with nothing asked, and an error that says what couldn't be read.
+    /// From [`HOLD_SWITCH`]'s value, `<seam>:<path>` or `<seam>:window`: `None` with nothing asked, and an error that says what couldn't be read.
     pub fn read(switch: Option<&str>) -> Result<Option<Self>, String> {
         let Some(value) = switch.map(str::trim).filter(|value| !value.is_empty()) else {
             return Ok(None);
         };
         let (name, path) = value
             .split_once(':')
-            .ok_or_else(|| format!("{HOLD_SWITCH}: `{value}` isn't `<seam>:<path>`."))?;
+            .ok_or_else(|| format!("{HOLD_SWITCH}: `{value}` isn't `<seam>:<path>` or `<seam>:{UNTIL_WINDOW}`."))?;
         let seam = Seam::from_name(name).ok_or_else(|| format!("{HOLD_SWITCH}: `{name}` isn't a seam. They're {}.", names()))?;
-        let until = std::path::PathBuf::from(path);
-        if !until.is_absolute() {
-            return Err(format!("{HOLD_SWITCH}: `{path}` isn't a whole path."));
+        if path == UNTIL_WINDOW {
+            return Ok(Some(Self { seam, until: Until::Window }));
         }
-        Ok(Some(Self { seam, until }))
+        let file = std::path::PathBuf::from(path);
+        if !file.is_absolute() {
+            return Err(format!("{HOLD_SWITCH}: `{path}` isn't a whole path or `{UNTIL_WINDOW}`."));
+        }
+        Ok(Some(Self {
+            seam,
+            until: Until::File(file),
+        }))
     }
 
-    /// Waits until its file's there, or the limit. How long it waited.
+    /// Whether what it waits for has come.
+    fn come(&self) -> bool {
+        match &self.until {
+            Until::File(file) => file.exists(),
+            Until::Window => WINDOW_UP.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Waits until its file's there or the window's up, or the limit. How long it waited.
     fn wait(&self) -> Duration {
         let began = Instant::now();
-        while !self.until.exists() && began.elapsed() < HOLD_LIMIT {
+        while !self.come() && began.elapsed() < HOLD_LIMIT {
             std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
         }
         began.elapsed()
@@ -537,19 +571,26 @@ mod tests {
         assert_eq!(mixed.delay(Seam::Draw, 0), None, "a seam at nothing doesn't wait");
     }
 
-    /// Failure: a hold reads something other than what it says, so a test that has to act while the app waits at a seam acts after it's gone on, or a typo holds the wrong seam or none. And a hold doesn't let go once its file is there.
+    /// Failure: a hold reads something other than what it says, so a test that has to act while the app waits at a seam acts after it's gone on, or a typo holds the wrong seam or none. And a hold doesn't let go once its file is there, or once the window's up (so a state held until then is never read), or lets go before.
     #[test]
-    fn a_hold_says_which_seam_and_lets_go_when_its_file_is_there() {
+    fn a_hold_says_which_seam_and_lets_go_when_what_it_waits_for_comes() {
         assert_eq!(Hold::read(None), Ok(None));
         assert_eq!(Hold::read(Some(" ")), Ok(None));
         assert_eq!(
             Hold::read(Some("launch:/t/go")),
             Ok(Some(Hold {
                 seam: Seam::Launch,
-                until: "/t/go".into()
+                until: Until::File("/t/go".into())
             }))
         );
-        for bad in ["launch", "lunch:/t/go", "launch:go"] {
+        assert_eq!(
+            Hold::read(Some("state:window")),
+            Ok(Some(Hold {
+                seam: Seam::State,
+                until: Until::Window
+            }))
+        );
+        for bad in ["launch", "lunch:/t/go", "launch:go", "launch:windows"] {
             assert!(Hold::read(Some(bad)).is_err(), "{bad}");
         }
         let dir = std::env::temp_dir().join(format!("recto-hold-{}", std::process::id()));
@@ -557,7 +598,7 @@ mod tests {
         let go = dir.join("go");
         let hold = Hold {
             seam: Seam::Launch,
-            until: go.clone(),
+            until: Until::File(go.clone()),
         };
         let (done, waited) = channel();
         std::thread::spawn(move || done.send(hold.wait()).unwrap());
@@ -565,6 +606,15 @@ mod tests {
         std::fs::write(&go, "").unwrap();
         assert!(waited.recv_timeout(Duration::from_secs(10)).is_ok(), "let go once it is");
         let _ = std::fs::remove_dir_all(&dir);
+        let hold = Hold {
+            seam: Seam::State,
+            until: Until::Window,
+        };
+        let (done, waited) = channel();
+        std::thread::spawn(move || done.send(hold.wait()).unwrap());
+        assert!(waited.recv_timeout(Duration::from_millis(200)).is_err(), "held while the window isn't up");
+        window_up();
+        assert!(waited.recv_timeout(Duration::from_secs(10)).is_ok(), "let go once it is");
     }
 
     /// Failure: the two older switches stop working, and the restore tests that use them run fast without saying so.

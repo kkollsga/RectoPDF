@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 # The fakes in `testkit`, and the headless app made of them, for other crates' tests.
-testkit = ["dep:recto-testpdf"]
+testkit = ["dep:recto-testpdf", "recto-reader/qa", "recto-agent/test-words"]
 
 [lints]
 workspace = true
@@ -29,6 +29,10 @@ serde_json.workspace = true
 recto-testpdf = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The page view's QA seams (`Engine::hold_busy`) for the headless tests, as `testkit` has them for other crates' tests.
+recto-reader = { workspace = true, features = ["qa"] }
+# Tests read a refusal's code as the wire does.
+recto-agent = { workspace = true, features = ["test-words"] }
 # For the headless tests' protected file, which only lopdf's writer encrypts.
 lopdf.workspace = true
 recto-testpdf.workspace = true

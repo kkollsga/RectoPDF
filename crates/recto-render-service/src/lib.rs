@@ -34,11 +34,15 @@ pub use budget::{
     measure_budget, measure_viewport, page_box_region, page_device_size, plan_regions,
 };
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
+#[cfg(feature = "test-seams")]
+mod test_deadline;
 pub use host::{
     CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure,
     RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown, Workers,
 };
 pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
+#[cfg(feature = "test-seams")]
+pub use test_deadline::under_page_deadline_for_test;
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.
 pub mod exit_code {

@@ -3,12 +3,13 @@
 //!
 //! **What an agent can't erase.** A log with one cap can be flushed by whoever is being logged: about 28,000 `status` calls at Off would push out everything before them. So there are two files with a cap
 //! each. What changes something (opening, editing, drawing to disk, setting the level) goes in one, and everything else in the other, so no amount of reading or refused commands can reach it. On top of that,
-//! the commands an agent can repeat for free (`status`, a bad line, a refusal) are written once, and then as one line with a count, at most once a minute each.
+//! the commands an agent can repeat for free (`status`, a refusal, and any line refused as it's read, which comes before the level is looked at) are written once, and then as one line with a count, at most once a minute each.
 //!
 //! **Going past a file's permissions** (owner, 2026-11-07: an agent keeps `recto copy --anyway`, and each use goes in the activity log). Each use that worked gets a line in a third file of its own, never counted or collapsed. It's at Read-only, so in the changes' file it would let an agent at Read-only push out what's changed, and among the rest a flood of reading could push it out. Here, only more of the same can.
 
 use crate::levels::now_ms;
 use crate::state::StatePaths;
+use recto_agent::Code;
 use recto_agent::Level;
 use recto_platform::local;
 use serde_json::{Value, json};
@@ -33,20 +34,23 @@ struct Rotating {
     old_path: PathBuf,
     file: Option<File>,
     size: u64,
+    /// Its size before it's rotated: [`MAX_LOG_BYTES`], and smaller in a test of what a flood pushes out.
+    cap: u64,
 }
 
 impl Rotating {
-    fn new(path: PathBuf, old_path: PathBuf) -> Self {
+    fn new(path: PathBuf, old_path: PathBuf, cap: u64) -> Self {
         Self {
             path,
             old_path,
             file: None,
             size: 0,
+            cap,
         }
     }
 
     fn append(&mut self, paths: &StatePaths, line: &[u8]) -> std::io::Result<()> {
-        if self.size + line.len() as u64 > MAX_LOG_BYTES && self.file.is_some() {
+        if self.size + line.len() as u64 > self.cap && self.file.is_some() {
             self.file = None;
             std::fs::rename(&self.path, &self.old_path)?;
         }
@@ -55,7 +59,7 @@ impl Rotating {
             let file = local::append_private_file(&self.path)?;
             self.size = file.metadata()?.len();
             // Something else may have filled it, and a new session starts here.
-            if self.size + line.len() as u64 > MAX_LOG_BYTES {
+            if self.size + line.len() as u64 > self.cap {
                 drop(file);
                 std::fs::rename(&self.path, &self.old_path)?;
                 self.size = 0;
@@ -127,22 +131,35 @@ fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
     outcome == "ok" && matches!(cmd, "select" | "copy" | "image" | "snapshot" | "render" | "export_svg" | "print") && details["anyway"] == true
 }
 
-/// What an agent can repeat for nothing, so it's counted rather than written each time.
+/// The refusals an agent can repeat for nothing: a level too low, a terminal it hasn't, the owner's edits, signing, a busy session.
+const REPEATED_FOR_NOTHING: [Code; 6] = [
+    Code::PERMISSION_DENIED,
+    Code::NEEDS_TERMINAL,
+    Code::WOULD_CLEAR_REDO,
+    Code::WOULD_DISCARD_USER_EDITS,
+    Code::SIGN_REFUSED,
+    Code::BUSY,
+];
+
+/// What an agent can repeat for nothing, so it's counted rather than written each time. Each record asks, so it looks at those six codes' words, not every
+/// code in the table (review of R2.5).
 fn collapses(cmd: &str, outcome: &str) -> bool {
-    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request")
-        || matches!(
-            outcome,
-            "permission_denied" | "needs_terminal" | "would_clear_redo" | "would_discard_user_edits" | "sign_refused" | "busy"
-        )
+    matches!(cmd, "status" | recto_agent::UNKNOWN | "connect" | "permission_show" | "permission_request")
+        || REPEATED_FOR_NOTHING.iter().any(|code| code.as_str() == outcome)
 }
 
 impl ActivityLog {
     pub fn new(paths: &StatePaths) -> Self {
+        Self::with_cap(paths, MAX_LOG_BYTES)
+    }
+
+    /// A log whose files rotate at `cap` bytes each.
+    fn with_cap(paths: &StatePaths, cap: u64) -> Self {
         Self {
             paths: paths.clone(),
-            changes: Rotating::new(paths.log.clone(), paths.old_log.clone()),
-            others: Rotating::new(paths.other_log.clone(), paths.old_other_log.clone()),
-            overrides: Rotating::new(paths.overrides_log.clone(), paths.old_overrides_log.clone()),
+            changes: Rotating::new(paths.log.clone(), paths.old_log.clone(), cap),
+            others: Rotating::new(paths.other_log.clone(), paths.old_other_log.clone(), cap),
+            overrides: Rotating::new(paths.overrides_log.clone(), paths.old_overrides_log.clone(), cap),
             collapsing: Vec::new(),
             failing: false,
         }
@@ -150,11 +167,30 @@ impl ActivityLog {
 
     /// One line, written in one call so two processes logging don't tangle.
     pub fn record(&mut self, cmd: &str, level: Level, outcome: &str, details: &Value) {
+        self.write(cmd, level, outcome, details, collapses(cmd, outcome));
+    }
+
+    /// **A line refused as it was read**, before anything looked at the level: one that's no command ([`recto_agent::UNKNOWN`]), too long, or whose
+    /// arguments its command's type refuses (step R2.5). Written under the command's own name the first time and counted after that, whatever the command
+    /// and the code (second review of R2.5, B1): an agent at Off can send these in a loop, and a line each would push out what earlier agents read. Nothing
+    /// of what the line held goes in.
+    ///
+    /// **Bound.** The kinds are (tag, level, code): a tag is a command's from the table or `unknown`, a code one of the listed few a line is refused with as
+    /// it's read, and an agent can't change the level. Today that's ten kinds at a level (`unknown`/`bad_command`; `usage` of `compare`, `contents_show`,
+    /// `view`, `find`, `edit_mode`, `update_dev_builds` and `settings`; `find`/`bad_limit`; `compare`/`too_many_panes`), so at most ten lines and then ten
+    /// counts a minute ([`COLLAPSE_WINDOW`]), however many lines are sent. The repeats are told apart among up to [`MAX_COLLAPSING`] kinds at once, not by
+    /// the last line alone, so going round two kinds, or twenty, or all of them, is counted the same as one.
+    pub fn record_refused_as_read(&mut self, tag: &'static str, level: Level, code: Code) {
+        self.write(tag, level, code.as_str(), &Value::Null, true);
+    }
+
+    /// Writes a line, or counts it as a repeat when it's `counted` and one of its kind is already written.
+    fn write(&mut self, cmd: &str, level: Level, outcome: &str, details: &Value, counted: bool) {
         self.flush_due(false);
-        if collapses(cmd, outcome) && self.note_repeat(cmd, level, outcome) {
+        if counted && self.note_repeat(cmd, level, outcome) {
             return;
         }
-        let details = if collapses(cmd, outcome) { &Value::Null } else { details };
+        let details = if counted { &Value::Null } else { details };
         let mut line = json!({ "t_ms": now_ms(), "cmd": cmd, "level": level.name(), "outcome": outcome, "details": details }).to_string();
         if line.len() > MAX_LINE_BYTES {
             line = json!({ "t_ms": now_ms(), "cmd": cmd, "level": level.name(), "outcome": outcome }).to_string();
@@ -293,6 +329,25 @@ pub fn iso8601(ms: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Failure (R2.5): the log's repeats are told apart by a code's string, and a refusal an agent repeats for nothing (a level too low, a busy session) is
+    /// written each time, or one worth a line is counted away. Routed by named codes: these collapse, and a refusal with something to say doesn't.
+    #[test]
+    fn the_refusals_an_agent_repeats_for_nothing_are_counted() {
+        for outcome in [
+            "permission_denied",
+            "needs_terminal",
+            "would_clear_redo",
+            "would_discard_user_edits",
+            "sign_refused",
+            "busy",
+        ] {
+            assert!(collapses("text", outcome), "{outcome}");
+        }
+        for outcome in ["ok", "usage", "no_such_tab", "unsaved_changes"] {
+            assert!(!collapses("text", outcome), "{outcome}");
+        }
+    }
+
     fn temp_paths(name: &str) -> (recto_testpdf::TempDir, StatePaths) {
         // The state folder itself isn't made: a test puts a file there instead.
         let root = recto_testpdf::TempDir::new(&format!("recto-log-{name}-"));
@@ -386,6 +441,63 @@ mod tests {
                 .collect();
             assert_eq!(rows.len(), 1, "{cmd}: {rows:?}");
             assert_eq!(rows[0]["count"], 59_999, "{cmd}");
+        }
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    /// Failure (second review of R2.5, B1): a refusal as a line is read (`edit_mode` with a word that's neither on nor off, `find` with a limit of 0, too many
+    /// panes) is written in full each time. The line is read before the level is looked at, so an agent at Off can send one in a loop and push out both halves
+    /// of the file with everything earlier agents read, where on `main` nothing it could send made a line that wasn't counted. Every refusal as a line is
+    /// read is counted after its first, whatever its command and code, and alternating between many kinds doesn't get round that.
+    #[test]
+    fn refusals_as_lines_are_read_cant_push_out_an_earlier_agents_record() {
+        const CAP: u64 = 4096;
+        let (_root, paths) = temp_paths("refused-as-read");
+        let mut log = ActivityLog::with_cap(&paths, CAP);
+        log.record("text", Level::ReadOnly, "ok", &json!({ "tab": "#1", "page": 1 }));
+        let earlier_is_there = |paths: &StatePaths| {
+            recent(paths, Some(100_000))["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["cmd"] == "text" && entry["level"] == "read_only")
+        };
+        // More than the shortest line written for each could fit in both halves of the file.
+        let past_both_halves = usize::try_from(2 * CAP / 40).unwrap() + 1;
+        for _ in 0..past_both_halves {
+            log.record_refused_as_read("edit_mode", Level::Off, Code::USAGE);
+        }
+        assert!(earlier_is_there(&paths), "one command's refusals pushed it out");
+        // Twenty kinds in turn: tags from the table, codes that refuse lines as they're read.
+        let kinds: Vec<(&'static str, Code)> = ["edit_mode", "find", "compare", "view", "settings"]
+            .into_iter()
+            .flat_map(|tag| [Code::USAGE, Code::BAD_LIMIT, Code::TOO_MANY_PANES, Code::BAD_COMMAND].map(|code| (tag, code)))
+            .collect();
+        assert_eq!(kinds.len(), 20);
+        for _ in 0..past_both_halves {
+            for (tag, code) in &kinds {
+                log.record_refused_as_read(tag, Level::Off, *code);
+            }
+        }
+        assert!(earlier_is_there(&paths), "twenty kinds in turn pushed it out");
+        assert!(!paths.old_other_log.exists(), "they wrote a file's worth");
+        // Each kind is there by its own name once, and the rest of it as one count.
+        log.flush();
+        let shown = recent(&paths, Some(100_000));
+        let entries = shown["entries"].as_array().unwrap();
+        for (tag, code) in &kinds {
+            let rows: Vec<&Value> = entries
+                .iter()
+                .filter(|entry| entry["cmd"] == *tag && entry["outcome"] == code.as_str())
+                .collect();
+            let repeats = if (*tag, *code) == ("edit_mode", Code::USAGE) {
+                2 * past_both_halves - 1
+            } else {
+                past_both_halves - 1
+            };
+            assert_eq!(rows.len(), 2, "{tag} {}: {rows:?}", code.as_str());
+            assert!(rows[0]["count"].is_null() && rows[0]["details"].is_null(), "{rows:?}");
+            assert_eq!(rows[1]["count"], json!(repeats), "{rows:?}");
         }
         std::fs::remove_dir_all(&paths.root).unwrap();
     }

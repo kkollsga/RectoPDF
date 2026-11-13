@@ -3,6 +3,7 @@
 //! **Losslessly** (SPEC section 6, "Click an image to copy it losslessly"): a JPEG goes as its own bytes, with only what's around its picture corrected where the page would read it differently (`JpegHeaderFixed`), and anything else as PNG at the image's own resolution, its pixels as PDFium decodes them. A masked image goes as PNG with its mask as alpha. An image PDFium can draw but not hand over is drawn alone at the scale asked for, and says so.
 
 use super::{Output, Shared, page_index};
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_proto::contents::{IMAGES_LIST, ImageCoding, Record, TextMode, Why, hints};
 use recto_render_service::{ContentsEvent, ContentsRequest, DocRenderer, OutputCaps, RenderFailure};
@@ -190,7 +191,7 @@ enum Writing<'a, O: Output> {
 /// A JPEG asked for, of an image that can't go as its own JPEG bytes.
 pub(crate) fn not_a_jpeg(page: u32, number: u32) -> AgentError {
     AgentError::new(
-        "not_a_jpeg",
+        Code::NOT_A_JPEG,
         format!(
             "Image {number} on page {} can't go as its own JPEG bytes, so a .jpg would be re-encoded, which loses something.",
             page + 1
@@ -201,7 +202,7 @@ pub(crate) fn not_a_jpeg(page: u32, number: u32) -> AgentError {
 }
 
 fn no_such_image(page: u32, number: u32) -> AgentError {
-    AgentError::new("no_such_image", format!("Page {} has no image {number}.", page + 1), exit::NOT_FOUND)
+    AgentError::new(Code::NO_SUCH_IMAGE, format!("Page {} has no image {number}.", page + 1), exit::NOT_FOUND)
         .then(format!("`recto images {}` lists them.", page + 1))
 }
 
@@ -302,9 +303,9 @@ pub(crate) fn copy_into<O: Output>(
         return Err(match sink_error {
             Some(error) if error.kind() == io::ErrorKind::Unsupported => not_a_jpeg(page, number),
             Some(error) if error.kind() == io::ErrorKind::FileTooLarge => {
-                AgentError::new("output_too_large", "This image would be larger than RectoPDF will hand over.", exit::FAILED)
+                AgentError::new(Code::OUTPUT_TOO_LARGE, "This image would be larger than RectoPDF will hand over.", exit::FAILED)
             }
-            Some(_) => AgentError::new("write_failed", "The image couldn't be written.", exit::FAILED),
+            Some(_) => AgentError::new(Code::WRITE_FAILED, "The image couldn't be written.", exit::FAILED),
             None => failure.into(),
         });
     }

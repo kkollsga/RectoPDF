@@ -2,6 +2,8 @@
 //!
 //! It holds one page's text at a time past the two pages a drag starts and ends on, and the next [`chrome::NEIGHBOURS`] read ahead, so a copy of a whole document costs what its few longest pages do, plus the copy. Running heads, footers and page numbers are left out of body text by comparing each page's edges with its neighbours' (see `recto_index::chrome`): a page past either end of the pick is read for that without the hidden-text check, as only its edge lines are kept.
 
+use crate::Code;
+use crate::TabRef;
 use crate::render::open_for_text;
 use crate::{AgentError, SessionAccess, exit, no_such_page, select as select_tab, source_changed};
 use recto_index::chrome::{self, EdgeLine};
@@ -24,7 +26,7 @@ const MAX_SELECT_BYTES: usize = 4 * 1024 * 1024;
 
 /// What's been asked for, on the command line or the wire.
 pub(crate) struct Pick<'a> {
-    pub tab: &'a str,
+    pub tab: &'a TabRef,
     pub page: Option<u32>,
     pub to_page: Option<u32>,
     pub chars: Option<&'a str>,
@@ -36,7 +38,7 @@ pub(crate) struct Pick<'a> {
 }
 
 fn bad(words: impl Into<String>) -> AgentError {
-    AgentError::new("usage", words.into(), exit::USAGE)
+    AgentError::new(Code::USAGE, words.into(), exit::USAGE)
 }
 
 fn point(word: &str, page: u32) -> Result<PagePoint, AgentError> {
@@ -239,10 +241,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         };
         // Its first page already says so, and the same goes for the rest: the permissions are the file's. Before anything else is read.
         if text.copy_restricted() && !pick.anyway && !rects {
-            return Err(
-                AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED)
-                    .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."),
-            );
+            return Err(copy_restricted());
         }
         edges.insert(page, text.edge_lines().to_vec());
         for other in neighbour_pages(page, pages) {
@@ -348,6 +347,16 @@ fn round(value: f32) -> f64 {
     (f64::from(value) * 100.0).round() / 100.0
 }
 
+/// The refusal of a copy the file's permissions ask not to be made, until the user says to.
+fn copy_restricted() -> AgentError {
+    AgentError::new(
+        Code::COPY_RESTRICTED,
+        "This file's permissions ask that its text isn't copied.",
+        exit::PROTECTED,
+    )
+    .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,7 +386,7 @@ mod tests {
 
     fn whole<'a>() -> Pick<'a> {
         Pick {
-            tab: "active",
+            tab: &crate::tab_ref::ACTIVE,
             page: None,
             to_page: None,
             chars: None,
@@ -422,7 +431,7 @@ mod tests {
         let mut counted = Counted::default();
         let access = Direct(RefCell::new(&mut session), None);
         let refused = run_counted(&access, &whole(), false, &mut counted).unwrap_err();
-        assert_eq!((refused.code, refused.exit), ("copy_restricted", exit::PROTECTED));
+        assert_eq!((refused.code.as_str(), refused.exit), ("copy_restricted", exit::PROTECTED));
         assert_eq!(counted.reads, 1, "it knew at the first page");
     }
 

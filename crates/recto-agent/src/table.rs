@@ -1,6 +1,7 @@
 //! **The one list of commands.** The CLI's grammar, `recto help`, the level checks, `SKILL.md` and `REFERENCE.md` all come from [`TABLE`], so nothing documented can be missing and nothing can be
 //! left out of the checks. Tests walk it: every command has a row, every row runs, every example parses.
 
+use crate::Code;
 use crate::{AgentError, Level, exit};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -602,7 +603,7 @@ impl Invocation {
 }
 
 fn usage_error(message: impl Into<String>, next: impl Into<String>) -> AgentError {
-    AgentError::new("usage", message, exit::USAGE).then(next)
+    AgentError::new(Code::USAGE, message, exit::USAGE).then(next)
 }
 
 /// The rows whose value is a secret read from stdin rather than the command line, under this field: a password typed for a test (review O6).
@@ -1407,27 +1408,66 @@ mod tests {
         }
     }
 
-    /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field. Fills every argument of every row and parses the result.
+    /// The line a row makes from these of its arguments, each with its value, and its required ones with a sample, as `recto` sends it.
+    fn line_of(spec: &Spec, given: &[(&Arg, &str)]) -> Result<String, AgentError> {
+        let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+        let required = spec
+            .args
+            .iter()
+            .filter(|arg| arg.required && !given.iter().any(|(each, _)| each.key == arg.key));
+        for (arg, value) in required.map(|arg| (arg, sample_of(arg.kind))).chain(given.iter().copied()) {
+            words.extend(arg.flag.map(str::to_string));
+            if !value.is_empty() {
+                words.push(value.to_string());
+            }
+        }
+        let mut parsed = parse_cli(&words).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
+        // What's read from stdin rather than the line, as `recto` itself puts it in.
+        if let Some(field) = stdin_secret_field(spec) {
+            parsed.fields.insert(field.into(), json!("from stdin"));
+        }
+        let wire = parsed.wire();
+        parse(&wire).map(|_| wire)
+    }
+
+    /// The switches that only go with another, each with its refusal when it's given alone: `find --jump` needs a step.
+    const SWITCHES_THAT_GO_WITH_ANOTHER: &[(&str, &str, &str)] = &[("find", "jump", crate::commands::finding::JUMP_WITH_A_STEP)];
+
+    /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field; or a word a row
+    /// offers is refused by its command's type (R2.5); or a switch alone is refused for some other switch's combination (second review of R2.5, S3: a
+    /// `compare --off` refused alone with `--off`'s own words passed). Each argument of every row alone, with each word it offers, makes a command with no
+    /// refusal at all (a switch that only goes with another is refused alone only with its own refusal); every argument at once does too, or is refused only
+    /// for flags that can't go together.
     #[test]
     fn every_argument_of_every_row_reaches_the_command() {
         for spec in TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.hidden) {
-            let mut line = vec![];
-            line.extend(spec.name.split(' ').map(str::to_string));
             for arg in spec.args {
-                if let Some(flag) = arg.flag {
-                    line.push(flag.to_string());
-                }
-                let sample = sample_of(arg.kind);
-                if !sample.is_empty() {
-                    line.push(sample.to_string());
+                let values: Vec<&str> = match arg.kind {
+                    Kind::Choice(words) | Kind::List(words) => words.to_vec(),
+                    other => vec![sample_of(other)],
+                };
+                for value in values {
+                    // A switch that only goes with another (`find --jump` needs a step) is refused alone for that, and only for that.
+                    match line_of(spec, &[(arg, value)]) {
+                        Err(error)
+                            if arg.kind == Kind::Switch
+                                && error.code == Code::USAGE
+                                && SWITCHES_THAT_GO_WITH_ANOTHER.contains(&(spec.tag, arg.key, error.message.as_str())) => {}
+                        Err(error) => panic!("{} --{} {value}: refused, {:?}: {}", spec.name, arg.key, error.code, error.message),
+                        Ok(_) => {}
+                    }
                 }
             }
-            let mut parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
-            // What's read from stdin rather than the line, as `recto` itself puts it in.
-            if let Some(field) = stdin_secret_field(spec) {
-                parsed.fields.insert(field.into(), json!("from stdin"));
+            let all: Vec<(&Arg, &str)> = spec.args.iter().map(|arg| (arg, sample_of(arg.kind))).collect();
+            if let Err(error) = line_of(spec, &all) {
+                assert!(
+                    crate::commands::refused_for_its_combination(spec.tag, &error),
+                    "{} with every argument: refused, {:?}: {}",
+                    spec.name,
+                    error.code,
+                    error.message
+                );
             }
-            parse(&parsed.wire()).unwrap_or_else(|_| panic!("{} sends a field its command doesn't know: {}", spec.name, parsed.wire()));
         }
     }
 
@@ -1466,7 +1506,7 @@ mod tests {
         ] {
             let args: Vec<String> = line.split(' ').map(str::to_string).collect();
             let error = parse_cli(&args).expect_err(line);
-            assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{line}");
+            assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE), "{line}");
             assert!(error.next.contains("recto"), "{line}: {}", error.next);
         }
     }
@@ -1617,7 +1657,7 @@ mod tests {
             (&["search", "--query", "word"][..], "recto search word"),
         ] {
             let error = line(typed).unwrap_err();
-            assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{typed:?}");
+            assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE), "{typed:?}");
             assert!(error.message.contains(wanted), "{typed:?} should say {wanted}: {}", error.message);
             assert!(error.next.contains("recto help"), "{typed:?}: {}", error.next);
         }

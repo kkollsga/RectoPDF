@@ -7,6 +7,7 @@
 use crate::client::Client;
 use crate::log::ActivityLog;
 use crate::{levels, state::StatePaths};
+use recto_agent::Code;
 use recto_agent::{AgentError, Level, exit};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
@@ -21,8 +22,9 @@ pub fn set_level(paths: &StatePaths, wanted: Level) -> Result<Value, AgentError>
     if wanted > was {
         confirm_at_terminal(wanted)?;
     }
-    levels::store(paths, wanted)
-        .map_err(|_| AgentError::new("write_failed", "The level couldn't be saved.", exit::FAILED).then("Check that the state folder can be written to."))?;
+    levels::store(paths, wanted).map_err(|_| {
+        AgentError::new(Code::WRITE_FAILED, "The level couldn't be saved.", exit::FAILED).then("Check that the state folder can be written to.")
+    })?;
     ActivityLog::new(paths).record("permission_set", wanted, "ok", &json!({ "by": "the user's terminal", "was": was.name() }));
     // Tell a running session, so anyone waiting finds out at once. It reads the file itself: this message carries no level.
     if let Ok(mut client) = Client::connect(paths) {
@@ -35,7 +37,7 @@ pub fn set_level(paths: &StatePaths, wanted: Level) -> Result<Value, AgentError>
 pub fn needs_terminal(wanted: Level) -> AgentError {
     let command = format!("recto permission set {}", wanted.name());
     AgentError::new(
-        "needs_terminal",
+        Code::NEEDS_TERMINAL,
         "Raising agent access needs the user, at a real terminal. Nothing else can do it.",
         exit::PERMISSION,
     )
@@ -65,8 +67,12 @@ pub fn confirm_skill_install(folder: &Path, replace: bool) -> Result<(), AgentEr
         format!("Write RectoPDF's skill to {shown}?")
     };
     confirm(&what, "recto skill install", || {
-        AgentError::new("needs_terminal", "Installing the skill needs the user, at a real terminal.", exit::PERMISSION)
-            .then("Ask the user to run `recto skill install` in their own terminal. `recto skill show` prints the skill for you to read.")
+        AgentError::new(
+            Code::NEEDS_TERMINAL,
+            "Installing the skill needs the user, at a real terminal.",
+            exit::PERMISSION,
+        )
+        .then("Ask the user to run `recto skill install` in their own terminal. `recto skill show` prints the skill for you to read.")
     })
 }
 
@@ -86,8 +92,10 @@ fn confirm(what: &str, command: &str, refused: impl Fn() -> AgentError) -> Resul
     BufReader::new(&terminal).read_line(&mut answer).map_err(|_| refused())?;
     if answer.trim() != word {
         let _ = writeln!(out, "That wasn't the word, so nothing changed.");
-        return Err(AgentError::new("not_confirmed", "That wasn't the word, so nothing changed.", exit::PERMISSION)
-            .then(format!("Run `{command}` again, and type the word it shows.")));
+        return Err(
+            AgentError::new(Code::NOT_CONFIRMED, "That wasn't the word, so nothing changed.", exit::PERMISSION)
+                .then(format!("Run `{command}` again, and type the word it shows.")),
+        );
     }
     Ok(())
 }

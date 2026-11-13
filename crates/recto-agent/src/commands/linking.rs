@@ -2,6 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -14,8 +15,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Links {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
 }
 
@@ -26,7 +27,7 @@ impl Cmd for Links {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -64,8 +65,8 @@ pub(crate) const ROWS_LINKS: &[Spec] = &[Spec {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Goto {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default)]
@@ -83,7 +84,7 @@ impl Cmd for Goto {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -107,13 +108,13 @@ impl Cmd for Goto {
             }),
             (None, Some(label)) if self.within.is_none() => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
             (None, Some(_)) => Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "`--within` is how far down a page, and goes with a page number, not a label.",
                 exit::USAGE,
             )
             .then("`recto goto 12 --within 0.3`.")),
             _ => Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
                 exit::USAGE,
             )
@@ -128,8 +129,8 @@ impl Cmd for Goto {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Back {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Back {
@@ -139,7 +140,7 @@ impl Cmd for Back {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -166,8 +167,8 @@ impl Cmd for Back {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Forward {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Forward {
@@ -177,7 +178,7 @@ impl Cmd for Forward {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -205,8 +206,8 @@ impl Cmd for Forward {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Follow {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
     pub link: u32,
 }
@@ -219,7 +220,7 @@ impl Cmd for Follow {
     const PROTECTED_OK: bool = false;
     // It reads the page's links from its file in place.
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

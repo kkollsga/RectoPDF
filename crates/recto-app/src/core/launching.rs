@@ -5,6 +5,7 @@ use super::*;
 impl Inner {
     /// The window is up: files named at launch start opening. The host's own part (a quiet run's line, the print sweep) is the host's.
     pub fn ready(&self, open: &[PathBuf]) {
+        recto_platform::slow::window_up();
         for path in open {
             super::opening::open(&self.core, path.clone());
         }

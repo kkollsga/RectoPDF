@@ -4,6 +4,7 @@
 //!
 //! **What runs.** [`run`] is one pass, a page at a time, looking at `stop` between pages, so a new query ends the old one within a page. Whoever holds the session runs it off every thread that mustn't wait: `recto_control::finding`. It's bounded by [`MAX_TIME`], after which it says how far it got.
 
+use crate::Code;
 use crate::index::Indexing;
 pub use crate::search::KeyLookup;
 use crate::search::{self, Got, Plan, Reader, Settings, Slot};
@@ -104,9 +105,15 @@ impl FindPlan {
     }
 }
 
+/// Whether a query is too long to find, which [`too_long`] refuses: the one rule, so the window says why by the query, not by the refusal's words.
+#[must_use]
+pub fn too_long_query(query: &str) -> bool {
+    query.len() > MAX_QUERY_BYTES
+}
+
 /// What's looked for, folded as a page is: lower case, any run of spaces and line breaks one space. `None` if there's nothing to look for.
 pub fn needle(query: &str) -> Option<String> {
-    if query.len() > MAX_QUERY_BYTES {
+    if too_long_query(query) {
         return None;
     }
     let folded = search::fold(query).0;
@@ -521,7 +528,7 @@ fn group(n: u64) -> String {
 
 /// The refusal for a query that's too long.
 pub fn too_long() -> AgentError {
-    AgentError::new("bad_query", "That's too long to find.", exit::FAILED).then("Find a few words.")
+    AgentError::new(Code::BAD_QUERY, "That's too long to find.", exit::FAILED).then("Find a few words.")
 }
 
 /// Whoever holds a session and can find in the background: `recto_control::finding::Finder`. One query at a time.
@@ -538,7 +545,7 @@ pub trait Finding: Send + Sync {
 }
 
 mod command;
-pub(crate) use command::{Asked, command};
+pub(crate) use command::command;
 
 /// Starts finding `query` in the document being read, in the background if this session can, and otherwise here, to the end. Puts it in the Find field and opens Find. Says which run it is. **The one way a query starts,** for `recto find` and the app's field alike.
 pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, AgentError> {
@@ -548,15 +555,15 @@ pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, Ag
 /// [`begin`], for the person's own Find, with their passwords: see [`FindPlan::with_keys`].
 pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Option<search::KeyLookup>) -> Result<u64, AgentError> {
     let needle = needle(query).ok_or_else(|| {
-        if query.len() > MAX_QUERY_BYTES {
+        if too_long_query(query) {
             too_long()
         } else {
-            AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.")
+            AgentError::new(Code::BAD_QUERY, "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.")
         }
     })?;
     let plan = access.with(|s| {
         let id = s.tabs().active().ok_or_else(|| {
-            AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first.")
+            AgentError::new(Code::NO_ACTIVE_TAB, "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first.")
         })?;
         let plan = plan(s, id)?;
         s.viewing_mut().set_find(true, query, query);

@@ -30,9 +30,9 @@ fn every_command_reaches_its_own_handler_through_the_app_at_every_level() {
     for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
         for (line, command) in &picked {
             let answer = host.run(recto_agent::Actor::Agent(level), command, &mut Vec::new());
-            let code = answer.as_ref().err().map(|error| error.code);
+            let code = answer.as_ref().err().map(|error| error.code.as_str());
             let needed = command.access();
-            let refused = refusal(table::display_name(command.tag()), level, needed).code;
+            let refused = refusal(table::display_name(command.tag()), level, needed).code.as_str();
             if !allowed(level, needed) {
                 if code != Some(refused) {
                     wrong.push(format!("{line} at {level:?} needs {needed:?}, and wasn't refused: {answer:?}"));

@@ -8,6 +8,8 @@
 //! - **A PDF's flag against printing is ignored** (owner, 2026-11-08: "Ignore the flag"): nothing here reads it. A print to a PDF *file* is an export, so a file that asks not to be copied asks "anyway" (owner, the same day), and print to paper never does.
 //! - **SSD cost.** The app's print is written once to a temp file and removed when the system's printing is done with it: about 0.3 MB a page of text at 300 dpi and up to about 50 MB a page of a dense map, held to [`MAX_BYTES`] in all. That's one write of what's printed, which the system's own print spooling would make anyway.
 
+use crate::Code;
+use crate::TabRef;
 use crate::render::{FileOut, Output, OwnTemp, output_exists, publish_picture};
 use crate::{AgentError, Direct, DocLoader, Session, SessionAccess, exit, no_such_page, parse_pages, select, source_changed};
 use flate2::{Compression, write::ZlibEncoder};
@@ -76,12 +78,12 @@ pub(crate) fn default_dpi() -> u32 {
 }
 
 /// [`print_pages`] on a session in hand, for the app's print.
-pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &str, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
+pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &TabRef, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
     print_pages(&Direct(RefCell::new(session), None), tab, pages)
 }
 
 /// The pages a print takes, as the tab has them, edits and all: each one's file and page there, and its unsaved turn. `pages` is `4`, `4-6` or `4-`, and all of them if left out.
-pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
+pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     let sources = access.with(|s| {
         let id = select(s, tab)?;
@@ -93,7 +95,7 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>)
         let end = start.saturating_add(len).min(total);
         if end - start > MAX_PAGES {
             return Err(
-                AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED)
+                AgentError::new(Code::TOO_MANY_PAGES, format!("A print is at most {MAX_PAGES} pages."), exit::FAILED)
                     .then("Print a range of pages at a time, with `--pages`."),
             );
         }
@@ -207,12 +209,12 @@ impl<'a, O: Output> PdfOut<'a, O> {
 }
 
 fn write_failed() -> AgentError {
-    AgentError::new("write_failed", "The print couldn't be written.", exit::FAILED)
+    AgentError::new(Code::WRITE_FAILED, "The print couldn't be written.", exit::FAILED)
 }
 
 fn from_io(error: &io::Error) -> AgentError {
     if error.kind() == io::ErrorKind::FileTooLarge {
-        AgentError::new("output_too_large", "This print would be larger than RectoPDF will write.", exit::FAILED)
+        AgentError::new(Code::OUTPUT_TOO_LARGE, "This print would be larger than RectoPDF will write.", exit::FAILED)
     } else {
         write_failed()
     }
@@ -245,17 +247,17 @@ fn print_with_caps<O: Output>(
 ) -> Result<Printed, AgentError> {
     if !(MIN_DPI..=MAX_DPI).contains(&dpi) {
         return Err(AgentError::new(
-            "bad_dpi",
+            Code::BAD_DPI,
             format!("A print is from {MIN_DPI} to {MAX_DPI} dots per inch."),
             exit::USAGE,
         ));
     }
     if pages.is_empty() {
-        return Err(AgentError::new("no_pages", "There are no pages to print.", exit::FAILED));
+        return Err(AgentError::new(Code::NO_PAGES, "There are no pages to print.", exit::FAILED));
     }
     if pages.len() > MAX_PAGES as usize {
         return Err(
-            AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED).then("Print a range of pages at a time."),
+            AgentError::new(Code::TOO_MANY_PAGES, format!("A print is at most {MAX_PAGES} pages."), exit::FAILED).then("Print a range of pages at a time."),
         );
     }
     let scale = scale_for(dpi);
@@ -266,7 +268,7 @@ fn print_with_caps<O: Output>(
     let mut surface = None;
     for (index, page) in pages.iter().enumerate() {
         if !progress(index as u32, pages.len() as u32) {
-            return Err(AgentError::new("cancelled", "The print was stopped.", exit::FAILED));
+            return Err(AgentError::new(Code::CANCELLED, "The print was stopped.", exit::FAILED));
         }
         // A worker per file, the most recent kept: pages of one file usually come together.
         let at = match open.iter().position(|(path, _)| *path == page.path) {
@@ -287,7 +289,7 @@ fn print_with_caps<O: Output>(
         } else {
             let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| {
                 AgentError::new(
-                    "too_large_at_this_scale",
+                    Code::TOO_LARGE_AT_THIS_SCALE,
                     format!(
                         "Page {} is {width_points} x {height_points} points, too large to print at any resolution.",
                         index + 1
@@ -407,7 +409,7 @@ pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, out: &Path, anyway: b
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
     if !anyway && any_copy_restricted(pages) {
         return Err(
-            AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED)
+            AgentError::new(Code::COPY_RESTRICTED, "This file's permissions ask that it isn't copied.", exit::PROTECTED)
                 .then("Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks."),
         );
     }

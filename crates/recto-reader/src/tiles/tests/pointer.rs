@@ -121,9 +121,10 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     reader.selection_press(x, y, 1, false);
     reader.pointer.selection_release();
     assert_eq!(reader.pointer.take_clicked_link().map(|hit| hit.page), Some(0));
-    // Another tab: what's known goes with the one that was showing.
+    // Another tab: what's known goes with the one that was showing. Held before (the page's links just read), none after.
+    assert_eq!(reader.pointer.link_pages_held(), 1, "the page's links are held while its tab shows");
     reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
-    assert_eq!(reader.pointer.link_pages_held(), 0);
+    assert_eq!(reader.pointer.link_pages_held(), 0, "another tab shows none of the first one's links");
 }
 
 /// Failure: a hidden-text check that takes seconds keeps the page the reader has just scrolled to blank, over and over on a hostile file, as a running text job couldn't be told to stop. Its first read, which is quick and is what the reader's hand is waiting on, isn't given up for a scroll.

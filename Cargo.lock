@@ -639,6 +639,7 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "lopdf",
+ "recto-agent",
  "recto-core",
  "recto-index",
  "recto-platform",
@@ -823,6 +824,7 @@ dependencies = [
  "recto-platform",
  "recto-proto",
  "recto-render",
+ "recto-render-service",
  "recto-testpdf",
 ]
 

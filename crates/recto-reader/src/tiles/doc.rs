@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The tabs the page view holds, hot and warm, and which is showing. Built only in the tiles module ([`Docs::new`]): the engine reaches it through `Reader`'s field for the lookups below, and can neither build one nor put another in its place.
+/// The tabs the page view holds, hot and warm, and which is showing. Built only in the tiles module ([`Docs::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for the lookups below.
 #[derive(Debug)]
 pub(crate) struct Docs {
     pub(super) views: HashMap<u32, DocView>,
@@ -30,6 +30,11 @@ impl Docs {
 
     pub(crate) fn hot_tab(&self) -> Option<u32> {
         self.hot
+    }
+
+    /// Which pages of the tab showing were found too heavy to draw in the ordinary way (the selection reads their text another way).
+    pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
+        self.shown().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
     }
 
     /// The files a tab it holds has.

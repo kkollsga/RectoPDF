@@ -1,6 +1,7 @@
 //! The renderer's commands. A transient worker per command for now, because the agent holds no state: it starts, answers, and goes away
 //! with the call. The session's scheduler will own long-lived ones, behind the same calls.
 
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_index::chrome::EdgeLine;
 use recto_index::select::{PageText, neighbour_pages};
@@ -104,7 +105,7 @@ impl From<RenderFailure> for AgentError {
             | RenderFailure::TookTooLong => exit::TIMED_OUT,
             _ => exit::FAILED,
         };
-        Self::new(failure.code(), failure.message(), exit)
+        Self::new(Code::lower(failure.code()), failure.message(), exit)
     }
 }
 
@@ -115,7 +116,7 @@ fn open(path: &Path, policy: Policy) -> Result<DocRenderer, AgentError> {
 /// One-based pages for people and agents, zero-based inside.
 fn page_index(page: u32) -> Result<u32, AgentError> {
     page.checked_sub(1)
-        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
+        .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
 pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path) -> Result<Value, AgentError> {
@@ -177,7 +178,7 @@ fn sweep_once(folder: &Path) {
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
     pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
-        let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
+        let failed = || AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED);
         if out.file_name().is_none() {
             return Err(failed());
         }
@@ -309,7 +310,7 @@ impl<O: Output> io::Write for Shared<'_, O> {
 /// Puts a finished picture at `out`, never over anything. A hard link does it in one step, so a stopped renderer leaves no half a picture under the real name, and a file that appeared meanwhile
 /// stays as it was. A volume without hard links, such as exFAT, gets the same refusal through `create_new`, then a copy, removed if the copy fails.
 fn publish(temp: &Path, out: &Path, link: impl Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), AgentError> {
-    let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
+    let failed = || AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED);
     match link(temp, out) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(output_exists()),
@@ -336,7 +337,7 @@ pub fn publish_picture(temp: &Path, out: &Path) -> Result<(), AgentError> {
 
 /// What a request for a place that has something in it hears.
 pub fn output_exists() -> AgentError {
-    AgentError::new("output_exists", "A file is already there, and it won't be replaced.", exit::FAILED)
+    AgentError::new(Code::OUTPUT_EXISTS, "A file is already there, and it won't be replaced.", exit::FAILED)
 }
 
 fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
@@ -350,7 +351,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let largest = scale == LARGEST_THAT_FITS;
     if !largest && !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
         return Err(AgentError::new(
-            "bad_scale",
+            Code::BAD_SCALE,
             format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE),
             exit::FAILED,
         ));
@@ -365,7 +366,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let mut doc = DocRenderer::new(path, None, config, policy)?;
     let scale = if largest { largest_scale(&mut doc, page, caps)? } else { scale };
     let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| {
-        let error = if error.code == "too_large_at_this_scale" {
+        let error = if error.code == Code::TOO_LARGE_AT_THIS_SCALE {
             naming_the_largest_scale(error, &mut doc, page, scale, caps)
         } else {
             error
@@ -392,7 +393,7 @@ fn largest_scale(doc: &mut DocRenderer, page: u32, caps: &OutputCaps) -> Result<
     let (width, height) = doc.page_size(page)?;
     largest_scale_that_fits(width, height, caps).ok_or_else(|| {
         AgentError::new(
-            "too_large_at_this_scale",
+            Code::TOO_LARGE_AT_THIS_SCALE,
             format!(
                 "Page {} is {width} x {height} points, and no scale fits: a picture is at most {} Mpx.",
                 page + 1,
@@ -441,7 +442,7 @@ fn write_page(
     caps: &OutputCaps,
     limit: u64,
 ) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
-    let write_failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
+    let write_failed = || AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED);
     let mut size = None;
     let mut surface = None;
     let mut kind = None;
@@ -552,9 +553,9 @@ fn with_time_taken(mut error: AgentError, started: Instant) -> AgentError {
 
 fn write_error_to_agent(error: &std::io::Error) -> AgentError {
     if error.kind() == std::io::ErrorKind::FileTooLarge {
-        AgentError::new("output_too_large", "This picture would be larger than RectoPDF will write.", exit::FAILED)
+        AgentError::new(Code::OUTPUT_TOO_LARGE, "This picture would be larger than RectoPDF will write.", exit::FAILED)
     } else {
-        AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED)
+        AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED)
     }
 }
 
@@ -661,14 +662,20 @@ const MIB: u64 = 1024 * 1024;
 const VIEWPORT_MARGIN_TILES: u32 = 1;
 
 pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, scale: f32, strategy: Option<&str>) -> Result<Value, AgentError> {
-    let bad = || AgentError::new("bad_viewport", "A viewport is WIDTHxHEIGHT in device pixels, such as 3024x1964.", exit::FAILED);
+    let bad = || {
+        AgentError::new(
+            Code::BAD_VIEWPORT,
+            "A viewport is WIDTHxHEIGHT in device pixels, such as 3024x1964.",
+            exit::FAILED,
+        )
+    };
     let (width, height) = viewport.split_once('x').ok_or_else(bad)?;
     let (width, height): (u32, u32) = (width.parse().map_err(|_| bad())?, height.parse().map_err(|_| bad())?);
     if !(1..=32_767).contains(&width) || !(1..=32_767).contains(&height) {
         return Err(bad());
     }
     if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
-        return Err(AgentError::new("bad_scale", "That scale can't be drawn.", exit::FAILED));
+        return Err(AgentError::new(Code::BAD_SCALE, "That scale can't be drawn.", exit::FAILED));
     }
     let mut doc = open(path, Policy::default())?;
     let first_page = first.map_or(Ok(0), page_index)?;
@@ -678,7 +685,7 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
         Some("region") => (DrawStrategy::Region, "region"),
         Some(_) => {
             return Err(AgentError::new(
-                "bad_strategy",
+                Code::BAD_STRATEGY,
                 "The strategy is per_tile or region, or left out to pick by page.",
                 exit::FAILED,
             ));
@@ -729,7 +736,7 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
 
 pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError> {
     if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&args.scale) {
-        return Err(AgentError::new("bad_scale", "That scale can't be drawn.", exit::FAILED));
+        return Err(AgentError::new(Code::BAD_SCALE, "That scale can't be drawn.", exit::FAILED));
     }
     let mut policy = Policy::default();
     if let Some(limit) = args.limit_mib {
@@ -1104,7 +1111,7 @@ mod tests {
         let before = folder_entries(&file);
         let out = file.0.with_file_name("heavy.png");
         let error = render_with(stand_in(), &file.0, 1, LARGEST_THAT_FITS, &out, &OutputCaps::default()).unwrap_err();
-        assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
+        assert!(matches!(error.code, Code::EXPORT_PAGE_TOO_HEAVY | Code::EXPORT_MEMORY_TIGHT), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
         assert_eq!(folder_entries(&file), before);
     }
@@ -1240,7 +1247,7 @@ mod tests {
         let out = file.0.with_file_name("low.png");
         let error = render_with(stand_in(), &file.0, 1, 2.0, &out, &OutputCaps::default()).unwrap_err();
         // Which refusal depends on how much memory this Mac has free. None of them is a picture.
-        assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
+        assert!(matches!(error.code, Code::EXPORT_PAGE_TOO_HEAVY | Code::EXPORT_MEMORY_TIGHT), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
         assert_eq!(folder_entries(&file), before, "something was left behind");
     }

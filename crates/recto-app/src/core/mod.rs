@@ -41,6 +41,7 @@ pub mod zoom;
 pub use host::*;
 use opening::*;
 pub use reconcile::*;
+use recto_agent::Code;
 pub use session::*;
 pub use start::*;
 use unlocking::*;
@@ -109,12 +110,12 @@ pub fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts,
     match facts {
         Ok(facts) if !facts.has_persons_signature() => Ok(()),
         Ok(_) => Err(AgentError::new(
-            "signed_needs_copy",
+            Code::SIGNED_NEEDS_COPY,
             recto_core::save::SaveError::SignedNeedsCopy.message(),
             recto_agent::exit::FAILED,
         )),
         Err(error) => Err(AgentError::new(
-            error.code(),
+            Code::lower(error.code()),
             format!("{} Its signatures couldn't be looked at, so nothing was put in place.", error.message()),
             recto_agent::exit::FAILED,
         )),

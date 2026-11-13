@@ -188,7 +188,7 @@ pub(super) fn shrink_into(
     }
 }
 
-/// Built only in the tiles module ([`Waking::new`]), with no `Default`: the engine reaches it through `Reader`'s field for what a wake is given and told below, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`Waking::new`]), with no `Default`, as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for what a wake is given and told below.
 #[derive(Debug)]
 pub(crate) struct Waking {
     /// What's come from a tab's sleep file, for when it's made the hot tab.
@@ -222,8 +222,8 @@ impl Waking {
         self.sleep_view = Some((tab, view));
     }
 
-    /// A tab's being woken, as of now, with `hot` the tab showing. For how long it takes.
-    pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
+    /// A tab's being woken, as of now, with `hot` the tab showing ([`Reader::note_wake`] says it, so a caller can't give another). For how long it takes.
+    pub(super) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
         // Said when it was asked for, and said again on its way to the screen: the first is when it began.
         if hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
             self.waking = Some((

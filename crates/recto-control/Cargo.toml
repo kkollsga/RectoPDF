@@ -18,5 +18,7 @@ recto-session.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Tests read a refusal's code as the wire does.
+recto-agent = { workspace = true, features = ["test-words"] }
 recto-testpdf.workspace = true
 recto-proto.workspace = true

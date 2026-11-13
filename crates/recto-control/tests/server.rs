@@ -1,5 +1,6 @@
 //! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
 
+use recto_agent::Code;
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
 use recto_control::StatePaths;
 use recto_control::client::Client;
@@ -81,17 +82,17 @@ impl Host for Stand {
         }
     }
 
-    fn check(&self, _condition: Condition, tab: &str, _page: Option<u32>) -> ConditionState {
-        if tab == "panics" {
+    fn check(&self, _condition: Condition, tab: &recto_agent::TabRef, _page: Option<u32>) -> ConditionState {
+        if tab.to_string() == "panics" {
             panic!("a bug in a look");
         }
-        if tab == "holds" {
+        if tab.to_string() == "holds" {
             let mut released = self.release.lock().unwrap();
             while !*released {
                 released = self.released.wait(released).unwrap();
             }
         }
-        if self.looks_answer.load(Ordering::SeqCst) && tab == "secret" {
+        if self.looks_answer.load(Ordering::SeqCst) && tab.to_string() == "secret" {
             return ConditionState::Met(json!({ "secret": true }));
         }
         ConditionState::Waiting
@@ -112,7 +113,7 @@ impl Host for Stand {
     fn stop_refusal(&self) -> Option<AgentError> {
         self.stop_refused
             .load(Ordering::SeqCst)
-            .then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
+            .then(|| AgentError::new(Code::ONLY_THE_USER_QUITS, "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -215,6 +216,66 @@ fn a_panic_is_one_clients_error() {
     assert_eq!(read_line(&mut stream).unwrap()["error"]["code"], "internal");
     let log = std::fs::read_to_string(&running.paths.other_log).unwrap();
     assert!(log.contains("\"outcome\":\"internal\""), "{log}");
+}
+
+/// The activity log's lines of one command and outcome, as written: a repeat that's counted rather than written isn't one.
+fn written(paths: &StatePaths, cmd: &str, outcome: &str) -> Vec<Value> {
+    std::fs::read_to_string(&paths.other_log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["cmd"] == cmd && line["outcome"] == outcome)
+        .collect()
+}
+
+/// Failure (review of R2.5, S1, and its second review, B1): a command whose arguments its type refuses as it's read (`edit_mode` with a word that's neither
+/// on nor off) is answered as `"cmd":"unknown"` and logged as `unknown`, so an agent's malformed attempt at a Control command has no line of its own in the
+/// person's log; or it's written in full each time, so an agent at Off can repeat it to push out what earlier agents read, since a line is read before the
+/// level is looked at. It's answered under its own name each time and written under it once, with its code and nothing of what it held, and the repeats are
+/// one count; a line that isn't a command is still `unknown`.
+#[test]
+fn a_command_refused_as_its_read_is_answered_and_logged_as_itself() {
+    let running = Running::start(Limits::default());
+    for _ in 0..3 {
+        let reply = running.call(&json!({ "cmd": "edit_mode", "set": "sideways" }));
+        assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("edit_mode"), &json!("usage")), "{reply}");
+    }
+    // `log` writes the counts before it reads.
+    assert_eq!(running.call(&json!({ "cmd": "log" }))["ok"], true);
+    let lines = written(&running.paths, "edit_mode", "usage");
+    assert_eq!(lines.len(), 2, "one line by its name, and one count for the rest: {lines:?}");
+    assert!(lines[0]["count"].is_null() && lines[1]["count"] == 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["details"].is_null()), "nothing of what it held: {lines:?}");
+    let reply = running.call(&json!({ "cmd": "no_such_command" }));
+    assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("unknown"), &json!("bad_command")), "{reply}");
+    assert_eq!(written(&running.paths, "unknown", "bad_command").len(), 1);
+}
+
+/// Failure (second review of R2.5, S1): a line past the socket's cap is refused in words of the server's own, which drift from the refusal `read` makes of
+/// a line too long to be a command, so one thing is said two ways; or its log line isn't counted after the first as every line refused as it's read is,
+/// which lets an agent at Off reconnect and resend to fill the log. The socket's refusal is `read`'s, under `unknown`, and repeats are one count.
+#[test]
+fn a_line_past_the_cap_is_refused_as_read_refuses_one_too_long() {
+    let limits = Limits {
+        max_line_bytes: 64,
+        ..Limits::default()
+    };
+    let running = Running::start(limits);
+    let too_long = "x".repeat(recto_agent::MAX_COMMAND_BYTES + 1);
+    let Err(refused) = recto_agent::read(&too_long) else {
+        panic!("a line past the most a command can be is read")
+    };
+    let expected = recto_agent::reply(refused.tag, &Err(*refused.error));
+    for _ in 0..3 {
+        let mut stream = running.connect();
+        stream.write_all(&[b'x'; 200]).unwrap();
+        assert_eq!(read_line(&mut stream), Some(expected.clone()), "the same refusal, said once");
+        assert!(read_line(&mut stream).is_none(), "and the connection closes");
+    }
+    assert_eq!(running.call(&json!({ "cmd": "log" }))["ok"], true);
+    let lines = written(&running.paths, recto_agent::UNKNOWN, "bad_command");
+    assert_eq!(lines.len(), 2, "one line, and one count for the rest: {lines:?}");
+    assert_eq!(lines[1]["count"], 2, "{lines:?}");
 }
 
 /// Failure: one slow command stalls everyone. `status` must answer while another client's command is stuck, and the stuck one still gets its answer when it's done.
@@ -424,7 +485,7 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
     client.send("{\"cmd\":\"tabs\"}", Duration::from_secs(5)).unwrap();
     let error = client.read(Duration::from_millis(50)).unwrap_err();
     assert_eq!(
-        (error.code, error.exit),
+        (error.code.as_str(), error.exit),
         ("no_answer", exit::TIMED_OUT),
         "the stuck command means no answer in time"
     );
@@ -432,7 +493,7 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
     std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     let refused = Client::connect(&running.paths).unwrap_err();
     assert_eq!(
-        (refused.code, refused.exit),
+        (refused.code.as_str(), refused.exit),
         ("socket_refused", exit::PERMISSION),
         "a folder others can reach isn't to be trusted"
     );

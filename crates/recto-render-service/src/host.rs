@@ -751,7 +751,7 @@ struct CountedFrom {
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
     config: ServiceConfig,
-    policy: Policy,
+    pub(crate) policy: Policy,
     /// Kept to see whether the file there is still this one, and to open it again if a failure was about the old one.
     path: PathBuf,
     file: File,

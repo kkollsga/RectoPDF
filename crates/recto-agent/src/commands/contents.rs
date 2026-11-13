@@ -5,6 +5,7 @@
 //! the sidebar shows: none answers with a heading's words, and none widens what the helper reads, which is what `contents --generated` already asks it for.
 
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::generated;
 use crate::table::*;
 use crate::*;
@@ -18,8 +19,8 @@ use serde_json::{Value, json};
 pub struct ContentsFold {
     /// The entry's number, as `contents` gives it.
     pub entry: u32,
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for ContentsFold {
@@ -30,7 +31,7 @@ impl Cmd for ContentsFold {
     // Which entries have sections under them is the shape of a document's contents.
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -48,7 +49,7 @@ impl Cmd for ContentsFold {
             let id = select(s, tab)?;
             let open = s.toggle_contents_section(id, *entry).ok_or_else(|| {
                 AgentError::new(
-                    "not_a_section",
+                    Code::NOT_A_SECTION,
                     "That entry has nothing under it in the contents the sidebar shows, so there's nothing to fold or open.",
                     exit::NOT_FOUND,
                 )
@@ -67,13 +68,88 @@ impl Cmd for ContentsFold {
 }
 
 /// Which contents the sidebar shows for a tab: the file's own, or generated ones, made if they aren't yet.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::ContentsShow")]
 pub struct ContentsShow {
-    /// `own` or `generated`.
-    pub which: String,
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    pub which: Which,
+    pub tab: TabRef,
+}
+
+/// Which list of contents: the file's own, or generated ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Own,
+    Generated,
+}
+
+impl Which {
+    /// Every value, in the order of [`Which::WORDS`].
+    pub const ALL: [Self; 2] = [Self::Own, Self::Generated];
+    /// Its words on the wire, which its row offers.
+    pub const WORDS: &'static [&'static str] = &["own", "generated"];
+
+    /// Its word on the wire.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        super::words::word_of(&Self::ALL, Self::WORDS, &self)
+    }
+
+    /// The value a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        super::words::value_of(&Self::ALL, Self::WORDS, word)
+    }
+}
+
+const _: () = assert!(Which::ALL.len() == Which::WORDS.len(), "a value without a word");
+
+/// `contents show` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ContentsShow {
+        /// `own` or `generated`.
+        pub which: String,
+        #[serde(default)]
+        pub tab: crate::TabRef,
+    }
+}
+
+impl TryFrom<line::ContentsShow> for ContentsShow {
+    type Error = AgentError;
+    fn try_from(line: line::ContentsShow) -> Result<Self, AgentError> {
+        let which = Which::from_word(&line.which).ok_or_else(|| {
+            AgentError::new(
+                Code::USAGE,
+                format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(&line.which)),
+                exit::USAGE,
+            )
+        })?;
+        Ok(Self { which, tab: line.tab })
+    }
+}
+
+impl From<&ContentsShow> for line::ContentsShow {
+    fn from(asked: &ContentsShow) -> Self {
+        Self {
+            which: asked.which.word().to_string(),
+            tab: asked.tab.clone(),
+        }
+    }
+}
+
+impl From<ContentsShow> for line::ContentsShow {
+    fn from(asked: ContentsShow) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for ContentsShow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::ContentsShow::from(self).fmt(f)
+    }
 }
 
 impl Cmd for ContentsShow {
@@ -84,7 +160,7 @@ impl Cmd for ContentsShow {
     const PROTECTED_OK: bool = false;
     // Generated ones not shown yet are looked for: the file's key, and the folder they're kept in.
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -94,10 +170,10 @@ impl Cmd for ContentsShow {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "tab": super::log_tab(&self.tab), "which": recto_core::clean_line(&self.which) })
+        json!({ "tab": super::log_tab(&self.tab), "which": self.which.word() })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        show(cx.access, &self.tab, &self.which)
+        show(cx.access, &self.tab, self.which)
     }
     fn human(data: &Value) -> String {
         match (data["shown"].as_str(), data["state"].as_str()) {
@@ -123,18 +199,8 @@ fn view_word(view: Option<&GeneratedView>) -> &'static str {
 
 /// `contents show`, the note's Show and Generate: the file's own chosen, or generated ones, looked for with the session free if they aren't shown yet and
 /// asked for if they aren't made, as the note's Generate always did.
-fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, AgentError> {
-    let generated = match which {
-        "own" => false,
-        "generated" => true,
-        other => {
-            return Err(AgentError::new(
-                "usage",
-                format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(other)),
-                exit::USAGE,
-            ));
-        }
-    };
+fn show<A: SessionAccess>(access: &A, tab: &TabRef, which: Which) -> Result<Value, AgentError> {
+    let generated = which == Which::Generated;
     let generating = if generated {
         Some(access.generating().ok_or_else(generated::no_generating)?)
     } else {
@@ -162,8 +228,8 @@ fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, A
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentsStop {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for ContentsStop {
@@ -173,7 +239,7 @@ impl Cmd for ContentsStop {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -239,7 +305,7 @@ pub(crate) const ROWS_CONTENTS_SHOW: &[Spec] = &[Spec {
         Arg {
             key: "which",
             flag: None,
-            kind: Kind::Choice(&["own", "generated"]),
+            kind: Kind::Choice(Which::WORDS),
             required: true,
             help: "`own` or `generated`.",
         },
@@ -301,7 +367,7 @@ mod tests {
     }
 
     fn run(session: &Mutex<Session<Sections>>, actor: Actor, line: &str) -> Result<serde_json::Value, crate::AgentError> {
-        execute(session, actor, &parse(line).expect("a command"), &mut Vec::new())
+        parse(line).and_then(|command| execute(session, actor, &command, &mut Vec::new()))
     }
 
     /// Failure (R2.3, C5f): `contents fold` folds a section other than the one `contents` numbered, says it did something to an entry with nothing under it,
