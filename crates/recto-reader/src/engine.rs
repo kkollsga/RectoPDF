@@ -1124,18 +1124,26 @@ const MAX_LOOKS: usize = 4096;
 /// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
 const LOOK_PICTURE_EDGE: f32 = 512.0;
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. `None` means this job went stale on the way, which says nothing about the page, and nothing is kept.
-fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
+/// Why there's no look for a page from this job, and nothing's kept: neither is about the page.
+enum NoLook {
+    /// The job went stale on the way.
+    Stale,
+    /// What it's decided from wasn't asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't, a heavy one if `heavy`.
+    Unstarted { heavy: bool },
+}
+
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't.
+fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Result<Arc<PageLook>, NoLook> {
     // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
     if open.doc.take_image_places_cleared() {
         open.looks.clear();
     }
     if let Some(known) = open.looks.get(&page) {
-        return Some(Arc::clone(known));
+        return Ok(Arc::clone(known));
     }
-    let boxes = open.doc.image_boxes(page, generation);
+    let boxes = open.doc.image_boxes(page, generation).map_err(unstarted)?;
     if open.doc.is_stale(generation) {
-        return None;
+        return Err(NoLook::Stale);
     }
     let look = if boxes.as_ref().is_some_and(Vec::is_empty) {
         PageLook::text()
@@ -1146,7 +1154,11 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
             .unwrap_or_else(|_| PageLook::unknown())
     } else {
         let doc = &mut open.doc;
-        let picture = doc.page_size(page).ok().and_then(|(width, height)| {
+        let size = match doc.page_size(page) {
+            Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
+            size => size.ok(),
+        };
+        let picture = size.and_then(|(width, height)| {
             let scale = (LOOK_PICTURE_EDGE / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
             let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
             let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
@@ -1179,7 +1191,8 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
                         .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height))
                         .unwrap_or_else(|_| PageLook::unknown())
                 }
-                Ok(TileResult::Cancelled { .. }) => return None,
+                Ok(TileResult::Cancelled { .. }) => return Err(NoLook::Stale),
+                Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
                 Err(_) => PageLook::unknown(),
             },
             None => PageLook::unknown(),
@@ -1190,7 +1203,14 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
     }
     let look = Arc::new(look);
     open.looks.insert(page, Arc::clone(&look));
-    Some(look)
+    Ok(look)
+}
+
+/// A refusal for want of a worker, as [`page_look`] says it. Only [`RenderFailure::WouldStart`] comes here.
+fn unstarted(failure: RenderFailure) -> NoLook {
+    NoLook::Unstarted {
+        heavy: matches!(failure, RenderFailure::WouldStart { heavy: true }),
+    }
 }
 
 /// Why there's no renderer for a job, for now or for good.
@@ -1340,11 +1360,17 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         let whole = (*what == DrawKind::Preview && low_res.is_none()).then_some(*rect);
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
-                        let look = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)));
-                        let page = look
-                            .as_ref()
-                            .and_then(|_| open.doc.page_size(job.source_page).ok())
-                            .and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
+                        let look = match page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect))) {
+                            Ok(look) => Some(look),
+                            Err(NoLook::Stale) => None,
+                            Err(NoLook::Unstarted { heavy }) => return Outcome::Unstarted { heavy },
+                        };
+                        let size = match look.as_ref().map(|_| open.doc.page_size(job.source_page)) {
+                            Some(Err(RenderFailure::WouldStart { heavy })) => return Outcome::Unstarted { heavy },
+                            size => size.and_then(Result::ok),
+                        };
+                        let page = size.and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
                         // Replaced after it was drawn, while its look or size was being asked: the tile's of the old file, and the look may be of either, or of a draw that failed for it. Neither is kept, and the tile's drawn again.
                         if seen_replaced(open) {
                             return Outcome::Cancelled;

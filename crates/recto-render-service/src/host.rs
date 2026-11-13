@@ -1064,14 +1064,14 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
-    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. `Err` is only [`RenderFailure::WouldStart`]: not asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't. That's no answer about the page either, and a caller mustn't decide anything from it and keep it, as it would from `None`.
+    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
         if let Some(known) = self.image_places.get(&page) {
-            return known.clone();
+            return Ok(known.clone());
         }
         // Stale says nothing about the page, so nothing's remembered.
         if self.control.is_stale(generation) {
-            return None;
+            return Ok(None);
         }
         // Only a page that can't be drawn as it is goes unasked. One that needed the larger limit is an ordinary page of a certain size, a page of text with a large figure say.
         let state = self.page_draw_state(page);
@@ -1098,10 +1098,11 @@ impl DocRenderer {
                 _ => Err(ProtoError("the wrong kind of reply to an images request")),
             });
             // Stale, or not asked for want of a worker: neither is about the page, so nothing's remembered.
-            if self.control.is_stale(generation) || matches!(reply, Err(JobFailure::Failed(RenderFailure::WouldStart { .. }))) {
-                return None;
+            match reply {
+                _ if self.control.is_stale(generation) => return Ok(None),
+                Err(JobFailure::Failed(failure @ RenderFailure::WouldStart { .. })) => return Err(failure),
+                reply => reply.ok(),
             }
-            reply.ok()
         };
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.image_places.len() >= MAX_IMAGE_PLACES {
@@ -1109,7 +1110,7 @@ impl DocRenderer {
             self.image_places_cleared = true;
         }
         self.image_places.insert(page, boxes.clone());
-        boxes
+        Ok(boxes)
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see

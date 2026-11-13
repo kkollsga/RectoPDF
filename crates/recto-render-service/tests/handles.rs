@@ -196,9 +196,9 @@ fn a_page_gets_one_decision_about_its_images() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let mut doc = DocRenderer::new(&file.0, None, config("images"), Policy::default()).unwrap();
-    assert_eq!(doc.image_boxes(0, 1), None, "it couldn't say");
-    assert_eq!(doc.image_boxes(0, 2), None, "and it's not asked again, though now it could");
-    assert_eq!(doc.image_boxes(1, 3), Some(vec![[0, 0, 100, 100]]), "another page is another question");
+    assert_eq!(doc.image_boxes(0, 1), Ok(None), "it couldn't say");
+    assert_eq!(doc.image_boxes(0, 2), Ok(None), "and it's not asked again, though now it could");
+    assert_eq!(doc.image_boxes(1, 3), Ok(Some(vec![[0, 0, 100, 100]])), "another page is another question");
 }
 
 /// Failure: a worker sends handles to the host and the host keeps them, until it runs out of descriptors. The host never expects one, so it's a violation.

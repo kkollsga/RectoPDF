@@ -802,7 +802,7 @@ fn only_the_file_changing_says_the_file_changed() {
     let file = TempPdf::new("places.pdf", &pages(&list));
     let mut doc = renderer(&file.0, Policy::default());
     for page in 0..4100 {
-        doc.image_boxes(page, 0);
+        let _ = doc.image_boxes(page, 0);
     }
     assert!(!doc.take_file_changed(), "a cache filling up");
     assert!(doc.take_image_places_cleared(), "and the cache says it's been cleared");

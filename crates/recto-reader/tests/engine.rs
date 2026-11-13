@@ -1321,3 +1321,69 @@ fn a_page_drawn_for_a_tab_left_by_a_worker_past_its_line_keeps_its_look_on_dark_
         said(&back)
     );
 }
+
+/// Failure (review round 2, B1): a preview drawn for a tab left whose worker went in the moment after it was drawn (the system's memory killer, a crash) had the page's image boxes and size refused, as no worker's started for it, and its look decided without them (the page judged whole, so dimmed) was kept for the page: the person's own tiles of it went by that look when they came back, and the picture put on dark paper by it went into the sleep file. Nothing decided from a refused input is kept: the asking ends for want of a worker, there's no picture of the page, and back at its place its tiles are turned over as a fresh engine's are. The worker is killed while the preview's answer waits at its seam, before the image boxes are asked.
+#[test]
+fn a_look_refused_for_want_of_a_worker_is_kept_for_nothing() {
+    use recto_platform::slow::{Seam, gate};
+    let (first, second) = (text_then_photos(64), document(1));
+    let engine = engine_with(&first, 40, recto_render_service::Policy::default(), &recto_render_service::HeavySlot::new());
+    engine.set_paper(PaperKind::Dark);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let tab_1s = engine.worker_pids();
+    assert_eq!(tab_1s.len(), 1, "{tab_1s:?}");
+    gate::hold(&[Seam::Worker]);
+    let owed = left_at_a_place_not_drawn(&engine, &first, &second, 1);
+    // Every worker's answer is let through, one at a time, until the tab left's third job, its first page's preview after its size and weight, has its answer waiting.
+    let deadline = Instant::now() + HANG;
+    loop {
+        engine.drain();
+        engine.applied();
+        let jobs = engine.report().0["sleep_draws"]["jobs"].as_u64().unwrap_or(0);
+        let waiting = gate::waiting(Seam::Worker);
+        if jobs >= 3 && waiting > 0 {
+            break;
+        }
+        if waiting > 0 {
+            gate::let_through(Seam::Worker, 1);
+        }
+        assert!(Instant::now() < deadline, "{}", engine.report().0["sleep_draws"]);
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    assert_eq!(engine.report().0["sleep_draws"]["jobs"], 3, "{}", engine.report().0["sleep_draws"]);
+    let killed = std::process::Command::new("/bin/kill").arg("-9").arg(tab_1s[0].to_string()).status().unwrap();
+    assert!(killed.success());
+    // Gone, not just signalled: no process, or a zombie till it's collected.
+    let gone = || {
+        let stat = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &tab_1s[0].to_string()])
+            .output()
+            .unwrap()
+            .stdout;
+        let stat = String::from_utf8_lossy(&stat);
+        stat.trim().is_empty() || stat.trim().starts_with('Z')
+    };
+    while !gone() {
+        assert!(Instant::now() < deadline, "tab 1's worker didn't go");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+    gate::open(Seam::Worker);
+    let draws = sleep_draws_end(&engine);
+    assert_eq!(draws["ended"]["no_worker"], 1, "{draws}");
+    assert_eq!(
+        draws["pictures"], 0,
+        "a picture put on dark paper by a look decided without the page's images: {draws}"
+    );
+    let material = engine.sleep_material(1, &tab_map(&first)).expect("tab 1 is held off screen");
+    assert!(material.pictures.iter().all(|picture| !owed.contains(&picture.page)), "{draws}");
+    let fresh = drawn_fresh_at_the_place(&first, &owed[..1]);
+    assert!(turned_over_around_the_photo(&fresh), "the control: {}", said(&fresh));
+    let back = shown_again_at_its_place(&engine, &first, &owed[..1]);
+    assert!(
+        turned_over_around_the_photo(&back),
+        "as a fresh draw has it ({}): {}",
+        said(&fresh),
+        said(&back)
+    );
+}
