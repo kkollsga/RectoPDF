@@ -24,6 +24,8 @@ mod now;
 mod said;
 pub mod seams;
 mod settle;
+mod started;
+use started::say_started;
 mod words;
 use flow::Going;
 pub use now::UpdateAction;
@@ -740,7 +742,7 @@ impl Updater {
         // update isn't sent back under a person's hands, and with no tab count, as it read no record and so can't have misread one (`plan::misread` passes a
         // count it isn't given). Nothing else: what's proven, its watch for early ends and the last update are written by the next launch that keeps the record.
         if second_copy {
-            say_started(&self.files, &version, shown_at_ms, None);
+            started::say_started_as_a_second_copy(&self.files, &version, shown_at_ms);
             self.log(&format!("{version} came up as a second copy, after an update: another copy keeps the record"));
             return;
         }
@@ -1191,14 +1193,6 @@ impl Updater {
 }
 
 /// What's said once a version that didn't work has gone back, by why.
-/// **The installer told the new version started:** the one place `launch-ok` is written, in the updater's own folder beside the record's (never the record's
-/// folder, so a second copy may write it), with the tabs it came up with if it read the record.
-fn say_started(files: &Files, version: &str, shown_at_ms: u64, tabs: Option<u32>) {
-    let _ = local::ensure_private_dir(&files.work);
-    let line = crate::plan::launch_ok_line(version, std::process::id(), shown_at_ms, tabs);
-    let _ = local::write_private_file(&files.launch_ok(), line.as_bytes());
-}
-
 fn went_back_words(why: &str, version: &str, current: &str) -> String {
     match why {
         "kept_ending" => {
@@ -1262,6 +1256,7 @@ fn clean_code(code: &str) -> String {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    mod second_copy;
     use super::*;
     use crate::fetch::tests::{Answer, Server};
     use crate::plan::{Outcome, OutcomeKind};
