@@ -17,7 +17,6 @@ use recto_control::log::{self, ActivityLog};
 use recto_control::server::{Limits, Server};
 use recto_control::{StatePaths, levels, local, terminal};
 use recto_platform::helper::Priority;
-use recto_session::Session;
 use serde_json::{Value, json};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
