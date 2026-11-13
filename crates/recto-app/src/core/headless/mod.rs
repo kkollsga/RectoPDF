@@ -17,6 +17,7 @@ mod launch;
 mod levels;
 mod menu_twins;
 mod navigation;
+mod newer_read;
 mod palette;
 mod passwords;
 mod protected_save;

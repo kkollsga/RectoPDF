@@ -14,6 +14,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("generated", s.generated.view(id).is_some()),
         ("saved_over", s.saves.remembers(id)),
         ("jumps", s.mail.waiting_jump(id).is_some()),
+        ("view_word", s.mail.holds_view_word_of(id)),
     ];
     let mut holding: Vec<&'static str> = parts
         .into_iter()
@@ -60,6 +61,9 @@ fn busy(s: &mut Session<FakeLoader>) -> (TabId, TabId) {
         failure: None,
     });
     s.jump(a, 3, 0.0).unwrap();
+    s.jump(a, 2, 0.5).unwrap();
+    s.jump_sent(a, trail::Stop::new(2, 0.5), 2);
+    s.jump(a, 3, 0.0).unwrap();
     s.compare(&[a, b], Some(a)).unwrap();
     // After the comparison, which shows each tab in turn: only the tab on screen keeps a generated list.
     s.set_generated_view(a, ready());
@@ -79,6 +83,7 @@ fn closing_a_tab_leaves_nothing_of_it() {
         "draws",
         "generated",
         "jumps",
+        "view_word",
         "comparison",
         "edits",
         "journals",
@@ -103,10 +108,57 @@ fn a_tab_gone_dormant_holds_no_more_than_a_cold_one() {
         failure: None,
     });
     s.set_generated_view(a, ready());
+    assert!(s.view_told_of(a, place_on(0, 0.5), 1));
     assert_eq!(s.active(), Some(b));
     assert!(holding(&s, a).contains(&"warm"));
+    assert!(holding(&s, a).contains(&"view_word"));
     assert!(s.go_dormant(a));
     assert_eq!(holding(&s, a), ["tabs"]);
+}
+
+fn place_on(page: u32, within: f64) -> PlaceRecord {
+    PlaceRecord {
+        page,
+        anchor_page: page,
+        within,
+        x: 0.0,
+        y: 0.0,
+        document_height: 1.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    }
+}
+
+/// Failure: a jump the look sent the page view is kept as where the reader is past an edit, a save or the tab going dormant, with no read of the view
+/// since to tell of it: the jump is about pages that are other pages now (an edit), the same pages in another file (a save), or a view that no longer
+/// holds the tab (dormancy), so Back marks a place the reader never saw.
+#[test]
+fn a_jump_sent_goes_with_an_edit_a_save_and_dormancy() {
+    for route in ["edit", "save", "dormancy"] {
+        let mut s = journaled(10);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        let b = s.open(Path::new("/d/b.pdf")).unwrap();
+        s.activate(a);
+        s.go_to(a, 4).unwrap();
+        assert!(s.view_told_of(a, place_on(4, 0.6), 5), "{route}: made before the send");
+        s.jump(a, 4, 0.8).unwrap();
+        s.jump_sent(a, trail::Stop::new(4, 0.8), 10);
+        assert_eq!(s.here(a), Some(trail::Stop::new(4, 0.8)), "{route}: the jump sent");
+        match route {
+            "edit" => s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap(),
+            "save" => {
+                s.begin_save(a, false).unwrap();
+                s.saved(a, stamp(2), 10, None, None);
+                s.end_save(a);
+            }
+            _ => {
+                s.activate(b);
+                assert!(s.go_dormant(a), "{route}: it goes dormant");
+            }
+        }
+        assert_eq!(s.here(a), Some(trail::Stop::new(4, 0.6)), "{route}: the jump's no longer where the reader is");
+    }
 }
 
 /// Failure: what was read of a tab is kept once its file has turned out to be another, so the next look shows the old file's contents.

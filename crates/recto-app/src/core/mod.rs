@@ -237,9 +237,9 @@ pub struct Serving {
     /// until a test asks.
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) heard: Mutex<crate::testkit::heard::Overheard>,
-    /// What a test asked to happen once the views' places are next taken in: [`crate::testkit::heard::OnTakingPlaces`].
+    /// Where a test comes between the reads of the views' places and their take-in, and the looks counted: [`crate::testkit::place_seams::PlaceSeams`].
     #[cfg(any(test, feature = "testkit"))]
-    pub(crate) on_taking_places: crate::testkit::heard::OnTakingPlaces,
+    pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
 }
 
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the

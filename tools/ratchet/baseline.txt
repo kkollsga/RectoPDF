@@ -11,7 +11,7 @@ fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
 fn crates/recto-agent/src/selecting.rs::run_counted 157
-fn crates/recto-app/src/core/reconcile.rs::reconcile 239
+fn crates/recto-app/src/core/reconcile.rs::reconcile 229
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187

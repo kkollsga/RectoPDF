@@ -144,7 +144,7 @@ impl Inner {
                 #[cfg(any(test, feature = "testkit"))]
                 heard: Mutex::new(crate::testkit::heard::Overheard::default()),
                 #[cfg(any(test, feature = "testkit"))]
-                on_taking_places: crate::testkit::heard::OnTakingPlaces::default(),
+                place_seams: crate::testkit::place_seams::PlaceSeams::default(),
             },
             window: WindowParts::new(watchdog),
             tools: Tools::new(&save_step),

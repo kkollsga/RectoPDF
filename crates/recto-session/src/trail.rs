@@ -146,21 +146,27 @@ impl<L: DocLoader> Session<L> {
         if tab.page != page {
             tab.page = page;
             tab.place_dirty = true;
-            self.mail.forget_sent(id);
+            self.mail.forget_jump_on_its_way(id);
         }
         Ok(())
     }
 
     /// **Where the reader is in a tab,** for a jump to mark, while the tab is still on the page it went to: a jump the page view hasn't taken yet, then
-    /// one it's been sent and hasn't told of yet, as each is where the session has sent the reader; or else the page, and how far down it if the page view
-    /// has said lately. The page view's word is about where it was before such a jump, and on the same page would mark the wrong place down it: Back
-    /// straight after a jump on the page showing kept the old place for Forward, and so did Back whose take-in of the views' places came just before the
-    /// session thread's look sent the jump (the word taken in was the view's from before it).
+    /// one it's been sent that no read of the view taken in since has told of, as each is where the session has sent the reader; or else the page, and how
+    /// far down it the page view said in the newest read taken in. A read from before such a jump is about where the view was before it, and on the same page
+    /// would mark the wrong place down it: Back straight after a jump on the page showing kept the old place for Forward, and so did Back whose read of the
+    /// views was taken in after the session thread's look sent the jump, the read having been made before the send. Which read is newer, and whether it came
+    /// after a send, goes by the place clock ([`Self::view_told_of`], [`Self::jump_sent`]): the newer read wins, whoever took it in.
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tab(id)?;
         // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
         let on_page = |stop: &trail::Stop| stop.page == tab.page;
-        if let Some(jump) = self.mail.waiting_jump(id).filter(on_page).or_else(|| self.mail.sent_jump(id).filter(on_page)) {
+        if let Some(jump) = self
+            .mail
+            .waiting_jump(id)
+            .filter(on_page)
+            .or_else(|| self.mail.jump_on_its_way(id).filter(on_page))
+        {
             return Some(trail::Stop::new(jump.page, f64::from(jump.within)));
         }
         let within = tab
@@ -226,15 +232,18 @@ impl<L: DocLoader> Session<L> {
         self.mail.take_jump(id)
     }
 
-    /// **What the session thread's look has had a tab's page view do,** said by the look alone, as only it sends jumps and only its read of a view comes
-    /// after everything that view was sent. `Some(jump)`: the jump taken with [`Self::take_jump`] has been sent, and is where the reader is ([`Self::here`])
-    /// until the view tells of where it is after it. `None`: the look has taken in the view's word on the tab, which came after any jump sent before, so no
-    /// sent jump is where the reader is any more.
-    pub fn view_sent(&mut self, id: TabId, jump: Option<trail::Stop>) {
-        match jump {
-            Some(jump) => self.mail.sent(id, jump),
-            None => self.mail.forget_sent(id),
-        }
+    /// The last jump in a tab waiting for the page view, with how far down to land, left waiting: the session thread's look sends it and then says so with
+    /// [`Self::jump_sent`], and one it couldn't send waits for the next look.
+    pub fn waiting_jump(&self, id: TabId) -> Option<trail::Stop> {
+        self.mail.waiting_jump(id)
+    }
+
+    /// **A jump has gone to a tab's page view,** said by the session thread's look once it's sent it, the send having come to `stamp` on the place clock
+    /// (what the page view's jump returned). It's where the reader is ([`Self::here`]) until a read of the view at or past `stamp` is taken in
+    /// ([`Self::view_told_of`]), which may have happened between the send and this. It stops waiting, unless a newer jump has taken its place since, which
+    /// waits for the next look and comes first.
+    pub fn jump_sent(&mut self, id: TabId, to: trail::Stop, stamp: u64) {
+        self.mail.jump_sent(id, to, stamp);
     }
 }
 
