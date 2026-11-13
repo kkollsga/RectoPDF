@@ -8,6 +8,7 @@
 use super::*;
 use crate::listener::QuitAnswer;
 use crate::testkit::headless::HeadlessApp;
+use recto_agent::Code;
 use recto_agent::table::{Kind, Route, Spec, TABLE};
 use recto_agent::{Actor, Command, Level};
 use recto_control::host::Host;
@@ -192,7 +193,9 @@ fn while_gone<R>(file: &Path, aside: &Path, name: &str, step: impl FnOnce() -> R
 
 /// Whether a refusal is the tab's: the value wasn't used.
 fn at_the_tab(answer: &Result<Value, AgentError>) -> bool {
-    answer.as_ref().is_err_and(|error| matches!(error.code, "no_such_tab" | "not_the_shown_tab"))
+    answer
+        .as_ref()
+        .is_err_and(|error| matches!(error.code, Code::NO_SUCH_TAB | Code::NOT_THE_SHOWN_TAB))
 }
 
 /// The verb a QA row sends.

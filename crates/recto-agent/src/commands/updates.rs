@@ -2,6 +2,7 @@
 
 use super::words::OnOff;
 use super::{Cmd, Cx, OnlyAsks, row_access};
+use crate::Code;
 use crate::human::text;
 use crate::table::*;
 use crate::*;
@@ -143,7 +144,7 @@ pub mod line {
 
 /// `on` or `off`, or the refusal of what isn't, in the words the app gave it.
 fn on_off(word: Option<String>) -> Result<Option<OnOff>, AgentError> {
-    word.map(|word| OnOff::from_word(&word).ok_or_else(|| AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)))
+    word.map(|word| OnOff::from_word(&word).ok_or_else(|| AgentError::new(Code::USAGE, "It's `on` or `off`.", exit::USAGE)))
         .transpose()
 }
 
@@ -320,7 +321,7 @@ impl OnlyAsks for Settings {
 /// Updates and settings are the app's. A session with no window has nothing to replace, and nothing to set.
 pub fn update_needs_app() -> AgentError {
     AgentError::new(
-        "needs_app",
+        Code::NEEDS_APP,
         "Updates and settings belong to the app, and this session has no window.",
         exit::FAILED,
     )

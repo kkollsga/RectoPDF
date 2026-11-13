@@ -1,6 +1,7 @@
 //! **The commands the server's loop answers itself** (route `Server`): `stop`, `status`, the permissions, the log, `wait`, `watch` and `watch stop`. It holds the connections, the level and the log, so these never reach the host. Everything else is sent on by [`Loop::send_on`].
 
 use super::*;
+use recto_agent::Code;
 
 impl<H: Host> Loop<H> {
     /// **The commands the server answers itself:** it holds the connections, the level and the log. Every Server command has its arm; a command declared the server's with none here is sent on, and the host says it needs the long-running session, which the routing guard catches.
@@ -37,7 +38,7 @@ impl<H: Host> Loop<H> {
             }
             Command::Rights(Rights::PermissionRequest(asked)) => self.permission_request(index, level, asked.level, asked.timeout_ms),
             Command::Waits(Waits::Wait(Wait { tab, .. })) if tab.over_long() => {
-                self.answer(index, tag, &Err(AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND)));
+                self.answer(index, tag, &Err(AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND)));
             }
             Command::Waits(Waits::Wait(_) | Waits::Watch(_)) if self.subscribers() >= self.limits.max_subscribers => {
                 self.log.record(tag, level, "busy", &Value::Null);

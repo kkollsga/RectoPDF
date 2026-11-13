@@ -5,6 +5,7 @@
 use crate::guard::{Budget, within};
 use crate::input::Take;
 use crate::targets::NamedLoader;
+use recto_agent::Code;
 use recto_agent::commands::{Rights, Waits};
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, parse};
 use recto_control::StatePaths;
@@ -34,7 +35,7 @@ struct Guarded(SessionHost<NamedLoader>);
 impl Host for Guarded {
     fn run(&self, actor: recto_agent::Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         if command.draws() {
-            return Err(AgentError::new("not_here", "Nothing draws in this check.", recto_agent::exit::FAILED));
+            return Err(AgentError::new(Code::NOT_HERE, "Nothing draws in this check.", recto_agent::exit::FAILED));
         }
         self.0.run(actor, command, events)
     }

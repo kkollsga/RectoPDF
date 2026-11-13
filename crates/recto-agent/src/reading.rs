@@ -1,5 +1,6 @@
 //! Commands that read a document's structure: facts, contents and signatures. Each reads the file outside the session, and every string from the file goes under `untrusted`.
 
+use crate::Code;
 use crate::TabRef;
 use crate::{AgentError, SessionAccess, exit, generated, select};
 use recto_core::{OpenError, SignatureEntry, SignatureState};
@@ -44,7 +45,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, Agent
             let record = s
                 .tabs()
                 .tab(id)
-                .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+                .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?;
             let positions = s.lists().get(id).map(|edits| {
                 let mut positions = vec![u32::MAX; record.page_count as usize];
                 for (position, slot) in edits.slots().iter().enumerate() {
@@ -61,7 +62,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, Agent
                 path: s
                     .tabs()
                     .path_of(id)
-                    .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?,
+                    .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?,
                 name: record.name.to_string(),
                 pages: s.pages().count(id),
                 edited: s.lists().is_edited(id),
@@ -167,7 +168,7 @@ fn generated_contents<A: SessionAccess>(access: &A, tab: &TabRef, from: Option<u
         );
     }
     let Some(made) = generated::find(generating, &keyed.path, keyed.key) else {
-        return Err(AgentError::new("generating_failed", "Generated contents were made but couldn't be read back.", exit::FAILED).then("Ask again."));
+        return Err(AgentError::new(Code::GENERATING_FAILED, "Generated contents were made but couldn't be read back.", exit::FAILED).then("Ask again."));
     };
     let toc = made.toc();
     let places: Vec<u16> = made.entries.iter().map(|entry| entry.place).collect();

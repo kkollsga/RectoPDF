@@ -4,6 +4,7 @@
 mod handover;
 mod qa;
 
+use recto_agent::Code;
 use recto_agent::commands::access::{Log, PermissionRequest};
 use recto_agent::commands::qa::{QaDrive, QaRead};
 use recto_agent::commands::sync::{Wait, Watch};
@@ -61,7 +62,7 @@ fn run(args: &[String]) -> i32 {
 
 /// The first line of stdin, for a secret that mustn't be on the command line: at most a password's length, and never from a terminal, where it would be echoed.
 fn read_secret_line() -> Result<String, AgentError> {
-    let refused = |words: &str| AgentError::new("usage", words, exit::USAGE).then("Pipe it in: `printf '%s' \"$PASSWORD\" | recto qa password`.");
+    let refused = |words: &str| AgentError::new(Code::USAGE, words, exit::USAGE).then("Pipe it in: `printf '%s' \"$PASSWORD\" | recto qa password`.");
     if std::io::stdin().is_terminal() {
         return Err(refused("This reads the password from stdin, and stdin is a terminal, which would show it."));
     }
@@ -247,7 +248,7 @@ fn here(invocation: &Invocation) -> i32 {
         "qa_select_budget" => qa::select_budget(invocation),
         "budget_index" => budget_index(invocation),
         // A row with no handler is a bug here, and a test walks the table for it.
-        _ => Err(AgentError::new("internal", "This command isn't wired up.", exit::FAILED)),
+        _ => Err(AgentError::new(Code::INTERNAL, "This command isn't wired up.", exit::FAILED)),
     };
     finish(tag, json_wanted, &result)
 }
@@ -279,7 +280,7 @@ fn permission_set(invocation: &Invocation) -> Result<Value, AgentError> {
         .get("level")
         .and_then(Value::as_str)
         .and_then(Level::parse)
-        .ok_or_else(|| AgentError::new("usage", "Which level?", exit::USAGE))?;
+        .ok_or_else(|| AgentError::new(Code::USAGE, "Which level?", exit::USAGE))?;
     terminal::set_level(&paths()?, level)
 }
 
@@ -301,12 +302,12 @@ fn skill_install(invocation: &Invocation) -> Result<Value, AgentError> {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .or_else(recto_platform::local::real_home)
-                .ok_or_else(|| AgentError::new("write_failed", "This user's home folder couldn't be found.", exit::FAILED))?;
+                .ok_or_else(|| AgentError::new(Code::WRITE_FAILED, "This user's home folder couldn't be found.", exit::FAILED))?;
             home.join(skill::CLAUDE_CODE_SKILL_FOLDER)
         }
         _ => {
             return Err(
-                AgentError::new("usage", "Say where: `--path <folder>`, or `--target claude-code`.", exit::USAGE)
+                AgentError::new(Code::USAGE, "Say where: `--path <folder>`, or `--target claude-code`.", exit::USAGE)
                     .then("`recto help skill install` shows both."),
             );
         }
@@ -354,7 +355,8 @@ fn serve_in_background(paths: &StatePaths) -> Result<Value, AgentError> {
         return Ok(json!({ "running": true, "pid": status["data"]["pid"], "socket": paths.socket, "already": true }));
     }
     paths.prepare()?;
-    let failed = || AgentError::new("serve_failed", "The session couldn't be started.", exit::FAILED).then("Run `recto serve` in the foreground to see why.");
+    let failed =
+        || AgentError::new(Code::SERVE_FAILED, "The session couldn't be started.", exit::FAILED).then("Run `recto serve` in the foreground to see why.");
     let messages = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -382,14 +384,19 @@ fn serve_in_background(paths: &StatePaths) -> Result<Value, AgentError> {
             return Ok(value["data"].clone());
         }
         // Lost a race with another start: that's fine if there's now a session.
-        if value["error"]["code"] == "already_running"
+        let code = value["error"]["code"].as_str().and_then(Code::listed);
+        if code == Some(Code::ALREADY_RUNNING)
             && let Ok(mut client) = Client::connect(paths)
             && let Ok(status) = client.call("{\"cmd\":\"status\"}", Duration::from_secs(5))
         {
             return Ok(json!({ "running": true, "pid": status["data"]["pid"], "socket": paths.socket, "already": true }));
         }
-        if let (Some(code), Some(message)) = (value["error"]["code"].as_str(), value["error"]["message"].as_str()) {
-            let code = if code == "state_refused" { "state_refused" } else { "serve_failed" };
+        if let (Some(_), Some(message)) = (value["error"]["code"].as_str(), value["error"]["message"].as_str()) {
+            let code = if code == Some(Code::STATE_REFUSED) {
+                Code::STATE_REFUSED
+            } else {
+                Code::SERVE_FAILED
+            };
             return Err(AgentError::new(code, message.to_string(), exit::FAILED).then(
                 value["error"]["next"]
                     .as_str()
@@ -434,7 +441,7 @@ fn run_local(invocation: &Invocation) -> i32 {
         return help(&inner);
     }
     if inner.spec.route != Route::Session {
-        let error = AgentError::new("usage", format!("`{}` doesn't run on a document.", inner.spec.name), exit::USAGE)
+        let error = AgentError::new(Code::USAGE, format!("`{}` doesn't run on a document.", inner.spec.name), exit::USAGE)
             .then("`recto local <file.pdf> text --page 1` is the kind of thing this does.");
         return finish("local", json_wanted, &Err(error));
     }
@@ -471,7 +478,7 @@ fn session() -> i32 {
         let (tag, result) = match parse(&line) {
             Ok(command) => (command.tag(), local::run_here(&mut session, &paths, &mut log, &command)),
             Err(error) => {
-                log.record("unknown", levels::current(&paths), error.code, &Value::Null);
+                log.record("unknown", levels::current(&paths), error.code.as_str(), &Value::Null);
                 ("unknown", Err(error))
             }
         };
@@ -487,15 +494,15 @@ fn budget_tabs(invocation: &Invocation) -> Result<Value, AgentError> {
     let count = invocation.fields.get("count").and_then(Value::as_u64).unwrap_or(0);
     let file = file
         .canonicalize()
-        .map_err(|_| AgentError::new("not_found", "That file couldn't be found.", exit::NOT_FOUND))?;
+        .map_err(|_| AgentError::new(Code::NOT_FOUND, "That file couldn't be found.", exit::NOT_FOUND))?;
     // A folder of this run's own, never one a run killed partway left behind, and gone when this ends, by a panic too.
     let base = std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir());
     let fresh = recto_platform::fresh::FreshDir::new_in(&base, "recto-budget-", "")
-        .map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
+        .map_err(|_| AgentError::new(Code::WRITE_FAILED, "Couldn't make a temporary folder.", exit::FAILED))?;
     let dir = fresh.path();
     let paths = paths()?;
     let file =
-        recto_platform::local::clone_source_in(&file, dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a file to clone.", exit::FAILED))?;
+        recto_platform::local::clone_source_in(&file, dir).map_err(|_| AgentError::new(Code::WRITE_FAILED, "Couldn't make a file to clone.", exit::FAILED))?;
     if invocation.fields.contains_key("in_process") {
         measure_in_process(&paths, &file, dir, count)
     } else {
@@ -518,17 +525,17 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
     let file = invocation.fields.get("file").and_then(Value::as_str).map(PathBuf::from).unwrap_or_default();
     let file = file
         .canonicalize()
-        .map_err(|_| AgentError::new("not_found", "That file couldn't be found.", exit::NOT_FOUND))?;
+        .map_err(|_| AgentError::new(Code::NOT_FOUND, "That file couldn't be found.", exit::NOT_FOUND))?;
     let runs = invocation.fields.get("runs").and_then(Value::as_u64).unwrap_or(7) as usize;
     let queries = invocation.fields.get("queries").and_then(Value::as_str).unwrap_or(DEFAULT_BUDGET_QUERIES);
     let foreground = invocation.fields.contains_key("foreground");
-    let key = recto_index::corpus::CorpusKey::of_file(&file).map_err(|_| AgentError::new("not_found", "That file couldn't be read.", exit::NOT_FOUND))?;
+    let key = recto_index::corpus::CorpusKey::of_file(&file).map_err(|_| AgentError::new(Code::NOT_FOUND, "That file couldn't be read.", exit::NOT_FOUND))?;
     // In the OS's temp folder, which it cleans for itself, since a run killed partway leaves a document's text here and nothing else would ever look at it.
-    let temp =
-        recto_platform::local::system_temp_dir().ok_or_else(|| AgentError::new("write_failed", "This Mac's temp folder couldn't be found.", exit::FAILED))?;
+    let temp = recto_platform::local::system_temp_dir()
+        .ok_or_else(|| AgentError::new(Code::WRITE_FAILED, "This Mac's temp folder couldn't be found.", exit::FAILED))?;
     // A folder of this run's own, never one a run killed partway left behind, and gone when this ends, by a panic too.
     let fresh = recto_platform::fresh::FreshDir::new_in(&temp, "recto-budget-", ".noindex")
-        .map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
+        .map_err(|_| AgentError::new(Code::WRITE_FAILED, "Couldn't make a temporary folder.", exit::FAILED))?;
     let root = fresh.path().to_path_buf();
     let result = (|| {
         let build = recto_control::indexing::build_now(
@@ -543,7 +550,11 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         );
         if build["state"] != "ready" {
             let code = build["code"].as_str().unwrap_or("unknown");
-            return Err(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED));
+            return Err(AgentError::new(
+                Code::INDEX_FAILED,
+                format!("The index couldn't be built ({code})."),
+                exit::FAILED,
+            ));
         }
         let corpus = recto_agent::index::ReadOnlyCorpus(root.clone());
         let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
@@ -605,7 +616,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
 /// Another file of the same bytes, at no cost on this disk: a link would be the same PDF, and a PDF is open once (SPEC decision 26).
 fn make_link(file: &Path, dir: &Path, index: u64) -> Result<PathBuf, AgentError> {
     let link = dir.join(format!("tab-{index:05}.pdf"));
-    recto_platform::local::clone_file(file, &link).map_err(|_| AgentError::new("write_failed", "Couldn't make a test copy.", exit::FAILED))?;
+    recto_platform::local::clone_file(file, &link).map_err(|_| AgentError::new(Code::WRITE_FAILED, "Couldn't make a test copy.", exit::FAILED))?;
     Ok(link)
 }
 
@@ -630,7 +641,7 @@ fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -
     }
     if session.tabs().len() as u64 != count {
         return Err(AgentError::new(
-            "budget_wrong_tabs",
+            Code::BUDGET_WRONG_TABS,
             format!(
                 "Asked for {count} tabs and got {}, so these numbers wouldn't mean what they say.",
                 session.tabs().len()
@@ -687,7 +698,7 @@ fn measure_through_session(paths: &StatePaths, file: &Path, dir: &Path, count: u
     let distinct: std::collections::HashSet<u64> = opened.iter().copied().collect();
     if failure.is_none() && distinct.len() as u64 != count {
         failure = Some(AgentError::new(
-            "budget_wrong_tabs",
+            Code::BUDGET_WRONG_TABS,
             format!(
                 "Asked for {count} tabs and got {}, so these numbers wouldn't mean what they say.",
                 distinct.len()
@@ -719,7 +730,7 @@ fn error_from(value: &Value) -> AgentError {
     let error = &value["error"];
     let exit_code = error["exit"].as_i64().and_then(|code| i32::try_from(code).ok()).unwrap_or(exit::FAILED);
     AgentError::new(
-        "session_refused",
+        Code::SESSION_REFUSED,
         error["message"].as_str().unwrap_or("The session refused this.").to_string(),
         exit_code,
     )

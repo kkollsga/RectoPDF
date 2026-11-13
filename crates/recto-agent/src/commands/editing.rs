@@ -2,6 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -474,7 +475,7 @@ impl Cmd for Undo {
             let id = select(s, &self.tab)?;
             note_agent_at_full(s, actor);
             if !s.undo_edit_as(id, actor.author())? {
-                return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
+                return Err(AgentError::new(Code::NOTHING_TO_UNDO, "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
@@ -520,7 +521,7 @@ impl Cmd for Redo {
             let id = select(s, &self.tab)?;
             note_agent_at_full(s, actor);
             if !s.redo_edit_as(id, actor.author())? {
-                return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
+                return Err(AgentError::new(Code::NOTHING_TO_REDO, "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);

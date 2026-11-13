@@ -10,6 +10,7 @@
 //!   brings the sidebar back.
 
 use super::*;
+use crate::Code;
 use crate::commands::finding::FindAsk;
 use crate::{Actor, Effect, Event};
 use serde_json::{Value, json};
@@ -109,7 +110,7 @@ fn running(finding: &dyn Finding) -> bool {
 
 /// The refusal when there's no hit to go to.
 fn nothing_found() -> AgentError {
-    AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`.")
+    AgentError::new(Code::NOTHING_FOUND, "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`.")
 }
 
 impl<A: crate::SessionAccess> Run<'_, A> {
@@ -150,7 +151,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             let id = s
                 .tabs()
                 .active()
-                .ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?;
+                .ok_or_else(|| AgentError::new(Code::NO_ACTIVE_TAB, "There's no document being read to find in.", exit::NOT_FOUND))?;
             Ok::<_, AgentError>((plan(s, id)?, needle(query).unwrap_or_default()))
         })?;
         let mut results = Results::default();
@@ -249,7 +250,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
         };
         let went = went.ok_or_else(|| {
             AgentError::new(
-                "no_such_hit",
+                Code::NO_SUCH_HIT,
                 "There's no hit with that index to go to: it's past the end, or on text that looks hidden.",
                 exit::NOT_FOUND,
             )

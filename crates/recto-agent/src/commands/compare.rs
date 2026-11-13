@@ -2,6 +2,7 @@
 
 use super::words::OnOff;
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::text;
 use crate::table::*;
 use crate::*;
@@ -56,7 +57,7 @@ const MAX_COMPARE_SELECTORS: usize = 8;
 impl TryFrom<line::Compare> for Compare {
     type Error = AgentError;
     fn try_from(line: line::Compare) -> Result<Self, AgentError> {
-        let usage = |words: &str| AgentError::new("usage", words, exit::USAGE);
+        let usage = |words: &str| AgentError::new(Code::USAGE, words, exit::USAGE);
         let line::Compare {
             tabs,
             sync,
@@ -143,7 +144,7 @@ impl std::fmt::Debug for Compare {
 
 /// A comparison that can't be as asked, in the session's words.
 fn refused(error: recto_session::compare::CompareError) -> AgentError {
-    AgentError::new(error.code(), error.message(), exit::FAILED)
+    AgentError::new(Code::lower(error.code()), error.message(), exit::FAILED)
 }
 
 impl Cmd for Compare {
@@ -273,7 +274,7 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
 /// Synced scroll or separate, for the comparison there is. Says whether that's a change.
 fn set_synced<A: SessionAccess>(access: &A, sync: OnOff) -> Result<bool, AgentError> {
     access.with(|s| s.set_compare_synced(sync.is_on())).ok_or_else(|| {
-        AgentError::new("not_comparing", "There's no comparison to sync.", exit::NOT_FOUND)
+        AgentError::new(Code::NOT_COMPARING, "There's no comparison to sync.", exit::NOT_FOUND)
             .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
     })
 }
@@ -281,7 +282,7 @@ fn set_synced<A: SessionAccess>(access: &A, sync: OnOff) -> Result<bool, AgentEr
 /// `--reading` of a tab that isn't one of those side by side.
 fn not_side_by_side() -> AgentError {
     AgentError::new(
-        "not_side_by_side",
+        Code::NOT_SIDE_BY_SIDE,
         "That tab isn't side by side with others, so it can't be the pane read.",
         exit::NOT_FOUND,
     )

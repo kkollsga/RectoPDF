@@ -2,6 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -107,13 +108,13 @@ impl Cmd for Goto {
             }),
             (None, Some(label)) if self.within.is_none() => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
             (None, Some(_)) => Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "`--within` is how far down a page, and goes with a page number, not a label.",
                 exit::USAGE,
             )
             .then("`recto goto 12 --within 0.3`.")),
             _ => Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
                 exit::USAGE,
             )

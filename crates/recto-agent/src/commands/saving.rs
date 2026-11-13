@@ -1,6 +1,7 @@
 //! `save` and `save-as`: a tab's edits into its file, or its document as a new one. The writing is the saving module's.
 
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::table::*;
 use crate::*;
 use serde::Deserialize;
@@ -51,7 +52,7 @@ impl Cmd for Save {
                 out: out.clone(),
                 replace: *replace,
             },
-            None if *replace => return Err(AgentError::new("usage", "`--replace` goes with Save As's `--out`.", exit::USAGE)),
+            None if *replace => return Err(AgentError::new(Code::USAGE, "`--replace` goes with Save As's `--out`.", exit::USAGE)),
             None => saving::SaveTo::Same,
         };
         saving::save(cx.access, cx.level, tab, &to, cx.events)

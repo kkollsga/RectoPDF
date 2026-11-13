@@ -3,6 +3,7 @@
 
 use super::words::OnOff;
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::TabRef;
 use crate::table::{Access, Arg, BASE, GROUP_EDIT, Kind, Spec};
 use crate::{AgentError, Level, Runs, SessionAccess, exit};
@@ -32,7 +33,7 @@ impl TryFrom<line::EditMode> for EditMode {
     fn try_from(line: line::EditMode) -> Result<Self, AgentError> {
         let set = OnOff::from_word(&line.set).ok_or_else(|| {
             AgentError::new(
-                "usage",
+                Code::USAGE,
                 format!("`{}` isn't a way edit mode can be. It's `on` or `off`.", recto_core::clean_line(&line.set)),
                 exit::USAGE,
             )
@@ -169,7 +170,7 @@ mod tests {
             .map(|line| {
                 execute(session, Actor::Agent(Level::Control), &parse(line).expect("a command"), &mut Vec::new())
                     .err()
-                    .map(|error| error.code)
+                    .map(|error| error.code.as_str())
             })
         };
         let session = with_the_owners_undone_step();

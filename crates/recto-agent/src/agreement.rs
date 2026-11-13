@@ -8,6 +8,7 @@
 //! (`Disagreement::Unchecked`). [`known_or_start`] is what the window asks, which starts the look on a thread of its own and calls back when it's known.
 //! At most [`LOOKS_AT_ONCE`] run at once, a save's counting, and [`KEPT`] answers are kept, so nothing grows with the files opened.
 
+use crate::Code;
 use crate::TabRef;
 use crate::{AgentError, SessionAccess, select};
 use recto_core::OpenError;
@@ -185,7 +186,7 @@ fn refusal_among<'a>(files: impl Iterator<Item = (&'a Path, Option<FileStamp>, b
         } else {
             "Tell the user. The file can still be read; to save changes to it, it first needs repairing in another tool. The edits stay unsaved."
         };
-        Some(AgentError::new("parsers_disagree", message, crate::exit::FAILED).then(next))
+        Some(AgentError::new(Code::PARSERS_DISAGREE, message, crate::exit::FAILED).then(next))
     })
 }
 

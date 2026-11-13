@@ -5,6 +5,8 @@
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
 pub mod actor;
+pub mod code;
+pub use code::Code;
 pub mod close_rule;
 pub use actor::Actor;
 pub mod agreement;
@@ -221,7 +223,7 @@ pub(crate) fn clean_range(text: &str) -> &str {
 /// A failed command, with a stable code, a plain message and the next step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentError {
-    pub code: &'static str,
+    pub code: Code,
     pub message: String,
     pub candidates: Vec<String>,
     pub exit: i32,
@@ -234,13 +236,13 @@ pub struct AgentError {
 }
 
 impl AgentError {
-    pub fn new(code: &'static str, message: impl Into<String>, exit: i32) -> Self {
+    pub fn new(code: Code, message: impl Into<String>, exit: i32) -> Self {
         Self {
             code,
             message: message.into(),
             candidates: Vec::new(),
             exit,
-            next: next_step(code, exit).to_string(),
+            next: code.next_step(exit).to_string(),
             ask: None,
             untrusted: None,
         }
@@ -254,73 +256,6 @@ impl AgentError {
     }
 }
 
-/// The next step for an error, by its code, or else by its kind. Every error says one.
-fn next_step(code: &str, exit: i32) -> &'static str {
-    match code {
-        "no_such_tab" => "`recto tabs` lists what's open. `recto open <file.pdf>` opens a file.",
-        "no_such_page" | "page_out_of_range" => "`recto where` gives the tab's length. Pages count from 1.",
-        "not_found" => "Check the path. It's read by the session, and relative paths are taken from where you ran `recto`.",
-        "not_allowed" => "Ask the user to give this user account access to the file.",
-        "not_pdf" => "This file can't be opened. Try another file.",
-        "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
-        "protected" => "Tell the user. Only they can allow an agent to read a protected document, and this version can't ask them, so work on another file.",
-        "ambiguous" => "Use one of the candidates, written as `#id`.",
-        "unsaved_changes" => {
-            "`recto discard` throws them away, then `recto close` or `recto stop` can go on. It needs Full access only if some are the user's. `recto save` puts them in the file instead, if the user wants that."
-        }
-        "last_page" => "Keep at least one page, or delete fewer.",
-        "too_many_pages" | "too_many_sources" => "Add less to this document.",
-        "too_many_tabs" => "`recto close` closes a tab.",
-        "renderer_only" => "This file can still be read and drawn. To change it, it first needs repairing in another tool.",
-        "source_changed" => {
-            "Tell the user this file changed. `recto edits` shows what's unsaved. `recto discard` throws the edits away, which needs Full access if some are the user's, and opening the file again starts from what's there now."
-        }
-        "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
-        "not_built" => "Tell the user this isn't in this version yet.",
-        "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
-        "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
-        "render_worker_missing" => {
-            "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the app's `Contents/Helpers/RectoRender.app`, or in a source tree in the same folder as `recto`. There, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't."
-        }
-        "renderer_not_sandboxed" => {
-            "Tell the user this copy of RectoPDF is signed wrong, so its renderer refuses to read any PDF. Installing a release again fixes it. In a source tree, `app/build.sh` signs the helper as it should be."
-        }
-        "renderer_inside_another_sandbox" => {
-            "Run `recto` outside the sandbox it's in, or ask the user to: the renderer can't start inside another sandbox. Nothing needs reinstalling."
-        }
-        "renderer_mach_drop_failed" | "renderer_launchd_reachable" => {
-            "Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling."
-        }
-        "renderer_start_refused" => {
-            "Tell the user macOS refused to start RectoPDF's renderer. A security tool, or a sandbox `recto` runs in, may be blocking it."
-        }
-        "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
-        "bad_command" => "`recto help` lists every command.",
-        "bad_path" => "Give the whole path. `recto` does this for you.",
-        "output_exists" => "Choose a new file name. An existing file is never replaced.",
-        "bad_output" => "Choose a file name ending in .png.",
-        "bad_rect" => "Write it as `--rect 10,20,300,200`, in points from the page's top left.",
-        "bad_text_mode" => "Use `--text both`, `paths` or `selectable`.",
-        "needs_server" => "Start the session with `recto serve --background`, then use `recto` without `local`.",
-        "not_running" => "Start it with `recto serve --background`.",
-        "needs_terminal" => "Ask the user to run this command themselves, in their own terminal.",
-        "sign_refused" => "Tell the user. Only they can sign, in the app.",
-        "busy" => "Try again in a moment.",
-        "wrong_version" => "Stop the old session with `recto stop` and start this version with `recto serve --background`.",
-        _ => match exit {
-            exit::NOT_FOUND => "`recto tabs` lists what's open.",
-            exit::AMBIGUOUS => "Use one of the candidates.",
-            exit::PERMISSION => "Ask the user for more access.",
-            exit::NOT_RUNNING => "Start it with `recto serve --background`.",
-            exit::TIMED_OUT => "Try again, or with a longer `--timeout`.",
-            exit::PROTECTED => "Ask the user: only they can unlock this.",
-            exit::BUSY => "Try again in a moment.",
-            exit::USAGE => "`recto help` lists every command.",
-            _ => "`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried.",
-        },
-    }
-}
-
 impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
         let exit = match error {
@@ -331,7 +266,7 @@ impl From<SessionError> for AgentError {
             SessionError::OutsideQuietRun => exit::PERMISSION,
             _ => exit::FAILED,
         };
-        Self::new(error.code(), error.message(), exit)
+        Self::new(Code::lower(error.code()), error.message(), exit)
     }
 }
 
@@ -377,7 +312,7 @@ pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
 /// Parses one JSON command. Unknown commands and fields are refused rather than guessed at.
 pub fn parse(line: &str) -> Result<Command, AgentError> {
     if line.len() > MAX_COMMAND_BYTES {
-        return Err(AgentError::new("bad_command", "That command is too long.", exit::FAILED));
+        return Err(AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED));
     }
     // The tag first, then the line as the family that reads it. A tag no family has is a command not moved into one yet, or none.
     match commands::tag_of(line).as_deref().and_then(commands::parser_for) {
@@ -388,7 +323,7 @@ pub fn parse(line: &str) -> Result<Command, AgentError> {
 
 /// The refusal of a line that isn't a command: no tag a family has, or a line serde can't read as its command.
 pub(crate) fn bad_command() -> AgentError {
-    AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED)
+    AgentError::new(Code::BAD_COMMAND, "That isn't a command RectoPDF knows.", exit::FAILED)
 }
 
 /// The refusal for a level that's too low: what's missing, and the one command that asks for it.
@@ -396,7 +331,7 @@ pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
     match needed {
         Access::At(level) => {
             let mut error = AgentError::new(
-                "permission_denied",
+                Code::PERMISSION_DENIED,
                 format!("`{command_name}` needs {} access, and agent access is {} now.", level.label(), have.label()),
                 exit::PERMISSION,
             );
@@ -406,12 +341,12 @@ pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
             error
         }
         Access::UserOnly => AgentError::new(
-            "needs_terminal",
+            Code::NEEDS_TERMINAL,
             format!("`{command_name}` is for the user, at their own terminal."),
             exit::PERMISSION,
         ),
         Access::Nobody => AgentError::new(
-            "sign_refused",
+            Code::SIGN_REFUSED,
             "Only the user can sign a document, in the app. No agent command signs, at any level.",
             exit::PERMISSION,
         ),
@@ -521,13 +456,13 @@ pub const PROTECTED_NOTE: &str = "The user opened this PDF with its password, so
 
 /// The refusal for anything that would read a protected document the person opened with its password. Exit 8, as a file that needs a password is.
 pub fn protected_refusal() -> AgentError {
-    AgentError::new("protected", PROTECTED_NOTE, exit::PROTECTED)
+    AgentError::new(Code::PROTECTED, PROTECTED_NOTE, exit::PROTECTED)
 }
 
 /// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 pub fn only_the_user_quits() -> AgentError {
     AgentError::new(
-        "only_the_user_quits",
+        Code::ONLY_THE_USER_QUITS,
         "This session is the app someone is using, and only they can quit it.",
         exit::FAILED,
     )
@@ -537,7 +472,7 @@ pub fn only_the_user_quits() -> AgentError {
 /// `session restore` would lose the owner's edits, which is theirs to say below Full: SPEC decision 20.
 pub fn restore_would_lose_owners_edits() -> AgentError {
     AgentError::new(
-        "owner_edits_at_stake",
+        Code::OWNER_EDITS_AT_STAKE,
         "Restoring would replace this session, which holds the user's own unsaved edits, so it wasn't done.",
         exit::PERMISSION,
     )
@@ -609,7 +544,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     // Its edits say what's on its pages, and they can't be read just now: anything that reads a page says so, rather than that there's no such page (review).
     let result = match held {
         Some((_, false)) if command.reads_pages() => Err(AgentError::new(
-            recto_session::SessionError::EditsUnreadable.code(),
+            Code::lower(recto_session::SessionError::EditsUnreadable.code()),
             recto_session::SessionError::EditsUnreadable.message(),
             exit::FAILED,
         )
@@ -651,10 +586,10 @@ fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: O
 }
 
 /// A refused file name says nothing about whether a page can be drawn, so a wait on that page mustn't hear of it.
-fn is_about_the_output(failure: Option<&str>) -> bool {
+fn is_about_the_output(failure: Option<Code>) -> bool {
     matches!(
         failure,
-        Some("output_exists" | "bad_output" | "bad_scale" | "bad_rect" | "bad_text_mode" | "write_failed" | "output_too_large")
+        Some(Code::OUTPUT_EXISTS | Code::BAD_OUTPUT | Code::BAD_SCALE | Code::BAD_RECT | Code::BAD_TEXT_MODE | Code::WRITE_FAILED | Code::OUTPUT_TOO_LARGE)
     )
 }
 
@@ -682,7 +617,7 @@ pub(crate) fn file_label(path: &Path) -> String {
 /// The refusal when a file has changed under the page numbers that were recorded from it.
 fn source_changed(path: &Path) -> AgentError {
     let mut error = AgentError::new(
-        "source_changed",
+        Code::SOURCE_CHANGED,
         "The file this page comes from has changed or gone since its page numbers were recorded, so the page can't be trusted to be the same one.",
         exit::FAILED,
     );
@@ -705,7 +640,7 @@ fn locate<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<(TabI
 }
 
 fn no_such_page() -> AgentError {
-    AgentError::new("no_such_page", "That page isn't in this document.", exit::NOT_FOUND)
+    AgentError::new(Code::NO_SUCH_PAGE, "That page isn't in this document.", exit::NOT_FOUND)
 }
 
 fn require_absolute(path: &Path) -> Result<(), AgentError> {
@@ -713,7 +648,7 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
         Ok(())
     } else {
         Err(AgentError::new(
-            "bad_path",
+            Code::BAD_PATH,
             "That path isn't whole. A session has no folder of its own to start from.",
             exit::FAILED,
         ))
@@ -788,12 +723,12 @@ fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f
 
 fn one_based(page: u32) -> Result<u32, AgentError> {
     page.checked_sub(1)
-        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
+        .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
 /// The refusal of a limit of none.
 pub(crate) fn bad_limit() -> AgentError {
-    AgentError::new("bad_limit", "A limit has to be at least 1.", exit::FAILED).then("Leave it out to get the default, or ask for 1 or more.")
+    AgentError::new(Code::BAD_LIMIT, "A limit has to be at least 1.", exit::FAILED).then("Leave it out to get the default, or ask for 1 or more.")
 }
 
 /// How many a command should give: what was asked, up to the most it gives, or its default. Asking for none is refused: it can't be what was meant, and answering with one would be a guess.
@@ -807,8 +742,9 @@ pub(crate) fn positive_limit(limit: Option<u32>, default: u32, max: u32) -> Resu
 
 /// Parses `4` or `4-6` into a zero-based start and a length. `4-` means to the end only where `open_ended` says that makes sense, and only that exact form: `4-x-` isn't it.
 pub(crate) fn parse_pages(pages: &str, open_ended: bool) -> Result<(u32, u32), AgentError> {
-    let bad =
-        || AgentError::new("bad_pages", "Pages are one number or a range, such as 4 or 4-6.", exit::FAILED).then("Write them as 4 or 4-6, counting from 1.");
+    let bad = || {
+        AgentError::new(Code::BAD_PAGES, "Pages are one number or a range, such as 4 or 4-6.", exit::FAILED).then("Write them as 4 or 4-6, counting from 1.")
+    };
     let (first, last) = pages.split_once('-').unwrap_or((pages, pages));
     let number = |text: &str| {
         if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
@@ -829,7 +765,7 @@ pub(crate) fn parse_pages(pages: &str, open_ended: bool) -> Result<(u32, u32), A
 fn quarter_turns(degrees: i32) -> Result<i32, AgentError> {
     if degrees % 90 != 0 || degrees % 360 == 0 {
         return Err(AgentError::new(
-            "bad_rotation",
+            Code::BAD_ROTATION,
             "A rotation is a quarter turn or more, such as 90, 180, 270 or -90 degrees.",
             exit::FAILED,
         )
@@ -885,7 +821,7 @@ fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level
         return Ok(());
     }
     let mut error = AgentError::new(
-        "would_clear_redo",
+        Code::WOULD_CLEAR_REDO,
         "A new edit here would throw away the user's edits, undone but still there to redo, and that needs Full access.",
         exit::PERMISSION,
     );
@@ -903,7 +839,7 @@ fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor
         return Ok(());
     }
     Err(AgentError::new(
-        "edits_unreadable",
+        Code::EDITS_UNREADABLE,
         format!("Nothing was {what}: this tab's edits couldn't be read back just now, so what that would throw away can't all be known."),
         exit::FAILED,
     )
@@ -916,7 +852,7 @@ fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId,
         return Ok(());
     }
     let mut error = AgentError::new(
-        "would_discard_user_edits",
+        Code::WOULD_DISCARD_USER_EDITS,
         "Nothing was discarded: some of this tab's edits are the user's, and throwing those away needs Full access.",
         exit::PERMISSION,
     );
@@ -1022,7 +958,7 @@ fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, Ag
     session
         .tabs()
         .path_of(id)
-        .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))
+        .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))
 }
 
 /// Finds a tab by `#id`, by `active`, or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
@@ -1032,14 +968,14 @@ pub fn select_tab<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result<Ta
 }
 
 pub(crate) fn select<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result<TabId, AgentError> {
-    let not_found = || AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND);
+    let not_found = || AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND);
     let needle = match tab {
         TabRef::Nothing(_) => return Err(not_found()),
         TabRef::Active => {
             return session
                 .tabs()
                 .active()
-                .ok_or_else(|| AgentError::new("no_such_tab", "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
+                .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
         }
         TabRef::Id(id) => return session.tabs().tab(*id).map(|_| *id).ok_or_else(not_found),
         TabRef::Name(name) => name.to_lowercase(),
@@ -1054,7 +990,7 @@ pub(crate) fn select<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result
         [] => Err(not_found()),
         [one] => Ok(one.id),
         many => {
-            let mut error = AgentError::new("ambiguous", "More than one tab matches that name.", exit::AMBIGUOUS);
+            let mut error = AgentError::new(Code::AMBIGUOUS, "More than one tab matches that name.", exit::AMBIGUOUS);
             with_tab_candidates(&mut error, many.iter().take(MAX_CANDIDATES).map(|t| (t.id, &*t.name)));
             Err(error)
         }
@@ -1112,7 +1048,7 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
         Condition::PageDrawn => {
             let Some(page) = page.filter(|page| *page >= 1) else {
                 return ConditionState::Failed(AgentError::new(
-                    "no_such_page",
+                    Code::NO_SUCH_PAGE,
                     "`wait page-drawn` needs `--page`, counting from 1.",
                     exit::NOT_FOUND,
                 ));
@@ -1124,7 +1060,7 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
                     None => ConditionState::Waiting,
                     Some(DrawNote { failure: None, .. }) => ConditionState::Met(json!({ "tab": id.0, "page": page, "drawn": true })),
                     Some(DrawNote { failure: Some(code), .. }) => ConditionState::Failed(
-                        AgentError::new("page_failed", format!("Page {page} couldn't be drawn ({code})."), exit::FAILED)
+                        AgentError::new(Code::PAGE_FAILED, format!("Page {page} couldn't be drawn ({code})."), exit::FAILED)
                             .then("Try another page, or `recto text --page N` for its text."),
                     ),
                 },
@@ -1548,7 +1484,7 @@ mod tests {
         assert_eq!(text.access(), Access::At(Level::ReadOnly));
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
-        assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
+        assert_eq!((refused.code.as_str(), refused.exit), ("permission_denied", exit::PERMISSION));
         let render = Command::from(crate::commands::export::Render {
             tab: "#1".into(),
             page: 1,
@@ -1592,7 +1528,7 @@ mod tests {
     #[test]
     fn a_protected_document_has_its_own_exit_code() {
         let error = AgentError::from(recto_render_service::RenderFailure::NeedsPassword);
-        assert_eq!((error.code, error.exit), ("needs_password", exit::PROTECTED));
+        assert_eq!((error.code.as_str(), error.exit), ("needs_password", exit::PROTECTED));
         let opening = AgentError::from(SessionError::Open(OpenError::PasswordNeeded));
         assert_eq!(opening.exit, exit::PROTECTED, "the session refusing it first must say the same");
     }
@@ -2171,7 +2107,7 @@ mod tests {
     fn a_refusal_gives_one_command_that_works_at_off() {
         for level in [Level::ReadOnly, Level::Control, Level::Full] {
             let error = refusal("text", Level::Off, Access::At(level));
-            assert_eq!((error.code, error.exit), ("permission_denied", exit::PERMISSION));
+            assert_eq!((error.code.as_str(), error.exit), ("permission_denied", exit::PERMISSION));
             assert!(error.message.contains(level.label()) && error.message.contains("Off"), "{}", error.message);
             let ask = error.ask.unwrap();
             let words = skill::shell_words(&ask);
@@ -2216,7 +2152,10 @@ mod tests {
             exit::PROTECTED,
             exit::BUSY,
         ] {
-            assert!(!AgentError::new("some_new_code", "m", exit_code).next.is_empty(), "exit {exit_code}");
+            assert!(
+                !AgentError::new(Code::lower("some_new_code"), "m", exit_code).next.is_empty(),
+                "exit {exit_code}"
+            );
         }
     }
 
@@ -2364,7 +2303,7 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert_eq!((far.code, far.exit), ("page_out_of_range", exit::NOT_FOUND));
+        assert_eq!((far.code.as_str(), far.exit), ("page_out_of_range", exit::NOT_FOUND));
         assert_eq!(
             run(
                 &mut s,
@@ -2641,7 +2580,7 @@ mod tests {
             for attempt in agent_attempts() {
                 let refused = run(&mut s, Level::Control, &attempt).unwrap_err();
                 assert_eq!(
-                    (refused.code, refused.exit),
+                    (refused.code.as_str(), refused.exit),
                     ("would_clear_redo", exit::PERMISSION),
                     "{} with {left} left",
                     attempt.tag()
@@ -2651,7 +2590,7 @@ mod tests {
                 assert!(refused.message.contains("user's"), "the message must say whose they are: {}", refused.message);
             }
             let discard = run(&mut s, Level::Control, &Command::from(crate::commands::editing::Discard { tab: tab() })).unwrap_err();
-            assert_eq!((discard.code, discard.exit), ("would_discard_user_edits", exit::PERMISSION));
+            assert_eq!((discard.code.as_str(), discard.exit), ("would_discard_user_edits", exit::PERMISSION));
             assert!(discard.message.contains("user's"), "{}", discard.message);
             check_still_there(&s, "after an undo");
         }
@@ -2758,7 +2697,7 @@ mod tests {
         assert!(!s.lists().get(id).unwrap().can_redo());
         // A close with unsaved edits stops, and says the way on, and that way works at Control.
         let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
-        assert_eq!((close.code, close.exit), ("unsaved_changes", exit::FAILED));
+        assert_eq!((close.code.as_str(), close.exit), ("unsaved_changes", exit::FAILED));
         assert!(
             close.next.contains("recto discard") && !close.next.contains("Full") && close.ask.is_none(),
             "{}",
@@ -3096,7 +3035,7 @@ mod tests {
 
         let both = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(
-            (both.code, both.exit),
+            (both.code.as_str(), both.exit),
             ("would_clear_redo", exit::PERMISSION),
             "below Full, this is still that refusal"
         );
@@ -3120,7 +3059,7 @@ mod tests {
 
         let at_full = run(&mut s, Level::Full, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!(
-            (at_full.code, at_full.exit),
+            (at_full.code.as_str(), at_full.exit),
             ("unsaved_changes", exit::FAILED),
             "unsaved edits stop a close at any level"
         );
@@ -3282,7 +3221,7 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert_eq!((error.code, error.exit), ("no_such_page", exit::NOT_FOUND));
+        assert_eq!((error.code.as_str(), error.exit), ("no_such_page", exit::NOT_FOUND));
         assert_eq!(
             run(
                 &mut s,
@@ -3324,7 +3263,7 @@ mod tests {
             &Command::from(crate::commands::reading::Where { tab: "active".into() }),
         )
         .unwrap_err();
-        assert_eq!((error.code, error.exit), ("no_such_tab", exit::NOT_FOUND));
+        assert_eq!((error.code.as_str(), error.exit), ("no_such_tab", exit::NOT_FOUND));
         assert!(error.next.contains("recto open"), "{}", error.next);
     }
 
@@ -3394,7 +3333,7 @@ mod tests {
     fn the_envelope_always_says_its_version_and_outcome() {
         let ok = envelope(&Ok(json!({ "x": 1 })));
         assert_eq!((&ok["v"], &ok["ok"]), (&json!(VERSION), &json!(true)));
-        let failed = envelope(&Err(AgentError::new("c", "m", exit::FAILED)));
+        let failed = envelope(&Err(AgentError::new(Code::lower("c"), "m", exit::FAILED)));
         assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("c")));
     }
 }
@@ -3724,7 +3663,7 @@ mod linking_tests {
         assert_eq!(labelled["page"], 12);
         assert_eq!(run(&mut session, Level::Control, &line("goto label xx")).unwrap_err().code, "no_such_label");
         let web = run(&mut session, Level::Full, &line("follow --page 1 --link 3")).unwrap_err();
-        assert_eq!((web.code, web.exit), ("web_link_needs_user", exit::PERMISSION), "not at any level");
+        assert_eq!((web.code.as_str(), web.exit), ("web_link_needs_user", exit::PERMISSION), "not at any level");
         assert_eq!(
             web.untrusted.as_deref().map(|value| value["address"].clone()),
             Some(json!("https://example.com/report?id=7"))

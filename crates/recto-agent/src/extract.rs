@@ -2,6 +2,7 @@
 //!
 //! **A file that asks not to be copied** (owner, 2026-11-08: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"): refused with exit 8 and `copy_restricted` unless `--anyway`, and the app's notice offers "Copy anyway". Each use of `--anyway` that gives something goes in the activity log.
 
+use crate::Code;
 use crate::render::image::{self, Coded, CopiedImage, Want};
 use crate::render::snapshot::{self, Format};
 use crate::render::{FileOut, LimitedOut, MemoryOut, OwnTemp, open_for_text, output_exists, publish_picture};
@@ -30,7 +31,7 @@ pub const UTI_SVG: &str = "public.svg-image";
 pub const UTI_TEXT: &str = "public.utf8-plain-text";
 
 fn restricted() -> AgentError {
-    AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED)
+    AgentError::new(Code::COPY_RESTRICTED, "This file's permissions ask that it isn't copied.", exit::PROTECTED)
         .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
 }
 
@@ -48,7 +49,7 @@ pub fn is_copy_restricted(path: &Path) -> bool {
 }
 
 fn bad_number() -> AgentError {
-    AgentError::new("usage", "An image is numbered from 1, as `recto images` lists them.", exit::USAGE)
+    AgentError::new(Code::USAGE, "An image is numbered from 1, as `recto images` lists them.", exit::USAGE)
 }
 
 /// `recto images`: where a page's images are.
@@ -60,7 +61,7 @@ pub(crate) fn images(path: &Path, page: u32) -> Result<Value, AgentError> {
 pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, anyway: bool) -> Result<Value, AgentError> {
     let index = page
         .checked_sub(1)
-        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
+        .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages are numbered from 1.", exit::NOT_FOUND))?;
     if number == 0 {
         return Err(bad_number());
     }
@@ -124,7 +125,7 @@ pub(crate) struct SnapshotAsked<'a> {
 }
 
 fn format_of(name: &str) -> Result<Format, AgentError> {
-    Format::from_name(name).ok_or_else(|| AgentError::new("usage", "A snapshot is `png`, `jpg`, `svg` or `text`.", exit::USAGE))
+    Format::from_name(name).ok_or_else(|| AgentError::new(Code::USAGE, "A snapshot is `png`, `jpg`, `svg` or `text`.", exit::USAGE))
 }
 
 /// Whether a snapshot in this format writes a file, which is what decides its level: text comes back in the answer, as `copy` does.
@@ -137,14 +138,14 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     let page = asked
         .page
         .checked_sub(1)
-        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
+        .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages are numbered from 1.", exit::NOT_FOUND))?;
     let format = format_of(asked.format)?;
     crate::render::check_scale_and_box(asked.scale, Some(asked.rect))?;
     let started = Instant::now();
     if format == Format::Text {
         if asked.out.is_some() {
             return Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "A snapshot as text comes back in the answer, as `copy` gives it, and writes no file.",
                 exit::USAGE,
             )
@@ -169,7 +170,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     }
     let out = asked
         .out
-        .ok_or_else(|| AgentError::new("usage", format!("A snapshot as {} needs `--out`, a new file.", format.name()), exit::USAGE))?;
+        .ok_or_else(|| AgentError::new(Code::USAGE, format!("A snapshot as {} needs `--out`, a new file.", format.name()), exit::USAGE))?;
     crate::saving::check_export_path(out, format.endings(), if format == Format::Svg { "SVG" } else { "picture" })?;
     if std::fs::symlink_metadata(out).is_ok() {
         return Err(output_exists());
@@ -532,7 +533,7 @@ mod tests {
         clip.items.push(ClipItem::Promised { uti: UTI_SVG, cap: 1 });
         assert_eq!(clip.room(), 20, "a promise takes no room until it's made");
         let over = in_memory(clip.room(), |out| {
-            std::io::Write::write_all(&mut *out.borrow_mut(), &[0; 21]).map_err(|_| AgentError::new("output_too_large", "", exit::FAILED))
+            std::io::Write::write_all(&mut *out.borrow_mut(), &[0; 21]).map_err(|_| AgentError::new(Code::OUTPUT_TOO_LARGE, "", exit::FAILED))
         });
         assert_eq!(over.unwrap_err().code, "output_too_large");
     }

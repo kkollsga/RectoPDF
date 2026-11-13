@@ -20,7 +20,7 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
     } else {
         Err(refusal(table::display_name(command.tag()), level, command.access()))
     };
-    let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");
+    let outcome = result.as_ref().map_or_else(|error| error.code.as_str(), |_| "ok");
     log.record(command.tag(), level, outcome, &with_acted_tab(command.log_details(), acted, &result, command));
     result
 }

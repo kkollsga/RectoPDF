@@ -7,6 +7,7 @@ use super::{Inner, lock, person};
 use crate::find::{self as app, FindHandle};
 pub use crate::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
 pub use crate::find::{FindRow, FindRowKind, FindView};
+use recto_agent::Code;
 use recto_agent::commands::Move;
 use recto_agent::commands::finding::{Find, FindAsk};
 use recto_agent::{Command, Effect, Event};
@@ -47,17 +48,23 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     let Command::Move(Move::Find(asked)) = ran.command else {
         return;
     };
+    // A query refused as too long, by the rule that refuses it: what was typed, or for ⌘F and a step what the field holds, which they find again (the query,
+    // or the draft if there's none). Never by the refusal's words. Worked out before the field is locked, as it reads the session.
+    let too_long = matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. })
+        && ran.refused().is_some_and(|error| error.code == Code::BAD_QUERY)
+        && match &asked.ask {
+            FindAsk::Query(query) => recto_agent::find::too_long_query(query),
+            _ => inner.host.session.with_session(|s| {
+                let find = s.viewing().find();
+                recto_agent::find::too_long_query(if find.query.is_empty() { &find.draft } else { &find.query })
+            }),
+        };
     {
         let mut field = lock(&inner.tools.find_field);
         if asked.ask == FindAsk::Close {
             field.clear_pending();
         } else if matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
-            let too_long = recto_agent::find::too_long();
-            field.set_note(
-                ran.refused()
-                    .filter(|error| error.code == too_long.code && error.message == too_long.message)
-                    .map(|_| too_long.message),
-            );
+            field.set_note(too_long.then(|| recto_agent::find::too_long().message));
         }
     }
     inner.listener.model_changed();

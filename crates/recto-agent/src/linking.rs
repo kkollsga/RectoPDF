@@ -2,6 +2,7 @@
 //!
 //! An agent sees where a link goes and can follow one within the document, as a click does. It never opens a web address: only the person can, in the app, after the app has asked them and shown the real address. A link's address comes from the file, so it goes under `untrusted`, and nothing about a link is ever run.
 
+use crate::Code;
 use crate::TabRef;
 use crate::{AgentError, Event, SessionAccess, exit, locate, page_now, select, where_json};
 use recto_core::nav::{LinkTarget, PageLinks};
@@ -102,14 +103,14 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32,
     // After the read, which can take a while on a slow disk, so the place taken in is the one showing as it goes.
     access.take_places();
     let chosen = link.checked_sub(1).and_then(|at| found.links.get(at as usize)).ok_or_else(|| {
-        AgentError::new("no_such_link", format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND)
+        AgentError::new(Code::NO_SUCH_LINK, format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND)
             .then("`recto links --page N` lists them, counted from 1.")
     })?;
     access.with(|s| {
-        let id = select(s, &TabRef::Id(id)).map_err(|_| AgentError::new("no_such_tab", "That tab closed.", exit::NOT_FOUND))?;
+        let id = select(s, &TabRef::Id(id)).map_err(|_| AgentError::new(Code::NO_SUCH_TAB, "That tab closed.", exit::NOT_FOUND))?;
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
-                let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
+                let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new(Code::LINK_GOES_NOWHERE, "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
                 s.jump_as(id, to, within.map_or(0.0, f64::from), by)?;
                 "page"
             }
@@ -121,12 +122,12 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32,
                 if *back { "back" } else { "forward" }
             }
             LinkTarget::Web(address) => {
-                let mut error = AgentError::new("web_link_needs_user", "This link goes to a web or email address. Only the person using RectoPDF can open one, in the app, after it asks them. No agent command opens it, at any level.", exit::PERMISSION).then("Tell the user where it goes, if it matters: it's under `untrusted`, from the file.");
+                let mut error = AgentError::new(Code::WEB_LINK_NEEDS_USER, "This link goes to a web or email address. Only the person using RectoPDF can open one, in the app, after it asks them. No agent command opens it, at any level.", exit::PERMISSION).then("Tell the user where it goes, if it matters: it's under `untrusted`, from the file.");
                 error.untrusted = Some(Box::new(json!({ "address": &**address })));
                 return Err(error);
             }
-            LinkTarget::Refused(why) => return Err(AgentError::new("link_refused", why.message(), exit::FAILED).then("Nothing happened, and nothing will: RectoPDF never does this.")),
-            LinkTarget::Nowhere => return Err(AgentError::new("link_goes_nowhere", "This link names a place that isn't in this document.", exit::FAILED)),
+            LinkTarget::Refused(why) => return Err(AgentError::new(Code::LINK_REFUSED, why.message(), exit::FAILED).then("Nothing happened, and nothing will: RectoPDF never does this.")),
+            LinkTarget::Nowhere => return Err(AgentError::new(Code::LINK_GOES_NOWHERE, "This link names a place that isn't in this document.", exit::FAILED)),
         };
         events.push(page_now(s, id));
         let mut answer = where_json(s, id);
@@ -137,10 +138,10 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32,
 
 fn nothing_that_way(back: bool) -> AgentError {
     if back {
-        AgentError::new("nothing_back", "There's nowhere to go back to in this tab.", exit::FAILED)
+        AgentError::new(Code::NOTHING_BACK, "There's nowhere to go back to in this tab.", exit::FAILED)
             .then("`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to.")
     } else {
-        AgentError::new("nothing_forward", "There's nowhere to go forward to in this tab.", exit::FAILED)
+        AgentError::new(Code::NOTHING_FORWARD, "There's nowhere to go forward to in this tab.", exit::FAILED)
             .then("`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to.")
     }
 }
@@ -163,7 +164,7 @@ pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, label:
     access.with(|s| {
         let id = select(s, tab)?;
         let page = s.pages().for_typed(id, label).ok_or_else(|| {
-            AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND)
+            AgentError::new(Code::NO_SUCH_LABEL, "No page in this document is called that.", exit::NOT_FOUND)
                 .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
         })?;
         s.jump_as(id, page, 0.0, by)?;

@@ -8,6 +8,7 @@
 
 use super::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
 pub use crate::snapshot_menu::{TOGGLE_ID, is_menu_id};
+use recto_agent::Code;
 use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
 use recto_reader::Engine;
 use recto_reader::snapshot::{SnapshotTool, Taken};
@@ -419,7 +420,7 @@ fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathB
     let Some((path, page)) = source_of(inner, job) else {
         return (
             ClipOutcome::Failed(recto_agent::AgentError::new(
-                "source_changed",
+                Code::SOURCE_CHANGED,
                 "That page can't be read now: its file has changed or gone.",
                 recto_agent::exit::FAILED,
             )),

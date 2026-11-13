@@ -181,7 +181,7 @@ const MALFORMED: &[(&str, &str)] = &[
 fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
     for (line, word) in MALFORMED {
         let refused = parse(line).expect_err(line);
-        assert_eq!((refused.code, refused.exit), ("usage", exit::USAGE), "{line}");
+        assert_eq!((refused.code.as_str(), refused.exit), ("usage", exit::USAGE), "{line}");
         assert!(
             refused.candidates.is_empty() && refused.untrusted.is_none() && refused.ask.is_none(),
             "{line}: {refused:?}"

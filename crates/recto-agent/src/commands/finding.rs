@@ -1,6 +1,7 @@
 //! `find`: the app's Find, in the document being read. The finding is the find module's.
 
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::{number, text};
 use crate::table::*;
 use crate::*;
@@ -82,14 +83,14 @@ impl TryFrom<line::Find> for Find {
         let said = [query.is_some(), next || previous, hit.is_some(), open, close];
         if said.iter().filter(|said| **said).count() > 1 || (next && previous) {
             return Err(AgentError::new(
-                "usage",
+                Code::USAGE,
                 "That's more than one thing at once: a query, a step, a hit, opening or closing.",
                 exit::USAGE,
             )
             .then("Find first, then `recto find --next`."));
         }
         if jump && !(next || previous) {
-            return Err(AgentError::new("usage", "`--jump` goes with `--next` or `--previous`.", exit::USAGE).then("`recto find --next --jump`."));
+            return Err(AgentError::new(Code::USAGE, "`--jump` goes with `--next` or `--previous`.", exit::USAGE).then("`recto find --next --jump`."));
         }
         let ask = match (query, hit) {
             (Some(query), _) => FindAsk::Query(query),

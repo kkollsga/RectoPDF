@@ -9,6 +9,7 @@ mod files_tests;
 
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
+use recto_agent::Code;
 use recto_agent::commands::Cmd;
 use recto_agent::commands::Qa;
 use recto_agent::commands::qa::{QaDrive, QaRead, verbs};
@@ -344,7 +345,7 @@ impl QaBridge {
                     answers.remove(&id);
                     return match answer {
                         Ok(text) => Ok(serde_json::from_str(&text).unwrap_or(Value::Null)),
-                        Err(words) => Err(AgentError::new("qa_failed", words, exit::FAILED)),
+                        Err(words) => Err(AgentError::new(Code::QA_FAILED, words, exit::FAILED)),
                     };
                 }
                 Some(None) => {}
@@ -469,7 +470,7 @@ impl QaBridge {
                 }
                 let tab = lock(&inner.published).reader.shown_tab;
                 if tab == 0 {
-                    return Err(AgentError::new("no_active_tab", "No tab is open.", exit::NOT_FOUND));
+                    return Err(AgentError::new(Code::NO_ACTIVE_TAB, "No tab is open.", exit::NOT_FOUND));
                 }
                 as_person::check_tests_files(&inner, &[Path::new(value)])?;
                 inner.act(crate::core::controls::UiAction::SaveAs { tab, path: value.to_owned() });
@@ -577,7 +578,7 @@ impl QaBridge {
         let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
         let report = inner
             .hand_off(ANSWER_AFTER_CLICK)
-            .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
+            .map_err(|error| AgentError::new(Code::HAND_OFF_REFUSED, error.to_string(), exit::FAILED))?;
         // The answer gets out first. An updater has no one to answer, and doesn't wait.
         let quitting = Arc::clone(&inner);
         let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
@@ -640,7 +641,7 @@ impl QaBridge {
         // Before anything, what's shown has to have been made from the state, which may be read late and taken in by making the window again (CI, 2026-11-11): a report before then is of a window that's about to go.
         while !self.inner().is_none_or(|inner| inner.life.state_read() && inner.life.shown_with_state()) {
             if left().is_zero() {
-                return Err(AgentError::new("timed_out", "The state hasn't been read and shown yet.", exit::TIMED_OUT)
+                return Err(AgentError::new(Code::TIMED_OUT, "The state hasn't been read and shown yet.", exit::TIMED_OUT)
                     .then("A slow disk holds it up: `recto qa state` says what the window shows meanwhile."));
             }
             std::thread::sleep(ANIMATION_POLL.min(left()));
@@ -648,7 +649,7 @@ impl QaBridge {
         loop {
             // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
             if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
-                return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT)
+                return Err(AgentError::new(Code::TIMED_OUT, "The page view didn't settle in time.", exit::TIMED_OUT)
                     .then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
@@ -661,10 +662,12 @@ impl QaBridge {
                 );
             }
             if left().is_zero() {
-                return Err(
-                    AgentError::new("timed_out", format!("Something in the window was still moving: {running}."), exit::TIMED_OUT)
-                        .then("`recto qa state` shows what's running under `app.animations`."),
-                );
+                return Err(AgentError::new(
+                    Code::TIMED_OUT,
+                    format!("Something in the window was still moving: {running}."),
+                    exit::TIMED_OUT,
+                )
+                .then("`recto qa state` shows what's running under `app.animations`."));
             }
             let pause = ANIMATION_POLL.min(left());
             std::thread::sleep(pause);
@@ -766,7 +769,7 @@ pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError>
 fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
     if release && matches!(verb, "as_person" | "owner_edit" | "save_as" | "save_from") {
         return Err(AgentError::new(
-            "qa_refused",
+            Code::QA_REFUSED,
             "A release build doesn't act as the person for a test: this QA verb is only in a development build.",
             exit::FAILED,
         ));
@@ -775,7 +778,7 @@ fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
 }
 
 fn stuck() -> AgentError {
-    AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT)
+    AgentError::new(Code::UI_NOT_ANSWERING, "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT)
         .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
@@ -789,7 +792,7 @@ fn on_the_shown_tab(shown: u32, meant: Option<u32>) -> Result<Value, AgentError>
             } else {
                 format!("The window shows tab #{shown}, not #{meant}, so nothing was done.")
             };
-            Err(AgentError::new("not_the_shown_tab", words, exit::FAILED).then("`recto tap` that tab first, or leave out `--tab`."))
+            Err(AgentError::new(Code::NOT_THE_SHOWN_TAB, words, exit::FAILED).then("`recto tap` that tab first, or leave out `--tab`."))
         }
         _ => Ok(if shown == 0 { Value::Null } else { json!(format!("#{shown}")) }),
     }

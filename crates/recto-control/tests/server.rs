@@ -1,5 +1,6 @@
 //! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
 
+use recto_agent::Code;
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
 use recto_control::StatePaths;
 use recto_control::client::Client;
@@ -112,7 +113,7 @@ impl Host for Stand {
     fn stop_refusal(&self) -> Option<AgentError> {
         self.stop_refused
             .load(Ordering::SeqCst)
-            .then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
+            .then(|| AgentError::new(Code::ONLY_THE_USER_QUITS, "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -424,7 +425,7 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
     client.send("{\"cmd\":\"tabs\"}", Duration::from_secs(5)).unwrap();
     let error = client.read(Duration::from_millis(50)).unwrap_err();
     assert_eq!(
-        (error.code, error.exit),
+        (error.code.as_str(), error.exit),
         ("no_answer", exit::TIMED_OUT),
         "the stuck command means no answer in time"
     );
@@ -432,7 +433,7 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
     std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     let refused = Client::connect(&running.paths).unwrap_err();
     assert_eq!(
-        (refused.code, refused.exit),
+        (refused.code.as_str(), refused.exit),
         ("socket_refused", exit::PERMISSION),
         "a folder others can reach isn't to be trusted"
     );

@@ -3,6 +3,7 @@
 use super::{
     FileOut, Output, OwnTemp, Shared, hidden_text_facts, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken,
 };
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_proto::contents::{ImageCoding, NoteCode, PaintStyle, Record, SEG_CURVE, SEG_LINE, TextMode, Why, WireSeg, hints};
 use recto_proto::jpeg::{JpegFacts, JpegScan};
@@ -404,7 +405,7 @@ fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
         Some("paths") => Ok(TextMode::Paths),
         Some("selectable") => Ok(TextMode::Selectable),
         Some(_) => Err(AgentError::new(
-            "bad_text_mode",
+            Code::BAD_TEXT_MODE,
             "How text comes out is `both`, `paths` or `selectable`.",
             exit::FAILED,
         )),
@@ -427,12 +428,12 @@ pub(crate) fn hints_for(path: &Path, page: u32) -> u8 {
 const WRITE_FAILED: &str = "The SVG couldn't be saved there.";
 
 fn write_failed() -> AgentError {
-    AgentError::new("write_failed", WRITE_FAILED, exit::FAILED)
+    AgentError::new(Code::WRITE_FAILED, WRITE_FAILED, exit::FAILED)
 }
 
 fn from_io(error: &io::Error) -> AgentError {
     if error.kind() == io::ErrorKind::FileTooLarge {
-        AgentError::new("output_too_large", "This SVG would be larger than RectoPDF will write.", exit::FAILED)
+        AgentError::new(Code::OUTPUT_TOO_LARGE, "This SVG would be larger than RectoPDF will write.", exit::FAILED)
     } else {
         write_failed()
     }
@@ -524,7 +525,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
 pub(crate) fn check_args(scale: f32, rect: Option<[f32; 4]>) -> Result<(), AgentError> {
     if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
         return Err(AgentError::new(
-            "bad_scale",
+            Code::BAD_SCALE,
             format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE),
             exit::FAILED,
         ));
@@ -585,7 +586,7 @@ pub(crate) fn write_svg<O: Output>(
     // A picture standing in for part of the page is drawn at this scale. What's vector has no scale, so a page too large for this one only changes what its pictures would be, and it's said.
     let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| {
         AgentError::new(
-            "too_large_at_this_scale",
+            Code::TOO_LARGE_AT_THIS_SCALE,
             format!(
                 "Page {} is {width_points} x {height_points} points, and no scale fits: a picture is at most {} Mpx.",
                 page + 1,
@@ -786,7 +787,7 @@ const WHYS: [Why; 19] = [
 
 fn bad_rect() -> AgentError {
     AgentError::new(
-        "bad_rect",
+        Code::BAD_RECT,
         "A box is x,y,width,height in points from the page's top left, each a number, with a width and a height above 0.",
         exit::FAILED,
     )

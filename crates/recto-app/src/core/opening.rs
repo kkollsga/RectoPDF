@@ -4,6 +4,7 @@
 //! [`answered`].
 
 use super::*;
+use recto_agent::Code;
 use recto_agent::TabRef;
 use recto_agent::commands::Move;
 use recto_agent::commands::tabs::{Open, RecentClear, Tap};
@@ -48,7 +49,7 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
 pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     match (ran.command, ran.refused()) {
         (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => inner.saver.write_soon(),
-        (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == OpenError::PasswordNeeded.code() => {
+        (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == Code::lower(OpenError::PasswordNeeded.code()) => {
             lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, path);
         }
         (Command::Move(Move::Open(_)), Some(error)) => {

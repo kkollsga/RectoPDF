@@ -7,6 +7,7 @@
 //! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
 
 use super::{CoreCall, HostAction, Inner, SelectionNotice, lock};
+use recto_agent::Code;
 use recto_agent::print;
 use recto_session::TabId;
 use std::path::{Path, PathBuf};
@@ -282,7 +283,7 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
         let outcome = listed.and_then(|listed| {
             if request.to_file && !request.anyway && print::any_copy_restricted(&listed) {
                 return Err(recto_agent::AgentError::new(
-                    "copy_restricted",
+                    Code::COPY_RESTRICTED,
                     "This file's permissions ask that it isn't copied.",
                     recto_agent::exit::PROTECTED,
                 ));
@@ -303,13 +304,13 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
                 }
                 *lock(&printing.ready) = Some(path);
             }
-            Err(error) if error.code == "copy_restricted" => {
+            Err(error) if error.code == Code::COPY_RESTRICTED => {
                 // A QA print's target stays, for "Print anyway" to write to.
                 let serial = printing.say(error.message, true);
                 *lock(&printing.refused) = Some((serial, request));
             }
             Err(error) => {
-                if error.code != "cancelled" {
+                if error.code != Code::CANCELLED {
                     printing.say(error.message, false);
                 }
                 lock(&printing.qa_target).take();

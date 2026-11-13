@@ -1,6 +1,7 @@
 //! **The session the socket and the app share:** the host every command runs on, and what the page views tell the app.
 
 use super::*;
+use recto_agent::Code;
 use recto_agent::commands::Move;
 use recto_agent::commands::view::{Palette, View};
 use recto_agent::{Actor, Runs};
@@ -54,7 +55,7 @@ impl Host for AppHost {
             if self.handing_off.load(Ordering::SeqCst) {
                 self.running.fetch_sub(1, Ordering::SeqCst);
                 return Err(
-                    AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
+                    AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
                         .then("Try again in a moment, when it's back."),
                 );
             }
@@ -172,7 +173,7 @@ impl AppHost {
         let inner = self
             .saver
             .inner()
-            .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
+            .ok_or_else(|| AgentError::new(Code::BUSY, "The app is going away.", recto_agent::exit::BUSY))?;
         // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
         let whom = crate::palette::ForWhom {
             hidden_tabs: self.session.with_session(|session| {
@@ -197,7 +198,7 @@ impl AppHost {
         let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
         if *run {
             let first = rows.first().ok_or_else(|| {
-                AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
+                AgentError::new(Code::NOTHING_FOUND, "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
                     .then("`recto palette` lists what there is.")
             })?;
             // A tab's or a recent file's row is the agent's own command; a menu id's is the one table's (`menu_rows`).
@@ -246,7 +247,7 @@ impl AppHost {
             && palette::title_now(inner, id).as_deref() != Some(matched)
         {
             return Err(AgentError::new(
-                "changed",
+                Code::CHANGED,
                 format!("“{matched}” changed between being found and being run, so nothing was run."),
                 recto_agent::exit::FAILED,
             )
@@ -272,7 +273,7 @@ impl AppHost {
                 Ok(does())
             }
             super::menu_rows::ForAgent::PersonsOwn { why, instead } => Err(AgentError::new(
-                "persons_own",
+                Code::PERSONS_OWN,
                 format!("`{id}` is the person's own in the window ({why}), so it isn't run for an agent."),
                 recto_agent::exit::FAILED,
             )
@@ -281,13 +282,13 @@ impl AppHost {
                 None => "There's no agent's command for it: `recto help` lists what there is.".to_string(),
             })),
             super::menu_rows::ForAgent::NothingNow => Err(AgentError::new(
-                "nothing_to_do",
+                Code::NOTHING_TO_DO,
                 format!("`{id}` has nothing to do just now, so nothing was run."),
                 recto_agent::exit::FAILED,
             )
             .then("`recto palette` lists what there is now.")),
             super::menu_rows::ForAgent::Unknown => Err(AgentError::new(
-                "nothing_found",
+                Code::NOTHING_FOUND,
                 format!("`{id}` isn't anything the window has, so nothing was run."),
                 recto_agent::exit::NOT_FOUND,
             )

@@ -1,6 +1,7 @@
 //! How the app shows pages: `view` (the paper, the sidebar, the agent icon, the active tab's layout, and the zoom, which is the app's, as it's about a screen) and ⌘K's `palette`, which only the app has.
 
 use super::{Cmd, Cx, OnlyAsks, row_access};
+use crate::Code;
 use crate::human::text;
 use crate::table::*;
 use crate::*;
@@ -115,7 +116,7 @@ pub mod line {
 }
 
 fn usage(message: String) -> AgentError {
-    AgentError::new("usage", message, exit::USAGE)
+    AgentError::new(Code::USAGE, message, exit::USAGE)
 }
 
 /// A word for something hidden or not, or the refusal of one that isn't.
@@ -249,10 +250,12 @@ impl Cmd for View {
             tab,
         } = self;
         if zoom.is_some() {
-            return Err(
-                AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED)
-                    .then("It works when `recto` is talking to the app."),
-            );
+            return Err(AgentError::new(
+                Code::ZOOM_NEEDS_APP,
+                "Zoom is about what's on a screen, and this session has none.",
+                exit::FAILED,
+            )
+            .then("It works when `recto` is talking to the app."));
         }
         set(cx.access, cx.actor, (*paper, *sidebar, *agent_icon, *layout), tab.as_ref(), cx.events)
     }
@@ -308,7 +311,7 @@ impl Cmd for Palette {
     }
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         Err(AgentError::new(
-            "palette_needs_app",
+            Code::PALETTE_NEEDS_APP,
             "The palette lists the app's commands, and this session has no app.",
             exit::FAILED,
         )
@@ -370,7 +373,7 @@ pub(crate) fn set<A: SessionAccess>(
         // read, and the tab it lays out is here.
         let spread = match layout {
             Some(spread) => {
-                let id = laid_out.ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+                let id = laid_out.ok_or_else(|| AgentError::new(Code::NO_ACTIVE_TAB, "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
                 Some((id, spread))
             }
             None => None,
@@ -545,7 +548,7 @@ mod tests {
         ] {
             let (view, layout) = (session.viewing().view(), session.tabs().spread_of(session.tabs().active().unwrap()));
             let (result, events) = run(&mut session, line);
-            assert_eq!(result.map_err(|error| error.code), Err("usage"), "{line}");
+            assert_eq!(result.map_err(|error| error.code.as_str()), Err("usage"), "{line}");
             assert_eq!(
                 (session.viewing().view(), session.tabs().spread_of(session.tabs().active().unwrap())),
                 (view, layout),

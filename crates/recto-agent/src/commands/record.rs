@@ -2,6 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, OnlyAsks, needs_server, row_access};
+use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -328,7 +329,7 @@ pub struct HandOff {
 
 /// A long-running session that keeps no record of its own.
 pub fn no_record() -> AgentError {
-    AgentError::new("no_record", "This session doesn't keep a state record.", exit::FAILED)
+    AgentError::new(Code::NO_RECORD, "This session doesn't keep a state record.", exit::FAILED)
 }
 
 fn show_words(data: &Value) -> String {

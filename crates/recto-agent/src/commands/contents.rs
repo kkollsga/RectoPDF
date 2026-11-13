@@ -5,6 +5,7 @@
 //! the sidebar shows: none answers with a heading's words, and none widens what the helper reads, which is what `contents --generated` already asks it for.
 
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::generated;
 use crate::table::*;
 use crate::*;
@@ -48,7 +49,7 @@ impl Cmd for ContentsFold {
             let id = select(s, tab)?;
             let open = s.toggle_contents_section(id, *entry).ok_or_else(|| {
                 AgentError::new(
-                    "not_a_section",
+                    Code::NOT_A_SECTION,
                     "That entry has nothing under it in the contents the sidebar shows, so there's nothing to fold or open.",
                     exit::NOT_FOUND,
                 )
@@ -113,7 +114,7 @@ impl TryFrom<line::ContentsShow> for ContentsShow {
     fn try_from(line: line::ContentsShow) -> Result<Self, AgentError> {
         let which = Which::ALL.into_iter().find(|which| which.word() == line.which).ok_or_else(|| {
             AgentError::new(
-                "usage",
+                Code::USAGE,
                 format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(&line.which)),
                 exit::USAGE,
             )

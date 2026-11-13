@@ -4,6 +4,7 @@
 
 use super::jpeg::{JpegWriter, QUALITY};
 use super::{Output, Shared, too_heavy_to_export, with_time_taken, write_error_to_agent};
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_index::chrome::EdgeLine;
 use recto_index::select::{BoxText, PageText, Rect, neighbour_pages};
@@ -147,7 +148,7 @@ pub(crate) fn pictures_into<O: Output>(
                 },
                 Some(size),
             ) => too_heavy_to_export(failure, page, scale, size, Policy::default().heavy_limit_bytes),
-            (RenderFailure::BadRequest, _) => AgentError::new("bad_rect", "That box isn't on the page.", exit::FAILED)
+            (RenderFailure::BadRequest, _) => AgentError::new(Code::BAD_RECT, "That box isn't on the page.", exit::FAILED)
                 .then("A box is x,y,width,height in points from the page's top left, as it's shown, and starts on the page."),
             _ => failure.into(),
         });

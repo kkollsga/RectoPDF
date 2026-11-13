@@ -5,6 +5,7 @@
 use super::{HostAction, Inner, person};
 use crate::queue::{CoreCall, Origin, PersonCommand};
 use crate::saving::{CloseChoice, SAVED_NOT_CLOSED};
+use recto_agent::Code;
 use recto_agent::commands::tabs::Close;
 use recto_agent::commands::{Move, editing::Discard};
 use recto_agent::{Command, TabRef};
@@ -21,7 +22,7 @@ fn close(tab: TabId) -> Command {
 /// nothing now.
 pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if let (Some(error), Command::Move(Move::Close(_)), Origin::Finishing) = (ran.refused(), ran.command, ran.origin)
-        && error.code == "unsaved_changes"
+        && error.code == Code::UNSAVED_CHANGES
     {
         person::say(inner, SAVED_NOT_CLOSED.to_string());
     }

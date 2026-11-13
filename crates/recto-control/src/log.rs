@@ -9,6 +9,7 @@
 
 use crate::levels::now_ms;
 use crate::state::StatePaths;
+use recto_agent::Code;
 use recto_agent::Level;
 use recto_platform::local;
 use serde_json::{Value, json};
@@ -131,8 +132,8 @@ fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
 fn collapses(cmd: &str, outcome: &str) -> bool {
     matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request")
         || matches!(
-            outcome,
-            "permission_denied" | "needs_terminal" | "would_clear_redo" | "would_discard_user_edits" | "sign_refused" | "busy"
+            Code::listed(outcome),
+            Some(Code::PERMISSION_DENIED | Code::NEEDS_TERMINAL | Code::WOULD_CLEAR_REDO | Code::WOULD_DISCARD_USER_EDITS | Code::SIGN_REFUSED | Code::BUSY)
         )
 }
 

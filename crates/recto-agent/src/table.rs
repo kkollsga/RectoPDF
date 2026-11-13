@@ -1,6 +1,7 @@
 //! **The one list of commands.** The CLI's grammar, `recto help`, the level checks, `SKILL.md` and `REFERENCE.md` all come from [`TABLE`], so nothing documented can be missing and nothing can be
 //! left out of the checks. Tests walk it: every command has a row, every row runs, every example parses.
 
+use crate::Code;
 use crate::{AgentError, Level, exit};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -602,7 +603,7 @@ impl Invocation {
 }
 
 fn usage_error(message: impl Into<String>, next: impl Into<String>) -> AgentError {
-    AgentError::new("usage", message, exit::USAGE).then(next)
+    AgentError::new(Code::USAGE, message, exit::USAGE).then(next)
 }
 
 /// The rows whose value is a secret read from stdin rather than the command line, under this field: a password typed for a test (review O6).
@@ -1475,7 +1476,7 @@ mod tests {
         ] {
             let args: Vec<String> = line.split(' ').map(str::to_string).collect();
             let error = parse_cli(&args).expect_err(line);
-            assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{line}");
+            assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE), "{line}");
             assert!(error.next.contains("recto"), "{line}: {}", error.next);
         }
     }
@@ -1626,7 +1627,7 @@ mod tests {
             (&["search", "--query", "word"][..], "recto search word"),
         ] {
             let error = line(typed).unwrap_err();
-            assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{typed:?}");
+            assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE), "{typed:?}");
             assert!(error.message.contains(wanted), "{typed:?} should say {wanted}: {}", error.message);
             assert!(error.next.contains("recto help"), "{typed:?}: {}", error.next);
         }

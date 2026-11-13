@@ -3,6 +3,7 @@
 //! file is read off the session thread, and the command runs again once it's in, as a tap's does. Each pane's layout is `view`'s.
 
 use super::{Inner, lock, person};
+use recto_agent::Code;
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Move, compare::Compare};
 use recto_agent::{AgentError, Command, TabRef};
@@ -24,7 +25,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
 fn compare_words(error: &AgentError) -> Option<&'static str> {
     [CompareError::TooMany, CompareError::TooFew, CompareError::NoSuchTab, CompareError::SameTabTwice]
         .into_iter()
-        .find(|known| known.code() == error.code)
+        .find(|known| Code::lower(known.code()) == error.code)
         .map(CompareError::message)
 }
 

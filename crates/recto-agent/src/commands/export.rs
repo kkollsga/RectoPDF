@@ -59,7 +59,7 @@ impl Cmd for Render {
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let drawn = render::render(&source.path, source.page + 1, *scale, out);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
-                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code.as_str()), events);
             }
             let mut data = drawn?;
             describe_source(&mut data, *page, &source);
@@ -142,7 +142,7 @@ impl Cmd for ExportSvg {
             };
             let drawn = render::export_svg(&args);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
-                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code.as_str()), events);
             }
             let mut data = drawn?;
             describe_source(&mut data, *page, &source);

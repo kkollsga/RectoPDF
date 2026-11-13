@@ -29,6 +29,7 @@ pub mod updates;
 pub mod view;
 pub mod words;
 
+use crate::Code;
 use crate::table::{self, Access, Spec};
 use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
 use serde_json::{Value, json};
@@ -84,7 +85,7 @@ pub fn row_access(tag: &str) -> Access {
 
 /// What a command answered by the server's own loop says if it reaches `execute`, as with a session run in one process.
 pub fn needs_server() -> AgentError {
-    AgentError::new("needs_server", "This needs the long-running session.", crate::exit::NOT_RUNNING)
+    AgentError::new(Code::NEEDS_SERVER, "This needs the long-running session.", crate::exit::NOT_RUNNING)
 }
 
 /// A file's name for the log. It comes from outside, so even cleaned, it goes under `untrusted`, here as everywhere.

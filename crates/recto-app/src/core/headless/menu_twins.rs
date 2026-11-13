@@ -333,13 +333,13 @@ fn differences_at_control(twins: &Twins, id: &str, title: &str) -> Vec<String> {
         };
         twins.person.settle();
         events.extend(twins.person.heard_events());
-        (result.map(drop).map_err(|error| error.code), events)
+        (result.map(drop).map_err(|error| error.code.as_str()), events)
     };
     let (result, mut said) = twins.agent.agent_heard(Level::Control, &palette_run(title));
     twins.agent.settle();
     said.extend(twins.agent.heard_events());
     let mut found = Vec::new();
-    let by_palette = result.map(drop).map_err(|error| error.code);
+    let by_palette = result.map(drop).map_err(|error| error.code.as_str());
     if by_palette != direct.0 {
         found.push(format!("at Control: its command came to {:?}, the palette's run to {by_palette:?}", direct.0));
     }
