@@ -158,6 +158,9 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Release 0.1.0 (2026-11-11)
 - "I preauthorize the 0.1.0 release once everything is done". This covers pushing the `v0.1.0` tag and publishing its draft, once: the open release work is merged, `tools/check.sh --full` passed on the commit, CI is green on it, and the release workflow's draft built, signed, notarized and passed its checks. If any of those fails, nothing is published; it's fixed, and the tag is made again. It covers 0.1.0 only.
 
+## Release 0.1.1 (2026-11-13)
+- Asked whether the fix for a quiet run giving an agent Full on the user's own files (in 0.1.0 as released) should go out as 0.1.1 as soon as it has merged: "no lets wait until we are done with R before we release". So nothing is released during phase R, security fixes included: they merge to `main` and wait. 0.1.1 is prepared when phase R is done, and publishing it is still the owner's word then.
+
 ## Product rules from the owner: privacy (2026-11-11)
 - Asked to approve `PRIVACY.md`, the quiet line in the empty window about the daily check, and the Settings hint and link: "Approve as written".
 - Asked whether the daily update check should get a real off, as it runs with *Update automatically* off too: "Keep as is". One anonymous request a day, always; said in Settings and `PRIVACY.md`.
