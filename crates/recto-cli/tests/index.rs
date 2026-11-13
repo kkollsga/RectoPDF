@@ -1488,13 +1488,15 @@ fn the_old_corpus_folder_goes_at_startup() {
     }
     // A link there isn't the old folder, and what it points at stays.
     std::os::unix::fs::symlink(&nearly, &old).unwrap();
+    // Its ready line comes before the session is made, so it's counted once the session answers. A thread a start makes for nothing goes in a moment, which no count can see; one it holds never does. Polled for, bounded.
     let serving = state.serve();
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(
-        recto_platform::local::process_counters(serving.pid()).unwrap().threads,
-        1,
-        "a start with nothing to remove holds a thread"
-    );
+    let status = Raw::connect(&state).call(&serde_json::json!({ "cmd": "status" }));
+    assert_eq!(status["ok"], true, "{status}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while recto_platform::local::process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(Instant::now() < deadline, "a start with nothing to remove holds a thread");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
     assert!(std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
 }
