@@ -17,10 +17,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 pub mod builds;
+mod flow;
 mod now;
 mod said;
 pub mod seams;
 mod words;
+use flow::{Going, Phase, Seen, Step};
 pub use now::UpdateAction;
 pub use said::{Said, SaidKind};
 use seams::duration_ms;
@@ -30,10 +32,6 @@ pub use seams::{Releases, Seams, WallClock};
 const HAND_OFF_LIMIT: Duration = Duration::from_secs(5);
 /// How often an install that's been asked for looks again at what it's waiting for.
 const WAIT_STEP: Duration = Duration::from_millis(100);
-/// How long an install that's been asked for will wait for something in flight, before saying it gave up.
-const WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
-/// How long the app gives itself to quit, before it says that didn't happen and carries on.
-const QUIT_PATIENCE: Duration = Duration::from_secs(15);
 /// What a check's thread gets: room for the parser's own limit of 128 levels on a hostile `latest.json`, at a debug build's frame sizes. It's only address space until it's used.
 const CHECK_STACK: usize = 1024 * 1024;
 /// Launches of a new version that don't come up. The launch after this many goes back to the kept one, as a launch that fails can't do anything about it itself.
@@ -84,6 +82,11 @@ pub trait Host: Send + Sync {
     /// What this launch was asked to open, by its arguments or the system, before it read the state. What a launch that goes back passes on to the version it goes back to.
     fn documents_asked_for(&self) -> Vec<PathBuf> {
         Vec::new()
+    }
+    /// Whether the app this updater is part of has ended, with the process still there: only a test's headless app, whose process goes on after it. An install
+    /// that's looking again ends then, writing nothing. A real app's updater ends with its process, so never there.
+    fn gone(&self) -> bool {
+        false
     }
     /// Starts the installer. A test stands in for this.
     fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
@@ -1218,11 +1221,6 @@ impl Updater {
         self.host.changed();
     }
 
-    /// Whether an automatic install is still right to go ahead: the user may have come back during a download.
-    fn still_idle(&self, look: &Look, idle_ms: u64) -> bool {
-        self.since_input(look) >= idle_ms
-    }
-
     fn run_install(self: &Arc<Self>, asked: Asked, version: &str) {
         let Some(facts) = lock(&self.st).facts.clone() else { return };
         self.ready_folder();
@@ -1286,35 +1284,26 @@ impl Updater {
         self.wait_and_hand_off(asked, &facts, &to);
     }
 
-    /// The download's good. What's in flight finishes first, and the user's told if they're waiting on it. Then the hand-off and the quit: from here, what's written is what comes back.
+    /// The download's good. What's in flight finishes first, and the user's told if they're waiting on it. Then the hand-off and the quit: from here, what's written is what comes back. What happens at each look is [`flow::next`]'s; this asks the host what it needs and carries it out.
     fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>) {
         let version = to.version;
-        let began = self.wall_ms();
+        let began_ms = self.wall_ms();
         loop {
-            // The user's quitting by other means, and this doesn't turn that into a reopening.
-            if self.stopping.load(Ordering::SeqCst) {
-                self.back_on_offer(version, None);
-                return;
-            }
-            // A build was handed over at Full: if access has dropped since, it doesn't go in, as no one at the level that asked for it is there to.
-            if to.development_build && !self.host.may_take_a_build() {
-                self.failed(
-                    asked,
-                    version,
-                    "agent access isn't Full any more, and a development build is installed only at Full",
-                    false,
-                );
-                return;
-            }
-            let look = self.host.look();
-            if asked == Asked::ByItself && !self.still_idle(&look, to.idle_ms) {
-                // They've come back. It's all ready for the next quiet half hour.
-                let wait = to.idle_ms.saturating_sub(self.since_input(&look));
-                self.back_on_offer(version, Some(self.now_ms().saturating_add(wait)));
-                return;
-            }
-            if look.busy.is_empty() {
-                match self.host.hand_off(HAND_OFF_LIMIT) {
+            let stopping = self.stopping.load(Ordering::SeqCst);
+            let seen = self.seen(stopping, to.development_build);
+            let mut step = flow::next(
+                to,
+                Phase::Waiting {
+                    began_ms,
+                    busy_at_hand_off: false,
+                },
+                &seen,
+                asked,
+                stopping,
+                self.wall_ms(),
+            );
+            if step == Step::HandOff {
+                step = match self.host.hand_off(HAND_OFF_LIMIT) {
                     Ok(handed) => {
                         self.quit_after_hand_off(asked, facts, to, handed);
                         return;
@@ -1322,65 +1311,137 @@ impl Updater {
                     Err(HandOffRefused::NotSaved(why)) => {
                         // Nothing's been lost, and the app's taking everything again: the update just doesn't go ahead.
                         self.log(&format!("{version}: the state couldn't be written and read back"));
-                        self.failed(asked, version, &format!("the app's state couldn't be saved first: {why}"), false);
-                        return;
+                        flow::next(to, Phase::NotSaved(&why), &seen, asked, stopping, self.wall_ms())
                     }
-                    Err(HandOffRefused::Busy(_)) => {}
+                    // Something's in flight that the look didn't see: this look waits, as for what it did.
+                    Err(HandOffRefused::Busy(_)) => flow::next(
+                        to,
+                        Phase::Waiting {
+                            began_ms,
+                            busy_at_hand_off: true,
+                        },
+                        &seen,
+                        asked,
+                        stopping,
+                        self.wall_ms(),
+                    ),
+                };
+            }
+            match step {
+                Step::Wait { waiting_for } => {
+                    self.say_waiting(version, waiting_for);
+                    std::thread::sleep(WAIT_STEP);
                 }
-            }
-            if asked == Asked::ByItself {
-                self.back_on_offer(version, Some(self.now_ms().saturating_add(rules::BUSY_RETRY_MS)));
-                return;
-            }
-            let for_what = look.busy.first().cloned().unwrap_or_default();
-            {
-                let mut st = lock(&self.st);
-                let changed = !matches!(&st.status, Status::Waiting { for_what: known, .. } if *known == for_what);
-                if changed {
-                    st.status = Status::Waiting {
-                        version: version.to_owned(),
-                        for_what: for_what.clone(),
-                    };
-                    st.notice = Some(Notice {
-                        text: format!("Updating to {version} as soon as this is done: {for_what}"),
-                        fades: false,
-                    });
-                    drop(st);
-                    self.host.changed();
+                Step::Failed { why, waiting_for } => {
+                    self.say_waiting(version, waiting_for);
+                    self.failed(asked, version, &why, false);
+                    return;
                 }
+                Step::BackOnOffer { look_again_in_ms, .. } => {
+                    self.back_on_offer(version, look_again_in_ms.map(|wait| self.now_ms().saturating_add(wait)));
+                    return;
+                }
+                // Not said before a hand-off, and the app's ended.
+                _ => return,
             }
-            if self.wall_ms().saturating_sub(began) >= duration_ms(WAIT_LIMIT) {
-                self.failed(asked, version, &format!("it waited too long: {for_what}"), false);
-                return;
-            }
-            std::thread::sleep(WAIT_STEP);
         }
     }
 
-    /// Past a good hand-off the app's frozen, so every way out from here has to free it.
-    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>, handed: HandedOff) {
-        let (version, cdhash) = (to.version, to.cdhash);
-        let give_up = |why: &str| {
-            let _ = std::fs::remove_file(self.files.plan());
-            self.host.cancelled();
-            self.failed(asked, version, why, false);
+    /// What a by-hand wait is waiting for, said if it's new.
+    fn say_waiting(&self, version: &str, waiting_for: Option<String>) {
+        let Some(for_what) = waiting_for else { return };
+        let mut st = lock(&self.st);
+        if matches!(&st.status, Status::Waiting { for_what: known, .. } if *known == for_what) {
+            return;
+        }
+        st.notice = Some(Notice {
+            text: format!("Updating to {version} as soon as this is done: {for_what}"),
+            fades: false,
+        });
+        st.status = Status::Waiting {
+            version: version.to_owned(),
+            for_what,
         };
-        // A quit that came in the meantime goes on as it was going, frozen and with nothing started. If it doesn't go through, it's that which takes everything again.
-        if self.stopping.load(Ordering::SeqCst) {
-            self.back_on_offer(version, None);
-            return;
+        drop(st);
+        self.host.changed();
+    }
+
+    /// What [`flow::next`] reads of the host, asked in the order it's read and no further than it's read: whether the app's ended, and unless a quit's under way
+    /// by other means, whether a build may still go in, and if it may, what's in flight and how long since the person touched the app.
+    fn seen(&self, stopping: bool, development_build: bool) -> Seen {
+        let mut seen = Seen {
+            gone: self.host.gone(),
+            ..Seen::default()
+        };
+        if seen.gone || stopping {
+            return seen;
         }
-        let look = self.host.look();
-        // The user may have touched it in the moment before it froze.
-        if asked == Asked::ByItself && !self.still_idle(&look, to.idle_ms) {
-            self.host.cancelled();
-            let wait = to.idle_ms.saturating_sub(self.since_input(&look));
-            self.back_on_offer(version, Some(self.now_ms().saturating_add(wait)));
-            return;
+        seen.build_allowed = !development_build || self.host.may_take_a_build();
+        if seen.build_allowed {
+            let look = self.host.look();
+            seen.since_input_ms = self.since_input(&look);
+            seen.busy = look.busy;
         }
+        seen
+    }
+
+    /// Past a good hand-off the app's frozen, so every way out from here has to free it. What happens at each step is [`flow::next`]'s.
+    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, facts: &Facts, to: &Going<'_>, handed: HandedOff) {
+        let version = to.version;
+        let stopping = self.stopping.load(Ordering::SeqCst);
+        let mut seen = self.seen(stopping, false);
+        let mut phase = Phase::HandedOff;
+        loop {
+            match flow::next(to, phase, &seen, asked, stopping, self.wall_ms()) {
+                Step::BackOnOffer { look_again_in_ms, give_back } => {
+                    if give_back {
+                        self.host.cancelled();
+                    }
+                    self.back_on_offer(version, look_again_in_ms.map(|wait| self.now_ms().saturating_add(wait)));
+                    return;
+                }
+                Step::WritePlan => phase = self.write_plan(facts, to, handed),
+                Step::StartInstaller => {
+                    {
+                        let mut st = lock(&self.st);
+                        st.status = Status::Installing(version.to_owned());
+                        st.notice = None;
+                        st.from_menu = false;
+                    }
+                    let helper = facts.app.join(HELPER);
+                    phase = match self.host.start_installer(&helper, &self.files.plan(), &self.files.log) {
+                        Ok(_) => Phase::InstallerStarted,
+                        Err(_) => Phase::Fault("the installer couldn't be started"),
+                    };
+                }
+                Step::QuitNow => {
+                    self.log(&format!("{version}: handed off, quitting"));
+                    phase = if self.host.quit_now() {
+                        Phase::QuitAsked { told_ms: self.wall_ms() }
+                    } else {
+                        Phase::Fault("the app couldn't be asked to quit")
+                    };
+                }
+                Step::Wait { .. } => {
+                    std::thread::sleep(WAIT_STEP);
+                    // Only whether the app's ended is looked at again, while it's quitting.
+                    seen.gone = self.host.gone();
+                }
+                Step::GiveUp(why) => {
+                    let _ = std::fs::remove_file(self.files.plan());
+                    self.host.cancelled();
+                    self.failed(asked, version, why, false);
+                    return;
+                }
+                Step::HandOff | Step::Failed { .. } | Step::Gone => return,
+            }
+        }
+    }
+
+    /// The installer's plan, written beside the state: what comes of it is the next phase.
+    fn write_plan(&self, facts: &Facts, to: &Going<'_>, handed: HandedOff) -> Phase<'static> {
         let Some(beside) = beside_app(&facts.app) else {
-            give_up("this copy isn't in a folder");
-            return;
+            return Phase::Fault("this copy isn't in a folder");
         };
         let team_required = matches!(self.source.trust, crate::source::Trust::DeveloperId { .. });
         let start_limit_ms = if self.source.mode == Mode::Test {
@@ -1390,13 +1451,13 @@ impl Updater {
         };
         let plan = Plan {
             id: crate::plan::new_id(),
-            cdhash: cdhash.to_owned(),
+            cdhash: to.cdhash.to_owned(),
             team_required,
             any_version: to.any_version,
             development_build: to.development_build,
             team_signed: to.team_signed,
             from: facts.version.clone(),
-            to: version.to_owned(),
+            to: to.version.to_owned(),
             pid: std::process::id(),
             app: facts.app.clone(),
             beside,
@@ -1410,33 +1471,10 @@ impl Updater {
             keep_record: false,
             test: test_launch(&self.source, self.host.relaunch()),
         };
-        let written = plan.write(&self.files.plan());
-        if written.is_err() {
-            give_up("the update's plan couldn't be written");
-            return;
+        match plan.write(&self.files.plan()) {
+            Ok(()) => Phase::PlanWritten,
+            Err(_) => Phase::Fault("the update's plan couldn't be written"),
         }
-        {
-            let mut st = lock(&self.st);
-            st.status = Status::Installing(version.to_owned());
-            st.notice = None;
-            st.from_menu = false;
-        }
-        let helper = facts.app.join(HELPER);
-        if self.host.start_installer(&helper, &self.files.plan(), &self.files.log).is_err() {
-            give_up("the installer couldn't be started");
-            return;
-        }
-        self.log(&format!("{version}: handed off, quitting"));
-        if !self.host.quit_now() {
-            give_up("the app couldn't be asked to quit");
-            return;
-        }
-        // Past here this process should be gone. If it isn't, the plan goes, so the installer stands down, and the app's given back. By this updater's clock, a step at a time: a test's process that hands off goes on, and its clock doesn't, so this never gives up under it.
-        let told = self.wall_ms();
-        while self.wall_ms().saturating_sub(told) < duration_ms(QUIT_PATIENCE) {
-            std::thread::sleep(WAIT_STEP);
-        }
-        give_up("the app didn't quit");
     }
 
     /// What's to be said in the app's margin now, if anything.
@@ -1500,19 +1538,6 @@ impl Updater {
     pub fn stop_over(&self) {
         self.stopping.store(false, Ordering::SeqCst);
     }
-}
-
-/// What an install is going to, once it's been checked: a release downloaded, or a development build handed over.
-struct Going<'a> {
-    version: &'a str,
-    cdhash: &'a str,
-    /// How long the app has to have gone unused, for an install that goes by itself: a release's 30 minutes, or a development build's 5.
-    idle_ms: u64,
-    /// Any other version may replace this one, older included ([`Plan::any_version`]).
-    any_version: bool,
-    /// A development build handed over ([`Plan::development_build`]), and whether a team signed it.
-    development_build: bool,
-    team_signed: bool,
 }
 
 /// What's said once a version that didn't work has gone back, by why.
