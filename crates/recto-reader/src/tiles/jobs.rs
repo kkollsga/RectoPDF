@@ -188,10 +188,12 @@ pub(super) struct Running {
 pub(crate) enum Renew {
     /// It has the wrong version open: it's let go of, and the next job opens what's there now.
     Reopen,
-    /// A tab of it was let go of (gone dormant, say): its worker, if the same one serves the tab again, says the file's length again. A worker says it once,
-    /// to the tab it opened for, and a tab let go of and shown again before that thread came round kept the same worker, which never said it again, so the
-    /// session never checked what the tab's sleep file said and wrote it none after (a whole-suite run, 2026-11-13).
-    TellLength,
+    /// This tab of it is being shown: its worker, if it has one open, says the file's length again to the tab whose own file it is. A worker says it
+    /// once in its life, and a tab put to sleep and woken from its sleep file while the same worker lived (the view let go of and shown again before that
+    /// thread came round, a whole-suite run of 2026-11-13; or never let go of, as a sleep and a wake fell into one look, the second review) never heard it
+    /// again, so the session never checked what the tab's sleep file said and wrote it none after. Asked where the tab is shown, so it doesn't depend on how
+    /// views come and go.
+    TellLength(u32),
 }
 
 /// Built only in the tiles module ([`Work::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for what it takes and notes below.

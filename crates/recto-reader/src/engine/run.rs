@@ -91,7 +91,15 @@ fn run(shared: &Shared) {
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
-            renew(&mut reader, &mut renderers, &mut openings);
+            let told = renew(&mut reader, &mut renderers, &mut openings);
+            // Said with the page view's lock let go, as a job's saying is.
+            if !told.is_empty() {
+                drop(reader);
+                for (tab, pages, version) in told {
+                    shared.events.file_length(tab, pages, version);
+                }
+                reader = lock(&shared.reader);
+            }
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
             let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
             (reader.next_plan(), changed)
@@ -214,22 +222,34 @@ fn run(shared: &Shared) {
 
 /// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
 /// **What's been asked of the renderers since the thread last came round** ([`Renew`]): one with the wrong version open is dropped, which kills its worker and
-/// closes its file, and the next job opens what's there now; one whose tab was let go of and shown again before this came round keeps its worker, which says
-/// the file's length again.
-fn renew(reader: &mut crate::tiles::Reader, renderers: &mut HashMap<PathBuf, OpenDoc>, openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>) {
+/// closes its file, and the next job opens what's there now; one whose tab is being shown keeps its worker, which says the file's length again to that tab
+/// now if it knows it (a view kept whole has nothing left to draw, so no job would come to say it), or at its next job if it doesn't yet. Says what's to be
+/// said, for after the page view's lock is let go.
+fn renew(
+    reader: &mut crate::tiles::Reader,
+    renderers: &mut HashMap<PathBuf, OpenDoc>,
+    openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>,
+) -> Vec<(u32, u32, u64)> {
+    let mut told = Vec::new();
     for (file, how) in reader.work.take_renewals() {
         match how {
             Renew::Reopen => {
                 renderers.remove(&file);
                 openings.remove(&file);
             }
-            Renew::TellLength => {
-                if let Some(open) = renderers.get_mut(&file) {
-                    open.length_told = false;
+            Renew::TellLength(tab) => {
+                let Some(open) = renderers.get_mut(&file) else { continue };
+                match (open.doc.known_page_count(), open.doc.known_version()) {
+                    (Some(pages), Some(version)) if reader.docs.is_own_file(tab, &file) => {
+                        open.length_told = true;
+                        told.push((tab, pages, version));
+                    }
+                    _ => open.length_told = false,
                 }
             }
         }
     }
+    told
 }
 
 fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {

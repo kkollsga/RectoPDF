@@ -422,6 +422,53 @@ fn a_tab_woken_while_its_worker_outlived_its_sleep_has_its_next_sleep_file_decid
     drop(app.quit());
 }
 
+/// Failure (the sleep branch's second review, 2026-11-13): the length was asked for again only when a page view let go of a tab's view, and a tab going dormant
+/// and being woken can fall into one look of the session thread's, so the view was never let go of: the session thread puts a tab left alone to sleep and
+/// queues its look behind whatever's queued already (a tap of the person's), and an agent's tap on the socket runs while the session thread is busy. Then
+/// no ask, the worker that had said the length kept quiet, and the woken tab stayed unchecked for good. Forced on the app's own core with the session thread
+/// held: a goes dormant, its sleep file written, and is tapped awake, all before one look; let go, a is shown with its view kept; its next sleep is decided.
+#[test]
+fn a_tab_put_to_sleep_and_woken_in_one_look_has_its_next_sleep_file_decided() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
+    let decided = || {
+        let sleep = app.record_json()["sleep"].clone();
+        sleep["writes_put_off"].as_u64().expect("put off") + sleep["sleep_files_written"].as_u64().expect("written")
+    };
+    let held = app.hold_session_thread();
+    let id = recto_session::TabId(u32::try_from(a).expect("a tab id"));
+    assert_eq!(app.core().go_dormant(&[id], super::super::sleeper::Why::LeftAlone), 1, "a goes dormant");
+    let name = sleep_file_of(&app, a);
+    app.wait_until("a's sleep file written", || sleep_files_on_disk(&app).contains(&name));
+    full(&app, &["tap", &format!("#{a}")]);
+    assert!(engine.waking().holds(id.0), "a's view is still held: the look that would let it go hasn't come");
+    drop(held);
+    host_turns(&app, &mut view, true);
+    assert_eq!(app.record_json()["sleep"]["woken_from_file"], 1, "{}", app.record_json()["sleep"]);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    let before = decided();
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    assert_eq!(
+        decided(),
+        before + 1,
+        "a's sleep reached no decision: its file's length was never asked for again: {}",
+        app.record_json()["sleep"]
+    );
+    drop(app.quit());
+}
+
 /// Failure (the sleep branch's second review, 2026-11-13): a worker says its file's length once, and it marked it said on a job for any tab, telling only the
 /// tab whose own file it is. So a job on `a.pdf` for b, a document with a's pages added, used up the saying (on a first open as much as after a re-ask), and
 /// a, woken from its sleep file, stayed unchecked for good: never given a new sleep file. On the app's own core: a put to sleep, b sent to one of a's pages

@@ -363,6 +363,9 @@ impl Reader {
     #[allow(clippy::too_many_arguments)]
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread) {
         self.keep_only(warm, tab);
+        // Its file's length is said again by a worker that has said it already, as the session counts a tab woken from its sleep file unchecked till it hears
+        // it, and a tab is woken to be shown here, whether or not its view was let go of on the way (a sleep and a wake can fall into one look).
+        self.work.renew(map.files.first(), jobs::Renew::TellLength(tab));
         // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
         let staying = self.docs.hot == Some(tab);
         // What was selected when a renderer saw the file replaced, for a save that turns out to have written what was shown.
@@ -498,9 +501,7 @@ impl Reader {
     fn keep_only(&mut self, warm: &[u32], hot: u32) {
         let gone: Vec<u32> = self.docs.views.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
         for tab in gone {
-            if let Some(view) = self.docs.views.remove(&tab) {
-                self.work.renew(view.map.files.first(), jobs::Renew::TellLength);
-            }
+            self.docs.views.remove(&tab);
             self.cache.drop_tab(tab, &mut self.host);
         }
     }
@@ -520,9 +521,7 @@ impl Reader {
         for tab in tabs {
             self.cache.drop_tab(tab, &mut self.host);
         }
-        for view in std::mem::take(&mut self.docs.views).into_values() {
-            self.work.renew(view.map.files.first(), jobs::Renew::TellLength);
-        }
+        self.docs.views.clear();
         self.docs.hot = None;
         self.work.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
