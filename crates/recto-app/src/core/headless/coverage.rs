@@ -134,8 +134,25 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             adding: false,
         },
         UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Contents,
+                page: Some(3),
+                ..row.clone()
+            },
+            adding: true,
+        },
+        UiAction::Row {
             row: rows[1].clone(),
             adding: true,
+        },
+        // The note over a tab's contents, b's, which has none of its own: its action is what a click does.
+        UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Note,
+                action: Some(recto_session::ContentsAction::Generate.id().into()),
+                ..rows[1].clone()
+            },
+            adding: false,
         },
         UiAction::PaneRead { tab },
         UiAction::Chevron { first: 0 },
@@ -189,8 +206,13 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
 fn kind(action: &UiAction) -> String {
     let name = match action {
         UiAction::Menu { .. } => "Menu",
-        UiAction::Row { adding: false, .. } => "Row",
-        UiAction::Row { adding: true, .. } => "Row(adding)",
+        UiAction::Row { row, adding } => match (row.kind, adding) {
+            (RowKind::Tab, false) => "Row(tab)",
+            (RowKind::Tab, true) => "Row(tab, adding)",
+            (RowKind::Contents, false) => "Row(contents)",
+            (RowKind::Contents, true) => "Row(contents, adding)",
+            (RowKind::Note, _) => "Row(note)",
+        },
         UiAction::PaneRead { .. } => "PaneRead",
         UiAction::Chevron { .. } => "Chevron",
         UiAction::Open { .. } => "Open",
@@ -217,9 +239,17 @@ fn kind(action: &UiAction) -> String {
     format!("UiAction::{name}")
 }
 
-/// What one control sent on an app of its own, settled: the person's commands, each checked to read back from its own line as itself; and why it's the
-/// window's alone, if it's said to be: a menu id's by its row in the one table, any other control's by [`HOST_ONLY`].
-fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> (Vec<String>, Option<&'static str>) {
+/// What one control did on an app of its own, settled: the person's commands it sent, each checked to read back from its own line as itself; why it's the
+/// window's alone, if it's said to be (a menu id's by its row in the one table, any other control's by [`HOST_ONLY`]); what it gave back to the host; and
+/// the Listener's calls it made, by kind, in order.
+struct Did {
+    sent: Vec<String>,
+    why: Option<&'static str>,
+    acted: crate::core::controls::Acted,
+    heard: Vec<&'static str>,
+}
+
+fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Did {
     let app = app();
     prepare(&app, name);
     let action = make(&app);
@@ -227,9 +257,12 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> (Vec<Stri
         UiAction::Menu { id } | UiAction::PaletteRun { id } => crate::core::menu_rows::row(app.core(), id).and_then(|row| row.windows_alone()),
         _ => HOST_ONLY.iter().find(|(host, _)| *host == name).map(|(_, why)| *why),
     };
-    app.keep_sent();
-    app.act(action);
     app.settle();
+    app.keep_sent();
+    drop(app.listener().take());
+    let acted = app.act(action);
+    app.settle();
+    let heard = app.listener().take().iter().map(heard_kind).collect();
     let sent = app
         .sent()
         .into_iter()
@@ -237,14 +270,29 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> (Vec<Stri
             let wire = command.wire();
             let again = recto_agent::parse(&wire).unwrap_or_else(|error| panic!("{name}: {wire} isn't a line an agent can send: {error:?}"));
             assert_eq!(format!("{again:?}"), format!("{command:?}"), "{name}: {wire} reads back as another command");
-            wire
+            wire.replace(&app.disk().files().display().to_string(), "<files>")
         })
         .collect();
-    (sent, why)
+    Did { sent, why, acted, heard }
 }
 
-/// Every control's name, what it sent, and why it's the window's alone if it's said to be.
-fn every_control() -> Vec<(String, Vec<String>, Option<&'static str>)> {
+/// A Listener call's kind, with nothing it carried: what the golden holds of the host being told.
+fn heard_kind(heard: &crate::testkit::Heard) -> &'static str {
+    use crate::testkit::Heard;
+    match heard {
+        Heard::ModelChanged => "model_changed",
+        Heard::OpsReady => "ops_ready",
+        Heard::QaRequest { .. } => "qa_request",
+        Heard::SessionEnded => "session_ended",
+        Heard::CopyReady => "copy_ready",
+        Heard::RestoreReady => "restore_ready",
+        Heard::QuitAnswer(_) => "quit_answer",
+        Heard::HandOffQuit => "hand_off_quit",
+    }
+}
+
+/// Every control's name and what it did, and the key of the recent file the names have.
+fn every_control() -> (Vec<(String, Did)>, String) {
     let mut controls: BTreeSet<Control> = menu_ids().into_iter().map(Control::Menu).collect();
     let probe = app();
     let rows = crate::palette::items(probe.core().bar_now(), |_| true, false, true)
@@ -253,43 +301,138 @@ fn every_control() -> Vec<(String, Vec<String>, Option<&'static str>)> {
         .map(|row| row.id)
         .chain([format!("tab:{}", probe.tabs()[0].tab), format!("recent:{}", recent_key(&probe))]);
     controls.extend(rows.map(Control::Palette));
-    let mut out: Vec<(String, Vec<String>, Option<&'static str>)> = controls
+    let mut out: Vec<(String, Did)> = controls
         .into_iter()
         .map(|control| match control {
             Control::Menu(id) => {
                 let name = id.clone();
-                let (sent, why) = sent_by(&name, |app| UiAction::Menu {
+                let did = sent_by(&name, |app| UiAction::Menu {
                     id: id.replace(&format!("recent.{ANY_RECENT}"), &format!("recent.{}", recent_key(app))),
                 });
-                (name, sent, why)
+                (name, did)
             }
             Control::Palette(id) => {
                 let name = format!("palette {id}");
-                let (sent, why) = sent_by(&name, |app| UiAction::PaletteRun {
+                let did = sent_by(&name, |app| UiAction::PaletteRun {
                     id: id.replace(&recent_key(&probe), &recent_key(app)),
                 });
-                (name, sent, why)
+                (name, did)
             }
         })
         .collect();
     let kinds = every_kind(&probe);
     for (at, (name, _)) in kinds.iter().enumerate() {
-        let (sent, why) = sent_by(name, |app| every_kind(app).swap_remove(at).1);
-        out.push((name.clone(), sent, why));
+        let did = sent_by(name, |app| every_kind(app).swap_remove(at).1);
+        out.push((name.clone(), did));
     }
-    out
+    (out, recent_key(&probe))
+}
+
+/// **What each control did, a line each, as the golden has it:** its name, the commands it sent, what it gave back to the host and whether it was
+/// understood, and the Listener's calls it made, in order. A recent file's key and a temporary folder are made the same on every app, so the line is the
+/// same on every run; no wording a person sees and no time is in it. What the host is told is [`heard_line`]'s.
+fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
+    controls
+        .iter()
+        .map(|(name, did)| {
+            let name = name.replace(recent, "<recent>");
+            let sent = did.sent.iter().map(|wire| wire.replace(recent, "<recent>")).collect::<Vec<_>>().join(" ; ");
+            let saves = did.sent.iter().any(|wire| wire.starts_with(r#"{"cmd":"save","#));
+            format!(
+                "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
+                did.acted.host,
+                did.acted.understood,
+                heard_line(&did.heard, saves)
+            )
+        })
+        .collect()
+}
+
+/// **The Listener's calls as the golden holds them:** every call in order, a run of one kind as `kind*n`, so an announcement made with nothing changed is a
+/// count that differs, and the host told in another order is a line that differs. A control that saves has each run of a kind as `kind+` instead: a save's
+/// steps (checking every page, writing, putting the file in place) are each a change the host is told of, as Save's tooltip says each, and two steps the
+/// session thread's look finds together are one call; so how many go by the save's thread (2026-11-13: a save told 4 times in 19 runs of 20 under
+/// `--like-ci`, and 3 in one, each call a step's change), while the order of the kinds held in every run. Every other control's calls were the same in all 20.
+fn heard_line(heard: &[&str], saves: bool) -> String {
+    if heard.is_empty() {
+        return "nothing".to_string();
+    }
+    let mut runs: Vec<(&str, usize)> = Vec::new();
+    for kind in heard {
+        match runs.last_mut() {
+            Some((last, count)) if last == kind => *count += 1,
+            _ => runs.push((kind, 1)),
+        }
+    }
+    let run = |(kind, count): &(&str, usize)| match (saves, count) {
+        (true, _) => format!("{kind}+"),
+        (false, 1) => (*kind).to_string(),
+        (false, count) => format!("{kind}*{count}"),
+    };
+    runs.iter().map(run).collect::<Vec<_>>().join(" ")
+}
+
+/// What every control did on 2026-11-13, before `Inner`'s person's methods moved into their features (R3.7): one line a control, as [`golden_lines`] makes them.
+const GOLDEN: &str = include_str!("golden/controls.txt");
+
+/// **The first control whose line differs from the golden,** named, with both lines; and the whole of what it did now, written to a file to compare.
+fn against_golden(now: &[String]) -> Result<(), String> {
+    let golden: Vec<&str> = GOLDEN.lines().collect();
+    if golden.iter().copied().eq(now.iter().map(String::as_str)) {
+        return Ok(());
+    }
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/recto-golden");
+    let _ = std::fs::create_dir_all(&out);
+    let written = out.join("controls.txt");
+    let _ = std::fs::write(&written, now.join("\n") + "\n");
+    // Each line by its control's name and which of that name it is: two controls of one kind (a tab's row and a contents row) have one name.
+    let keyed = |lines: &mut dyn Iterator<Item = &str>| -> Vec<(String, String)> {
+        let mut seen = std::collections::BTreeMap::<String, usize>::new();
+        lines
+            .map(|line| {
+                let name = line.split(" | ").next().unwrap_or_default().to_string();
+                let nth = seen.entry(name.clone()).or_default();
+                *nth += 1;
+                (format!("{name} (#{nth})"), line.to_string())
+            })
+            .collect()
+    };
+    let golden = keyed(&mut golden.into_iter());
+    let now = keyed(&mut now.iter().map(String::as_str));
+    let was: std::collections::BTreeMap<&str, &str> = golden.iter().map(|(key, line)| (key.as_str(), line.as_str())).collect();
+    let is: std::collections::BTreeMap<&str, &str> = now.iter().map(|(key, line)| (key.as_str(), line.as_str())).collect();
+    let mut said = Vec::new();
+    for (key, _) in &golden {
+        if !is.contains_key(key.as_str()) {
+            said.push(format!("{key}: in the golden, and no control is it now"));
+        }
+    }
+    for (key, line) in &now {
+        match was.get(key.as_str()) {
+            None => said.push(format!("{key}: a control the golden doesn't have:\n  now:    {line}")),
+            Some(golden) if golden != line => said.push(format!("{key} did otherwise:\n  golden: {golden}\n  now:    {line}")),
+            Some(_) => {}
+        }
+    }
+    said.truncate(8);
+    Err(format!("{}\n(what every control did now: {})", said.join("\n"), written.display()))
 }
 
 /// Failure (R2.3, C6): a control the window has does something no command does, with no reason given for it being the host's, so a person can do what an
 /// agent can't (a second implementation, against the owner's rule); or a control said to be the host's sends a command after all, or is in no menu, panel,
 /// palette or key any more, so the list says what isn't so; or a command the window sends isn't a line an agent could send. Every control, each on an app of
 /// its own, as `every_control` lists them.
+///
+/// And (R3.7, a guard put in before `Inner`'s methods moved): a control does something other than it did, after code moved: it sends another command, sends
+/// one twice or none, gives the host another action, or the host is told otherwise. Each control's line is held against the golden, naming the first that
+/// differs. On the same apps, so it costs no launch of its own.
 #[test]
 fn every_control_is_a_command_or_the_hosts_with_a_reason() {
-    let controls = every_control();
+    let (controls, recent) = every_control();
+    let lines = golden_lines(&controls, &recent);
     let mut wrong = Vec::new();
     let mut seen = BTreeSet::new();
-    for (name, sent, why) in &controls {
+    for (name, Did { sent, why, .. }) in &controls {
         if why.is_some() {
             seen.insert(name.as_str());
         }
@@ -307,6 +450,9 @@ fn every_control_is_a_command_or_the_hosts_with_a_reason() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(controls.len() > 60, "every control: {}", controls.len());
+    if let Err(differs) = against_golden(&lines) {
+        panic!("{differs}");
+    }
 }
 
 /// Failure (R2.3, C6): the bridge reaches past the one way a person's action comes in (`Inner::act` and the methods it calls), queuing a person's call on

@@ -73,10 +73,3 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
         _ => return None,
     })
 }
-
-impl Inner {
-    /// Into edit mode or out of it: `edit mode on|off`.
-    pub fn edit_mode_for_person(self: &Arc<Self>, on: bool) {
-        person::submit(self, EditMode { set: OnOff::from_bool(on) }.into());
-    }
-}

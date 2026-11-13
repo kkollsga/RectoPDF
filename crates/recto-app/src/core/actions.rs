@@ -4,7 +4,6 @@
 use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, lock, menus, updates};
 use crate::menus::RecentItem;
 use recto_session::{Paper, ViewSettings, record};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -18,18 +17,6 @@ impl Inner {
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
     pub fn recent_files(&self) -> Vec<RecentFile> {
         lock(&self.published).recent.as_ref().clone()
-    }
-
-    /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
-    pub fn open_recent(&self, key: String) {
-        let path = lock(&self.published)
-            .recent
-            .iter()
-            .find(|file| file.key == key)
-            .map(|file| PathBuf::from(&file.path));
-        if let Some(path) = path {
-            super::opening::open(&self.core, path);
-        }
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host: the row `menu_rows` has for its id, run as the person's.
