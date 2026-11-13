@@ -79,7 +79,7 @@ pub(super) enum PlanKind {
 
 impl JobPlan {
     /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made: the system has no surface for it now, which the
-    /// thread that draws waits out and asks again ([`SurfaceRetry`]), as the plan is still there.
+    /// thread that draws waits out and asks again (`SurfaceRetry`), as the plan is still there.
     pub fn ready(self) -> Option<Job> {
         let Self {
             tab,

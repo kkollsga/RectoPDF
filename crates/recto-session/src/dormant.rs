@@ -115,7 +115,7 @@ impl Dormant<'_> {
 
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
     ///
-    /// **Protected here means a password was needed to open it** ([`Self::password_was_needed`]), not that the file is encrypted on disk: a file anyone can open
+    /// **Protected here means a password was needed to open it** (`password_was_needed`), not that the file is encrypted on disk: a file anyone can open
     /// with no password (permissions only, as many government and UN reports are) has nothing a sleep file could give away, and its sleep file is private and
     /// out of backups like any other. Until 2026-11-13 the rule read `encrypted`, so such a document never had a sleep file and woke bare every time.
     pub fn sleep_facts(&self, id: TabId) -> Option<SleepFacts> {
