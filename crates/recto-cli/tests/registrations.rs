@@ -65,12 +65,47 @@ enum Verdict {
     Blame,
     /// Forgotten, and the stage doesn't fail, with why: an older tree's before folders carried a tree, or another tree's, stale.
     Forget(&'static str),
+    /// This checkout's own build folder, `app/build.noindex/RectoPDF.app` and no other path: the one every app test launches, so no test can be named for it. Forgotten until it stays gone, said in one line, and not a failure unless it won't stay gone or a process of it is running.
+    BuildFolder,
     /// Said, and left to whoever it belongs to.
     Leave(&'static str),
 }
 
+/// This checkout's build folder, the one path `Verdict::BuildFolder` is for.
+fn build_folder(checkout: &Path) -> PathBuf {
+    checkout.join("app/build.noindex/RectoPDF.app")
+}
+
+/// Forgets the build folder until two looks in a row find it gone, within `limit`; fails if a process of its app is running, naming it, or if it won't stay gone. Returns how long it took.
+fn settle_build_folder(path: &Path, limit: std::time::Duration) -> Result<std::time::Duration, String> {
+    let executable = path.join("Contents/MacOS/RectoPDF");
+    let began = std::time::Instant::now();
+    let mut clean = 0;
+    loop {
+        let running = recto_platform::local::processes_running(&executable);
+        if !running.is_empty() {
+            return Err(format!("{} is still running as process {running:?}", executable.display()));
+        }
+        clean = if registry::forget_until_gone(path, std::time::Duration::ZERO) {
+            clean + 1
+        } else {
+            0
+        };
+        if clean >= 2 {
+            return Ok(began.elapsed());
+        }
+        if began.elapsed() > limit {
+            return Err(format!("{} would not stay forgotten within {} s", path.display(), limit.as_secs()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 /// What is done with a copy. **Another tree's ended test's copy is never this tree's to change, nor to answer for:** its tree's own stage forgets it and fails on it (2026-11-13: this stage forgot a copy another tree's update test had made 3 s before, blamed its own tree, and hid it from the tree whose test had left it).
 fn judge(copy: &Registered, checkout: &Path, temp: &Path, now_ms: u64, alive: impl Fn(u32) -> bool) -> Verdict {
+    if copy.path == build_folder(checkout) {
+        return Verdict::BuildFolder;
+    }
     match whose(copy, checkout, temp) {
         Whose::Elsewhere => Verdict::Leave("not this check's to change"),
         Whose::ThisTree => Verdict::Blame,
@@ -123,6 +158,8 @@ fn describe(copy: &Registered, checkout: &Path, temp: &Path, now_ms: u64, alive:
 }
 
 /// Failure: a copy of the app that isn't the one install is left registered after the tests, so a second RectoPDF shows in Open With: this checkout's build folder (`app/build.noindex`), a test's install in temp (`recto-update-e2e-*`), or a kept copy's renderer helper, which is how about 40 were found on 2026-11-11. This tree's and the tests' are forgotten here; anything else is only said, as it's not this check's to change. Another tree's update test's copy is its own tree's to answer for: said, and left unless it is over an hour old.
+///
+/// **This checkout's own build folder (`app/build.noindex/RectoPDF.app`, that path only) is forgotten here until it stays gone, said in one line, and is not a failure.** Owner, 2026-11-13: "the check ... reports and removes a stray and fails only when it can show which test left it". Nearly every app test launches that bundle and forgets it once, with no look, so a late registration (CI run 43369527265: `registered, and forgotten now, this tree's: .../app/build.noindex/RectoPDF.app`, "not a bed's folder; on disk", the four reruns clean) can come from any of about 180 tests, and none can be named. A direct run of the built binary that ends at once left it registered 20 of 20 times by hand, which is why no test may do that (`app_launch_guard`). It still fails if a process of that app is running, or it won't stay forgotten within 20 s. A test's own copy (`OwnCopy`, a bed) and any other path in this checkout still fail the stage.
 #[test]
 fn no_copy_but_the_one_install_is_left_registered() {
     if std::env::var_os("RECTO_SKIP_APP").is_some() {
@@ -140,6 +177,7 @@ fn no_copy_but_the_one_install_is_left_registered() {
     let now_ms = recto_update::wall_ms();
     let alive = recto_platform::local::process_exists;
     let mut this_tree = Vec::new();
+    let mut unsettled = Vec::new();
     for copy in &strays {
         let what = describe(copy, &checkout, &temp, now_ms, alive);
         match judge(copy, &checkout, &temp, now_ms, alive) {
@@ -149,6 +187,15 @@ fn no_copy_but_the_one_install_is_left_registered() {
                 eprintln!("registered, and forgotten now ({why}): {} ({}): {what}", copy.path.display(), copy.identifier);
                 registry::forget(&copy.path);
             }
+            Verdict::BuildFolder => match settle_build_folder(&copy.path, std::time::Duration::from_secs(20)) {
+                Ok(took) => eprintln!(
+                    "registered, and forgotten until it stayed gone, this checkout's build folder, which every app test launches and none can be named for: {} ({}) in {} ms",
+                    copy.path.display(),
+                    copy.identifier,
+                    took.as_millis()
+                ),
+                Err(why) => unsettled.push(why),
+            },
             Verdict::Blame => {
                 eprintln!(
                     "registered, and forgotten now, this tree's: {} ({}): {what}",
@@ -160,6 +207,10 @@ fn no_copy_but_the_one_install_is_left_registered() {
             }
         }
     }
+    assert!(
+        unsettled.is_empty(),
+        "this checkout's build folder could not be made to stay forgotten: {unsettled:?}"
+    );
     assert!(
         this_tree.is_empty(),
         "this tree's tests left these registered, each a second RectoPDF in Open With: {this_tree:#?}"
@@ -199,7 +250,33 @@ fn what_counts_as_this_trees() {
     let now = 1_794_531_500_000;
     let bed = |pid: u32, at: u64, tree: &Path| format!("/t/{}/install/RectoPDF.app", bed_folder::name(pid, at, tree));
     let judged = |path: &str, alive: &dyn Fn(u32) -> bool| judge(&copy(path), checkout, temp, now, alive);
-    assert_eq!(judged("/w/tree/app/build.noindex/RectoPDF.app", &none_alive), Verdict::Blame);
+    assert_eq!(
+        judged("/w/tree/app/build.noindex/RectoPDF.app", &none_alive),
+        Verdict::BuildFolder,
+        "the one path every app test launches"
+    );
+    assert_eq!(
+        judged("/w/tree/app/build.noindex/own-1-0/RectoPDF.app", &none_alive),
+        Verdict::Blame,
+        "a test's copy beside it"
+    );
+    assert_eq!(
+        judged("/w/tree/app/build.noindex/RectoPDF.app/Contents/Helpers/RectoRender.app", &none_alive),
+        Verdict::Blame,
+        "inside it"
+    );
+    assert_eq!(
+        judged("/w/tree/target/dev/RectoPDF.app", &none_alive),
+        Verdict::Blame,
+        "anything else of this checkout's"
+    );
+    assert!(
+        matches!(
+            judged("/w/tree/.worktrees/other/app/build.noindex/RectoPDF.app", &none_alive),
+            Verdict::Leave(_)
+        ),
+        "another tree's build folder is left alone"
+    );
     for elsewhere in ["/Applications/Old RectoPDF.app", "/t/someone-else/RectoPDF.app"] {
         assert!(matches!(judged(elsewhere, &none_alive), Verdict::Leave(_)), "{elsewhere}");
     }
