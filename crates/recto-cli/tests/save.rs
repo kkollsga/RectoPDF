@@ -307,7 +307,7 @@ fn a_file_replaced_under_a_tab_isnt_saved_over() {
     let file = TempPdf::new("doc.pdf", &marked(&["MINE"]));
     ok(&state, &["open", path(&file)]);
     ok(&state, &["page", "rotate", "1", "--by", "90"]);
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Another length, so the change shows in the file's identity whatever its time says: no wait for the clock to move on.
     std::fs::write(&file.0, marked(&["SOMEONE ELSE'S"])).unwrap();
     let (refused, code) = state.json(&["save"]);
     assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("file_changed")), "{refused}");
@@ -457,7 +457,7 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
         let waited = std::time::Instant::now();
         while !marker.exists() {
             assert!(waited.elapsed() < std::time::Duration::from_secs(30), "{step}: the save never got there");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // ratchet: poll
         }
         drop(server);
         drop(saving);
