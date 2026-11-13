@@ -8,7 +8,9 @@ of a release bundle outside the checkout, so a rebuild doesn't change it underne
 At the end it runs tools/soak/verdict.py on its CSV into DIR/verdict.txt.
 
 DIR gets samples.csv (one row a minute), driver.log (errors and an hourly summary), run.json (PIDs and paths), state/ (the run's
-RECTO_STATE_DIR) and work/ (temp copies that edits are saved into). Nothing outside DIR is written, the corpus is only read.
+RECTO_STATE_DIR) and work/ (temp copies that edits are saved into, and work/corpus/, a copy of each corpus file as it's first opened, cloned
+where the volume allows). Nothing outside DIR is written, the corpus is only read. DIR is in a temp folder (`/tmp` or the system's own), as a
+quiet run opens nothing outside them (2026-11-13).
 
 The sampler measures the whole tree: the app and every process under it (render workers, indexer, headings helper), by
 proc_pid_rusage's phys_footprint, proc_pidinfo's thread count and descriptor list. No posted events: every action is a `recto`
@@ -339,7 +341,7 @@ class Soak:
             cursor += 1
             for sel in to_close(tabs, {edit["sel"]}, MAX_TABS):
                 self.recto("close", "--tab", sel)
-            opened = self.recto("open", path, timeout=180) or {}
+            opened = self.recto("open", in_the_corpus_copy(path), timeout=180) or {}
             self.settle()
             tabs = self.tabs()
             self.tabs_open = len(tabs)
@@ -436,7 +438,30 @@ class Soak:
         self.stop = True
 
 
+def temp_folders():
+    """The system's temp folders, where they really are: a quiet run's session opens and writes files only there (2026-11-13)."""
+    folders = ["/tmp"]
+    try:
+        folders.append(os.confstr(65537))  # _CS_DARWIN_USER_TEMP_DIR, which $TMPDIR can't change.
+    except (ValueError, OSError):
+        pass
+    return [os.path.realpath(f) for f in folders if f]
+
+
+def in_the_corpus_copy(path):
+    """A corpus file's copy in WORK, made once: an APFS clone where the volume allows, which costs nothing, and a plain copy across volumes."""
+    folder = os.path.join(WORK, "corpus")
+    os.makedirs(folder, exist_ok=True)
+    copy = os.path.join(folder, os.path.basename(path))
+    if not os.path.exists(copy) and subprocess.run(["cp", "-c", path, copy], capture_output=True).returncode != 0:
+        shutil.copyfile(path, copy)
+    return copy
+
+
 def main():
+    real = os.path.realpath(DIR)
+    if not any(real == t or real.startswith(t + os.sep) for t in temp_folders()):
+        sys.exit(f"soak: DIR must be in a temp folder ({', '.join(temp_folders())}): a quiet run only uses files there.")
     os.makedirs(DIR, exist_ok=True)
     try:
         os.setsid()  # Its own session, so the shell or agent session that started it ending doesn't take it along.
