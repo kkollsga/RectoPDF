@@ -1139,7 +1139,12 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
     assert_eq!(reply["error"]["code"], "edits_unreadable", "{reply}");
 }
 
-/// Failure (review, blocks the merge): a protected PDF's pages go in a sleep file in the clear, when it's been added to a plain document: only the tab's own file was looked at. A document with a page from one has no pictures, and that's known after a restart.
+/// Failure (review, blocks the merge): a protected PDF's pages go in a sleep file in the clear, as the tab's own file or added to a plain document. Protected
+/// is a file a password was needed to open (2026-11-13: until then this test's file had an empty user password, which anyone opens, so it held the rule only
+/// for files that now have sleep files like any other; that side is `recto-app`'s `core::headless::encrypted_sleep`). A red page behind a real password:
+/// adding it to a plain green document is refused, as it needs the password; opened by the person with the password, drawn, and left, then every tab off
+/// screen put to sleep by memory pressure (an agent may not ask for a protected tab's sleep) and an update's hand-off writing what it writes: the plain
+/// document's green pictures are in its sleep file, so pictures were written, and no sleep file has a red one.
 #[test]
 #[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
@@ -1163,7 +1168,7 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     let encryption = EncryptionState::try_from(EncryptionVersion::V2 {
         document: &document,
         owner_password: "owner",
-        user_password: "",
+        user_password: "open sesame",
         key_length: 128,
         permissions: Permissions::all(),
     })
@@ -1173,34 +1178,27 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     document.save(&locked).unwrap();
     run.ok(&["open", plain.to_str().unwrap()]);
     run.settled();
-    run.ok(&["page", "insert", locked.to_str().unwrap(), "--at", "1"]);
-    run.settled();
-    assert_eq!(run.ok(&["edits"])["pages"], 3);
-    let on_plain = format!("#{}", tabs_of(&run.report())[0]["id"]);
-    run.ok(&["open", other.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["session", "sleep", "--tab", &on_plain]);
-    let colours = colours_in_sleep_files(&state);
-    assert!(colours.iter().all(|(_, colours)| colours.is_empty()), "no pictures at all: {colours:?}");
-    // And on a page of its own too, as a tab on the file itself.
-    run.ok(&["open", locked.to_str().unwrap()]);
+    let (refused, code) = state.json(&["page", "insert", locked.to_str().unwrap(), "--at", "1"]);
+    assert_ne!(code, 0, "a page that needs a password isn't added: {refused}");
+    assert_eq!(run.ok(&["edits"])["pages"], 2);
+    // The tab's own file, opened by the person with its password.
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.to_str().unwrap())]);
+    wait_until("the password's asked for", || run.report()["app"]["sheet"]["kind"] == "password");
+    let (typed, code) = state.json_with_stdin(&["qa", "password"], "open sesame");
+    assert_eq!(code, 0, "{typed}");
+    wait_until("it's open", || run.report()["app"]["sheet"] == json!({}) && tabs_of(&run.report()).len() == 2);
     run.settled();
     run.ok(&["open", other.to_str().unwrap()]);
     run.settled();
-    let on_locked = format!(
-        "#{}",
-        tabs_of(&run.report())
-            .iter()
-            .find(|tab| tab["path"].as_str().unwrap().ends_with("locked.pdf"))
-            .unwrap()["id"]
-    );
-    run.ok(&["session", "sleep", "--tab", &on_locked]);
+    run.ok(&["qa", "memory-pressure", "warning"]);
+    run.settled();
     run.hand_off();
+    let colours = colours_in_sleep_files(&state);
     assert!(
-        colours_in_sleep_files(&state).iter().all(|(_, colours)| !colours.contains(&"red")),
-        "{:?}",
-        colours_in_sleep_files(&state)
+        colours.iter().any(|(_, colours)| colours.contains(&"green")),
+        "the plain document's pictures were written: {colours:?}"
     );
+    assert!(colours.iter().all(|(_, colours)| !colours.contains(&"red")), "{colours:?}");
 }
 
 /// Failure (review): a forged sleep file says a 3-page PDF has 100 pages, and that goes on being believed through drawing and another sleep, and a rotation lands on a page that isn't there. The worker's word goes over it as soon as it has the file open: the sleep file goes, and the file's read.

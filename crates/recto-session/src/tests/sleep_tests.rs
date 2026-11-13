@@ -331,7 +331,9 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     assert!(s.dormant().oldest_first().len() < MAX_WARM);
 }
 
-/// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow way.
+/// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow
+/// way. Protected is a file a password was needed to open (here opened with the person's, `open_unlocked`); one that's encrypted but opens with no password
+/// (the sleep-costs run of 2026-11-13: `un_report_un_sdg2023.pdf`, which never had a sleep file) has one like any other.
 #[test]
 fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     struct Protected;
@@ -340,7 +342,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
             Ok(DocFacts {
                 page_count: 3,
                 byte_len: 1,
-                encrypted: path.ends_with("locked.pdf"),
+                encrypted: path.ends_with("locked.pdf") || path.ends_with("open-to-anyone.pdf"),
                 version: "1.7".into(),
                 title: None,
                 toc: Toc::default(),
@@ -358,18 +360,25 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     let mut s = Session::new(Protected);
     s.dormancy_mut().set_sleep_files(true);
     let open = s.open(&file("open.pdf")).unwrap();
-    let locked = s.open(&file("locked.pdf")).unwrap();
+    let locked_file = file("locked.pdf");
+    let locked_facts = s.loader().load(&locked_file).unwrap();
+    let locked = s.open_unlocked(&locked_file, locked_facts, file_stamp(&locked_file).ok()).unwrap();
+    let open_to_anyone = s.open(&file("open-to-anyone.pdf")).unwrap();
     assert!(s.dormant().sleep_facts(open).is_some());
     assert!(s.dormant().sleep_facts(locked).is_none(), "its contents don't go on disk");
     assert!(s.dormant().sleep_to_read(locked).is_none());
+    assert!(
+        s.dormant().sleep_facts(open_to_anyone).is_some_and(|facts| facts.pictures_allowed),
+        "encrypted, but opened with no password: nothing a sleep file could give away"
+    );
     for at in 0..MAX_WARM {
         s.open(&file(&format!("{at}.pdf"))).unwrap();
     }
     let left = s.sleeper().take_left_warm();
     assert_eq!(
         left.iter().map(|facts| facts.id).collect::<Vec<_>>(),
-        [open],
-        "the unprotected one that left: {left:?}"
+        [open, open_to_anyone],
+        "the unprotected ones that left: {left:?}"
     );
     assert_eq!(left[0].sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());

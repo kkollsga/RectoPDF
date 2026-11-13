@@ -9,6 +9,7 @@ mod contents;
 mod controls;
 mod coverage;
 mod editing;
+mod encrypted_sleep;
 mod exits;
 pub(crate) mod files;
 mod find;

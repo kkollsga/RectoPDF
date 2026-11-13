@@ -107,7 +107,17 @@ impl Dormant<'_> {
             .collect()
     }
 
+    /// **Whether a password was needed to open a tab's file:** it was opened with one the person typed, or it needs one that hasn't been given. What keeps a
+    /// document's pages out of a sleep file, and the same as what keeps them from an agent ([`Tabs::withheld_from_agents`]), stated once there.
+    fn password_was_needed(&self, id: TabId) -> bool {
+        self.tabs.withheld_from_agents(id)
+    }
+
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
+    ///
+    /// **Protected here means a password was needed to open it** ([`Self::password_was_needed`]), not that the file is encrypted on disk: a file anyone can open
+    /// with no password (permissions only, as many government and UN reports are) has nothing a sleep file could give away, and its sleep file is private and
+    /// out of backups like any other. Until 2026-11-13 the rule read `encrypted`, so such a document never had a sleep file and woke bare every time.
     pub fn sleep_facts(&self, id: TabId) -> Option<SleepFacts> {
         let toc = self.warm.toc(id)?;
         self.sleep_facts_with(id, toc)
@@ -122,7 +132,7 @@ impl Dormant<'_> {
             tabs: self.tabs,
             lists: self.lists,
         };
-        if tab.file.encrypted
+        if self.password_was_needed(id)
             || tab.from_sleep.is_some()
             || self.lists.is_asleep(id)
             || matches!(tab.file.notice(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword))
@@ -156,7 +166,7 @@ impl Dormant<'_> {
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.
     pub fn sleep_to_read_awake(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
         let tab = self.tabs.tab(id)?;
-        if !self.dormancy.sleep_files() || tab.file.encrypted {
+        if !self.dormancy.sleep_files() || self.password_was_needed(id) {
             return None;
         }
         Some((tab.file.stamp?, self.tabs.named_path(id)?))
@@ -168,7 +178,7 @@ impl Dormant<'_> {
             return None;
         }
         let tab = self.tabs.tab(id)?;
-        if tab.file.encrypted || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword)) {
+        if self.password_was_needed(id) {
             return None;
         }
         Some((tab.file.stamp?, self.tabs.named_path(id)?))
