@@ -23,7 +23,6 @@ impl<L: DocLoader> Session<L> {
             woken_from_file: _,
             left_warm: _,
             mail: _,
-            woken: _,
             journaling: _,
             journals,
             fresh_journals: _,
@@ -123,8 +122,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.clear();
         // Every tab's going, and with them every folder's number.
         self.dirs = dirs::Dirs::default();
-        self.warm.clear();
-        self.woken.clear();
+        self.warm = warm::Warm::default();
         self.edits.clear();
         self.asleep.clear();
         self.wake_failed.clear();

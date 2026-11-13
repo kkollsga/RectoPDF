@@ -5,7 +5,7 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// **What the file calls a page,** zero-based, counting unsaved edits: `iv` for a page of front matter. Nothing for a file without labels, a page added from another file, or a tab whose file isn't read, which shows its number. A moved page keeps its own label, as its file names it.
     pub fn page_label(&self, id: TabId, position: u32) -> Option<String> {
-        let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        let toc = self.warm.toc(id)?;
         if toc.labels.is_empty() {
             return None;
         }
@@ -40,7 +40,7 @@ impl<L: DocLoader> Session<L> {
     pub fn page_for_typed(&self, id: TabId, typed: &str) -> Option<u32> {
         let typed = typed.trim();
         let pages = self.pages_in(id);
-        if let Some((_, toc)) = self.warm.iter().find(|(tab, _)| *tab == id)
+        if let Some(toc) = self.warm.toc(id)
             && !toc.labels.is_empty()
         {
             let file_pages = self.tab(id).map_or(0, |tab| tab.page_count);

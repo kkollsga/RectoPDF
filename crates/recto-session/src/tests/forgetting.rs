@@ -7,8 +7,8 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
     let parts = [
         ("tabs", s.tabs.iter().any(|tab| tab.id == id)),
         ("active", s.active == Some(id)),
-        ("warm", s.warm.iter().any(|(tab, _)| *tab == id)),
-        ("woken", s.woken.iter().any(|(tab, _, _)| *tab == id)),
+        ("warm", s.warm.contains(id)),
+        ("woken", s.warm.holds_read_of(id)),
         ("edits", s.edits.contains_key(&id)),
         ("asleep", s.asleep.contains_key(&id)),
         ("wake_failed", s.wake_failed.contains(&id)),
@@ -145,7 +145,7 @@ fn reads_ahead_are_held_to_their_cap_and_the_oldest_goes() {
     for id in cold {
         s.give_woken(*id, Err(OpenError::NotFound), None);
     }
-    assert_eq!(s.woken.len(), MAX_READ_AHEAD);
+    assert_eq!(s.warm.reads_held(), MAX_READ_AHEAD);
     assert!(!s.holds_read_of(cold[0]), "the oldest read went");
     assert!(cold[1..].iter().all(|id| s.holds_read_of(*id)), "the newest are kept");
 }

@@ -10,8 +10,7 @@ impl<L: DocLoader> Session<L> {
             tabs: Vec::new(),
             active: None,
             next_id: 1,
-            warm: VecDeque::new(),
-            woken: Vec::new(),
+            warm: warm::Warm::default(),
             dirs: dirs::Dirs::default(),
             edits: HashMap::new(),
             wake_failed: Vec::new(),
@@ -347,9 +346,8 @@ impl<L: DocLoader> Session<L> {
         let closed = self.tabs.remove(index);
         self.let_go_of_dir_if_unused(closed.dir);
         self.mail.forget(id);
-        self.warm.retain(|(tab, _)| *tab != id);
         self.generated.forget(id);
-        self.woken.retain(|(tab, _, _)| *tab != id);
+        self.warm.forget(id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
         if let Some(comparison) = &mut self.comparison

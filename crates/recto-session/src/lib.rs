@@ -28,6 +28,7 @@ mod tabs;
 mod tiers;
 mod view;
 mod viewing;
+mod warm;
 
 pub use change::Closed;
 pub use edit::Author;
@@ -39,7 +40,7 @@ use record::{
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -777,8 +778,8 @@ pub struct Session<L = DiskLoader> {
     tabs: Vec<TabRecord>,
     active: Option<TabId>,
     next_id: u32,
-    /// Most recently used first, at most [`MAX_WARM`].
-    warm: VecDeque<(TabId, Arc<Toc>)>,
+    /// The tabs that keep their contents, and the reads of cold tabs' files made ahead of waking them.
+    warm: warm::Warm,
     /// The folders tabs' files are in.
     dirs: dirs::Dirs,
     /// Only for tabs with page edits. A tab with none costs nothing here.
@@ -798,8 +799,6 @@ pub struct Session<L = DiskLoader> {
     left_warm: Vec<(TabId, Arc<Toc>)>,
     /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
     mail: mail::PageViewMail,
-    /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
-    woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.

@@ -83,7 +83,7 @@ fn closing_the_active_tab_activates_a_neighbour() {
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.close(b).unwrap();
     assert_eq!(s.active(), Some(a));
-    assert!(s.warm.iter().all(|(id, _)| *id != b));
+    assert!(!s.warm.contains(b));
     s.close(a).unwrap();
     assert_eq!(s.active(), None);
     assert_eq!(s.sidebar().place, "");

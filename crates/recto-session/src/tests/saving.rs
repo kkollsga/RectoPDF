@@ -446,7 +446,7 @@ fn a_file_changed_under_a_history_clears_it_on_waking() {
     let b = s.open(&dir.join("b.pdf")).unwrap();
     s.tap(b).unwrap();
     std::fs::write(&file, b"another version altogether").unwrap();
-    s.warm.clear();
+    s.warm.clear_contents();
     s.tap(a).unwrap();
     assert!(s.page_edits(a).is_none());
     assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));

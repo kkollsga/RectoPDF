@@ -30,7 +30,7 @@ impl<L: DocLoader> Session<L> {
             toc_open = tab.toc_open;
             place = self.place_words(tab.id, tab.page);
             if tab.toc_open
-                && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
+                && let Some(toc) = self.warm.toc(tab.id)
             {
                 let view = self.generated_view(tab.id);
                 let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
@@ -137,7 +137,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
     fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
-        let (_, own) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        let own = self.warm.toc(id)?;
         Some(match (self.tab(id).is_some_and(|tab| tab.generated_contents), self.generated_view(id)) {
             (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
             _ => Arc::clone(own),
@@ -146,7 +146,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What's thought of a tab's own contents, once they've been read.
     pub fn contents_verdict(&self, id: TabId) -> Option<ContentsVerdict> {
-        let known = self.warm.iter().any(|(tab, _)| *tab == id);
+        let known = self.warm.contains(id);
         self.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
     }
 }
