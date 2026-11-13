@@ -395,8 +395,11 @@ fn of_length(who: &str, pages: usize, len: usize) -> Vec<u8> {
 
 /// Failure (B3, 2026-11-13): another program rewrites the file with its size and modification time put back, which no stamp can tell from the version the edits
 /// were made on, and Save or Save As writes the edits onto it. Rewritten in place (its number kept) with another page count, the page count read at save
-/// refuses it; replaced by a rename (another number), the save's own look at the number does. Nothing is written either way. What's left uncaught: a rewrite
-/// that keeps the size, the time to the nanosecond, the number and the page count (listed for the page matcher, which has to know the version anyway).
+/// refuses it. Replaced by a rename (another number), the save's own look at the number refuses it here, given the stamp from before; **but in the app that
+/// doesn't protect**: a look at the file finds the same size and time, takes it for the version the edits were made on (`classify_file`'s `Same`, which goes
+/// by size and time whatever the number), and the tab's stamp takes the new number, so the save's look then passes. What's left uncaught is a different file
+/// with the same size, time and page count, put in place by any means (real on volumes with one-second times): nothing recorded per list today can tell it
+/// from the earlier version, which the page matcher has to know anyway.
 #[test]
 fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
     let dir = Dir::new();
