@@ -220,8 +220,8 @@ names_or_stop() {
 # late at once. Since R1.4 (2026-11-13) what Rust decides of a late arrival is tested in process, each seam held and let through in order by the headless
 # kit (`recto_platform::slow::gate`); a window made again from a late state is the window tier's `everything_comes_back_when_the_state_is_read_late`, which
 # says the remake happened (`record.remade`); a tab woken from its sleep file late is `slow::a_slow_run_waits_at_every_seam_it_passes`. Here: the one
-# whole-state test with every seam late, the first frame drawn through late workers, the switch's own check, and the late-state tests whose twins are still
-# to come (PLAN R1.4).
+# whole-state test with every seam late, the first frame drawn through late workers, the switch's own check, and a protected tab asked again on a late
+# state, whose sheet and its Cancel are on the window that went up without the state and the one made again from it, which the kit has no window to see.
 SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=slow::a_quiet_run_with_no_switch_is_never_slow)'
 export SLOW_TESTS
 # How a run is shaped, set below from the mode and what changed, and read by `run`:
