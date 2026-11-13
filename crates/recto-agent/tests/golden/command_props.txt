@@ -188,10 +188,10 @@ signatures level=read_only tab=Some("active") draws=false reads_pages=false rout
 signatures level=read_only tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
 signatures level=read_only tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
 signatures level=read_only tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
-edits level=read_only tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
-edits level=read_only tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
-edits level=read_only tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
-edits level=read_only tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
+edits level=read_only tab=Some("active") draws=false reads_pages=true route=session log={"tab":"active"}
+edits level=read_only tab=Some("#2") draws=false reads_pages=true route=session log={"tab":"#2"}
+edits level=read_only tab=Some("active") draws=false reads_pages=true route=session log={"tab":"active"}
+edits level=read_only tab=Some("#2") draws=false reads_pages=true route=session log={"tab":"#2"}
 page_move level=control tab=Some("active") draws=false reads_pages=false route=session log={"pages":"2-3","tab":"active","to":3}
 page_move level=control tab=Some("#2") draws=false reads_pages=false route=session log={"pages":"2-3","tab":"#2","to":3}
 page_move level=control tab=Some("#2") draws=false reads_pages=false route=session log={"pages":"2-3","tab":"#2","to":3}
