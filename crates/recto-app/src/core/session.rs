@@ -278,7 +278,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
             CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
             CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
             CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),

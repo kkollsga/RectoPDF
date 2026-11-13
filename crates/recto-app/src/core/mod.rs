@@ -594,9 +594,11 @@ impl Inner {
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            // What going in does, and what Done does.
+            // What going in does, and what Done does: the person's `edit mode on|off`.
             "edit_mode" => {
-                self.core.push(CoreCall::SetEditMode(value == "on"));
+                if let Some(inner) = self.saver.inner() {
+                    inner.edit_mode_for_person(value == "on");
+                }
                 self.core.flush(Duration::from_secs(5));
                 Ok(())
             }

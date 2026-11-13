@@ -1,8 +1,9 @@
 //! **The window's edits:** the panel's Rotate, Edit > Undo and Redo are `page rotate`, `undo` and `redo`, the commands an agent sends, run for the person
-//! (R2.3, C5d), and so the owner's, as a person's edits always are; Clear History is still the session thread's own.
+//! (R2.3, C5d), and so the owner's, as a person's edits always are; the panel's Done is `edit mode off`. Clear History is still the session thread's own.
 
 use super::*;
 use recto_agent::commands::Edit;
+use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::editing::{PageRotate, Redo, Undo};
 
 /// The panel's Rotate, a quarter turn each way: every page, or in edit mode the page being read, by the session as it is when it runs, so an edit mode
@@ -50,6 +51,17 @@ impl Inner {
     /// The panel's Rotate: `page rotate`, every page or in edit mode the page being read.
     pub fn rotate_for_person(self: &Arc<Self>, turns: i32) {
         person::submit_when_run(self, rotate(turns), rotate_pages_now);
+    }
+
+    /// Into edit mode or out of it, as the panel's Done takes it out: `edit mode on|off`.
+    pub fn edit_mode_for_person(self: &Arc<Self>, on: bool) {
+        person::submit(
+            self,
+            EditMode {
+                set: if on { "on" } else { "off" }.into(),
+            }
+            .into(),
+        );
     }
 
     /// Edit > Undo, or Redo: `undo` or `redo`, on the tab being read.

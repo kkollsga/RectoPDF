@@ -88,6 +88,7 @@ fn every_control_returns_while_the_session_is_held() {
         UiAction::Menu { id: "rotate.right".into() },
         UiAction::Menu { id: "edit.undo".into() },
         UiAction::Menu { id: "edit.redo".into() },
+        UiAction::Menu { id: "edit_mode.done".into() },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,

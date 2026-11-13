@@ -59,7 +59,9 @@ fn the_windows_edits_are_the_agents_commands() {
         app.agent(recto_agent::Level::Full, r##"{"cmd":"goto","tab":"#1","page":3}"##)
             .expect("to page 3");
         app.settle();
-        app.core().host.session.with_session(|session| session.set_edit_mode(true));
+        app.recto(recto_agent::Level::Control, &["edit", "mode", "on"])
+            .expect("an agent at Control turns it on");
+        app.settle();
         drop(app.heard_events());
     }
     let (said, agent_said) = twins.both(menu("rotate.right"), &rotate("3", 90));
@@ -75,4 +77,22 @@ fn the_windows_edits_are_the_agents_commands() {
         "one page turned, between two runs that aren't: {}",
         twins.person.session_json()
     );
+}
+
+/// Failure (R2.3, C5d): the panel's Done does something other than `edit mode off`, or `recto edit mode on` at Control doesn't turn on the window's edit mode
+/// (its tools in the sidebar, its Rotate of the page being read).
+#[test]
+fn the_panels_done_is_edit_mode_off() {
+    let twins = Twins::on(&[("a.pdf", 5)]);
+    for app in [&twins.person, &twins.agent] {
+        let on = app.recto(recto_agent::Level::Control, &["edit", "mode", "on"]).expect("turned on at Control");
+        assert_eq!(on["changed"], true);
+        app.settle();
+        assert!(app.reader().edit_mode, "the window's in edit mode");
+        drop(app.heard_events());
+    }
+    let (said, agent_said) = twins.both(menu("edit_mode.done"), r#"{"cmd":"edit_mode","set":"off"}"#);
+    assert_eq!(said, agent_said, "the same said");
+    assert!(!twins.person.reader().edit_mode, "out of edit mode");
+    twins.assert_same("Done and edit mode off", &[]);
 }

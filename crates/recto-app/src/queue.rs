@@ -67,8 +67,6 @@ pub enum CoreCall {
     ToggleSection(TabId, u32),
     /// The Find field, its list, and ⌘G.
     Find(crate::find::FindCall),
-    /// Into edit mode or out, by the owner.
-    SetEditMode(bool),
     /// **A command for the person** (step R2.3): the one an agent would send, run by the one executor on this thread, as theirs.
     Run(Box<PersonCommand>),
 }
@@ -134,8 +132,7 @@ impl CoreCall {
             | Self::ClearEditHistory
             // The note over the contents, and a section's chevron: both kept in the record.
             | Self::ContentsAction(..)
-            | Self::ToggleSection(..)
-            | Self::SetEditMode(_) => true,
+            | Self::ToggleSection(..) => true,
             Self::Find(call) => call.is_user_action(),
             Self::Run(run) => run.origin == Origin::Input,
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
@@ -455,7 +452,6 @@ mod tests {
             CoreCall::Find(crate::find::FindCall::Choose(0)),
             CoreCall::Find(crate::find::FindCall::News),
             CoreCall::Find(crate::find::FindCall::Reveal(1, hit)),
-            CoreCall::SetEditMode(true),
             CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
             CoreCall::Run(Box::new(PersonCommand::finishing(
                 recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
@@ -499,13 +495,12 @@ mod tests {
                 crate::find::FindCall::News => 28,
                 crate::find::FindCall::Reveal(..) => 29,
             },
-            CoreCall::SetEditMode(_) => 30,
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 31,
-                Origin::Finishing => 32,
+                Origin::Input => 30,
+                Origin::Finishing => 31,
             },
         };
-        (place, 33)
+        (place, 32)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -530,7 +525,6 @@ mod tests {
                         | CoreCall::ClearEditHistory
                         | CoreCall::ContentsAction(..)
                         | CoreCall::ToggleSection(..)
-                        | CoreCall::SetEditMode(_)
                         | CoreCall::Find(
                             crate::find::FindCall::Typed(_)
                                 | crate::find::FindCall::Open
