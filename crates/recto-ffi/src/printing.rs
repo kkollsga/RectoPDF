@@ -71,21 +71,11 @@ impl AppCore {
 
     /// For QA's print to a PDF through the system's printing: where it should write, a new name of ours beside `out`, which is published at `out` when it's done, never over anything. None if `out` can't be written to.
     pub fn print_qa_target(&self, out: String) -> Option<String> {
-        let out = PathBuf::from(out);
-        let folder = out.parent()?;
-        if !out.is_absolute() || std::fs::symlink_metadata(&out).is_ok() {
-            return None;
-        }
-        let written = folder.join(format!(
-            ".recto-print-{}-{}.pdf",
-            std::process::id(),
-            self.inner.tools.printing().generation.load(Ordering::SeqCst) + 1
-        ));
-        if std::fs::symlink_metadata(&written).is_ok() {
-            return None;
-        }
-        *lock(&self.inner.tools.printing().qa_target) = Some((written.clone(), out));
-        Some(written.to_string_lossy().into_owned())
+        self.inner
+            .tools
+            .printing()
+            .qa_target_for(PathBuf::from(out))
+            .map(|written| written.to_string_lossy().into_owned())
     }
 
     /// The file a print's pages are in, once, for the host to hand to the system's printing.

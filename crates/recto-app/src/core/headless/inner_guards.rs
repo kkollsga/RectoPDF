@@ -196,14 +196,13 @@ Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
 Lifecycle::pub(crate) fn takes_input(&self) -> bool
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
 Printing (pub struct, derives Default)
-Printing.pub generation: AtomicU64
-Printing.pub qa_target: Mutex<Option<(PathBuf, PathBuf)>>
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)
 Printing::pub fn dismiss_notice(&self)
 Printing::pub fn finished(&self, path: &str)
 Printing::pub fn has_ready(&self) -> bool
 Printing::pub fn notice(&self) -> Option<String>
+Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
 Printing::pub fn take_ready(&self) -> Option<PathBuf>
