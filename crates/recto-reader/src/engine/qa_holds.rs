@@ -8,7 +8,7 @@ impl Engine {
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
     pub fn hold_drawing(&self, on: bool) {
         lock(&self.shared.reader).work.hold_drawing(on);
-        self.wake();
+        self.unpark_thread();
     }
 
     /// **For QA: a busy page view, made to last.** While on, what the UI thread asks of this view from another pane (synced scroll's place, the one zoom,
@@ -18,7 +18,7 @@ impl Engine {
     pub fn hold_busy(&self, on: bool) {
         self.shared.qa_busy.store(on, Ordering::SeqCst);
         if !on {
-            self.wake();
+            self.unpark_thread();
         }
     }
 }

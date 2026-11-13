@@ -433,7 +433,7 @@ Engine::pub fn wait_settled(&self, limit: Duration) -> bool
 Engine::pub fn waking(&self) -> Wake<'_>
 Engine::pub fn window_closed(&self)
 Engine::pub fn window_opened(&self)
-Engine::pub fn workers(&self) -> Workers<'_>
+Engine::pub fn workers(&self) -> WorkerFigures<'_>
 Engine::pub fn zoom(&self, zoom: Zoom) -> Option<f64>
 Engine::pub fn zoom_soon(&self, value: f64) -> bool
 EngineConfig (pub struct, derives Clone, Debug, Default)
@@ -690,11 +690,11 @@ Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
-Workers (pub struct, derives Clone, Copy)
-Workers::pub fn bytes(&self, tab: u32) -> u64
-Workers::pub fn footprint(&self) -> (u64, u64)
-Workers::pub fn pids(&self) -> Vec<u32>
-Workers::pub fn walled(&self) -> u32
+WorkerFigures (pub struct, derives Clone, Copy)
+WorkerFigures::pub fn bytes(&self, tab: u32) -> u64
+WorkerFigures::pub fn footprint(&self) -> (u64, u64)
+WorkerFigures::pub fn pids(&self) -> Vec<u32>
+WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>

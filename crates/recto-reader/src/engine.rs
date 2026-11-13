@@ -25,7 +25,7 @@ pub use points::Points;
 use run::run_guarded;
 pub use selection::Selection;
 pub use waking::Wake;
-pub use workers::Workers;
+pub use workers::WorkerFigures;
 
 /// What the engine tells whoever's drawing. Called off the UI thread, and must return at once.
 pub trait EngineEvents: Send + Sync {
@@ -128,7 +128,7 @@ impl Engine {
     }
 
     /// Starts the thread the first time there's a document, and wakes it. `unpark` costs one atomic when it's already running.
-    fn wake(&self) {
+    fn unpark_thread(&self) {
         if self.shared.stopping.load(Ordering::SeqCst) {
             return;
         }
@@ -160,7 +160,7 @@ impl Engine {
         if has_ops {
             signal_ops(&self.shared);
         }
-        self.wake();
+        self.unpark_thread();
     }
 
     /// **Ends this page view for good:** what's on screen comes off, its thread ends at its next turn, and its workers and everything drawn go with it. A comparison's pane closing does this, so a pane that's gone costs no thread, worker or surface.
@@ -239,7 +239,7 @@ impl Engine {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
                 leave(&mut lock(&self.shared.pending));
-                self.wake();
+                self.unpark_thread();
                 return false;
             }
         };
@@ -288,7 +288,7 @@ impl Engine {
     pub fn memory_pressure(&self, critical: bool) {
         lock(&self.shared.reader).memory_pressure(critical);
         self.shared.kill_idle_workers.store(true, Ordering::SeqCst);
-        self.wake();
+        self.unpark_thread();
     }
 
     /// For QA: the system taking back what's marked discardable, without a word. Says how many surfaces went.
@@ -399,7 +399,7 @@ impl Engine {
         if more {
             signal_ops(&self.shared);
         }
-        self.wake();
+        self.unpark_thread();
         ViewportOutcome {
             ops,
             scrolled,
@@ -421,7 +421,7 @@ impl Engine {
         if more {
             signal_ops(&self.shared);
         }
-        self.wake();
+        self.unpark_thread();
         ops
     }
 
@@ -641,7 +641,7 @@ mod tests {
                 "its own thread takes it: {:?}",
                 engine.reading_anchor()
             );
-            engine.wake();
+            engine.unpark_thread();
             std::thread::sleep(Duration::from_millis(5));
         }
         engine.shut_down();
