@@ -800,6 +800,33 @@ fn going_to_the_background_and_memory_pressure_write_what_waits_now() {
     drop(app.quit());
 }
 
+/// Failure (the sleep branch's second review, 2026-11-13): the UI thread's hurry on going to the background started no writer, so after a sleep writer
+/// panicked what waited in its cool-down had no thread and stayed unwritten till something else started one. A writer that panics as it starts, a tab
+/// waiting its cool-down, then the app goes to the background with the clock standing still: what waits is written.
+#[test]
+fn going_to_the_background_after_a_sleep_writer_panicked_writes_what_waits() {
+    let disk = Disk::new();
+    let docs: Vec<_> = ["a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).start();
+    app.core().sleeper.panic_next_leaving_writer();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    app.wait_until("the writer gone, panicked", || {
+        let leaving = app.record_json()["sleep"]["leaving"].clone();
+        leaving["writer_panics"] == 1 && leaving["writer"] == false
+    });
+    let a = tab_named(&app, "a.pdf");
+    assert!(!sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)), "written before its wait");
+    app.core().frontmost_changed(true, true);
+    app.core().frontmost_changed(false, false);
+    app.wait_until("written on going to the background, with no writer left to take a word", || {
+        sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
+    });
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

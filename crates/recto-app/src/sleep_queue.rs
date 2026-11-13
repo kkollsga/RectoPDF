@@ -22,7 +22,9 @@ use recto_reader::SleepMaterial;
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -375,20 +377,22 @@ pub enum Leaves {
     Dormant,
 }
 
-/// **The queue and what waits on it:** its one short lock, the condition the writer and a drain wait on, the cool-down, and a hurry asked for from the UI thread,
-/// which takes no lock. Held by the sleeper; the writer's loop is [`Self::serve`].
+/// **The queue and what waits on it:** its one short lock, the condition the writer and a drain wait on, and the cool-down. Everything that changes what the
+/// writer waits for changes it under the lock, so a word can't fall between the writer's look and its wait; the UI thread never calls here (going to the
+/// background asks the saver's pass to hurry, [`crate::core::sleeper::Sleeper::hurry_leaving_soon`]). Held by the sleeper; the writer's loop is
+/// [`Self::serve`].
 pub struct Leaving {
     queue: Mutex<LeavingQueue>,
     /// Said to whenever the queue changes in a way the writer or a drain should look again for: something queued, hurried, taken back, retired or written.
     moved: Condvar,
     /// How long a pushed-out tab's sleep file waits, in milliseconds of the app's clock: [`crate::sleeper::LEAVING_WAIT_MS`], set small by tests.
     wait_ms: AtomicU64,
-    /// **A hurry asked for on the UI thread** (the app going to the background), which takes no lock there: the writer takes it in at its next look. With no
-    /// writer it waits for the next one, and a writer started for a tab queued after it is started without it (a stale hurry would write that tab early).
-    hurry_soon: AtomicBool,
     /// A test's: the next writer panics as it starts, as one that met a bug would.
     #[cfg(test)]
     panic_next: AtomicBool,
+    /// A test's: run once by the writer between its look at the queue and its wait, with the queue's lock held, as a word can land there.
+    #[cfg(test)]
+    before_wait: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Default for Leaving {
@@ -404,9 +408,10 @@ impl Leaving {
             queue: Mutex::new(LeavingQueue::default()),
             moved: Condvar::new(),
             wait_ms: AtomicU64::new(wait_ms),
-            hurry_soon: AtomicBool::new(false),
             #[cfg(test)]
             panic_next: AtomicBool::new(false),
+            #[cfg(test)]
+            before_wait: Mutex::new(None),
         }
     }
 
@@ -425,9 +430,6 @@ impl Leaving {
             Leaves::PushedOut | Leaves::Dormant => 0,
         };
         let start = lock(&self.queue).push_due(facts, material, due);
-        if start {
-            self.hurry_soon.store(false, Ordering::SeqCst);
-        }
         self.moved.notify_all();
         start
     }
@@ -451,19 +453,13 @@ impl Leaving {
         self.moved.notify_all();
     }
 
-    /// **Everything waiting is due now.** Says whether a writer has to be started for it ([`LeavingQueue::hurry`]). Takes the lock: not for the UI thread.
+    /// **Everything waiting is due now,** under the queue's lock, so a writer between its look and its wait sees it when it next looks, the word said after it
+    /// waits. Says whether a writer has to be started for it ([`LeavingQueue::hurry`]). Takes the lock: not for the UI thread.
     #[must_use]
     pub fn hurry(&self) -> bool {
         let start = lock(&self.queue).hurry();
-        self.hurry_soon.store(false, Ordering::SeqCst);
         self.moved.notify_all();
         start
-    }
-
-    /// **The same, from the UI thread:** an atomic and a word to the writer, no lock. It starts no writer.
-    pub fn hurry_soon(&self) {
-        self.hurry_soon.store(true, Ordering::SeqCst);
-        self.moved.notify_all();
     }
 
     /// The writer looks at the queue again, as the clock's moved on (a test's clock, which no timeout follows).
@@ -530,14 +526,15 @@ impl Leaving {
     fn next(&self, now: &impl Fn() -> u64) -> Option<(SleepFacts, SleepMaterial)> {
         let mut held = lock(&self.queue);
         loop {
-            if self.hurry_soon.swap(false, Ordering::SeqCst) {
-                let _ = held.hurry();
-            }
             match held.take_due(now()) {
                 Next::Write(leaving) => return Some(*leaving),
                 Next::End => return None,
                 Next::Wait(ms) => {
                     held.counts.waits += 1;
+                    #[cfg(test)]
+                    if let Some(then) = lock(&self.before_wait).take() {
+                        then();
+                    }
                     held = self
                         .moved
                         .wait_timeout(held, Duration::from_millis(ms.max(1)))
@@ -545,6 +542,12 @@ impl Leaving {
                 }
             }
         }
+    }
+
+    /// The writer runs `then` once, between its next look at the queue and its wait, with the queue's lock held.
+    #[cfg(test)]
+    fn before_next_wait(&self, then: impl FnOnce() + Send + 'static) {
+        *lock(&self.before_wait) = Some(Box::new(then));
     }
 
     /// The next writer panics as it starts, for a test of what's left after one.
@@ -984,19 +987,35 @@ mod tests {
         assert!(!line.hurry(), "one's been started");
     }
 
-    /// Failure (the cool-down's review, 2026-11-13): going to the background hurried the queue under its lock, on the UI thread. The UI thread's hurry is an
-    /// atomic the writer takes in at its next look: a file waiting its cool-down is written then, not at its wait.
+    /// Failure (the sleep branch's second review, 2026-11-13): going to the background hurried from the UI thread with an atomic and a word said with no lock,
+    /// and the writer held the queue's lock from its look at that atomic to its wait, so a word said in between was lost and the waiting files waited out their
+    /// cool-down (20 s). The writer held between its look and its wait, a hurry asked there: let go, the file waiting is written now, not at its wait.
     #[test]
-    fn the_ui_threads_hurry_takes_no_lock_and_the_writer_takes_it_in() {
+    fn a_hurry_landing_between_the_writers_look_and_its_wait_is_not_lost() {
         let line = Leaving::new(60_000);
         let written = Mutex::new(Vec::new());
         assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0));
+        let (at_wait, writer_at_wait) = std::sync::mpsc::channel();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        line.before_next_wait(move || {
+            let _ = at_wait.send(());
+            let _ = gone.recv();
+        });
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| line.serve(|| 0, |facts, _| lock(&written).push(facts.id)));
             let _ends = EndsTheWriter(&line);
-            until("the writer waiting", || line.report()["waits"].as_u64().unwrap() >= 1);
-            line.hurry_soon();
-            until("the file hurried, written", || lock(&written).contains(&TabId(1)));
+            writer_at_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the writer between its look and its wait");
+            let hurrying = scope.spawn(|| line.hurry());
+            // The hurry has its chance to land in the window: it has, or it waits for the lock, which is the fix.
+            let began = Instant::now();
+            while !hurrying.is_finished() && began.elapsed() < Duration::from_millis(300) {
+                std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
+            }
+            drop(go);
+            until("the file hurried, written now", || lock(&written).contains(&TabId(1)));
+            hurrying.join().expect("the hurry returns");
             writer.join().expect("the writer ends");
         });
     }

@@ -43,6 +43,10 @@ pub struct Sleeper {
     leaving: crate::sleep_queue::Leaving,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
+    /// **The app's gone to the background and what waits in the cool-down is to be written now:** set on the UI thread, which takes no lock and says no word
+    /// ([`Self::hurry_leaving_soon`]), and taken by the saver's pass that going to the background asks for, off the UI thread, which hurries the queue under its
+    /// lock and starts a writer if there's none ([`Inner::hurry_leaving_if_asked`]).
+    background_hurry: std::sync::atomic::AtomicBool,
 }
 
 /// Looks at files that can be under way at once. A look is a stat, microseconds, unless the file's on a volume that's stopped answering, where it may never end: then this many threads are all that's ever held for it, however many times the app comes to the front.
@@ -92,6 +96,7 @@ impl Sleeper {
             writing: Mutex::new(()),
             leaving: crate::sleep_queue::Leaving::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
+            background_hurry: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -189,9 +194,10 @@ impl Sleeper {
         self.leaving.panic_next_writer();
     }
 
-    /// The app's gone to the background: what's waiting is written at the writer's next look. The UI thread's: an atomic, no lock.
+    /// **The app's gone to the background:** what's waiting is to be written now, by the saver's pass the caller asks for next (`Saver::write_soon`), which
+    /// carries it out off this thread ([`Inner::hurry_leaving_if_asked`]). The UI thread's: one atomic store, no lock, no word to the writer.
     pub fn hurry_leaving_soon(&self) {
-        self.leaving.hurry_soon();
+        self.background_hurry.store(true, Ordering::SeqCst);
     }
 
     /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further (counted as skipped past it),
@@ -434,6 +440,14 @@ impl Inner {
         };
         if self.sleeper.leaving.push(facts, material, Leaves::Dormant, self.sleeper.millis()) {
             self.start_sleep_writer();
+        }
+    }
+
+    /// **A hurry going to the background asked for, carried out:** what waits in the cool-down is due now, under the queue's lock, and a writer's started if
+    /// there's none (as after one panicked). Called by the saver's pass and at the end of a flush, never on the UI thread.
+    pub(crate) fn hurry_leaving_if_asked(&self) {
+        if self.sleeper.background_hurry.swap(false, Ordering::SeqCst) {
+            self.sleeper.hurry_leaving(|| self.start_sleep_writer());
         }
     }
 
