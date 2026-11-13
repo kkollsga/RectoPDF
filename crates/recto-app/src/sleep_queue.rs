@@ -99,6 +99,8 @@ struct Counts {
     retired: u64,
     /// Queued, and handed back to a tab shown again inside its wait.
     handed_back: u64,
+    /// Taken out of their cool-down to be written now, past the cap on tabs.
+    hurried: u64,
     writer_panics: u64,
 }
 
@@ -119,7 +121,17 @@ impl LeavingQueue {
         let bytes = bytes_of(&facts, &material);
         self.queue.push_back(Leaving { facts, material, bytes, due });
         self.bytes += bytes;
+        // Past the cap on tabs, the oldest still in its cool-down is written now rather than dropped (found 2026-11-13: flicking through thirty tabs, every
+        // sleep file past the eighth was dropped while it waited, and those tabs woke bare). Only when none is waiting, so the writer is behind (a slow disk),
+        // does the oldest go; and past twice the cap, the oldest goes whatever it is, so what's held never grows with the tabs leaving.
         while self.queue.len() > MAX_LEAVING_TABS {
+            if self.queue.len() <= 2 * MAX_LEAVING_TABS
+                && let Some(waiting) = self.queue.iter_mut().find(|leaving| leaving.due > 0)
+            {
+                waiting.due = 0;
+                self.counts.hurried += 1;
+                break;
+            }
             self.remove(0);
             self.counts.dropped += 1;
         }
@@ -282,6 +294,7 @@ impl LeavingQueue {
             "stale_skipped": self.counts.stale_skipped,
             "retired": self.counts.retired,
             "handed_back": self.counts.handed_back,
+            "hurried": self.counts.hurried,
             "writer_panics": self.counts.writer_panics,
         })
     }
@@ -483,6 +496,25 @@ mod tests {
         assert!(matches!(queue.take_due(200), Next::Write(leaving) if leaving.0.id == TabId(4)), "hurried");
         assert!(matches!(queue.take_due(200), Next::End));
         assert_eq!(queue.report()["handed_back"], 1);
+    }
+
+    /// Failure (the cool-down's first full check, 2026-11-13, `a_long_session_stays_flat`: 4 of 60 wakes from a sleep file): with every pushed-out tab waiting
+    /// its cool-down, flicking past more than the cap on tabs dropped the oldest, unwritten, and those tabs woke bare. Past the cap, the oldest waiting is
+    /// written now, not dropped; with none waiting (the writer behind) the oldest goes, as before; and what's queued stays within twice the cap.
+    #[test]
+    fn past_the_cap_on_tabs_the_oldest_waiting_is_written_now_not_dropped() {
+        let mut queue = LeavingQueue::default();
+        for id in 1..=(2 * MAX_LEAVING_TABS as u32 + 3) {
+            let _ = queue.push_due(facts(id), material(10, 0), 1_000);
+            assert!(queue.queue.len() <= 2 * MAX_LEAVING_TABS, "{} queued", queue.queue.len());
+        }
+        let report = queue.report();
+        assert!(report["hurried"].as_u64().unwrap() >= MAX_LEAVING_TABS as u64, "{report}");
+        assert_eq!(report["dropped"], 3, "{report}");
+        assert!(
+            matches!(queue.take_due(0), Next::Write(leaving) if leaving.0.id == TabId(4)),
+            "the oldest left, now due"
+        );
     }
 
     /// Failure (the sleeper's review, 2026-11-13): a tab's sleep file retired (closed, saved, its file changed) was still written from what the queue held, after

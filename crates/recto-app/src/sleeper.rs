@@ -31,10 +31,10 @@ pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
 pub const LEAVING_WAIT_MS: u64 = 20_000;
 
 /// When a sleep file queued at `now` may be written, by the app's clock: a tab pushed out of the warm ones after `wait_ms`, and one going dormant (left
-/// alone, the budget, memory pressure) at once, as zero.
+/// alone, the budget, memory pressure), or any with no wait set, at once, as zero.
 #[must_use]
 pub fn leaving_due(now: u64, pushed_out: bool, wait_ms: u64) -> u64 {
-    if pushed_out { now.saturating_add(wait_ms) } else { 0 }
+    if pushed_out && wait_ms > 0 { now.saturating_add(wait_ms) } else { 0 }
 }
 
 /// What sleep files may come to in an hour, all told, for the whole app, for the same reason. 4 MiB (owner, 2026-11-13, "I agree with your recommendation",
