@@ -212,7 +212,7 @@ impl<L: DocLoader> Session<L> {
         // Every pane is a live document, so each is one of the warm tabs, the one read last and so first: a tab warm before that isn't a pane goes cold, and the live documents stay at [`MAX_WARM`] (SPEC §2), as `compare::MAX_PANES` is.
         // Those warm already first, so a pane coming in from cold pushes out a tab that isn't a pane, and never another pane, which would then be read with the session held.
         let mut others: Vec<TabId> = tabs.iter().copied().filter(|id| *id != reading).collect();
-        others.sort_by_key(|id| !self.warm.iter().any(|(tab, _)| tab == id));
+        others.sort_by_key(|id| !self.warm.contains(*id));
         for id in others {
             self.activate(id);
         }

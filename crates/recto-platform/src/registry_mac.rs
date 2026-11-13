@@ -62,6 +62,59 @@ pub fn forget_until_gone(bundle: &Path, limit: Duration) -> bool {
     }
 }
 
+/// **How a forgetting is settled: by looks, not by the clock.** A registration still on its way can land after one clean look, so a copy is gone when two
+/// looks in a row say so; and each look is a whole dump of the registry, which takes a few seconds on a quiet machine and has taken over 30 on a starved
+/// one (CI, 2026-11-13: a bound of 20 s gave up after one or two looks, and the copy was called left). So the bound is a number of looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settling {
+    clean: u32,
+    looks: u32,
+}
+
+/// What a look came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// Look again.
+    NotYet,
+    /// Clean twice in a row.
+    Gone,
+    /// Every look allowed has been made, and it never stayed gone.
+    GaveUp,
+}
+
+impl Settling {
+    /// Clean looks in a row that mean gone.
+    pub const CLEAN: u32 = 2;
+    /// The most looks made.
+    pub const MAX_LOOKS: u32 = 12;
+
+    /// A look was made: `clean` if nothing of it was registered or running.
+    pub fn after_look(&mut self, clean: bool) -> Settled {
+        self.looks += 1;
+        self.clean = if clean { self.clean + 1 } else { 0 };
+        if self.clean >= Self::CLEAN {
+            Settled::Gone
+        } else if self.looks >= Self::MAX_LOOKS {
+            Settled::GaveUp
+        } else {
+            Settled::NotYet
+        }
+    }
+
+    /// How many looks have been made.
+    #[must_use]
+    pub fn looks(self) -> u32 {
+        self.looks
+    }
+}
+
+/// One look: forgets `bundle` and everything in it, then says whether the dump has none of it.
+pub fn forget_and_look(bundle: &Path) -> bool {
+    forget_all_under(bundle);
+    forget(bundle);
+    !registered().iter().any(|copy| copy.path.starts_with(bundle))
+}
+
 /// The same without waiting, for a process on its way out: the tool outlives it.
 pub fn forget_soon(bundle: &Path) {
     let _ = Command::new(LSREGISTER)
@@ -268,5 +321,26 @@ identifier:                 io.github.kkollsga.RectoPDF
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure (CI run 43392356580, 2026-11-13): a copy was called left after 20 s, in which a starved runner had made one or two looks. Settling goes by
+    /// looks: gone is two clean in a row whatever the time, a dirty look starts the count again, and it gives up only after every look allowed.
+    #[test]
+    fn a_forgetting_settles_by_looks_and_not_by_the_clock() {
+        let mut settling = Settling::default();
+        assert_eq!(
+            settling.after_look(true),
+            Settled::NotYet,
+            "one clean look isn't gone: a registration can still land"
+        );
+        assert_eq!(settling.after_look(false), Settled::NotYet, "it landed");
+        assert_eq!(settling.after_look(true), Settled::NotYet, "the count began again");
+        assert_eq!(settling.after_look(true), Settled::Gone);
+        let mut never = Settling::default();
+        for look in 1..Settling::MAX_LOOKS {
+            assert_eq!(never.after_look(look % 2 == 0), Settled::NotYet, "look {look}");
+        }
+        assert_eq!(never.after_look(false), Settled::GaveUp);
+        assert_eq!(never.looks(), Settling::MAX_LOOKS);
     }
 }

@@ -4,6 +4,11 @@ use super::Op;
 use recto_platform::surface::PixelSurface;
 use std::collections::{HashMap, VecDeque};
 
+/// The most entries' room each list of what's gone off a layer keeps once it's empty: a page's tiles in view and more.
+pub(super) const KEEP_GONE: usize = 256;
+/// The most ops' room the queue keeps once it's empty: a turn's attachments and the pages' layers placed, several times over.
+pub(super) const KEEP_OPS: usize = 64;
+
 /// How a page sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Placement {
@@ -38,6 +43,24 @@ impl HostQueue {
         self.ops.drain(..).collect()
     }
 
+    /// Gives back the room of the lists of what's gone off a layer past [`KEEP_GONE`], once they're empty: a step that took a hostile file's thousands of tiles off doesn't leave that room held.
+    pub(super) fn trim(&mut self) {
+        for list in [&mut self.to_discard, &mut self.handed_to_host] {
+            if list.is_empty() && list.capacity() > KEEP_GONE {
+                list.shrink_to(KEEP_GONE);
+            }
+        }
+        if self.ops.is_empty() && self.ops.capacity() > KEEP_OPS {
+            self.ops.shrink_to(KEEP_OPS);
+        }
+    }
+
+    /// The bytes the queue's lists hold, filled or not.
+    #[cfg(test)]
+    pub(super) fn held_bytes(&self) -> usize {
+        (self.to_discard.capacity() + self.handed_to_host.capacity()) * size_of::<u64>() + self.ops.capacity() * size_of::<Op>()
+    }
+
     /// Whether the host should come back for more.
     pub(super) fn has_ops(&self) -> bool {
         !self.ops.is_empty() || self.more_to_attach
@@ -51,8 +74,10 @@ impl HostQueue {
                 PixelSurface::release_for_host(surface);
             }
         }
-        self.to_discard.clear();
-        self.handed_to_host.clear();
+        // Their room too: a closed window holds nothing here.
+        self.ops = VecDeque::new();
+        self.to_discard = Vec::new();
+        self.handed_to_host = Vec::new();
         self.unapplied = false;
         self.more_to_attach = false;
     }

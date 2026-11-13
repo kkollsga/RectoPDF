@@ -41,7 +41,7 @@ fn draw_notes_are_capped_and_go_with_their_tab() {
     for page in 0..(MAX_DRAWS_KEPT as u32 * 2) {
         s.note_drawn(DrawNote { tab: a, page, failure: None });
     }
-    assert_eq!(s.draws.len(), MAX_DRAWS_KEPT);
+    assert_eq!(s.mail.draws_kept(), MAX_DRAWS_KEPT);
     assert!(s.draw_note(a, 0).is_none());
     let last = MAX_DRAWS_KEPT as u32 * 2 - 1;
     assert!(s.draw_note(a, last).is_some());

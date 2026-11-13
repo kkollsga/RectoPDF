@@ -97,8 +97,8 @@ impl Reader {
     pub fn zoom(&mut self, zoom: Zoom) -> Option<f64> {
         let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
         let value = match zoom {
-            Zoom::In => doc.magnification * ZOOM_STEP,
-            Zoom::Out => doc.magnification / ZOOM_STEP,
+            Zoom::In => doc.place.magnification * ZOOM_STEP,
+            Zoom::Out => doc.place.magnification / ZOOM_STEP,
             Zoom::Fit => 1.0,
             Zoom::Actual => 1.0 / doc.layout.fit().max(f64::MIN_POSITIVE),
             Zoom::To(value) => value,
@@ -107,9 +107,9 @@ impl Reader {
         let value = if value.is_finite() {
             value.clamp(MIN_ZOOM, MAX_ZOOM)
         } else {
-            doc.magnification
+            doc.place.magnification
         };
-        doc.magnification = value;
+        doc.place.magnification = value;
         self.host.ops.push_back(Op::Magnify { value });
         Some(value)
     }
@@ -121,6 +121,6 @@ impl Reader {
 
     /// The tab showing's magnification, if one is.
     pub fn magnification(&self) -> Option<f64> {
-        self.doc().map(|doc| doc.magnification)
+        self.doc().map(|doc| doc.place.magnification)
     }
 }

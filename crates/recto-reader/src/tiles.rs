@@ -9,30 +9,35 @@
 use crate::layout::{PageBox, PageLayout, Spread};
 use crate::paper::PaperKind;
 use recto_platform::FileStamp;
-use recto_proto::{MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
+use recto_proto::{MAX_SCALE, MIN_SCALE, TileRect};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod cache;
+mod doc;
 mod geometry;
 mod host;
 mod jobs;
 mod place;
 mod plan;
 mod pointer;
+mod refresh;
 mod report;
+mod scratch;
 mod wake;
 mod zoom;
 
-use cache::{Entry, TileCache, TileKey};
-use host::{HostQueue, Placement};
+use cache::{Entry, TileCache};
+use doc::{DocView, Issue};
+use host::HostQueue;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind, Work};
 use place::Place;
 use pointer::Pointer;
+use scratch::Scratch;
 use wake::Waking;
 pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepView, WakeReport};
 
@@ -52,8 +57,18 @@ const SCALE_SLACK: f64 = 0.005;
 const TRY_AGAIN_AFTER: Duration = Duration::from_secs(3);
 /// Pages remembered as heavy or not.
 const MAX_HEAVY_REMEMBERED: usize = 4096;
+/// Pages remembered as drawn at least once, which only the QA count of blank steps on pages seen before goes by. A file can claim 8 million pages, and a long scroll draws page after page, so past this they're all forgotten at once, as `heavy` is. **What that costs is the count's accuracy:** a page drawn before then counts as never seen until it's drawn again. As many as the layout keeps sizes for, far past any book read through in one sitting, and about 0.6 MiB a held tab at the most.
+const MAX_SEEN_REMEMBERED: usize = crate::layout::MAX_OVERRIDES;
+/// Pages whose problem is remembered, so they aren't asked for again. Past it, the problems of pages away from the view go: such a page is asked for once more when it's back in view, and its answer remembered again, so it's never asked on every look. 4,096 failing pages is far past what a damaged real file has, and about 0.5 MiB a held tab at the most.
+const MAX_ISSUES_REMEMBERED: usize = 4096;
 /// Pages either side of what's visible whose sizes are asked for, so layout near the reader settles early.
 const SIZES_AROUND: u32 = 2;
+/// The most pages counted as in view, from the top of the view. A row is at least the gap between rows tall, 10 points, so the tallest Mac display's window, 3,384 points, at the least zoom shows at most about 2,700 pages side by side, however small a hostile file makes them; past this only a window taller than any display could. Everything sized by the pages in view is held by it: the layers placed, the tiles on them, a step's ops, and the problems of pages near the view, which [`MAX_ISSUES_REMEMBERED`] keeps past its cap.
+const MAX_PAGES_IN_VIEW: usize = 4_000;
+const _: () = assert!(
+    MAX_PAGES_IN_VIEW + 2 * SIZES_AROUND as usize <= MAX_ISSUES_REMEMBERED,
+    "the problems of the pages near the view would pass their cap"
+);
 
 /// The host's scrolled view, in document points, on each scroll or resize. The whole of it crosses in one call.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -160,52 +175,19 @@ impl PageMap {
 
 impl PageMap {
     fn source(&self, position: u32) -> Option<(PathBuf, u32)> {
+        self.file_of(position).map(|(file, page)| (file.clone(), page))
+    }
+
+    /// Which file and which page a position is, borrowed: asked on every tile put on a layer, so it copies no path.
+    fn file_of(&self, position: u32) -> Option<(&PathBuf, u32)> {
         match &self.slots {
-            None => self.files.first().map(|file| (file.clone(), position)),
+            None => self.files.first().map(|file| (file, position)),
             Some(slots) => {
                 let &(file, page) = slots.get(position as usize)?;
-                self.files.get(usize::from(file)).map(|file| (file.clone(), page))
+                self.files.get(usize::from(file)).map(|file| (file, page))
             }
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct Issue {
-    message: String,
-    /// When it may have passed. `None` holds until the zoom changes or someone asks again.
-    try_again_at: Option<Instant>,
-}
-
-#[derive(Debug)]
-struct DocView {
-    tab: u32,
-    layout: PageLayout,
-    map: PageMap,
-    magnification: f64,
-    anchor: (u32, f64),
-    tile_scale: f32,
-    issues: HashMap<u32, Issue>,
-    heavy: HashMap<u32, bool>,
-    /// The whole file can't be drawn, in words the reader can read.
-    problem: Option<String>,
-    seen: HashSet<u32>,
-    /// Which page the reader was on when this tab was left, and exactly where in it.
-    left_at: Option<(u32, (u32, f64))>,
-    /// How far across the view is, when zoomed in.
-    scroll_x: f64,
-    /// Exactly how far down it was, and the document's height then, so that while nothing about the layout has changed it comes back to the very pixel, where the anchor would come to within rounding.
-    exact_y: Option<(f64, f64)>,
-    /// Jobs of a generation below this were about the pages as they were before the last edit, and what they found is thrown away.
-    floor: u64,
-    /// It came up from a sleep file, so a page shows on what its size is taken to be before it's been asked.
-    size_on_trust: bool,
-    /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown, or goes in a sleep file:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
-    versions: HashMap<PathBuf, u64>,
-    /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
-    left_pictures: Option<Vec<RawPicture>>,
-    /// The document's width as the host was last told it: the window's, or a fold-out's while its row is in view.
-    width_shown: f64,
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -257,6 +239,8 @@ pub struct Reader {
     wake: Waking,
     /// The least room either side of the pages: a comparison's pane has less than a window.
     margins: (f64, f64),
+    /// The lists a scroll step fills, kept between steps.
+    scratch: Scratch,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -289,6 +273,7 @@ impl Reader {
             pointer: Pointer::default(),
             wake: Waking::default(),
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
+            scratch: Scratch::default(),
         }
     }
 
@@ -311,8 +296,8 @@ impl Reader {
     /// The version of the file a page of a tab is from, as a worker last said.
     fn version_of_page(&self, tab: u32, page: u32) -> Option<u64> {
         let doc = self.docs.get(&tab)?;
-        let (file, _) = doc.map.source(page)?;
-        doc.versions.get(&file).copied()
+        let (file, _) = doc.map.file_of(page)?;
+        doc.drawing.versions.get(file).copied()
     }
 
     /// Whether something drawn is of the version of its file there is now. Unknown on either side passes: before a worker's said, what there is is all there is.
@@ -333,12 +318,12 @@ impl Reader {
             .collect();
         for tab in tabs {
             let Some(doc) = self.docs.get_mut(&tab) else { continue };
-            let was = doc.versions.insert(file.to_path_buf(), version);
+            let was = doc.drawing.versions.insert(file.to_path_buf(), version);
             if was == Some(version) {
                 continue;
             }
             // Of the version it was left with.
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
             let stale: Vec<u64> = self
                 .cache
                 .entries
@@ -377,8 +362,8 @@ impl Reader {
         self.work.reopen_files.push(path.to_path_buf());
         for doc in self.docs.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
-                doc.problem = None;
-                doc.issues.clear();
+                doc.drawing.problem = None;
+                doc.drawing.issues.clear();
             }
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -426,94 +411,40 @@ impl Reader {
         let selected_before_change = self.pointer.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
         if staying && let Some(doc) = self.docs.get_mut(&tab) {
             // Across the page, as the view has it now: what's taken up again goes back there.
-            doc.scroll_x = self.viewport.x;
+            doc.place.scroll_x = self.viewport.x;
         }
         if self.hot != Some(tab) {
-            // While what it showed is still on the screen, and so all there.
-            if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
-                let pictures = self.pictures_in_view(left);
-                if let Some(doc) = self.docs.get_mut(&left) {
-                    doc.left_pictures = Some(pictures);
-                }
-            }
-            let last_page = self.place.last_view_page;
-            let (left_x, left_y) = (self.viewport.x, self.viewport.y);
-            if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
-                doc.left_at = last_page.map(|page| (page, doc.anchor));
-                doc.scroll_x = left_x;
-                doc.exact_y = Some((left_y, doc.layout.document_height()));
-            }
-            self.clear_screen();
-            self.hot = Some(tab);
-            self.place.last_view_page = None;
-            self.place.moved_page = None;
-            // A selection is in what's on screen, and a tab off screen holds none.
-            self.pointer.selecting.reset();
-            self.pointer.linking.clear();
+            self.leave_hot(tab);
         }
         let floor = self.work.next_generation;
-        let doc = self.docs.entry(tab).or_insert_with(|| {
-            let mut layout = PageLayout::with_spread(pages, spread);
-            layout.set_margins(self.margins.0, self.margins.1);
-            layout.set_turns(map.turns.clone());
-            // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
-            let saved = saved.filter(|saved| saved.page < pages.max(1));
-            if let Some(size) = saved.and_then(|saved| saved.page_size) {
-                layout.seed_usual(size);
-            }
-            let magnification = saved.map_or(1.0, |saved| {
-                if saved.magnification.is_finite() {
-                    saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM)
-                } else {
-                    1.0
-                }
-            });
-            let within = |value: f64| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
-            let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
-            let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
-            let exact_y = saved
-                .filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite())
-                .map(|saved| (saved.y, saved.document_height));
-            DocView {
-                tab,
-                layout,
-                map: map.clone(),
-                magnification,
-                anchor: (page, 0.0),
-                tile_scale: 0.0,
-                issues: HashMap::new(),
-                heavy: HashMap::new(),
-                problem: None,
-                seen: HashSet::new(),
-                left_at,
-                scroll_x,
-                exact_y,
-                floor,
-                size_on_trust: false,
-                versions: HashMap::new(),
-                left_pictures: None,
-                width_shown: 0.0,
-            }
-        });
+        let margins = self.margins;
+        let doc = self
+            .docs
+            .entry(tab)
+            .or_insert_with(|| DocView::from_saved(tab, pages, page, &map, saved, spread, margins, floor));
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
         let same_pages = (doc.map.same_pages(&map) || carried) && doc.layout.count() == pages;
         let back_at = if staying && same_pages {
-            Some(doc.anchor)
+            Some(doc.place.anchor)
         } else {
-            doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor)
+            doc.place
+                .left_at
+                .take()
+                .filter(|(left, _)| *left == page && same_pages)
+                .map(|(_, anchor)| anchor)
         };
         if back_at.is_none() {
-            doc.scroll_x = 0.0;
-            doc.exact_y = None;
+            doc.place.scroll_x = 0.0;
+            doc.place.exact_y = None;
         }
-        doc.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
+        doc.place.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
         if doc.map.turns != map.turns && doc.map.same_pages(&map) && doc.layout.count() == pages {
             // Turned, and nothing else: what's drawn stays, and the pages sit the new way.
             doc.layout.set_turns(map.turns.clone());
             doc.map.turns = map.turns.clone();
-            doc.exact_y = None;
+            doc.place.exact_y = None;
         }
         let mut carried_selection = None;
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
@@ -530,11 +461,11 @@ impl Reader {
             }
             doc.layout.set_turns(map.turns.clone());
             doc.map = map;
-            doc.issues.clear();
-            doc.heavy.clear();
-            doc.problem = None;
-            doc.seen.clear();
-            doc.floor = floor;
+            doc.drawing.issues.clear();
+            doc.drawing.heavy.clear();
+            doc.drawing.problem = None;
+            doc.drawing.seen.clear();
+            doc.drawing.floor = floor;
             if let Some(running) = &self.work.running
                 && running.tab == tab
                 && let Some(cancel) = &running.cancel
@@ -552,22 +483,47 @@ impl Reader {
         }
         // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
         }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
         if let Some(doc) = self.docs.get_mut(&tab)
             && doc.layout.set_spread(spread)
         {
-            doc.exact_y = None;
+            doc.place.exact_y = None;
         }
-        let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.magnification, doc.scroll_x));
+        let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.place.magnification, doc.place.scroll_x));
         self.host.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
         self.jump_to_anchor(page);
         self.host.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
         self.refresh(MAX_ATTACH_PER_TURN);
+    }
+
+    /// Leaves the tab that was showing for `tab`: what it showed and where it was are kept with it, and the screen is cleared.
+    fn leave_hot(&mut self, tab: u32) {
+        // While what it showed is still on the screen, and so all there.
+        if let Some(left) = self.hot.filter(|hot| self.docs.contains_key(hot)) {
+            let pictures = self.pictures_in_view(left);
+            if let Some(doc) = self.docs.get_mut(&left) {
+                doc.drawing.left_pictures = Some(pictures);
+            }
+        }
+        let last_page = self.place.last_view_page;
+        let (left_x, left_y) = (self.viewport.x, self.viewport.y);
+        if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
+            doc.place.left_at = last_page.map(|page| (page, doc.place.anchor));
+            doc.place.scroll_x = left_x;
+            doc.place.exact_y = Some((left_y, doc.layout.document_height()));
+        }
+        self.clear_screen();
+        self.hot = Some(tab);
+        self.place.last_view_page = None;
+        self.place.moved_page = None;
+        // A selection is in what's on screen, and a tab off screen holds none.
+        self.pointer.selecting.reset();
+        self.pointer.linking.clear();
     }
 
     /// Everything of tabs that have gone cold goes, as a cold tab holds nothing.
@@ -599,6 +555,13 @@ impl Reader {
         self.work.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
         self.pointer.selecting.reset();
+        self.let_lists_go();
+    }
+
+    /// The room kept for scroll steps goes, when there's nothing to scroll: no tab, or no window.
+    fn let_lists_go(&mut self) {
+        self.scratch = Scratch::default();
+        self.cache.spare = Vec::new();
     }
 
     /// Takes everything off the screen, in one op.
@@ -635,7 +598,7 @@ impl Reader {
             }
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
             if !viewport.live && self.place.jump.is_none() {
-                doc.magnification = viewport.magnification;
+                doc.place.magnification = viewport.magnification;
             }
         }
         if moved_layout {
@@ -659,8 +622,12 @@ impl Reader {
             #[allow(clippy::reversed_empty_ranges)]
             return 1..=0;
         }
-        doc.layout
-            .pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height)
+        let pages = doc
+            .layout
+            .pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height);
+        // Held to the most a real display's view has: a hostile file's slivers past it aren't in view.
+        let (first, last) = (*pages.start(), *pages.end());
+        first..=last.min(first.saturating_add(MAX_PAGES_IN_VIEW as u32 - 1))
     }
 
     /// Whether a device rectangle of a page at a scale shows in the viewport, however the page is turned.
@@ -684,264 +651,6 @@ impl Reader {
         (target as f32).clamp(MIN_SCALE, MAX_SCALE)
     }
 
-    /// Which tiles of a page the view touches, nearest the middle first.
-    fn visible_cells(&self, doc: &DocView, page: u32, scale: f32) -> Result<Vec<(u16, u16)>, ()> {
-        let size = doc.layout.raw_size(page);
-        let (width, height) = device_size(size.width, size.height, scale).map_err(|_| ())?;
-        // The view's corners on the page as it is before it's turned, in device pixels at this scale.
-        let (view_x, view_y, view_w, view_h) = (self.viewport.x, self.viewport.y, self.viewport.width, self.viewport.height);
-        let corners = [
-            (view_x, view_y),
-            (view_x + view_w, view_y),
-            (view_x, view_y + view_h),
-            (view_x + view_w, view_y + view_h),
-        ]
-        .map(|(x, y)| doc.layout.to_page(page, x, y));
-        let per_point = f64::from(scale);
-        let (low_u, high_u) = corners
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (u, _)| (low.min(*u), high.max(*u)));
-        let (low_v, high_v) = corners
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (_, v)| (low.min(*v), high.max(*v)));
-        let left = (low_u * per_point).max(0.0);
-        let top = (low_v * per_point).max(0.0);
-        let right = (high_u * per_point).min(f64::from(width));
-        let bottom = (high_v * per_point).min(f64::from(height));
-        if right <= left || bottom <= top {
-            return Ok(Vec::new());
-        }
-        let edge = f64::from(TILE_EDGE);
-        let (first_column, last_column) = ((left / edge) as u32, ((right - 1e-6) / edge) as u32);
-        let (first_row, last_row) = ((top / edge) as u32, ((bottom - 1e-6) / edge) as u32);
-        let (middle_x, middle_y) = ((left + right) / 2.0, (top + bottom) / 2.0);
-        let mut cells: Vec<(u16, u16)> = Vec::with_capacity(((last_column - first_column + 1) * (last_row - first_row + 1)) as usize);
-        for row in first_row..=last_row {
-            for column in first_column..=last_column {
-                cells.push((u16::try_from(column).map_err(|_| ())?, u16::try_from(row).map_err(|_| ())?));
-            }
-        }
-        let distance = |&(column, row): &(u16, u16)| {
-            let x = (f64::from(column) + 0.5) * edge - middle_x;
-            let y = (f64::from(row) + 0.5) * edge - middle_y;
-            x * x + y * y
-        };
-        cells.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
-        Ok(cells)
-    }
-
-    /// Brings the screen into line with what's wanted, attaching at most `budget` tiles. The rest wait for the next turn.
-    fn refresh(&mut self, mut budget: usize) {
-        self.host.more_to_attach = false;
-        let Some(tab) = self.hot else { return };
-        if !self.window_open {
-            return;
-        }
-        let Some(doc) = self.docs.get(&tab) else { return };
-        let target = self.target_scale(doc);
-        let change = f64::from(target) / f64::from(doc.tile_scale.max(f32::MIN_POSITIVE));
-        let retarget = doc.tile_scale == 0.0 || (!self.viewport.live && (change - 1.0).abs() > SCALE_SLACK);
-        if retarget && let Some(doc) = self.docs.get_mut(&tab) {
-            doc.tile_scale = target;
-            doc.issues.retain(|_, issue| issue.try_again_at.is_some());
-        }
-        let Some(doc) = self.docs.get(&tab) else { return };
-        let scale = doc.tile_scale;
-        let visible: Vec<u32> = self.visible_pages(doc).filter(|page| doc.layout.is_known(*page)).collect();
-        // A tab that's come from a sleep file knows what size its pages are likely to be, so with or without a picture its place is there on the paper from the first frame, and real sizes follow.
-        let on_paper: Vec<u32> = if doc.size_on_trust {
-            self.visible_pages(doc).collect()
-        } else {
-            visible.clone()
-        };
-
-        let stale: Vec<u32> = self.host.shown.keys().copied().filter(|page| !on_paper.contains(page)).collect();
-        for page in stale {
-            self.hide_page(page);
-        }
-        let Some(doc) = self.docs.get(&tab) else { return };
-        let paper_rgb = self.paper.rgb();
-        let device = self.viewport.magnification * self.viewport.backing;
-        let mut placements = Vec::with_capacity(on_paper.len());
-        for &page in &on_paper {
-            let rect = doc.layout.rect(page);
-            let size = doc.layout.raw_size(page);
-            // On whole device pixels, so a tile's pixels land on the screen's.
-            let snap = |value: f64| if device > 0.0 { (value * device).round() / device } else { value };
-            placements.push((
-                page,
-                Placement {
-                    x: snap(rect.x),
-                    y: snap(rect.y),
-                    width: f64::from(size.width),
-                    height: f64::from(size.height),
-                    fit: doc.layout.fit(),
-                    paper_rgb,
-                    turns: doc.layout.turns_of(page),
-                },
-            ));
-        }
-        for (page, placement) in placements {
-            if self.host.shown.get(&page) != Some(&placement) {
-                self.host.shown.insert(page, placement);
-                self.host.ops.push_back(Op::ShowPage {
-                    page,
-                    x: placement.x,
-                    y: placement.y,
-                    width: placement.width,
-                    height: placement.height,
-                    fit: placement.fit,
-                    paper_rgb: placement.paper_rgb,
-                    turns: placement.turns,
-                });
-            }
-        }
-        self.highlight_ops();
-        // Every visible page shows something before any page gets more: a preview is one attachment and fills a page. Without this, a tall page's first eight tiles leave the next page blank for a turn.
-        for &page in &visible {
-            let Some(doc) = self.docs.get(&tab) else { return };
-            let preview = self.preview_key(doc, page);
-            let bare = !self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
-            if bare
-                && let Some(&id) = self.cache.cover.get(&preview)
-                && self.attach(id, true)
-            {
-                budget = budget.saturating_sub(1);
-            }
-        }
-        let now = Instant::now();
-        for page in visible {
-            let Some(doc) = self.docs.get(&tab) else { return };
-            if doc.issues.contains_key(&page) && !doc.issues[&page].try_again_at.is_some_and(|at| now >= at) {
-                continue;
-            }
-            let Ok(cells) = self.visible_cells(doc, page, scale) else { continue };
-            let keys: Vec<TileKey> = cells.iter().map(|cell| self.key(doc, page, scale, *cell)).collect();
-            let preview = self.preview_key(doc, page);
-            let mut missing = false;
-            let mut wanted = Vec::with_capacity(keys.len());
-            for key in keys {
-                let Some(&id) = self.cache.cover.get(&key) else {
-                    missing = true;
-                    continue;
-                };
-                wanted.push(id);
-                let attached = self.cache.entries.get(&id).is_some_and(|entry| entry.attached);
-                if !attached {
-                    if budget == 0 {
-                        self.host.more_to_attach = true;
-                        missing = true;
-                    } else if self.attach(id, false) {
-                        budget -= 1;
-                    } else {
-                        // The OS took it. Drawn again.
-                        missing = true;
-                    }
-                }
-            }
-            let preview_id = self.cache.cover.get(&preview).copied();
-            if missing {
-                if let Some(id) = preview_id {
-                    let attached = self.cache.entries.get(&id).is_some_and(|entry| entry.attached);
-                    if !attached && budget > 0 && self.attach(id, true) {
-                        budget -= 1;
-                    }
-                }
-            } else {
-                let done: Vec<u64> = self.cache.attached_on(page).filter(|id| !wanted.contains(id)).collect();
-                for id in done {
-                    self.detach(id, page);
-                }
-            }
-            // Tiles scrolled out of a tall page come off, even while others are still coming.
-            if !missing {
-                continue;
-            }
-            let Some(doc) = self.docs.get(&tab) else { return };
-            let out: Vec<u64> = self
-                .cache
-                .attached_on(page)
-                .filter(|id| {
-                    self.cache.entries.get(id).is_some_and(|entry| {
-                        !entry.preview && entry.scale == scale && entry.paper == self.paper && !self.touches_view(doc, page, entry.rect, scale)
-                    })
-                })
-                .collect();
-            for id in out {
-                self.detach(id, page);
-            }
-        }
-        self.update_note();
-    }
-
-    fn update_note(&mut self) {
-        let note = self.doc().and_then(|doc| {
-            if let Some(problem) = &doc.problem {
-                return Some(problem.clone());
-            }
-            for page in self.visible_pages(doc) {
-                if let Some(issue) = doc.issues.get(&page) {
-                    return Some(issue.message.clone());
-                }
-                let low = self
-                    .cache
-                    .attached
-                    .get(&page)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|id| self.cache.entries.get(id))
-                    .find_map(|entry| entry.low_res.as_ref());
-                if let Some(low) = low {
-                    return Some(low.message.to_string());
-                }
-            }
-            None
-        });
-        self.set_note(if self.work.gave_up { Some(CANT_DRAW.to_string()) } else { note });
-    }
-
-    fn set_note(&mut self, note: Option<String>) {
-        self.note = note;
-    }
-
-    fn hide_page(&mut self, page: u32) {
-        self.host.ops.push_back(Op::HidePage { page });
-        self.host.shown.remove(&page);
-        self.pointer.selecting.page_hidden(page);
-        for id in self.cache.attached.remove(&page).unwrap_or_default() {
-            if let Some(entry) = self.cache.entries.get_mut(&id) {
-                entry.attached = false;
-                self.host.to_discard.push(id);
-            }
-        }
-    }
-
-    /// Whether any pixel of a page is in view at the tiles' scale. The view can reach into a page by less than the part of a pixel its tiles leave off at its foot or its right edge, as
-    /// [`recto_proto::device_size`] rounds those to whole pixels: then no tile is in view, so [`Self::refresh`] takes what was on the page off it, and nothing of it can be seen. A page whose
-    /// size or scale isn't known yet counts as showing.
-    fn shows_a_pixel(&self, doc: &DocView, page: u32) -> bool {
-        let scale = doc.tile_scale;
-        if scale <= 0.0 || !doc.layout.is_known(page) {
-            return true;
-        }
-        !matches!(self.visible_cells(doc, page, scale), Ok(cells) if cells.is_empty())
-    }
-
-    /// Counts a step that left a page in view bare: one that shows a pixel, by the same cells drawing goes by, so a sliver of 0.004 points isn't a blank page.
-    fn count_blanks(&mut self) {
-        let Some(doc) = self.doc() else { return };
-        let (mut blank, mut blank_seen) = (false, false);
-        for page in self.visible_pages(doc) {
-            let has_something = self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
-            if !has_something && !doc.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
-                blank = true;
-                blank_seen |= doc.seen.contains(&page);
-            }
-        }
-        self.counts.blank_steps += u64::from(blank);
-        self.counts.blank_seen_steps += u64::from(blank_seen);
-    }
-
     /// The ops for the host, attaching at most `budget` more first.
     pub fn drain(&mut self, budget: usize) -> Vec<Op> {
         self.refresh(budget);
@@ -957,7 +666,8 @@ impl Reader {
     pub fn applied(&mut self) {
         self.host.unapplied = false;
         self.track_wake();
-        for id in std::mem::take(&mut self.host.handed_to_host) {
+        // Emptied and kept: it fills again on the next step that takes something off.
+        for id in self.host.handed_to_host.drain(..) {
             if let Some(entry) = self.cache.entries.get_mut(&id)
                 && !entry.attached
                 && !entry.discardable
@@ -968,6 +678,7 @@ impl Reader {
                 entry.discardable = true;
             }
         }
+        self.host.trim();
         self.cache.evict(&mut self.host);
     }
 
@@ -985,7 +696,7 @@ impl Reader {
         self.window_open = false;
         self.clear_screen();
         for doc in self.docs.values_mut() {
-            doc.left_pictures = None;
+            doc.drawing.left_pictures = None;
         }
         let ids: Vec<u64> = self.cache.entries.keys().copied().collect();
         for id in ids {
@@ -999,6 +710,7 @@ impl Reader {
         }
         self.work.wanted_files = Arc::new(Vec::new());
         self.pointer.selecting.drop_texts();
+        self.let_lists_go();
     }
 
     /// The window is back: everything is asked for again.
@@ -1008,13 +720,13 @@ impl Reader {
         let warm: Vec<u32> = self.docs.keys().copied().filter(|tab| Some(*tab) != hot).collect();
         self.recount_wanted_files(&warm);
         // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
-        if let Some(magnification) = self.doc().map(|doc| doc.magnification) {
+        if let Some(magnification) = self.doc().map(|doc| doc.place.magnification) {
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
             self.place.jump = Some(u64::MAX);
         }
         self.lay_out();
-        if let Some(across) = self.doc().map(|doc| doc.scroll_x) {
+        if let Some(across) = self.doc().map(|doc| doc.place.scroll_x) {
             self.host.ops.push_back(Op::ScrollAcross { x: across });
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -1029,8 +741,16 @@ impl Reader {
     }
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
+        // What the view is on, and the pages around it whose sizes are asked for, keep theirs past the cap: those are the pages that would be asked for again at once.
+        let near = self.doc().filter(|doc| doc.tab == tab).map(|doc| {
+            let visible = self.visible_pages(doc);
+            visible.start().saturating_sub(SIZES_AROUND)..=visible.end().saturating_add(SIZES_AROUND)
+        });
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.issues.insert(
+            if doc.drawing.issues.len() >= MAX_ISSUES_REMEMBERED && !doc.drawing.issues.contains_key(&page) {
+                doc.drawing.issues.retain(|known, _| near.as_ref().is_some_and(|near| near.contains(known)));
+            }
+            doc.drawing.issues.insert(
                 page,
                 Issue {
                     message,
@@ -1056,7 +776,7 @@ impl Reader {
         if matches!(kind, JobKind::Links) {
             // About the tab showing, as it is, or about nothing.
             match outcome {
-                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => {
+                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) => {
                     self.pointer.linking.take(position, links)
                 }
                 _ => self.pointer.linking.cancelled(position),
@@ -1064,7 +784,7 @@ impl Reader {
             return;
         }
         // Asked about the pages as they were. An edit has changed what's at this position since.
-        if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
+        if self.docs.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) {
             self.counts.cancelled += 1;
             self.refresh(MAX_ATTACH_PER_TURN);
             return;
@@ -1083,10 +803,10 @@ impl Reader {
             }
             (JobKind::Traits, Outcome::Heavy(heavy)) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
-                    if doc.heavy.len() >= MAX_HEAVY_REMEMBERED {
-                        doc.heavy.clear();
+                    if doc.drawing.heavy.len() >= MAX_HEAVY_REMEMBERED {
+                        doc.drawing.heavy.clear();
                     }
-                    doc.heavy.insert(position, heavy);
+                    doc.drawing.heavy.insert(position, heavy);
                 }
             }
             (
@@ -1112,7 +832,7 @@ impl Reader {
             }
             (_, Outcome::DocumentFailed { message, needs_key }) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
-                    doc.problem = Some(message);
+                    doc.drawing.problem = Some(message);
                 }
                 if needs_key && !self.work.keyless.contains(&file) && self.work.keyless.len() < MAX_KEYLESS {
                     self.work.keyless.push(file);
@@ -1146,7 +866,7 @@ impl Reader {
             return false;
         }
         let Some(doc) = self.doc() else { return true };
-        if doc.problem.is_some() {
+        if doc.drawing.problem.is_some() {
             return true;
         }
         if !self.window_open {
@@ -1155,7 +875,7 @@ impl Reader {
         if self.viewport.height <= 0.0 {
             return false;
         }
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         if scale <= 0.0 {
             return false;
         }
@@ -1163,12 +883,12 @@ impl Reader {
         if !self
             .pointer
             .selecting
-            .is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))
+            .is_settled(&visible, doc.layout.count(), |page| doc.drawing.heavy.get(&page).copied().unwrap_or(false))
         {
             return false;
         }
         for page in self.visible_pages(doc) {
-            if doc.issues.contains_key(&page) {
+            if doc.drawing.issues.contains_key(&page) {
                 continue;
             }
             if !doc.layout.is_known(page) {

@@ -21,14 +21,14 @@ impl Reader {
                     && (running.preview
                         || running
                             .rect
-                            .is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
+                            .is_none_or(|rect| running.scale == doc.drawing.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
             })
     }
 
     /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
     pub(super) fn view_needs_something(&self) -> bool {
         let Some(doc) = self.doc() else { return false };
-        let scale = doc.tile_scale;
+        let scale = doc.drawing.tile_scale;
         if scale <= 0.0 {
             return false;
         }
@@ -37,14 +37,14 @@ impl Reader {
             .pointer
             .selecting
             .wanted(Urgency::Now, &visible, doc.layout.count(), |page| {
-                doc.heavy.get(&page).copied().unwrap_or(false)
+                doc.drawing.heavy.get(&page).copied().unwrap_or(false)
             })
             .is_some()
         {
             return true;
         }
         visible.iter().any(|&page| {
-            if doc.issues.contains_key(&page) {
+            if doc.drawing.issues.contains_key(&page) {
                 return false;
             }
             if !doc.layout.is_known(page) {
@@ -76,19 +76,48 @@ impl Reader {
         }
         let tab = self.hot?;
         let doc = self.docs.get(&tab)?;
-        if doc.problem.is_some() || self.viewport.height <= 0.0 {
+        if doc.drawing.problem.is_some() || self.viewport.height <= 0.0 {
             return None;
         }
-        // Sizes first: nothing is shown or drawn before them. The first page known sets the fit, so where a reader lands is asked first, and then the pages around it.
         let visible = self.visible_pages(doc);
         let (first, last) = (*visible.start(), *visible.end());
         if first > last {
             return None;
         }
+        if let Some(plan) = self.size_plan(tab, visible)? {
+            return Some(plan);
+        }
+        let now = Instant::now();
+        let scale = self.docs.get(&tab)?.drawing.tile_scale;
+        if scale <= 0.0 {
+            return None;
+        }
+        if let Some(plan) = self.links_plan(tab) {
+            return Some(plan);
+        }
+        // A selection the reader is making comes before tiles: it answers their hand.
+        if let Some(plan) = self.text_plan(tab, Urgency::Now) {
+            return Some(plan);
+        }
+        let doc = self.docs.get(&tab)?;
+        let pages: Vec<u32> = self.visible_pages(doc).collect();
+        for page in pages {
+            if let Some(plan) = self.page_plan(tab, page, scale, now)? {
+                return Some(plan);
+            }
+        }
+        self.text_plan(tab, Urgency::WhenIdle)
+    }
+
+    /// Sizes first: nothing is shown or drawn before them. The first page known sets the fit, so where a reader lands is asked first, and then the pages around it. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on.
+    fn size_plan(&mut self, tab: u32, visible: std::ops::RangeInclusive<u32>) -> Option<Option<JobPlan>> {
+        let doc = self.docs.get(&tab)?;
+        let (first, last) = (*visible.start(), *visible.end());
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
         // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
         let waiting_on_issue = |page: &u32| {
-            doc.issues
+            doc.drawing
+                .issues
                 .get(page)
                 .is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at))
         };
@@ -99,21 +128,20 @@ impl Reader {
         {
             let (file, source_page) = doc.map.source(page)?;
             let generation = self.work.fresh_generation();
-            return Some(JobPlan {
+            return Some(Some(JobPlan {
                 tab,
                 position: page,
                 file,
                 source_page,
                 generation,
                 kind: PlanKind::Size,
-            });
+            }));
         }
-        let now = Instant::now();
-        let scale = doc.tile_scale;
-        if scale <= 0.0 {
-            return None;
-        }
-        // The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
+        Some(None)
+    }
+
+    /// The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
+    fn links_plan(&mut self, tab: u32) -> Option<JobPlan> {
         if let Some(page) = self.pointer.linking.next_wanted()
             && let Some(doc) = self.docs.get(&tab)
             && page < doc.layout.count()
@@ -129,118 +157,92 @@ impl Reader {
                 kind: PlanKind::Links,
             });
         }
-        // A selection the reader is making comes before tiles: it answers their hand.
-        if let Some(plan) = self.text_plan(tab, Urgency::Now) {
-            return Some(plan);
-        }
+        None
+    }
+
+    /// A visible page's heaviness, its preview or its next tiles, if it wants any. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on to the next page.
+    fn page_plan(&mut self, tab: u32, page: u32, scale: f32, now: Instant) -> Option<Option<JobPlan>> {
         let doc = self.docs.get(&tab)?;
-        let pages: Vec<u32> = self.visible_pages(doc).collect();
-        for page in pages {
-            let doc = self.docs.get(&tab)?;
-            if let Some(issue) = doc.issues.get(&page)
-                && !issue.try_again_at.is_some_and(|at| now >= at)
-            {
-                continue;
-            }
-            let Ok(cells) = self.visible_cells(doc, page, scale) else {
-                let size = doc.layout.raw_size(page);
-                self.note_issue(
-                    tab,
-                    page,
-                    format!(
-                        "Page {} is too large to draw at this zoom ({} by {} points).",
-                        page + 1,
-                        size.width,
-                        size.height
-                    ),
-                    false,
-                );
-                continue;
-            };
-            let missing: Vec<(u16, u16)> = cells
-                .iter()
-                .copied()
-                .filter(|cell| {
-                    let key = self.key(doc, page, scale, *cell);
-                    match self.cache.cover.get(&key).and_then(|id| self.cache.entries.get(id)) {
-                        None => true,
-                        Some(entry) => entry
-                            .low_res
-                            .as_ref()
-                            .is_some_and(|low| low.may_clear && now.duration_since(low.at) >= TRY_AGAIN_AFTER),
-                    }
-                })
-                .collect();
-            if missing.is_empty() {
-                continue;
-            }
-            let (file, source_page) = doc.map.source(page)?;
-            // Asked once, and it loads the page, which drawing would do anyway.
-            if !doc.heavy.contains_key(&page) {
-                let generation = self.work.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Traits,
-                });
-            }
-            let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
-            // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
-            let preview_wanted = !heavy && !self.cache.cover.contains_key(&self.preview_key(doc, page));
-            if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
-                let paper = self.paper;
-                let generation = self.work.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Draw {
-                        scale: preview_scale,
-                        rect,
-                        what: DrawKind::Preview,
-                        paper,
-                    },
-                });
-            }
+        if let Some(issue) = doc.drawing.issues.get(&page)
+            && !issue.try_again_at.is_some_and(|at| now >= at)
+        {
+            return Some(None);
+        }
+        let Ok(cells) = self.visible_cells(doc, page, scale) else {
             let size = doc.layout.raw_size(page);
-            let (width, height) = device_size(size.width, size.height, scale).ok()?;
-            if heavy && missing.len() > 1 {
-                let wanted: Vec<(u32, u32)> = missing.iter().map(|&(column, row)| (u32::from(column), u32::from(row))).collect();
-                let mut sorted = wanted;
-                sorted.sort_unstable();
-                let rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
-                let paper = self.paper;
-                let generation = self.work.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Draw {
-                        scale,
-                        rect,
-                        what: DrawKind::Region,
-                        paper,
-                    },
-                });
-            }
-            let (column, row) = missing[0];
-            let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
-            let rect = TileRect {
-                x,
-                y,
-                width: TILE_EDGE.min(width - x),
-                height: TILE_EDGE.min(height - y),
-            };
+            self.note_issue(
+                tab,
+                page,
+                format!(
+                    "Page {} is too large to draw at this zoom ({} by {} points).",
+                    page + 1,
+                    size.width,
+                    size.height
+                ),
+                false,
+            );
+            return Some(None);
+        };
+        let missing: Vec<(u16, u16)> = cells
+            .iter()
+            .copied()
+            .filter(|cell| {
+                let key = self.key(doc, page, scale, *cell);
+                match self.cache.cover.get(&key).and_then(|id| self.cache.entries.get(id)) {
+                    None => true,
+                    Some(entry) => entry
+                        .low_res
+                        .as_ref()
+                        .is_some_and(|low| low.may_clear && now.duration_since(low.at) >= TRY_AGAIN_AFTER),
+                }
+            })
+            .collect();
+        if missing.is_empty() {
+            return Some(None);
+        }
+        let (file, source_page) = doc.map.source(page)?;
+        // Asked once, and it loads the page, which drawing would do anyway.
+        if !doc.drawing.heavy.contains_key(&page) {
+            let generation = self.work.fresh_generation();
+            return Some(Some(JobPlan {
+                tab,
+                position: page,
+                file,
+                source_page,
+                generation,
+                kind: PlanKind::Traits,
+            }));
+        }
+        let heavy = doc.drawing.heavy.get(&page).copied().unwrap_or(false);
+        // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
+        let preview_wanted = !heavy && !self.cache.cover.contains_key(&self.preview_key(doc, page));
+        if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
             let paper = self.paper;
             let generation = self.work.fresh_generation();
-            return Some(JobPlan {
+            return Some(Some(JobPlan {
+                tab,
+                position: page,
+                file,
+                source_page,
+                generation,
+                kind: PlanKind::Draw {
+                    scale: preview_scale,
+                    rect,
+                    what: DrawKind::Preview,
+                    paper,
+                },
+            }));
+        }
+        let size = doc.layout.raw_size(page);
+        let (width, height) = device_size(size.width, size.height, scale).ok()?;
+        if heavy && missing.len() > 1 {
+            let wanted: Vec<(u32, u32)> = missing.iter().map(|&(column, row)| (u32::from(column), u32::from(row))).collect();
+            let mut sorted = wanted;
+            sorted.sort_unstable();
+            let rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
+            let paper = self.paper;
+            let generation = self.work.fresh_generation();
+            return Some(Some(JobPlan {
                 tab,
                 position: page,
                 file,
@@ -249,22 +251,43 @@ impl Reader {
                 kind: PlanKind::Draw {
                     scale,
                     rect,
-                    what: DrawKind::Tile,
+                    what: DrawKind::Region,
                     paper,
                 },
-            });
+            }));
         }
-        self.text_plan(tab, Urgency::WhenIdle)
+        let (column, row) = missing[0];
+        let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
+        let rect = TileRect {
+            x,
+            y,
+            width: TILE_EDGE.min(width - x),
+            height: TILE_EDGE.min(height - y),
+        };
+        let paper = self.paper;
+        let generation = self.work.fresh_generation();
+        Some(Some(JobPlan {
+            tab,
+            position: page,
+            file,
+            source_page,
+            generation,
+            kind: PlanKind::Draw {
+                scale,
+                rect,
+                what: DrawKind::Tile,
+                paper,
+            },
+        }))
     }
 
     /// Reading text for a selection, a copy or the pointer, if any is wanted at this urgency.
     pub(super) fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
         let doc = self.docs.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        let wanted = self
-            .pointer
-            .selecting
-            .wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
+        let wanted = self.pointer.selecting.wanted(urgency, &visible, doc.layout.count(), |page| {
+            doc.drawing.heavy.get(&page).copied().unwrap_or(false)
+        })?;
         let (file, source_page) = doc.map.source(wanted.page)?;
         let generation = self.work.fresh_generation();
         Some(JobPlan {

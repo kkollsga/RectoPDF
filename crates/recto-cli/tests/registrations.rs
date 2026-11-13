@@ -76,21 +76,30 @@ fn build_folder(checkout: &Path) -> PathBuf {
     checkout.join("app/build.noindex/RectoPDF.app")
 }
 
-/// Forgets the build folder until two looks in a row find it gone, within `limit`; fails if a process of its app is running, naming it, or if it won't stay gone. Returns how long it took.
-fn settle_build_folder(path: &Path, limit: std::time::Duration) -> Result<std::time::Duration, String> {
+/// Forgets the build folder until two looks in a row find it gone, bounded by looks and not by the clock (`registry::Settling`); fails if a process of its app
+/// is running, naming it, or if it won't stay gone. Returns how long it took.
+fn settle_build_folder(path: &Path) -> Result<std::time::Duration, String> {
     let executable = path.join("Contents/MacOS/RectoPDF");
     let began = std::time::Instant::now();
-    // Two looks in a row, each forgetting until the dump says it is gone: a registration still on its way can land after one clean look.
-    for _ in 0..2 {
+    let mut settling = registry::Settling::default();
+    loop {
         let running = recto_platform::local::processes_running(&executable);
         if !running.is_empty() {
             return Err(format!("{} is still running as process {running:?}", executable.display()));
         }
-        if !registry::forget_until_gone(path, limit / 2) {
-            return Err(format!("{} would not stay forgotten within {} s", path.display(), limit.as_secs()));
+        match settling.after_look(registry::forget_and_look(path)) {
+            registry::Settled::Gone => return Ok(began.elapsed()),
+            registry::Settled::GaveUp => {
+                return Err(format!(
+                    "{} would not stay forgotten in {} looks ({:.1} s)",
+                    path.display(),
+                    settling.looks(),
+                    began.elapsed().as_secs_f64()
+                ));
+            }
+            registry::Settled::NotYet => {}
         }
     }
-    Ok(began.elapsed())
 }
 
 /// What is done with a copy. **Another tree's ended test's copy is never this tree's to change, nor to answer for:** its tree's own stage forgets it and fails on it (2026-11-13: this stage forgot a copy another tree's update test had made 3 s before, blamed its own tree, and hid it from the tree whose test had left it).
@@ -179,7 +188,7 @@ fn no_copy_but_the_one_install_is_left_registered() {
                 eprintln!("registered, and forgotten now ({why}): {} ({}): {what}", copy.path.display(), copy.identifier);
                 registry::forget(&copy.path);
             }
-            Verdict::BuildFolder => match settle_build_folder(&copy.path, std::time::Duration::from_secs(20)) {
+            Verdict::BuildFolder => match settle_build_folder(&copy.path) {
                 Ok(took) => eprintln!(
                     "registered, and forgotten until it stayed gone, this checkout's build folder, which every app test launches and none can be named for: {} ({}) in {} ms",
                     copy.path.display(),

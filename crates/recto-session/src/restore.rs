@@ -7,47 +7,24 @@ impl<L: DocLoader> Session<L> {
     pub fn to_record(&self) -> SessionRecord {
         let Self {
             loader: _,
-            view,
+            viewing,
             tabs,
             active,
             next_id,
             warm: _,
             dirs: _,
-            dir_ids: _,
             edits,
             wake_failed: _,
             asleep,
-            started: _,
-            held: _,
-            sleep_files: _,
-            just_read: _,
-            woken_from_file: _,
-            left_warm: _,
-            draws: _,
-            woken: _,
-            place_lost: _,
-            find,
-            edit_mode,
-            journaling: _,
+            dormancy: _,
+            mail: _,
             journals,
-            fresh_journals: _,
-            retired_journals: _,
-            departing: _,
-            history: _,
             agent_at_full: _,
             generated: _,
             comparison,
-            saving: _,
-            saved_over: _,
-            jumps: _,
+            saves: _,
             recent,
-            recent_version: _,
         } = self;
-        let ViewSettings {
-            paper,
-            sidebar_hidden,
-            agent_icon_hidden,
-        } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
@@ -90,7 +67,7 @@ impl<L: DocLoader> Session<L> {
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
-                    journal: journals.get(id).map(ToString::to_string),
+                    journal: journals.name_of(*id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
@@ -105,17 +82,13 @@ impl<L: DocLoader> Session<L> {
             synced: comparison.synced,
             sync_from: comparison.sync_from.clone(),
         });
-        let recent = recent.iter().map(|path| PathField::from_path(path)).collect();
+        let recent = recent.to_record();
+        let (view, find, edit_mode) = viewing.to_record();
         SessionRecord {
             app: record::AppRecord::default(),
-            view: ViewRecord {
-                paper: paper.map(Paper::to_record),
-                focus: false,
-                sidebar_hidden,
-                agent_icon_hidden,
-            },
-            find: find.clone(),
-            edit_mode: *edit_mode,
+            view,
+            find,
+            edit_mode,
             active: active.map(|id| id.0),
             next_id: *next_id,
             tabs,
@@ -137,45 +110,27 @@ impl<L: DocLoader> Session<L> {
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
         self.tabs.clear();
-        self.warm.clear();
-        self.woken.clear();
+        // Every tab's going, and with them every folder's number.
+        self.dirs = dirs::Dirs::default();
+        self.warm = warm::Warm::default();
         self.edits.clear();
         self.asleep.clear();
         self.wake_failed.clear();
-        self.draws.clear();
-        self.journals.clear();
-        self.fresh_journals.clear();
-        self.jumps.clear();
+        self.mail = mail::PageViewMail::default();
+        self.journals.restored();
+        // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
+        self.generated = generated::Generated::default();
+        self.saves.restored();
+        self.dormancy.restored();
         self.active = None;
         self.comparison = None;
         self.next_id = record.next_id;
-        self.find = record.find.clone();
-        self.recent = record
-            .recent
-            .iter()
-            .filter(|path| path.fits())
-            .filter_map(PathField::to_path)
-            .filter(|path| path.is_absolute())
-            .take(MAX_RECENT)
-            .collect();
-        self.recent_version += 1;
-        self.edit_mode = record.edit_mode;
-        let sidebar_hidden = record.view.sidebar_comes_back_hidden();
-        let ViewRecord {
-            paper,
-            focus: _,
-            sidebar_hidden: _,
-            agent_icon_hidden,
-        } = record.view;
-        self.view = ViewSettings {
-            paper: paper.map(Paper::from_record),
-            sidebar_hidden,
-            agent_icon_hidden,
-        };
+        self.recent.restore(&record.recent);
+        self.viewing.restore(&record.view, &record.find, record.edit_mode);
         self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
-            let dir = self.intern_dir(path.parent().unwrap_or(Path::new("")));
+            let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();
@@ -189,13 +144,13 @@ impl<L: DocLoader> Session<L> {
                             notice = Some(FileNotice::EditsUnreadable);
                         }
                         let mut edits = restored.edits;
-                        if self.journaling {
+                        if self.journals.journaling() {
                             edits.set_journal_seq(restored.seq);
                         } else {
                             edits.no_journal();
                         }
                         self.edits.insert(id, edits);
-                        self.journals.insert(id, name.as_str().into());
+                        self.journals.set_name(id, name);
                     }
                     None => notice = Some(FileNotice::EditsUnreadable),
                 }
@@ -251,7 +206,7 @@ impl<L: DocLoader> Session<L> {
             self.active = comparison.tabs.first().copied();
         }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
-        if self.journaling && self.history.is_some() {
+        if self.journals.kept_and_readable() {
             let others: Vec<TabId> = self.edits.keys().copied().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
                 self.put_list_to_sleep(id);

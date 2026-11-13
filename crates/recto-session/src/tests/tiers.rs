@@ -42,12 +42,12 @@ fn what_was_read_ahead_stays_with_its_tab() {
     // Closed mid-read: nothing's kept for it.
     s.give_woken(ids[2], facts(33), None);
     s.close(ids[2]).unwrap();
-    assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[2]));
+    assert!(!s.warm.holds_read_of(ids[2]));
     s.give_woken(ids[2], facts(33), None);
-    assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[2]), "it's gone, so what arrives late isn't kept");
+    assert!(!s.warm.holds_read_of(ids[2]), "it's gone, so what arrives late isn't kept");
     // Already warm: it's not needed.
     s.give_woken(ids[5], facts(55), None);
-    assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[5]));
+    assert!(!s.warm.holds_read_of(ids[5]));
     s.tap(ids[0]).unwrap();
     assert_eq!(s.pages_in(ids[0]), 11, "the first's own");
     assert_eq!(loads.get(), base);

@@ -920,60 +920,13 @@ fn run(shared: &Shared) {
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            shared.settled.notify_all();
-            if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
-                for open in renderers.values_mut() {
-                    open.doc.kill_worker();
-                }
-                publish_workers(shared, &mut renderers);
-            }
-            // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
-            let big = renderers
-                .values_mut()
-                .any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
-            if !big {
-                std::thread::park();
-                resting_since = None;
-                continue;
-            }
-            let since = *resting_since.get_or_insert_with(Instant::now);
-            let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
-            if left.is_zero() {
-                for open in renderers.values_mut() {
-                    if open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
-                        open.doc.kill_worker();
-                    }
-                }
-                resting_since = None;
-            } else {
-                std::thread::park_timeout(left);
-            }
+            rest(shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
         resting_since = None;
         lock(&shared.reader).note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
-            // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
-            // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
-            let links = renderers
-                .get(&job.file)
-                .filter(|open| !open.replaced && !open.doc.file_seen_changed())
-                .and_then(|open| {
-                    open.doc.read_structure(|file, password| {
-                        recto_core::nav::page_links_in(file, password, &[job.source_page])
-                            .ok()
-                            .and_then(|read| read.into_iter().next())
-                            .map(|(_, links)| Arc::new(links))
-                    })
-                });
-            let mut reader = lock(&shared.reader);
-            let outcome = match links {
-                Some(found) => Outcome::Links(found),
-                None => Outcome::Cancelled,
-            };
-            reader.finish(job, outcome);
-            drop(reader);
-            shared.settled.notify_all();
+            read_links(shared, &renderers, job);
             continue;
         }
         let mut file_changed = false;
@@ -1061,6 +1014,63 @@ fn run(shared: &Shared) {
         }
         shared.settled.notify_all();
     }
+}
+
+/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory, which is let go after [`BIG_WORKER_REST`].
+fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+    shared.settled.notify_all();
+    if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
+        for open in renderers.values_mut() {
+            open.doc.kill_worker();
+        }
+        publish_workers(shared, renderers);
+    }
+    // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
+    let big = renderers
+        .values_mut()
+        .any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
+    if !big {
+        std::thread::park();
+        *resting_since = None;
+        return;
+    }
+    let since = *resting_since.get_or_insert_with(Instant::now);
+    let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
+    if left.is_zero() {
+        for open in renderers.values_mut() {
+            if open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
+                open.doc.kill_worker();
+            }
+        }
+        *resting_since = None;
+    } else {
+        std::thread::park_timeout(left);
+    }
+}
+
+/// A page's links, read from the file's structure, here and with no worker.
+fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) {
+    // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
+    // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+    let links = renderers
+        .get(&job.file)
+        .filter(|open| !open.replaced && !open.doc.file_seen_changed())
+        .and_then(|open| {
+            open.doc.read_structure(|file, password| {
+                recto_core::nav::page_links_in(file, password, &[job.source_page])
+                    .ok()
+                    .and_then(|read| read.into_iter().next())
+                    .map(|(_, links)| Arc::new(links))
+            })
+        });
+    let mut reader = lock(&shared.reader);
+    let outcome = match links {
+        Some(found) => Outcome::Links(found),
+        None => Outcome::Cancelled,
+    };
+    reader.finish(job, outcome);
+    drop(reader);
+    shared.settled.notify_all();
 }
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {

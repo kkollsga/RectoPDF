@@ -164,7 +164,7 @@ impl Reader {
             return false;
         }
         let Some(doc) = self.doc() else { return false };
-        doc.problem.is_none() && self.pages_all_covered(doc)
+        doc.drawing.problem.is_none() && self.pages_all_covered(doc)
     }
 
     /// Whether every page that's really in view has something on it. A sliver of the page before, a few points at the top of the view, isn't what a frame's blank for: it has no picture if it wasn't drawn when the tab was left, and it comes a moment later with the rest.
@@ -223,24 +223,26 @@ impl Reader {
         }
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
-        let version = doc.map.files.first().and_then(|file| doc.versions.get(file)).copied();
+        let version = doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).copied();
         let pages: Vec<u32> = if self.hot == Some(tab) {
-            self.visible_pages(doc).collect()
+            self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect()
         } else {
             let y = doc
+                .place
                 .exact_y
-                .map_or_else(|| doc.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
+                .map_or_else(|| doc.place.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
             // Its own view: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't.
             let window_height = self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE);
-            let height = (window_height / doc.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
+            let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
             if doc.layout.count() == 0 {
                 Vec::new()
             } else {
-                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect()
+                // Only as many as a sleep file takes: a hostile file's slivers can put thousands in view.
+                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).take(MAX_SLEEP_SHOTS).collect()
             }
         };
         // What it was left with first, page by page: what's here now may have been taken by the system since.
-        let mut left = doc.left_pictures.clone().unwrap_or_default();
+        let mut left = doc.drawing.left_pictures.clone().unwrap_or_default();
         let mut pictures = Vec::new();
         for page in pages.into_iter().take(MAX_SLEEP_SHOTS) {
             if version.is_none() {
@@ -263,7 +265,7 @@ impl Reader {
     /// A picture of each page of the tab showing that's in view, while it's on the screen. Nothing if no worker's said which version it's of, as there'd be no saying what they're of.
     pub(super) fn pictures_in_view(&mut self, tab: u32) -> Vec<RawPicture> {
         let Some(doc) = self.docs.get(&tab) else { return Vec::new() };
-        if doc.map.files.first().and_then(|file| doc.versions.get(file)).is_none() {
+        if doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).is_none() {
             return Vec::new();
         }
         let pages: Vec<u32> = self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect();
@@ -443,7 +445,7 @@ impl Reader {
         let Some(doc) = self.docs.get_mut(&tab) else { return };
         if let Some(usual) = view.usual {
             doc.layout.seed_usual(usual);
-            doc.size_on_trust = true;
+            doc.drawing.size_on_trust = true;
         }
         for (page, size) in view.sizes {
             doc.layout.set_page_size(page, size);

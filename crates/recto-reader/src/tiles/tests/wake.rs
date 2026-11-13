@@ -182,7 +182,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
     // Shown again, it's drawn again, and what was kept for its sleep file goes.
     reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
-    assert!(reader.docs[&1].left_pictures.is_none());
+    assert!(reader.docs[&1].drawing.left_pictures.is_none());
     assert_eq!(reader.report().0["left_picture_bytes"], 0);
 }
 
@@ -211,7 +211,7 @@ fn pictures_kept_of_a_tab_left_go_with_its_version() {
         "kept as it was left, within its limit: {kept}"
     );
     reader.note_version(Path::new("/d/a.pdf"), 2);
-    assert!(reader.docs[&1].left_pictures.is_none());
+    assert!(reader.docs[&1].drawing.left_pictures.is_none());
     assert!(
         reader.sleep_material(1, None).unwrap().pictures.is_empty(),
         "nothing of version 1 is left to give"

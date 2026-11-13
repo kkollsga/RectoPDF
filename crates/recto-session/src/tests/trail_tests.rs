@@ -41,7 +41,7 @@ fn back_and_forward_come_back_after_a_restart() {
     assert_eq!(again.tab(id).unwrap().page, 9);
     assert!(!again.go_forward(id).unwrap(), "nowhere further");
     again.close(id).unwrap();
-    assert!(again.jumps.is_empty());
+    assert!(again.mail.no_jumps());
 }
 
 /// Failure: a tab's trail makes a cold tab cost more than its budget of 4 KiB, as nothing counts it.

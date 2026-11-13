@@ -12,6 +12,6 @@
 
 | Struct | Held per | Limit |
 |---|---|---|
-| `TabRecord` | Every tab, including cold | ≤ 256 B plus title |
+| `TabRecord` | Every tab, including cold | ≤ 224 B (2 of them padding) plus its name, file name and any boxed parts |
 | `DrawNote` | Recent draw, at most 256 | ≤ 32 B |
 | `edit::Entry` | Step of an edited tab's undo history, at most 1,000 in undo and redo together | ≤ 32 B |

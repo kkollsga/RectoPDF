@@ -55,7 +55,7 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::Edit(EditError::TooManyPages));
         }
         let place = self.place_of(id);
-        let journaling = self.journaling;
+        let journaling = self.journals.journaling();
         let may_push_owner = by == Author::Agent && self.agent_at_full;
         let edits = self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count));
         if journaling {
@@ -117,7 +117,7 @@ impl<L: DocLoader> Session<L> {
                 trail.follow_pages(|page| now.get(&page).copied().flatten());
             }
         }
-        self.draws.retain(|draw| draw.tab != id);
+        self.mail.forget_draws(id);
         self.drop_list_if_idle(id);
         let pages = self.pages_in(id);
         let found = place.and_then(|(source, page, near)| match self.edits.get(&id) {
@@ -125,7 +125,7 @@ impl<L: DocLoader> Session<L> {
             None => (source == 0 && page < pages).then_some(page),
         });
         let near = place.map_or(0, |(_, _, near)| near);
-        self.place_lost = place.is_some() && found.is_none();
+        self.mail.set_place_lost(place.is_some() && found.is_none());
         let last = pages.saturating_sub(1);
         if let Some(tab) = self.tab_mut(id) {
             tab.page = found.unwrap_or(near).min(last);
@@ -151,16 +151,8 @@ impl<L: DocLoader> Session<L> {
                 .collect();
             self.retire_kept(kept);
         }
-        self.fresh_journals.retain(|(tab, _, replaces)| {
-            if *tab == id {
-                if let Some(old) = replaces {
-                    self.retired_journals.push(old.as_str().into());
-                }
-                return false;
-            }
-            true
-        });
-        self.retire_journal(id);
+        self.journals.let_go_of_fresh(id);
+        self.journals.retire(id);
     }
 
     /// Whether a tab has a list of edits, in memory or on disk.
@@ -181,7 +173,7 @@ impl<L: DocLoader> Session<L> {
     pub fn list_record_anywhere(&self, id: TabId) -> Option<record::EditsRecord> {
         self.edits_record(id).or_else(|| {
             self.asleep.contains_key(&id).then_some(())?;
-            Some(self.history.as_ref()?.read_list(self.journals.get(&id)?)?.edits.to_record())
+            Some(self.journals.history()?.read_list(self.journals.name_of(id)?)?.edits.to_record())
         })
     }
 
@@ -274,11 +266,7 @@ impl<L: DocLoader> Session<L> {
     /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
     pub fn saved_from(&self, id: TabId) -> Option<FileStamp> {
         let now = self.own_stamp(id)?;
-        self.saved_over
-            .iter()
-            .rev()
-            .find(|(tab, _, after)| *tab == id && *after == now)
-            .map(|(_, before, _)| *before)
+        self.saves.saved_from(id, now)
     }
 
     /// Reverses the last page edit. Returns false with nothing to undo.
@@ -309,7 +297,7 @@ impl<L: DocLoader> Session<L> {
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
     pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
         let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
-        let one_page = self.edit_mode;
+        let one_page = self.edit_mode();
         self.edit_pages_as(id, Author::Owner, |edits| {
             if one_page {
                 edits.rotate(page, 1, quarter_turns)
