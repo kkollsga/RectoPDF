@@ -307,6 +307,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
+            CoreCall::TryBack(back) => keeping::try_back(inner, &reads, back),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }

@@ -68,47 +68,112 @@ pub(super) fn look_after_call(inner: &Arc<Inner>, reads: &FileReads) {
     }
 }
 
-/// **The session thread's deadline while it's trying:** a look at the window, then one try at the lock (see the module's order).
+/// **The session thread's deadline while it's trying:** a look at the window, and if it's as it was read, one try at the lock sent out on a thread of its own
+/// (see the module's order). With no thread to be had, it's a try that didn't get the lock.
 pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
     if !inner.life.keeping_due().is_some_and(|wait| wait.is_zero()) {
         return;
     }
     let now_as = as_done(inner, reads);
-    let looked = inner.life.step(LifeEvent::Keeping(KeepingEvent::Looked { now_as }));
-    if looked.is_some() {
-        let _ = settled(inner, looked);
+    if step(inner, KeepingEvent::Looked { now_as }).is_some() || !inner.life.keeping().trying() {
         inner.core.push(CoreCall::Reconcile);
         return;
     }
-    let out = {
-        // Held across the try. A writer between gathering and writing has it: then this is a try that didn't get the lock, and the session thread doesn't wait
-        // on the disk for it.
-        let gate = match inner.saver.gate.try_lock() {
-            Ok(gate) => Some(gate),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        };
-        inner.life.try_keeping(
-            || gate.is_none() || inner.host.running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst),
-            || inner.saver.store.try_to_keep(),
-        )
-    };
-    match out {
-        Some(crate::lifecycle::Out::Keeping(KeepingOut::Restore)) => {
-            let reading = Arc::clone(inner);
-            let spawned = std::thread::Builder::new()
-                .name("recto-restore".into())
-                .stack_size(1024 * 1024)
-                .spawn(move || launching::read_state(&reading));
-            if spawned.is_err() {
-                launching::read_state(inner);
-            }
-        }
-        out => {
-            let _ = settled(inner, out);
-            inner.core.push(CoreCall::Reconcile);
+    if inner.life.step(LifeEvent::Keeping(KeepingEvent::Asking)) != Some(crate::lifecycle::Out::Keeping(KeepingOut::Ask)) {
+        return;
+    }
+    // An agent's change under way, or a hand-off's: a try that didn't get the lock.
+    if inner.host.running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst) {
+        back(inner, reads, false, None);
+        return;
+    }
+    let (verdict, heard) = std::sync::mpsc::channel();
+    let asking = Arc::clone(inner);
+    let sent = std::thread::Builder::new()
+        .name("recto-record-lock".into())
+        .stack_size(512 * 1024)
+        .spawn(move || ask(&asking, verdict, &heard));
+    if sent.is_err() {
+        back(inner, reads, false, None);
+    }
+}
+
+/// **A try at the record's lock, on a thread of its own:** the store's one `try_lock` (an open of the lock file, which a sleeping disk can make slow), told to the
+/// session thread, which decides; with the lock, this thread then reads the saved session, or lets the lock go again, as it's told.
+fn ask(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &std::sync::mpsc::Receiver<Verdict>) {
+    let got = inner.saver.store.try_to_keep();
+    recto_platform::slow::pause(recto_platform::slow::Seam::RecordLock);
+    inner.core.push(CoreCall::TryBack(TryBack { got, verdict }));
+    if !got {
+        return;
+    }
+    match heard.recv() {
+        Ok(Verdict::Read) => launching::read_state(inner),
+        Ok(Verdict::LetGo) => inner.saver.store.let_go(),
+        // The session thread ended without deciding: the app's going, and the process takes the lock with it.
+        Err(_) => {}
+    }
+}
+
+/// What the session thread decided about a try that came back with the lock.
+#[derive(Debug)]
+pub enum Verdict {
+    /// Keep it: read the saved session, as a launch does.
+    Read,
+    /// The trying stopped while it was out: let it go again, writing nothing.
+    LetGo,
+}
+
+/// A try back from its thread: whether it got the lock, and where the decision about it goes.
+#[derive(Debug)]
+pub struct TryBack {
+    got: bool,
+    verdict: std::sync::mpsc::Sender<Verdict>,
+}
+
+#[cfg(test)]
+impl TryBack {
+    /// One that didn't get the lock, for a test of the queue's variants.
+    pub(crate) fn for_test() -> Self {
+        Self {
+            got: false,
+            verdict: std::sync::mpsc::channel().0,
         }
     }
+}
+
+/// **A try is back,** on the session thread: the window's looked at first, so whatever the person did while it was out counts before the lock does; then the try's
+/// taken in, and the thread that made it told to read, or to let the lock go again.
+pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back_from: TryBack) {
+    back(inner, reads, back_from.got, Some(&back_from.verdict));
+}
+
+fn back(inner: &Arc<Inner>, reads: &FileReads, got: bool, verdict: Option<&std::sync::mpsc::Sender<Verdict>>) {
+    if inner.life.keeping().trying() {
+        let now_as = as_done(inner, reads);
+        let _ = step(inner, KeepingEvent::Looked { now_as });
+    }
+    let out = inner.life.step(LifeEvent::Keeping(KeepingEvent::Tried { got }));
+    let decided = match out {
+        Some(crate::lifecycle::Out::Keeping(KeepingOut::Restore)) => Some(Verdict::Read),
+        Some(crate::lifecycle::Out::Keeping(KeepingOut::LetGo)) => Some(Verdict::LetGo),
+        out => {
+            let _ = settled(inner, out);
+            None
+        }
+    };
+    if let (Some(decided), Some(verdict)) = (decided, verdict) {
+        // A thread that's gone has nothing to read or let go.
+        let _ = verdict.send(decided);
+    }
+    inner.core.push(CoreCall::Reconcile);
+}
+
+/// **Whether a writer of the record may write now:** this copy holds the record's lock and keeps the record, from the launch or since a late try's saved session
+/// is in. Not while it's trying (a try may be back with the lock and not yet decided on), restoring (what it would gather is the window before the restore), or
+/// once it's settled not to keep it. Looked at by every writer before it takes the saver's gate, so one that can't write never waits for it, and again under it.
+pub(crate) fn may_write(inner: &Inner) -> bool {
+    inner.life.keeping().writes() && inner.saver.store.holds_the_record()
 }
 
 /// **A step of keeping the record, and what it settles carried out:** every step the session thread makes of it, so the one place keeping settles is where

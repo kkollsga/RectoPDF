@@ -24,7 +24,7 @@ pub mod controls;
 mod editing;
 #[cfg(test)]
 mod headless;
-mod keeping;
+pub(crate) mod keeping;
 mod launching;
 pub mod menu_rows;
 mod navigation;
@@ -358,18 +358,6 @@ impl Lifecycle {
     pub(crate) fn keeping_due(&self) -> Option<Duration> {
         let now = self.now_ms();
         self.life().keeping_due(now)
-    }
-
-    /// **A try at the record's lock, if one's due** ([`crate::lifecycle::keeping`]), made under the life's lock so a quit or a hand-off beginning can't come
-    /// between the look at whether it's due and the try. `busy` is looked at first: an agent's change under way makes it a try that didn't get the lock.
-    pub(crate) fn try_keeping(&self, busy: impl FnOnce() -> bool, try_lock: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
-        let now = self.now_ms();
-        let mut life = lock(&self.life);
-        if !life.keeping_due(now).is_some_and(|wait| wait.is_zero()) {
-            return None;
-        }
-        let got = !busy() && try_lock();
-        life.step(crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got }), now)
     }
 
     /// Whether the window is made again from the state now ([`crate::lifecycle::Life::may_remake_window`]): what the host asks on the UI thread, cheap and

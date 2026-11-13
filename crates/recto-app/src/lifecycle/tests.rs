@@ -574,6 +574,7 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
     for touched in [false, true] {
         let mut life = trying_for_the_lock();
         assert!(!life.may_remake_window(500, false), "nothing to make while it tries");
+        assert_eq!(life.step(Event::Keeping(keeping::Event::Asking), 3_000), Some(Out::Keeping(keeping::Out::Ask)));
         assert_eq!(
             life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000),
             Some(Out::Keeping(keeping::Out::Restore))

@@ -58,6 +58,8 @@ pub enum CoreCall {
     Find(crate::find::FindCall),
     /// **A command for the person** (step R2.3): the one an agent would send, run by the one executor on this thread, as theirs.
     Run(Box<PersonCommand>),
+    /// A late try at the record's lock is back from its own thread ([`crate::core::keeping`]).
+    TryBack(crate::core::keeping::TryBack),
 }
 
 /// A person's command, as it's queued: what it is, where it came from, and what was read for it, if it's running again once a file's in.
@@ -135,7 +137,8 @@ impl CoreCall {
             | Self::RestorePatienceOver
             | Self::Events(_)
             | Self::GeneratedFinished
-            | Self::GeneratedView(..) => false,
+            | Self::GeneratedView(..)
+            | Self::TryBack(_) => false,
         }
     }
 }
@@ -425,6 +428,7 @@ mod tests {
             CoreCall::Events(Vec::new()),
             CoreCall::GeneratedFinished,
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
+            CoreCall::TryBack(crate::core::keeping::TryBack::for_test()),
             CoreCall::Find(crate::find::FindCall::News),
             CoreCall::Find(crate::find::FindCall::Effect(recto_agent::Effect::Reveal { tab, hit })),
             CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
@@ -462,8 +466,9 @@ mod tests {
                 Origin::Input => 18,
                 Origin::Finishing => 19,
             },
+            CoreCall::TryBack(_) => 20,
         };
-        (place, 20)
+        (place, 21)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.

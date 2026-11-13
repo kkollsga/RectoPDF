@@ -52,8 +52,9 @@ pub enum Keeping {
     NotAsked,
     /// It keeps the record: from the start, or since a late try's restore was taken in.
     Keeps,
-    /// Trying again, quietly: since when, how many tries so far, and what the window had when the state was taken in.
-    Trying { since_ms: u64, tries: u32, as_read: u64 },
+    /// Trying again, quietly: since when, how many tries so far, what the window had when the state was taken in, and whether a try is out (made on a thread
+    /// of its own, and not yet back).
+    Trying { since_ms: u64, tries: u32, as_read: u64, asking: bool },
     /// A try got the lock, and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's done.
     Restoring,
     /// It doesn't, for good: the tries ran out or the person started working in the window first. Said, and the updater told it's a second copy.
@@ -70,7 +71,11 @@ pub enum Event {
     Read { keeps: bool, as_read: u64 },
     /// A call's been taken on the session thread: what the window has now.
     Looked { now_as: u64 },
-    /// A try at the lock, made because [`Keeping::due`] said so, with nothing taken between the [`Event::Looked`] before it and this.
+    /// A try at the lock is going out, because [`Keeping::due`] said so and a look found the window as it was read: made off the session thread and off the
+    /// life's lock, as it opens a file, so a sleeping disk holds up nothing.
+    Asking,
+    /// The try that went out is back, with or without the lock, and the window's been looked at again ([`Event::Looked`]) just before this, on the session
+    /// thread: so anything the person did while it was out counts first.
     Tried { got: bool },
     /// A quit or an update's hand-off has begun.
     Stopped,
@@ -79,8 +84,13 @@ pub enum Event {
 /// What the app does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// A try at the lock goes out now, on a thread of its own.
+    Ask,
     /// It has the lock: the saved session is read and taken in, as at a launch.
     Restore,
+    /// A try came back with the lock after the trying stopped (the person started working in the window, or a quit or a hand-off began while it was out): the
+    /// lock is let go again at once, and nothing is written.
+    LetGo,
     /// **It keeps the record from here,** by whatever route: told to the updater as a copy that keeps it, if its launch was held back. `remake` when a late
     /// try's saved session is in: the window is made again from it, once, as a launch's is.
     Kept { remake: bool },
@@ -102,6 +112,7 @@ impl Keeping {
                     since_ms: now_ms,
                     tries: 0,
                     as_read,
+                    asking: false,
                 };
                 None
             }
@@ -118,33 +129,74 @@ impl Keeping {
                 *self = Self::NotKept;
                 Some(Out::SayNotKept)
             }
-            (Self::Trying { .. }, Event::Tried { got: true }) => {
+            (
+                Self::Trying {
+                    since_ms,
+                    tries,
+                    as_read,
+                    asking: false,
+                },
+                Event::Asking,
+            ) => {
+                *self = Self::Trying {
+                    since_ms,
+                    tries,
+                    as_read,
+                    asking: true,
+                };
+                Some(Out::Ask)
+            }
+            (Self::Trying { asking: true, .. }, Event::Tried { got: true }) => {
                 *self = Self::Restoring;
                 Some(Out::Restore)
             }
-            (Self::Trying { since_ms, tries, as_read }, Event::Tried { got: false }) => {
+            (
+                Self::Trying {
+                    since_ms,
+                    tries,
+                    as_read,
+                    asking: true,
+                },
+                Event::Tried { got: false },
+            ) => {
                 let tries = tries + 1;
                 if tries >= TRIES {
                     *self = Self::NotKept;
                     return Some(Out::SayNotKept);
                 }
-                *self = Self::Trying { since_ms, tries, as_read };
+                *self = Self::Trying {
+                    since_ms,
+                    tries,
+                    as_read,
+                    asking: false,
+                };
                 None
             }
+            // Back with the lock once it's for good not keeping it: let go again, as nothing's to be written with it.
+            (Self::NotKept | Self::Stopped, Event::Tried { got: true }) => Some(Out::LetGo),
             (Self::Trying { .. }, Event::Stopped) => {
                 *self = Self::Stopped;
                 None
             }
-            // A state taken in again without the lock, a look at a window as it was, a try that comes when nothing's trying, or a quit once it's settled or
-            // restoring (whose writer waits for the restore, and writes it): nothing changes.
+            // A state taken in again without the lock, a look at a window as it was, a try asked for with one out or a try back with none out, a try back while
+            // it keeps the record by another route (whose lock it is), or a quit once it's settled or restoring (whose writer writes nothing until the restore's
+            // in): nothing changes.
             _ => None,
         }
     }
 
-    /// How long until the next try, zero once it's due; `None` when nothing's trying.
+    /// How long until the next try, zero once it's due; `None` when nothing's trying, or a try is out.
     #[must_use]
     pub fn due(&self, now_ms: u64) -> Option<Duration> {
-        let Self::Trying { since_ms, tries, .. } = *self else { return None };
+        let Self::Trying {
+            since_ms,
+            tries,
+            asking: false,
+            ..
+        } = *self
+        else {
+            return None;
+        };
         let at = since_ms.saturating_add(TRY_EVERY_MS.saturating_mul(u64::from(tries) + 1));
         Some(Duration::from_millis(at.saturating_sub(now_ms)))
     }
@@ -154,6 +206,13 @@ impl Keeping {
     #[must_use]
     pub fn settled(&self) -> bool {
         matches!(self, Self::Keeps | Self::NotKept)
+    }
+
+    /// **Whether a writer of the record may write, if this copy holds its lock:** before the state's read (when nothing's started writing yet) and once it keeps
+    /// it; never while it tries, restores, or has settled not to.
+    #[must_use]
+    pub fn writes(&self) -> bool {
+        matches!(self, Self::NotAsked | Self::Keeps)
     }
 
     /// Whether it's still trying.
@@ -180,6 +239,13 @@ impl Keeping {
 mod tests {
     use super::*;
 
+    /// A try sent out at `now` and back with `got`: what it comes back to.
+    fn try_once(keeping: &mut Keeping, got: bool, now: u64) -> Option<Out> {
+        assert_eq!(keeping.step(Event::Asking, now), Some(Out::Ask), "a try goes out from {keeping:?}");
+        assert_eq!(keeping.due(now), None, "no second try while one is out");
+        keeping.step(Event::Tried { got }, now)
+    }
+
     fn trying_from(now: u64) -> Keeping {
         let mut keeping = Keeping::default();
         assert_eq!(keeping.step(Event::Read { keeps: false, as_read: 7 }, now), None, "nothing said while it tries");
@@ -200,13 +266,18 @@ mod tests {
             assert!(tried_at.len() <= TRIES as usize, "more tries than it says: {tried_at:?}");
             now += u64::try_from(wait.as_millis()).unwrap();
             tried_at.push(now - start);
-            said = keeping.step(Event::Tried { got: false }, now);
+            said = try_once(&mut keeping, false, now);
             assert!(said.is_none() || keeping.due(now).is_none(), "said only at the end");
         }
         assert_eq!(tried_at, (1..=10).map(|second| second * 1_000).collect::<Vec<_>>());
         assert_eq!(said, Some(Out::SayNotKept));
         assert_eq!(keeping, Keeping::NotKept);
-        assert_eq!(keeping.step(Event::Tried { got: true }, now + 1), None, "a straggler changes nothing");
+        assert_eq!(
+            keeping.step(Event::Tried { got: true }, now + 1),
+            Some(Out::LetGo),
+            "a straggler with the lock lets it go"
+        );
+        assert_eq!(keeping, Keeping::NotKept);
     }
 
     /// Failure: a lock got on a try isn't taken as keeping the record (the saved session isn't restored, or the notice shows anyway), or the window isn't made
@@ -214,8 +285,8 @@ mod tests {
     #[test]
     fn a_lock_got_late_restores_and_is_never_said() {
         let mut keeping = trying_from(0);
-        assert_eq!(keeping.step(Event::Tried { got: false }, 1_000), None);
-        assert_eq!(keeping.step(Event::Tried { got: true }, 2_000), Some(Out::Restore));
+        assert_eq!(try_once(&mut keeping, false, 1_000), None);
+        assert_eq!(try_once(&mut keeping, true, 2_000), Some(Out::Restore));
         assert_eq!(keeping, Keeping::Restoring);
         assert_eq!(keeping.due(2_000), None, "no more tries while it restores");
         assert_eq!(
@@ -271,7 +342,29 @@ mod tests {
         assert_eq!(keeping.step(Event::Stopped, 400), None, "nothing said");
         assert_eq!(keeping, Keeping::Stopped);
         assert_eq!(keeping.due(1_000), None, "no more tries");
-        assert_eq!(keeping.step(Event::Tried { got: true }, 1_000), None, "nor a restore");
+        assert_eq!(keeping.step(Event::Asking, 1_000), None, "none goes out");
+        assert_eq!(
+            keeping.step(Event::Tried { got: true }, 1_000),
+            Some(Out::LetGo),
+            "nor a restore: one back with the lock lets it go"
+        );
+    }
+
+    /// Failure (review, 2026-11-13, S1): a try is out on its own thread (the lock file's open on a sleeping disk) when a quit begins or the person changes
+    /// something, and comes back with the lock: kept, it restores under the quit's write or over what the person has, or keeps the record in a window that says
+    /// it won't be remembered. Or a second try goes out beside the first. One out at a time; what came while it was out wins, and the lock it brings is let go.
+    #[test]
+    fn what_comes_while_a_try_is_out_wins_and_its_lock_is_let_go() {
+        for (event, settles_to) in [(Event::Looked { now_as: 8 }, Keeping::NotKept), (Event::Stopped, Keeping::Stopped)] {
+            let mut keeping = trying_from(0);
+            assert_eq!(keeping.step(Event::Asking, 1_000), Some(Out::Ask));
+            assert_eq!(keeping.due(5_000), None, "no try's due while one is out");
+            assert_eq!(keeping.step(Event::Asking, 5_000), None, "nor goes out");
+            let _ = keeping.step(event, 1_001);
+            assert_eq!(keeping, settles_to, "{event:?}");
+            assert_eq!(keeping.step(Event::Tried { got: true }, 1_002), Some(Out::LetGo), "{event:?}");
+            assert_eq!(keeping, settles_to, "{event:?}: and stays so");
+        }
     }
 
     /// Failure (review, 2026-11-13): an agent's open or edit lands while it's trying, stopping the retry and showing the person a notice for what an agent did, or
@@ -283,7 +376,7 @@ mod tests {
         assert!(!keeping.refuses_agents_changes(), "before the state's read, the socket isn't served at all");
         let _ = keeping.step(Event::Read { keeps: false, as_read: 7 }, 0);
         assert!(keeping.refuses_agents_changes(), "trying");
-        let _ = keeping.step(Event::Tried { got: true }, 1_000);
+        let _ = try_once(&mut keeping, true, 1_000);
         assert!(keeping.refuses_agents_changes(), "restoring");
         let _ = keeping.step(Event::Read { keeps: true, as_read: 0 }, 1_050);
         assert!(!keeping.refuses_agents_changes(), "kept");
@@ -303,25 +396,28 @@ mod tests {
         assert_eq!(keeping.step(Event::Looked { now_as: 8 }, 400), Some(Out::SayNotKept));
         assert_eq!(keeping, Keeping::NotKept);
         assert_eq!(keeping.due(400), None, "no more tries");
-        assert_eq!(keeping.step(Event::Tried { got: true }, 1_000), None, "nor a restore");
+        assert_eq!(keeping.step(Event::Asking, 1_000), None, "none goes out");
     }
 
     /// Every state the machine can be in, with what it was read with: the states to walk every event from.
     fn every_state() -> Vec<Keeping> {
         let mut states = vec![Keeping::NotAsked, Keeping::Keeps, Keeping::Restoring, Keeping::NotKept, Keeping::Stopped];
         for tries in [0, 1, TRIES - 1] {
-            states.push(Keeping::Trying {
-                since_ms: 0,
-                tries,
-                as_read: 7,
-            });
+            for asking in [false, true] {
+                states.push(Keeping::Trying {
+                    since_ms: 0,
+                    tries,
+                    as_read: 7,
+                    asking,
+                });
+            }
         }
         states
     }
 
     /// Every event, each way it can come.
     fn every_event() -> Vec<Event> {
-        let mut events = vec![Event::Stopped, Event::Tried { got: true }, Event::Tried { got: false }];
+        let mut events = vec![Event::Stopped, Event::Asking, Event::Tried { got: true }, Event::Tried { got: false }];
         for keeps in [true, false] {
             events.push(Event::Read { keeps, as_read: 7 });
             events.push(Event::Read { keeps, as_read: 8 });

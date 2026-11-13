@@ -6,7 +6,7 @@
 use crate::lifecycle::keeping::{Keeping, TRIES, TRY_EVERY_MS};
 use crate::testkit::Heard;
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
-use recto_agent::{Actor, Level};
+use recto_agent::Level;
 use recto_control::record_store::{Flavor, RecordStore};
 use recto_platform::slow::Seam;
 use recto_session::record::{Rect, WindowRecord, notices};
@@ -485,21 +485,20 @@ fn quit_answered(app: &HeadlessApp) -> bool {
 
 /// Failure (review, 2026-11-13, route 1): a quit while it tries starts the quit's write, which gathers the empty window; a try then gets the lock and restores, and
 /// the quit's write, now let past the lock, writes the empty window as the newest record and deletes the places log, so the next launch has no tabs and the
-/// journals of unsaved edits are orphaned. The quit's write is held at its write with the empty window gathered, the copy before lets go and a try comes due: no
-/// try is made once the quit has begun, the write is refused, the record's folder is byte for byte as it was, and the next launch has the saved session.
+/// journals of unsaved edits are orphaned. The quit begins, the copy before lets go and a try comes due: no try is made once the quit has begun, the quit's write
+/// writes nothing (it doesn't keep the record), the record's folder is byte for byte as it was, and the next launch has the saved session.
 #[test]
 fn a_quit_while_it_tries_writes_nothing_over_the_saved_session() {
     let disk = a_saved_session();
     let before = the_copy_before(&disk);
     let on_disk = record_folder(&disk);
-    let app = disk.builder().another_keeps().hold(&[Seam::RecordWrite]).start();
+    let app = disk.builder().another_keeps().start();
     app.core().quit_requested();
-    app.wait_until("the quit's write held with the empty window gathered", || app.waiting(Seam::RecordWrite) > 0);
+    app.wait_until("no longer trying", || !app.core().life.keeping().trying());
     drop(before);
     app.advance(TRY_EVERY_MS);
-    app.wait_until("no longer trying", || !app.core().life.keeping().trying());
-    app.let_through(Seam::RecordWrite, 1);
     app.wait_until("the quit's answer", || quit_answered(&app));
+    app.settle();
     assert!(!app.core().saver.store.holds_the_record(), "no try once the quit began");
     let disk = app.quit_anyway();
     assert_eq!(record_folder(&disk), on_disk, "the saved session and its journal as the copy before left them");
@@ -532,59 +531,47 @@ fn a_write_due_while_the_saved_session_is_read_back_writes_nothing_over_it() {
     comes_back_at_the_next_launch(disk);
 }
 
-/// The agent's `session save` (which only asks, so it isn't refused while trying), on a thread of its own as the socket's server runs it.
-fn agents_save(app: &HeadlessApp) -> std::thread::JoinHandle<Result<serde_json::Value, recto_agent::AgentError>> {
+/// Every writer of the record, each once, as each is made: a flush (a `session save`, a quit's or a hand-off's), the saver's own pass when something is due at
+/// once, and the journals written ahead of a tab going dormant. What each said, for the flush.
+fn every_writer(app: &HeadlessApp) -> Result<(), String> {
     let core = Arc::clone(app.core());
-    std::thread::Builder::new()
-        .name("test-agents-save".into())
+    let flushed = std::thread::Builder::new()
+        .name("test-writer".into())
         .spawn(move || {
-            let command = recto_agent::parse(r#"{"cmd":"session_save"}"#).expect("a command");
-            recto_control::host::Host::run(&*core.host, Actor::Agent(Level::Full), &command, &mut Vec::new())
+            core.saver.write_journals_now(&core);
+            core.saver.flush(false, WAIT_LIMIT).map(|_| ()).map_err(|error| error.code.to_owned())
         })
         .expect("a thread")
+        .join()
+        .expect("the writer answered");
+    app.core().saver.write_soon();
+    app.settle();
+    flushed
 }
 
-/// Failure (review, 2026-11-13, route 3): an agent's `session save` gathers the empty window, a try gets the lock under it, and the save's write then goes past
-/// the lock and writes the empty window over the saved session; or a save that comes just after a try got the lock writes the empty window before the saved
-/// session is in. Gathered before the try (held at its write): the try is one that didn't get the lock, the save is refused, and the next try keeps the
-/// record. Come after the try (the saved session's read held): the save is refused. Either way the saved session comes back, now and at the next launch.
+/// Failure (review, 2026-11-13, route 3, and S1: the try no longer holds the saver's gate): a writer of the record writes the window as it is (empty) at the
+/// moment a late try has the lock: back from its thread and not yet decided on, or while the saved session is read back. It would be the newest record, with
+/// the places log removed, so the next launch has no tabs and the journals of unsaved edits are orphaned. At each moment every writer writes nothing, the
+/// record's folder is byte for byte as it was, and once the saved session is in it's what's there, now and at the next launch.
 #[test]
-fn an_agents_save_at_the_moment_of_a_try_writes_nothing_over_the_saved_session() {
-    for gathered_first in [true, false] {
+fn a_writer_at_the_moment_of_a_try_writes_nothing_over_the_saved_session() {
+    for moment in [Seam::RecordLock, Seam::State] {
         let disk = a_saved_session();
         let before = the_copy_before(&disk);
         let on_disk = record_folder(&disk);
-        let app = disk.builder().another_keeps().hold(&[Seam::RecordWrite]).start();
-        let saved = if gathered_first {
-            let saving = agents_save(&app);
-            app.wait_until("the agent's save held with the empty window gathered", || app.waiting(Seam::RecordWrite) > 0);
-            drop(before);
-            next_try_fails(&app);
-            assert!(!app.core().saver.store.holds_the_record(), "not taken under a writer");
-            app.let_through(Seam::RecordWrite, 1);
-            let saved = saving.join().expect("the agent's save answered");
-            app.advance(TRY_EVERY_MS);
-            saved
-        } else {
-            recto_platform::slow::gate::hold(&[Seam::State]);
-            drop(before);
-            app.advance(TRY_EVERY_MS);
-            app.wait_until("the saved session's read held at its seam", || app.waiting(Seam::State) > 0);
-            let saving = agents_save(&app);
-            // A save that got past the read would wait at its write: let it, and see what it did.
-            app.wait_until("the agent's save answered or at its write", || {
-                saving.is_finished() || app.waiting(Seam::RecordWrite) > 0
-            });
-            app.let_through(Seam::RecordWrite, 1);
-            let saved = saving.join().expect("the agent's save answered");
-            assert_eq!(record_folder(app.disk()), on_disk, "nothing written while it's read back");
-            app.let_through(Seam::State, 1);
-            saved
-        };
-        assert!(saved.is_err(), "gathered first {gathered_first}: the empty window isn't written: {saved:?}");
+        let app = disk.builder().another_keeps().start();
+        recto_platform::slow::gate::hold(&[moment]);
+        drop(before);
+        app.advance(TRY_EVERY_MS);
+        app.wait_until("the try held at the moment", || app.waiting(moment) > 0);
+        assert!(app.core().saver.store.holds_the_record(), "{moment:?}: the try has the lock");
+        let flushed = every_writer(&app);
+        assert!(flushed.is_err(), "{moment:?}: the flush is refused: {flushed:?}");
+        assert_eq!(record_folder(app.disk()), on_disk, "{moment:?}: nothing written");
+        app.let_through(moment, 1);
         app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
         app.settle();
-        assert_eq!(tab_names(&app), ["a", "b"], "gathered first {gathered_first}");
+        assert_eq!(tab_names(&app), ["a", "b"], "{moment:?}");
         let (_, disk) = app.quit();
         comes_back_at_the_next_launch(disk);
     }
@@ -639,6 +626,80 @@ fn a_try_with_an_agents_change_under_way_waits_for_the_next() {
     app.settle();
     assert_eq!(tab_names(&app), ["a", "b"]);
     drop(app.quit());
+}
+
+/// What can come between a late try taking the record's lock and the app deciding to keep it.
+#[derive(Clone, Copy, Debug)]
+enum Between {
+    /// The person opens a file.
+    AnOpen,
+    /// The person asks to quit.
+    AQuit,
+}
+
+/// The window's own calls (the UI thread's), each answered within `limit` while a try is held on the disk, or which didn't answer.
+fn the_window_answers_within(app: &HeadlessApp, limit: std::time::Duration) -> Result<(), &'static str> {
+    let core = Arc::clone(app.core());
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("test-window".into())
+        .spawn(move || {
+            let _ = core.state_read();
+            let _ = core.window_interactive();
+            let _ = core.life.may_remake_window();
+            let _ = said.send(());
+        })
+        .expect("a thread");
+    heard.recv_timeout(limit).map_err(|_| "the window's calls waited on the try")
+}
+
+/// Failure (review, 2026-11-13, S1): a late try at the record's lock is made holding the app's life lock, which the UI thread takes to ask whether the state's
+/// read, whether the window takes input and whether to make it again, and for a quit: a try's open of the lock file on a sleeping disk then stalls the window for
+/// as long as the disk takes. And once the try is made off that lock, a quit or the person's change that comes between the lock being taken and the app deciding
+/// must not leave the lock kept, or anything written over the saved session. The try held on the disk: the window answers, the quit and the open are taken;
+/// let go, the lock is let go again at once, the record's folder is byte for byte as it was, and the next launch has the saved session.
+#[test]
+fn a_try_held_on_the_disk_holds_up_nothing_and_what_comes_meanwhile_wins() {
+    for between in [Between::AnOpen, Between::AQuit] {
+        let disk = a_saved_session();
+        let before = the_copy_before(&disk);
+        let on_disk = record_folder(&disk);
+        let app = disk.builder().another_keeps().hold(&[Seam::RecordLock]).start();
+        drop(before);
+        app.advance(TRY_EVERY_MS);
+        app.wait_until("the try held on the disk", || app.waiting(Seam::RecordLock) > 0);
+        assert_eq!(the_window_answers_within(&app, std::time::Duration::from_secs(5)), Ok(()), "{between:?}");
+        match between {
+            Between::AnOpen => {
+                let c = app.disk().pdf("c.pdf", 2);
+                app.core().open_file(c);
+                app.wait_until("the person's open taken", || tab_names(&app) == ["c"]);
+            }
+            Between::AQuit => app.core().quit_requested(),
+        }
+        app.let_through(Seam::RecordLock, 1);
+        app.wait_until("the try decided", || !app.core().life.keeping().trying());
+        app.wait_until("the lock let go again", || !app.core().saver.store.holds_the_record());
+        let disk = match between {
+            Between::AnOpen => {
+                assert_eq!(app.reader().note, not_kept_words(), "said, as for any change before the lock");
+                assert_eq!(tab_names(&app), ["c"], "what the person has, and nothing restored over it");
+                app.core().saver.write_soon();
+                app.settle();
+                app.quit().1
+            }
+            Between::AQuit => {
+                app.wait_until("the quit's answer", || quit_answered(&app));
+                app.quit_anyway()
+            }
+        };
+        assert_eq!(
+            record_folder(&disk),
+            on_disk,
+            "{between:?}: the saved session and its journal as the copy before left them"
+        );
+        comes_back_at_the_next_launch(disk);
+    }
 }
 
 /// Failure (review, 2026-11-13: only opening a file was tested): the person changes the paper, or the appearance, before the lock comes, and the restore then
