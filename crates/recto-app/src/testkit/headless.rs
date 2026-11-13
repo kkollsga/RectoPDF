@@ -322,7 +322,7 @@ impl HostPlay {
                 self.remade += 1;
                 // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
                 // new one opens.
-                if !crate::lock(&inner.window.app).window_closed {
+                if !inner.window.is_closed() {
                     inner.window_replaced();
                     inner.window_opened();
                 }

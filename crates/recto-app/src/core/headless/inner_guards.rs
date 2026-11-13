@@ -236,7 +236,6 @@ Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
-Window.pub app: Mutex<AppState>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
@@ -255,6 +254,7 @@ Window::pub fn focus_changed(&self, view: &str, saver: &Saver)
 Window::pub fn focus_view(&self) -> &'static str
 Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
 Window::pub fn hidden_changed(&self, hidden: bool, saver: &Saver)
+Window::pub fn is_closed(&self) -> bool
 Window::pub fn main_busy(&self, block: bool) -> bool
 Window::pub fn main_idle(&self)
 Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)

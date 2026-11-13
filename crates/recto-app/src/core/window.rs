@@ -21,9 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 pub struct Window {
     /// The contents' follow, which the window's opening and the session thread's look at the contents set as well.
     pub(super) contents_follow: Mutex<ContentsFollow>,
-    /// What the host tells of the window, for the record. Reached from outside the core only by the bridge's `window_placement`, which moves here next
-    /// (R3.7 S2, once `build/record-lock-retry` is in), and by the headless kit's launch.
-    pub app: Mutex<AppState>,
+    /// What the host tells of the window, for the record: set by the methods here, and by the core's launch, restore and reconcile.
+    pub(super) app: Mutex<AppState>,
     watchdog: Watchdog,
     /// The system's appearance is dark, for the paper's look.
     pub(super) dark: AtomicBool,
@@ -301,6 +300,11 @@ impl Window {
     /// Whether the sidebar's panel is open.
     pub fn panel_open(&self) -> bool {
         self.panel_open.load(Ordering::SeqCst)
+    }
+
+    /// Whether the window's closed, as the record has it.
+    pub fn is_closed(&self) -> bool {
+        lock(&self.app).window_closed
     }
 
     /// Where the Settings window was, if it was open.
