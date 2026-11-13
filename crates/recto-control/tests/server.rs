@@ -29,6 +29,8 @@ struct Stand {
     told_off: AtomicUsize,
     /// Every command that reached `run`, by its tag.
     ran: Mutex<Vec<&'static str>>,
+    /// `where` answers with something small, for a test about where it goes and not its size.
+    small_wheres: std::sync::atomic::AtomicBool,
 }
 
 impl Stand {
@@ -59,6 +61,9 @@ impl Host for Stand {
             }
             Command::Read(recto_agent::commands::Read::Where(recto_agent::commands::reading::Where { .. })) => {
                 self.wheres.fetch_add(1, Ordering::SeqCst);
+                if self.small_wheres.load(Ordering::SeqCst) {
+                    return Ok(json!({ "small": true }));
+                }
                 Ok(json!({ "huge": "x".repeat(5_000_000) }))
             }
             Command::Move(recto_agent::commands::Move::Goto(recto_agent::commands::linking::Goto { page, .. })) => {
@@ -832,13 +837,13 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
 fn the_server_answers_only_server_commands_and_sends_on_the_rest() {
     const REQUESTS: &str = include_str!("../../recto-agent/tests/golden/requests.txt");
     let running = Running::start(Limits::default());
-    // `tabs` waits for this here.
+    // `tabs` waits for this here, and `where` answers in a few bytes.
     running.host.release();
+    running.host.small_wheres.store(true, Ordering::SeqCst);
     let mut picked: Vec<(&str, Command)> = Vec::new();
     for line in REQUESTS.lines() {
         let Ok(command) = recto_agent::parse(line) else { continue };
-        // The stand answers `where` with 5 MB, for the cap's test, which takes a second here: it's a session command like the many others.
-        if !recto_agent::allowed(Level::Full, command.access()) || command.tag() == "where" {
+        if !recto_agent::allowed(Level::Full, command.access()) {
             continue;
         }
         // The quick form of a command that waits, so the test doesn't wait out a default.
