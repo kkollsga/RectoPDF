@@ -198,6 +198,10 @@ pub(super) struct Work {
     pub(super) wanted_files: Arc<Vec<PathBuf>>,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Work>() <= 128, "what's asked of the renderer grew");
+
 impl Work {
     pub(super) fn new() -> Self {
         Self {

@@ -34,6 +34,10 @@ pub(super) struct HostQueue {
     pub(super) more_to_attach: bool,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<HostQueue>() <= 136, "what the host's told grew");
+
 impl HostQueue {
     pub(super) fn take_ops(&mut self) -> Vec<Op> {
         if !self.ops.is_empty() {

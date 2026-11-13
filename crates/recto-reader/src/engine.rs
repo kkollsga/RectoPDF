@@ -160,6 +160,9 @@ pub struct Engine {
     thread: Arc<Mutex<Option<Thread>>>,
 }
 
+// size: two `Arc`s, on 2026-11-13 before R3.6. A handle every caller copies and every facade borrows: held so nothing is put in it by the way.
+const _: () = assert!(size_of::<Engine>() <= 16, "the page view's handle grew");
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

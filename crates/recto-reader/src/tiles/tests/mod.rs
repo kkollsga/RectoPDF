@@ -738,6 +738,40 @@ mod cost {
         assert_eq!(allocations, 0, "50 steps that told the host nothing");
     }
 
+    /// **How long a scroll step takes, measured** (R3.6): the UI thread's whole part of a step over pages already drawn and kept, a viewport, a drain and the
+    /// host's word that it applied them, as [`scrolling_over_drawn_pages_allocates_only_what_it_hands_the_host`] makes them. Not a check: it asserts nothing
+    /// about time, which is one machine's, and runs only when asked, on a release build, before and after a change to the scroll path:
+    ///
+    /// `tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-reader --run-ignored only --no-capture -E 'test(=tiles::tests::cost::scroll_step_time)'`
+    ///
+    /// This binary counts allocations, which costs a thread-local look on each: the same before and after, so two builds compare.
+    #[test]
+    #[ignore = "a measurement, run on a release build when asked"]
+    fn scroll_step_time() {
+        let mut reader = reader_on(6);
+        drawn_and_kept(&mut reader);
+        for round in 0..5 {
+            let mut steps = Vec::with_capacity(5_000);
+            for step in 0..5_000u32 {
+                let y = f64::from(step % 25) * 280.0;
+                let began = std::time::Instant::now();
+                let ops = reader.set_viewport(view(y));
+                let more = reader.drain(MAX_ATTACH_PER_TURN);
+                reader.applied();
+                steps.push(began.elapsed());
+                drop((ops, more));
+            }
+            steps.sort_unstable();
+            let at = |share: f64| steps[((steps.len() - 1) as f64 * share) as usize].as_secs_f64() * 1e6;
+            println!(
+                "scroll step, round {round}: p50 {:.2} µs, p90 {:.2} µs, p99 {:.2} µs",
+                at(0.5),
+                at(0.9),
+                at(0.99)
+            );
+        }
+    }
+
     /// Failure: what's kept for scroll steps holds the room of the largest step it ever saw, as a hostile file's thousands of tiny pages in view, for as long as the reader lives; or a reader with nothing to show still holds it.
     #[test]
     fn the_room_kept_for_scroll_steps_is_capped_and_goes_with_the_tab() {

@@ -15,6 +15,9 @@ pub mod selection;
 pub mod snapshot;
 pub mod tiles;
 
+#[cfg(test)]
+mod surface;
+
 pub use engine::{Engine, EngineConfig};
 pub use layout::{PageBox, PageLayout, PageRect};
 pub use paper::PaperKind;

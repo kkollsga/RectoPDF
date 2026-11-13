@@ -38,6 +38,10 @@ pub(super) struct Place {
     pub(super) arrived: bool,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Place>() <= 56, "a page view's place grew");
+
 impl Place {
     pub(super) fn new() -> Self {
         Self {

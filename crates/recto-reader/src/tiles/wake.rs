@@ -199,6 +199,10 @@ pub(super) struct Waking {
     pub(super) draws: super::sleep_draw::SleepDraws,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Waking>() <= 440, "the wake's state grew");
+
 impl Waking {
     /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
     pub(super) fn pictures_exist_for(reader: &Reader, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {

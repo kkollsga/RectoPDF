@@ -17,6 +17,10 @@ pub(super) struct Pointer {
     pub(super) revealing: Option<(u32, recto_index::select::Range, bool)>,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Pointer>() <= 664, "what the pointer does grew");
+
 impl Pointer {
     /// **The last thing asked for wins:** a jump the session sends to another page than Find's hit waiting for its page's text is the newer ask, so the
     /// hit isn't brought into view when the text comes, which would take the view back from where the session has it and be told of as the reader's own

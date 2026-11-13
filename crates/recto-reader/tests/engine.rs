@@ -1453,3 +1453,57 @@ fn the_tab_showing_s_big_worker_rests_on_time_while_a_tab_left_is_drawn() {
     gate::open(Seam::Worker);
     assert!(engine.worker_pids().contains(&tab_1s[0]), "tab 1's worker isn't big, and stays");
 }
+
+/// **Input to first frame, a tab switch while another tab is owed pages, measured** (R3.6; the numbers in `docs/engineering/sleep.md` before it came
+/// from a harness that wasn't kept). Tab 1 is left at a place not drawn, so its place is owed pictures ([`left_at_a_place_not_drawn`]), and at once a third
+/// tab, never shown, is switched to: from that call to the first frame the host applies with something on every page in view (`last_wake.first_frame_us`,
+/// the page view's own reckoning), and to sharp. A real worker, started for the new tab's file as a switch to a file not open does. Not a check: it asserts
+/// nothing about time, and runs only when asked, on a release build:
+///
+/// `tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-reader -p recto-render-service --run-ignored only --no-capture -E 'test(=tab_switch_input_to_first_frame)'`
+///
+/// (`-p recto-render-service` so the worker it runs is built from the same tree.) Seven runs, each on a fresh page view, printed sorted, with the load.
+#[test]
+#[ignore = "a measurement, run on a release build when asked"]
+fn tab_switch_input_to_first_frame() {
+    let (first, second, third) = (document(40), document(3), document(3));
+    let mut first_frames = Vec::new();
+    let mut sharp = Vec::new();
+    for _ in 0..7 {
+        let (engine, _events) = started(&first, 40);
+        left_at_a_place_not_drawn(&engine, &first, &second, 3);
+        let began = Instant::now();
+        engine.note_wake(3, began);
+        engine.activate(3, 3, 0, tab_map(&third), &[1, 2], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        let deadline = Instant::now() + HANG;
+        let wake = loop {
+            if !engine.drain().is_empty() {
+                engine.applied();
+            }
+            let wake = engine.report().0["last_wake"].clone();
+            if wake["tab"] == 3 && !wake["sharp_us"].is_null() || Instant::now() >= deadline {
+                break wake;
+            }
+            engine.wait_settled(Duration::from_millis(1));
+        };
+        let micros = |key: &str| wake[key].as_u64().unwrap_or_else(|| panic!("{key} in {wake}")) as f64 / 1000.0;
+        first_frames.push(micros("first_frame_us"));
+        sharp.push(micros("sharp_us"));
+        assert_eq!(
+            engine.report().0["sleep_draws"]["owed_tab"],
+            1,
+            "tab 1 was still owed its place when the switch came"
+        );
+        engine.shut_down();
+    }
+    first_frames.sort_by(f64::total_cmp);
+    sharp.sort_by(f64::total_cmp);
+    let load = std::process::Command::new("uptime")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    println!("tab switch, input to first frame (ms, sorted): {first_frames:.1?}");
+    println!("tab switch, input to sharp (ms, sorted): {sharp:.1?}");
+    println!("load: {load}");
+}

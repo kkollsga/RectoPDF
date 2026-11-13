@@ -76,6 +76,10 @@ pub(super) struct TileCache {
     pub(super) spare: Vec<Vec<u64>>,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<TileCache>() <= 240, "the tile cache grew");
+
 /// Emptied lists of a page's tiles kept for pages to come: about as many pages as come and go in a scroll step, side by side and zoomed out.
 pub(super) const SPARE_LISTS: usize = 8;
 /// The most tiles' room a kept list may have; a larger one goes.
