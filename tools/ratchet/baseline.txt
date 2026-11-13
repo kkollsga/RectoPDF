@@ -1,16 +1,16 @@
 apptest crates/recto-cli/tests 203
-ffi crates/recto-ffi/src 2354
+ffi crates/recto-ffi/src 2330
 file crates/recto-agent/src/lib.rs 1572
 file crates/recto-agent/src/table.rs 3524
 file crates/recto-control/src/server.rs 1507
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 1640
+file crates/recto-ffi/src/lib.rs 1616
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-reader/src/tiles.rs 3351
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-session/src/record.rs 1561
-file crates/recto-update/src/updater.rs 2766
+file crates/recto-update/src/updater.rs 2599
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
@@ -38,7 +38,7 @@ impl crates/recto-reader/src/tiles.rs::Reader 138
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
-impl crates/recto-update/src/updater.rs::Updater 50
+impl crates/recto-update/src/updater.rs::Updater 47
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
 sleep app/qa/save-shots.sh 1
@@ -99,7 +99,7 @@ sleep crates/recto-update/src/bin/recto-updater.rs 4
 sleep crates/recto-update/src/fetch.rs 1
 sleep crates/recto-update/src/install.rs 5
 sleep crates/recto-update/src/process.rs 1
-sleep crates/recto-update/src/updater.rs 5
+sleep crates/recto-update/src/updater.rs 3
 sleep crates/recto-update/src/updater/builds.rs 1
 sleep crates/recto-update/tests/installer.rs 4
 struct crates/recto-agent/src/render/svg.rs::Tally 20
