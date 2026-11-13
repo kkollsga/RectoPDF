@@ -45,10 +45,10 @@ impl Inner {
         });
     }
 
-    /// A layout from the context menu: `view --layout`, for the pane being read as it's chosen, which a right-click on a pane has just made it, whatever the
-    /// session's still to hear, when there's more than one; the active tab's otherwise.
+    /// A layout from the context menu: `view --layout --tab`, naming the tab in the pane being read as it's chosen, which a right-click on a pane has just
+    /// made it, whatever the session's still to hear: a tab tapped just before isn't laid out instead (accident A4). The active tab's with no tab shown.
     pub fn set_layout(self: &Arc<Self>, spread: record::Spread) {
-        let tab = (self.panes.count() > 1).then(|| self.panes.tab_of(self.panes.reading())).flatten();
+        let tab = self.panes.tab_of(self.panes.reading());
         self.view_for_person(View {
             layout: Some(spread.name().into()),
             tab: tab.map(|tab| format!("#{}", tab.0)),

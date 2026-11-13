@@ -103,3 +103,32 @@ fn two_quick_presses_of_the_sidebars_button_are_two_toggles() {
     });
     assert!(app.reader().sidebar_hidden, "one press hides it");
 }
+
+/// Failure (R2.3, accident A4): a layout chosen on the page showing one tab lands on whichever tab is active by the time it's done, so a tap on another tab
+/// just before it lays out that one instead. It names the tab in the pane it was chosen on.
+#[test]
+fn a_layout_lands_on_the_tab_it_was_chosen_on() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 4), disk.pdf("b.pdf", 4));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    let rows = app.tabs();
+    let (first, second) = (rows[0].clone(), rows[1].clone());
+    assert!(second.current, "b is showing");
+    while_the_session_is_busy(&app, || {
+        app.act(UiAction::Row {
+            row: first.clone(),
+            adding: false,
+        });
+        app.act(menu("layout.two_up"));
+    });
+    let layout = |tab: u32| {
+        app.session_json()["tabs"]
+            .as_array()
+            .and_then(|tabs| tabs.iter().find(|kept| kept["id"] == tab))
+            .map(|kept| kept["layout"].clone())
+    };
+    assert_eq!(layout(second.tab), Some("two-up".into()), "the tab it was chosen on");
+    assert_eq!(layout(first.tab), Some("single".into()), "the tab tapped just before is left as it was");
+}
