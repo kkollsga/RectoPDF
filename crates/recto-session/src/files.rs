@@ -13,20 +13,25 @@ impl<L: DocLoader> Session<L> {
         let has_edits = self.lists.has_list(id);
         let edited = self.lists.is_edited(id);
         let (stamp, missing) = (tab.file.stamp, matches!(tab.file.notice(), Some(FileNotice::Missing)));
-        let dont_fit = !self.notices().fit(id).fits();
+        // Under edits that don't fit, the version last taken in, found again, is nothing new; any other is, as what's held is of that one (F2).
+        let fit = self.notices().fit(id);
+        let elsewhere = tab.file.elsewhere().filter(|_| !fit.fits());
+        let seen_again = |now: &FileStamp| elsewhere.and_then(|elsewhere| elsewhere.seen).is_some_and(|seen| seen.same_contents(*now));
         let known = match &status {
             FileStatus::NotLooked => true,
-            FileStatus::Changed(_) => edited && dont_fit && !missing,
+            FileStatus::Changed(now) => seen_again(now) && !missing,
             FileStatus::Missing => missing,
-            // With no stamp a file found is never taken as the edits' own, and with them already known not to fit it, it's nothing new. Back from gone is.
-            FileStatus::Same(_) => has_edits && stamp.is_none() && !missing && (!edited || dont_fit),
+            // With no stamp a file found is never taken as the edits' own. Back from gone is news, and so is a version not yet taken in.
+            FileStatus::Same(now) => has_edits && stamp.is_none() && !missing && (!edited || seen_again(now)),
             FileStatus::Moved(..) => false,
         };
         if known {
             return false;
         }
         // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
-        if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
+        // So does another version under edits that name none.
+        let other_version_unnamed = edited && stamp.is_none() && matches!(&status, FileStatus::Same(now) if !seen_again(now));
+        if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) || other_version_unnamed {
             self.generated.forget(id);
             // Folds are by entry number, which another version's contents don't share.
             if let Some(tab) = self.tab_mut(id) {
@@ -38,6 +43,11 @@ impl<L: DocLoader> Session<L> {
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
                     let was = (tab.file.stamp, tab.file.notice().is_some());
+                    if other_version_unnamed {
+                        // What's read next is this version, and it's what a look will find again; the edits stay about none.
+                        let file_changed = fit != EditsFit::NotThisFile;
+                        tab.file.set_elsewhere(Some(fit::Elsewhere { seen: Some(now), file_changed }));
+                    }
                     if stamp.is_some() || !has_edits {
                         // The version the edits were made on, or the file as it is for a tab with none: so it fits.
                         tab.file.take_version(Some(now));
@@ -48,7 +58,7 @@ impl<L: DocLoader> Session<L> {
                     {
                         tab.file.set_notice(None);
                     }
-                    return was != (tab.file.stamp, tab.file.notice().is_some());
+                    return other_version_unnamed || was != (tab.file.stamp, tab.file.notice().is_some());
                 }
             }
             FileStatus::Moved(path, now) => {

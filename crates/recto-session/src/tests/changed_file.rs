@@ -430,3 +430,35 @@ fn nothing_decides_by_a_notice_code_string() {
     }
     assert!(found.is_empty(), "decided by a notice's code: {found:#?}");
 }
+
+/// Failure (F2): a second change under edits that don't fit (v2, then v3) was taken for nothing new, as the tab already said its file changed, so what was held
+/// of v2 (its contents and labels, the contents' verdict and folds, generated contents) stayed on while the renderer drew v3: "nothing of the old file is
+/// shown as the new" (SPEC). Each version not yet taken in is news, and what's held of the last goes; a look at the same one again does no work. With the stamp
+/// kept and with it gone alike.
+#[test]
+fn a_second_change_under_edits_that_dont_fit_is_news_and_a_third_look_isnt() {
+    let kept = || {
+        let (mut bed, a, b) = Bed::new(10);
+        bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+        replace_file(&bed.path(), b"v2, saved by another app");
+        assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+        (bed, a, b)
+    };
+    for (what, (mut bed, a, b)) in [("kept stamp", kept()), ("no stamp", dropped_stamp())] {
+        let stamp = bed.s.tabs().own_stamp(a);
+        let look = |bed: &Bed| record::look_at_file(&bed.path(), stamp);
+        // v2 read in, as the app does on news: what's held of it is v2's, and a fold is made on its contents.
+        bed.s.forget_read(a);
+        bed.make_cold(a, b);
+        bed.s.tap(a).unwrap();
+        bed.s.tabs_mut().tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
+        assert!(!bed.s.apply_file_status(a, look(&bed)), "{what}: v2 again is nothing new");
+        assert!(bed.s.tabs().tab(a).unwrap().folds.is_some(), "{what}: so its fold stays");
+        replace_file(&bed.path(), b"v3, saved by another app again, longer");
+        assert!(bed.s.apply_file_status(a, look(&bed)), "{what}: v3 is news");
+        assert!(bed.s.tabs().tab(a).unwrap().folds.is_none(), "{what}: v2's folds go with it");
+        assert_eq!(bed.s.tabs().own_stamp(a), stamp, "{what}: and the edits aren't taken to be about v3");
+        assert!(!bed.s.notices().fit(a).fits(), "{what}");
+        assert!(!bed.s.apply_file_status(a, look(&bed)), "{what}: a third look at v3 does nothing");
+    }
+}
