@@ -248,6 +248,7 @@ mod tests {
             areas.insert(area.to_owned(), area_verbs(&source, area).map_err(|error| format!("{name}: {error}"))?);
         }
         let channel = std::fs::read_to_string(folder.join("QAChannel.swift")).map_err(|error| error.to_string())?;
+        handle_is_only_the_chain(&channel)?;
         let handle = channel
             .lines()
             .find(|line| line.contains("let finished = "))
@@ -258,6 +259,37 @@ mod tests {
             .filter_map(|part| part.split_once("(id, verb, value, controller)").map(|(area, _)| area.to_owned()))
             .collect();
         Ok((areas, chained))
+    }
+
+    /// **`QAChannel.handle` is the chain of areas and its guard, and nothing else:** a verb answered there, before or after the areas, would be one no area
+    /// file shows and the guard above never sees. Its lines, comments aside, are exactly these.
+    fn handle_is_only_the_chain(channel: &str) -> Result<(), String> {
+        const BODY: [&str; 6] = [
+            "let controller = delegate.windowController",
+            "let finished = ",
+            "guard let finished else { return fail(id, \"That isn't a QA command.\") }",
+            "if !finished { return }",
+            "delegate.windowController?.window.layoutIfNeeded()",
+            "answer(id, state())",
+        ];
+        let mut lines = channel
+            .lines()
+            .skip_while(|line| !line.contains("func handle(id: UInt64, verb: String, value: String) {"));
+        lines.next().ok_or("no `func handle(id:verb:value:)` in QAChannel.swift")?;
+        let body: Vec<&str> = lines
+            .map(str::trim)
+            .take_while(|line| *line != "}")
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .collect();
+        let fits = body.len() == BODY.len()
+            && body
+                .iter()
+                .zip(BODY)
+                .all(|(line, want)| if want.ends_with(' ') { line.starts_with(want) } else { *line == want });
+        if !fits {
+            return Err(format!("`QAChannel.handle` is more than the chain of areas and its guard: {body:#?}"));
+        }
+        Ok(())
     }
 
     /// What's wrong between the table and what the host answers, in words, one line each: nothing when they agree.
@@ -358,8 +390,30 @@ mod tests {
             mismatches(&areas, &chained).iter().any(|line| line.contains("find_click")),
             "a verb the host stopped answering"
         );
+        let channel = std::fs::read_to_string(swift_folder().join("QAChannel.swift")).unwrap();
+        assert!(handle_is_only_the_chain(&channel).is_ok());
+        let answered_in_handle = channel.replacen(
+            "        let controller = delegate.windowController\n",
+            "        let controller = delegate.windowController\n        if verb == \"secret\" { return answer(id, 1) }\n",
+            1,
+        );
+        assert!(handle_is_only_the_chain(&answered_in_handle).is_err(), "a verb answered in handle itself");
         let mut unasked = chained.clone();
         unasked.remove("Find");
         assert!(!mismatches(&areas, &unasked).is_empty(), "an area `handle` never asks");
+    }
+
+    /// Failure: the one `.qa` line splitter splits a path with a space in it, runs on past an open quote, or reads a `$` as a name where it was asked to
+    /// take it as itself (`qa as-person`'s command, which the app must not fill from its environment).
+    #[test]
+    fn a_line_splits_as_a_script_does() {
+        let words = |line: &str| super::super::line_words(line, None);
+        assert_eq!(words(r#"open "/a b/c.pdf" --page 2"#).unwrap(), ["open", "/a b/c.pdf", "--page", "2"]);
+        assert_eq!(words("  qa   state ").unwrap(), ["qa", "state"]);
+        assert!(words(r#"open "/a"#).is_err());
+        assert_eq!(words("find $HOME").unwrap(), ["find", "$HOME"], "a `$` is itself without names");
+        let named = |name: &str| (name == "X").then(|| "/x y".to_owned());
+        assert_eq!(super::super::line_words("open \"$X\"", Some(&named)).unwrap(), ["open", "/x y"]);
+        assert!(super::super::line_words("open $Y", Some(&named)).is_err());
     }
 }
