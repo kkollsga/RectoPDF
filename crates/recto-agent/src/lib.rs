@@ -447,6 +447,10 @@ pub trait SessionAccess {
     fn reads_later(&self) -> Option<&dyn later::ReadLater> {
         None
     }
+    /// **Takes in where the window's page views are now,** before a jump or a step in the trail marks where it leaves: what the reader has scrolled to that
+    /// the session hasn't heard yet, so Back comes back to the place that was showing (R2.3, accident A1). Called without the session held, as it takes it
+    /// itself. A session with no window has nothing to take in.
+    fn take_places(&self) {}
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {

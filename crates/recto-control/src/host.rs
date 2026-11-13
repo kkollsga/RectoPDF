@@ -65,10 +65,15 @@ pub struct SessionHost<L = DrawableLoader> {
     records: std::sync::OnceLock<Arc<dyn Records + Send + Sync>>,
     /// Where what a command asks of the window goes, set once by the app: none for a session with no window.
     effects: std::sync::OnceLock<Effects>,
+    /// What takes in where the window's page views are, before a jump: set once by the app, none for a session with no window.
+    places: std::sync::OnceLock<Places>,
 }
 
 /// What carries a command's [`recto_agent::Effect`] to the window.
 pub type Effects = Arc<dyn Fn(recto_agent::Effect) + Send + Sync>;
+
+/// What takes in where the window's page views have each tab: [`recto_agent::SessionAccess::take_places`].
+pub type Places = Arc<dyn Fn() + Send + Sync>;
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
 pub struct BackupsOnly(pub PathBuf);
@@ -94,6 +99,7 @@ struct Hosted<'a, L> {
     /// The app's record, or this session's own, or none.
     records: Option<&'a (dyn Records + Send + Sync)>,
     effects: Option<&'a Effects>,
+    places: Option<&'a Places>,
     /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
@@ -121,6 +127,11 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
             (Some(records), _) => Ok(records as &dyn Records),
             (None, Some(own)) => Ok(own as &dyn Records),
             (None, None) => Err(recto_agent::commands::record::no_record()),
+        }
+    }
+    fn take_places(&self) {
+        if let Some(places) = self.places {
+            places();
         }
     }
     fn effect(&self, effect: recto_agent::Effect) {
@@ -152,6 +163,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             find_keys: std::sync::OnceLock::new(),
             records: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),
+            places: std::sync::OnceLock::new(),
         }
     }
 
@@ -228,6 +240,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.effects.set(effects);
     }
 
+    /// Where the window's page views are is taken in from here before a jump, once, by the app.
+    pub fn set_places(&self, places: Places) {
+        let _ = self.places.set(places);
+    }
+
     /// With generated contents made on demand, kept in the state folder's contents folder.
     #[must_use]
     pub fn with_generating(mut self, paths: &StatePaths) -> Self {
@@ -256,6 +273,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             saving: self.saving.get().map(|saving| &**saving),
             records: self.records.get().map(|records| &**records),
             effects: self.effects.get(),
+            places: self.places.get(),
             reads_later: None,
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }

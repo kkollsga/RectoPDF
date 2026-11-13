@@ -93,6 +93,7 @@ impl Cmd for Goto {
         json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some() })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        cx.access.take_places();
         match (self.page, &self.label) {
             (Some(page), None) => cx.access.with(|s| {
                 let id = select(s, &self.tab)?;
@@ -144,6 +145,7 @@ impl Cmd for Back {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
+        access.take_places();
         linking::step(access, cx.actor.author(), tab, true, events)
     }
     fn human(data: &Value) -> String {
@@ -181,6 +183,7 @@ impl Cmd for Forward {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
+        access.take_places();
         linking::step(access, cx.actor.author(), tab, false, events)
     }
     fn human(data: &Value) -> String {
@@ -322,3 +325,95 @@ pub(crate) const ROWS_FOLLOW: &[Spec] = &[Spec {
     examples: &["recto follow --page 1 --link 2"],
     ..BASE
 }];
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+    use recto_core::{DocFacts, OpenError, Toc};
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct Fake;
+
+    impl DocLoader for Fake {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts {
+                page_count: 12,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
+        }
+    }
+
+    /// A session with a window whose page view has scrolled to a page the session hasn't heard of yet, which it gives when asked.
+    struct Scrolled {
+        session: Mutex<Session<Fake>>,
+        showing: Mutex<Option<(TabId, u32)>>,
+    }
+
+    impl SessionAccess for Scrolled {
+        type Loader = Fake;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<Fake>) -> R) -> R {
+            self.session.with(step)
+        }
+        fn take_places(&self) {
+            if let Some((id, page)) = self.showing.lock().unwrap().take() {
+                self.session.lock().unwrap().go_to(id, page).unwrap();
+            }
+        }
+    }
+
+    impl Scrolled {
+        /// The reader has scrolled to this page (counted from 1), and the session's not heard.
+        fn scroll_to(&self, id: TabId, page: u32) {
+            *self.showing.lock().unwrap() = Some((id, page - 1));
+        }
+
+        fn run(&self, line: &str) -> Value {
+            execute(self, Actor::Agent(Level::Control), &parse(line).unwrap(), &mut Vec::new()).unwrap_or_else(|error| panic!("{line}: {error:?}"))
+        }
+    }
+
+    /// Failure (R2.3, accident A1): an agent's `goto`, `goto label`, `back`, `forward` or `follow` marks the trail with where the session last heard the
+    /// reader was, not the page showing, so Back after it returns to a stale place the reader had scrolled away from. Each takes in the page view's place
+    /// first, as the window's own jumps do, and the trail holds the page that was showing.
+    #[test]
+    fn an_agents_jump_marks_the_page_that_was_showing() {
+        let file = recto_testpdf::TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+        let access = Scrolled {
+            session: Mutex::new(Session::new(Fake)),
+            showing: Mutex::new(None),
+        };
+        let id = access.session.lock().unwrap().open(&file.0).unwrap();
+        let page = |answer: Value| answer["page"].as_u64().unwrap();
+        for jump in [
+            r#"{"cmd":"goto","page":9}"#,
+            r#"{"cmd":"goto","label":"9"}"#,
+            r#"{"cmd":"follow","page":1,"link":1}"#,
+        ] {
+            access.run(r#"{"cmd":"goto","page":1}"#);
+            access.scroll_to(id, 5);
+            access.run(jump);
+            assert_eq!(page(access.run(r#"{"cmd":"back"}"#)), 5, "{jump}: Back comes back to the page that was showing");
+        }
+        // Back from 9 with the reader scrolled on to 11: Forward goes to 11, where they were.
+        access.run(r#"{"cmd":"goto","page":9}"#);
+        access.scroll_to(id, 11);
+        access.run(r#"{"cmd":"back"}"#);
+        assert_eq!(
+            page(access.run(r#"{"cmd":"forward"}"#)),
+            11,
+            "back: the way forward is the page that was showing"
+        );
+        // Forward from there with the reader scrolled back to 3: Back goes to 3.
+        access.run(r#"{"cmd":"back"}"#);
+        access.scroll_to(id, 3);
+        access.run(r#"{"cmd":"forward"}"#);
+        assert_eq!(page(access.run(r#"{"cmd":"back"}"#)), 3, "forward: the way back is the page that was showing");
+    }
+}
