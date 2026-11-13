@@ -87,7 +87,9 @@ struct Shared {
 }
 
 /// The tick ([`asked`]) of the newest ask of each kind applied to the view, each moved on only with the view's lock held, so an ask asked before it isn't
-/// applied after it, whichever thread got the lock first: one atomic each, no lock and no wait on the UI thread.
+/// applied after it, whichever thread got the lock first: one atomic each, no lock and no wait on the UI thread. The reader's own scroll in this view
+/// ([`Engine::set_viewport_scrolled`]) takes no tick: it drops a follow left pending, and a jump asked before it that gets the lock after it still moves
+/// the view.
 #[derive(Default)]
 struct Applied {
     /// Where the view is: a jump ([`Engine::jump_within`], [`Engine::jump_to`]), a follow ([`Engine::follow_soon`]) or another tab ([`Engine::activate`]).
