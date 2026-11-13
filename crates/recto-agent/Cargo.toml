@@ -8,7 +8,9 @@ publish.workspace = true
 
 [features]
 # A code compared with a word, `error.code == "usage"`, for tests: only dev-dependencies (and `recto-app`'s `testkit`) turn this on, so a release build
-# has no string comparison of a code (review of R2.5, F3).
+# has no string comparison of a code (review of R2.5, F3). `recto-fuzz`, test-only, turns it on as a plain dependency, so a `cargo build --workspace
+# --release` would build `recto-agent` with it, features being unified across a build: release builds go by `app/build.sh`'s list of packages, which has
+# no `recto-fuzz` (second review of R2.5).
 test-words = []
 
 [lints]
