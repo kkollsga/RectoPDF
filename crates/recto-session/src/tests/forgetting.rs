@@ -5,8 +5,6 @@ use super::*;
 /// Every part of the session that keeps something of a tab, by the name of what it keeps, and whether it holds anything of this one: the names of those that do, sorted. A part added to the session, or moved into a component, is listed here.
 fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
     let parts = [
-        ("tabs", s.tabs.iter().any(|tab| tab.id == id)),
-        ("active", s.active == Some(id)),
         ("warm", s.warm.contains(id)),
         ("woken", s.warm.holds_read_of(id)),
         ("draws", s.mail.holds_draw_of(id)),
@@ -22,6 +20,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         .chain(s.dormancy.holding(id))
         .chain(s.journals.holding(id))
         .chain(s.lists.holding(id))
+        .chain(s.tabs.holding(id))
         .filter(|(_, holds)| *holds)
         .map(|(name, _)| name)
         .collect();

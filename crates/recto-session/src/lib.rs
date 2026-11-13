@@ -24,6 +24,7 @@ mod lists;
 mod mail;
 mod pages;
 mod recent;
+mod registry;
 mod restore;
 mod saves;
 mod saving;
@@ -778,13 +779,10 @@ pub struct Session<L = DiskLoader> {
     loader: L,
     /// The view settings, Find and edit mode.
     viewing: viewing::Viewing,
-    tabs: Vec<TabRecord>,
-    active: Option<TabId>,
-    next_id: u32,
+    /// Every open tab, which one's active, the next one's number, and the folders their files are in.
+    tabs: registry::Tabs,
     /// The tabs that keep their contents, and the reads of cold tabs' files made ahead of waking them.
     warm: warm::Warm,
-    /// The folders tabs' files are in.
-    dirs: dirs::Dirs,
     /// Every tab's list of edits, in memory or gone to disk, those that couldn't be read back, and whether an agent's at Full.
     lists: lists::Lists,
     /// The session's clock, holds on tabs, and what's on its way to and from the sleep files.

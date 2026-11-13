@@ -74,6 +74,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Every tab's file and what's known of it, for one pass by one thread after a restore. No thread or handle per tab.
     pub fn files_to_look_at(&self) -> Vec<(TabId, PathBuf, Option<FileStamp>)> {
-        self.tabs.iter().filter_map(|tab| Some((tab.id, self.path_of(tab.id)?, tab.stamp))).collect()
+        self.tabs
+            .all()
+            .iter()
+            .filter_map(|tab| Some((tab.id, self.path_of(tab.id)?, tab.stamp)))
+            .collect()
     }
 }

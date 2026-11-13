@@ -9,7 +9,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub fn tier(&self, id: TabId) -> Tier {
-        if self.active == Some(id) {
+        if self.tabs.active() == Some(id) {
             Tier::Hot
         } else if self.warm.contains(id) {
             Tier::Warm
@@ -20,7 +20,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The tab tapping this one would wake from cold, and its file, so that can be read with this session free: a file on a dead volume mustn't hold up everything else that asks about tabs.
     pub fn wake_for_tap(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
-        let file = (self.active != Some(id)).then(|| self.file_to_wake(id)).flatten()?;
+        let file = (self.tabs.active() != Some(id)).then(|| self.file_to_wake(id)).flatten()?;
         // A sleep file says all a read would, with nothing asked of the PDF.
         if self.wake_from_sleep_file(file.0) {
             return None;
@@ -30,16 +30,16 @@ impl<L: DocLoader> Session<L> {
 
     /// The same, for closing this tab: what becomes active next.
     pub fn wake_for_close(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
-        if self.active != Some(id) {
+        if self.tabs.active() != Some(id) {
             return None;
         }
         let next = match self.pane_after(id) {
             Some(pane) => pane,
             None => {
-                let index = self.tabs.iter().position(|tab| tab.id == id)?;
+                let index = self.tabs.position(id)?;
                 self.tabs
-                    .get(index + 1)
-                    .or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?
+                    .at(index + 1)
+                    .or_else(|| index.checked_sub(1).and_then(|before| self.tabs.at(before)))?
                     .id
             }
         };
@@ -92,7 +92,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Makes a restored active tab what it says it is, once its file has been read. No tap, so its fold isn't touched.
     pub fn wake_active(&mut self) {
-        if let Some(id) = self.active {
+        if let Some(id) = self.tabs.active() {
             self.activate(id);
         }
     }
@@ -106,7 +106,7 @@ impl<L: DocLoader> Session<L> {
         self.generated.keep_ready_only_for(id);
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
-        if let Some(left) = self.active.filter(|left| *left != id) {
+        if let Some(left) = self.tabs.active().filter(|left| *left != id) {
             let clean = !self.has_list(left);
             self.touch(left);
             if let Some(tab) = self.tab_mut(left)
@@ -116,7 +116,7 @@ impl<L: DocLoader> Session<L> {
                 tab.notice = None;
             }
         }
-        self.active = Some(id);
+        self.tabs.set_active(Some(id));
         if self.warm.bring_to_front(id) {
             return;
         }

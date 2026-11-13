@@ -199,7 +199,7 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
 #[test]
 fn tab_numbers_dont_wrap() {
     let mut s = session(5);
-    s.next_id = MAX_TAB_ID;
+    s.tabs.set_next_id(MAX_TAB_ID);
     assert_eq!(s.open(Path::new("/d/a.pdf")), Err(SessionError::TooManyTabs));
 }
 
@@ -280,12 +280,12 @@ fn folders_are_kept_only_while_a_tab_is_in_them() {
         );
         s.close(beside).unwrap();
     }
-    assert_eq!(s.dirs.len(), 1, "only the folder still in use");
+    assert_eq!(s.tabs.dirs_kept(), 1, "only the folder still in use");
     assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
     assert_eq!(s.tab_for_path(Path::new("/folder-7/a.pdf")), None);
     let moved = s.open(Path::new("/before/moved.pdf")).unwrap();
     s.relocate(moved, Path::new("/after/moved.pdf"));
-    assert_eq!(s.dirs.len(), 2, "a tab moved out of its folder lets it go");
+    assert_eq!(s.tabs.dirs_kept(), 2, "a tab moved out of its folder lets it go");
     assert_eq!(s.path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
     assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
 }

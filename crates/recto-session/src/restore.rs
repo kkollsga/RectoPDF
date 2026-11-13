@@ -8,11 +8,8 @@ impl<L: DocLoader> Session<L> {
         let Self {
             loader: _,
             viewing,
-            tabs,
-            active,
-            next_id,
+            tabs: open,
             warm: _,
-            dirs: _,
             lists,
             dormancy: _,
             mail: _,
@@ -22,7 +19,8 @@ impl<L: DocLoader> Session<L> {
             saves: _,
             recent,
         } = self;
-        let tabs = tabs
+        let tabs = open
+            .all()
             .iter()
             .map(|tab| {
                 let TabRecord {
@@ -86,8 +84,8 @@ impl<L: DocLoader> Session<L> {
             view,
             find,
             edit_mode,
-            active: active.map(|id| id.0),
-            next_id: *next_id,
+            active: open.active().map(|id| id.0),
+            next_id: open.next_id(),
             tabs,
             comparison,
             recent,
@@ -106,9 +104,7 @@ impl<L: DocLoader> Session<L> {
         let mut deduped = record.clone();
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
-        self.tabs.clear();
-        // Every tab's going, and with them every folder's number.
-        self.dirs = dirs::Dirs::default();
+        self.tabs.restored(record.next_id, record.tabs.len());
         self.warm = warm::Warm::default();
         self.lists.restored();
         self.mail = mail::PageViewMail::default();
@@ -117,15 +113,12 @@ impl<L: DocLoader> Session<L> {
         self.generated = generated::Generated::default();
         self.saves.restored();
         self.dormancy.restored();
-        self.active = None;
         self.comparison = None;
-        self.next_id = record.next_id;
         self.recent.restore(&record.recent);
         self.viewing.restore(&record.view, &record.find, record.edit_mode);
-        self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
-            let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
+            let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();
@@ -179,7 +172,7 @@ impl<L: DocLoader> Session<L> {
                 trail,
             });
         }
-        self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
+        self.tabs.set_active(record.active.map(TabId).filter(|id| self.tab(*id).is_some()));
         // Side by side as it was, of the tabs that came back. A record's been checked, but one tab per file can take one out.
         self.comparison = record.comparison.as_ref().and_then(|saved| {
             let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tab(*id).is_some()).collect()).ok()?;
@@ -196,9 +189,9 @@ impl<L: DocLoader> Session<L> {
             Some(comparison)
         });
         if let Some(comparison) = &self.comparison
-            && !self.active.is_some_and(|active| comparison.contains(active))
+            && !self.tabs.active().is_some_and(|active| comparison.contains(active))
         {
-            self.active = comparison.tabs.first().copied();
+            self.tabs.set_active(comparison.tabs.first().copied());
         }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
         if self.journals.kept_and_readable() {

@@ -66,7 +66,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
     pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
-        for tab in &mut self.tabs {
+        for tab in self.tabs.iter_mut() {
             if tab.selection.is_some() && tab.id != showing {
                 tab.selection = None;
             }
@@ -98,14 +98,14 @@ impl<L: DocLoader> Session<L> {
     /// What's changed that a line of the log of places can say. Marks it as said.
     pub fn take_place_delta(&mut self, seq: u64) -> PlaceDelta {
         let mut places = Vec::new();
-        for tab in &mut self.tabs {
+        for tab in self.tabs.iter_mut() {
             if std::mem::take(&mut tab.place_dirty) {
                 places.push((tab.id.0, tab.page, tab.place));
             }
         }
         PlaceDelta {
             seq,
-            active: self.active.map(|id| id.0),
+            active: self.tabs.active().map(|id| id.0),
             places,
             contents_scroll: None,
             focus: None,
