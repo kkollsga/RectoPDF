@@ -86,8 +86,25 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     assert!(!copy.exists(), "no copy was made");
     assert_eq!(std::fs::read(&file).expect("the file"), theirs, "and the other program's version is as it was");
     // The person's Save: the same refusal, with no Save As offered.
+    // File > Save does something only when it can be chosen (CI run 43465773035: a look at the file that read two versions greyed it, and the person's Save
+    // did nothing, with nothing said): if it can't, why, as the window has it.
+    let reader = app.reader();
+    assert!(
+        app.core().menu_item_enabled("file.save".into()),
+        "Save can't be chosen, so the person's Save would do nothing: edited {}, save on {}, saving {}, readers disagree: {:?}",
+        reader.edited,
+        reader.save_enabled,
+        reader.saving,
+        app.core().tools.save_ui.disagreement_now()
+    );
     app.core().perform("file.save".into());
     app.settle();
+    app.wait_for("the person's Save answered in the window", || {
+        app.core().tools.save_ui.problem().map(|_| ()).ok_or_else(|| {
+            let reader = app.reader();
+            format!("no problem to show; save on {}, saving {}", reader.save_enabled, reader.saving)
+        })
+    });
     let problem = app.core().tools.save_ui.problem().expect("the person's told");
     assert_eq!(problem.save_as_title, None, "Save As isn't offered, as it would be refused: {problem:?}");
     assert!(!problem.message.contains("Save As"), "{problem:?}");

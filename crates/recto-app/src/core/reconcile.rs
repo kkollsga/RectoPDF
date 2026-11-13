@@ -282,14 +282,10 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
-        let open: Vec<(u64, u64)> = inner.host.session.with_session(|session| {
-            session
-                .tabs()
-                .iter()
-                .filter_map(|tab| session.tabs().own_stamp(tab.id))
-                .map(|stamp| (stamp.device, stamp.inode))
-                .collect()
-        });
+        let open: Vec<(u64, u64)> = inner
+            .host
+            .session
+            .with_session(|session| session.tabs().own_stamps().map(|stamp| (stamp.device, stamp.inode)).collect());
         inner.keys.keep_only(&open);
     }
     let reading_engine = inner.panes.reading_engine(&inner.engine);
@@ -395,6 +391,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         inner.saver.view_changed();
     }
+    #[cfg(any(test, feature = "testkit"))]
+    inner.serving.place_seams.look_ended();
 }
 
 /// **What the window's Save is for the tab being read, decided by Rust.** A signed file's (SPEC decision 27): an edit a Save over it would break the signature

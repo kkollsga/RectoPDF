@@ -12,12 +12,24 @@
 # A finished watch prints the result, the failed jobs, the failed tests with their "failed N of M" lines (tools/check-rerun.sh) and the artifacts with how
 # to fetch them, and keeps the result in the git common dir (recto-ci-main). Every call to `gh` is bounded (PUSH_MAIN_GH_TIMEOUT, 20 s), and `gh` missing,
 # signed out or offline is said plainly, never waited on. A green run's check time is kept (recto-ci-times) and said against CI's budget (CI_BUDGET). A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
+#
+# Which runs it sees (2026-11-13: a push of 91 files was called "documents only" and given up on at 3 min, while its run sat queued): GitHub's run list
+# leaves a run that is still queued out of an answer filtered by --branch or --commit, though the unfiltered list shows it. So the list is asked
+# unfiltered (newest 30 of the CI workflow) and the script picks the branch and the commit, and a queued, waiting or running run is a run: it is waited
+# for, and one that gets no runner in the whole limit is "never got a runner", neither green nor red, and kept as neither. "Documents only" is decided
+# from the whole pushed range against the workflow's own paths-ignore (read from the workflow file, so the two can't drift), as GitHub does; a range with
+# code in it and no run after PUSH_MAIN_NORUN seconds (10 min) is "no CI run at all", said with the range's file count.
+#
+# One watcher a repository (recto-ci-watcher in the git common dir: its process and commit). A watch that starts while another is alive says so in one line,
+# and the older one stops when it sees the newer one has taken its commit or a later one over. A run's time is kept once, whoever sees it go green.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GH=${PUSH_MAIN_GH:-gh}
 GH_TIMEOUT=${PUSH_MAIN_GH_TIMEOUT:-20}
 POLL=${PUSH_MAIN_POLL:-30}
 LIMIT=${PUSH_MAIN_LIMIT:-2700}
+NORUN=${PUSH_MAIN_NORUN:-600}
+WORKFLOW_FILE=${PUSH_MAIN_WORKFLOW_FILE:-.github/workflows/ci.yml}
 WORKFLOW=CI
 common=$(git rev-parse --git-common-dir)
 results="$common/recto-ci-main"
@@ -27,6 +39,7 @@ known="$common/recto-ci-known"
 # 21 min on 2026-11-13, when five green runs in a row took 15 min 56 s to 19 min 35 s).
 CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1260}
 times="$common/recto-ci-times"
+watcher_file=${PUSH_MAIN_WATCHER_FILE:-$common/recto-ci-watcher}
 
 # Runs gh with a bound. Its output on stdout; 124 if it took too long, 127 if there's no gh.
 gh_bounded() {
@@ -100,12 +113,24 @@ run_outcome() {
   printf 'never\t%s\n' "${never:-no job of it failed}"
 }
 
+# The CI workflow's newest runs on main, one JSON object a line, queued ones included. Not asked with --branch or --commit: those leave a queued run out
+# (run 43469313717, 2026-11-13: --workflow CI --branch main -L 2 and --commit <sha> both answered without it, the plain list had it first).
+runs_on_main() {
+  local raw rc=0 line
+  raw=$(gh_bounded run list --workflow "$WORKFLOW" -L 30 --json databaseId,headSha,headBranch,status,conclusion,url) || rc=$?
+  [ "$rc" = 0 ] || return "$rc"
+  printf '%s' "$raw" | objects | while IFS= read -r line; do
+    if [ -n "$line" ] && [ "$(field "$line" headBranch)" = main ]; then printf '%s\n' "$line"; fi
+  done
+  return 0
+}
+
 # The last pushed main commit's CI: the newest run on main that wasn't cancelled (a newer push cancels an older run) and whose commit is origin/main or
 # in its history. Prints `<state> <sha> <run id> <url>`, state one of green, red, running, none. Fails with gh's code when it can't be read.
 last_main_run() {
   local tip runs rc=0 line sha status conclusion
   tip=$(git rev-parse -q --verify refs/remotes/origin/main) || { echo "none - - -"; return 0; }
-  runs=$(gh_bounded run list --workflow "$WORKFLOW" --branch main -L 10 --json databaseId,headSha,status,conclusion,url) || rc=$?
+  runs=$(runs_on_main) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -121,7 +146,7 @@ last_main_run() {
       esac
     fi
     return 0
-  done < <(printf '%s' "$runs" | objects)
+  done <<< "$runs"
   echo "none - - -"
 }
 
@@ -182,7 +207,7 @@ report_failure() {
 # one. Nothing when there is none, or when gh can't say (the cancelled run is then reported as it is).
 newer_run_than() {
   local runs line other
-  runs=$(gh_bounded run list --workflow "$WORKFLOW" --branch main -L 10 --json databaseId,headSha,status,conclusion,url) || return 0
+  runs=$(runs_on_main) || return 0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     other=$(field "$line" headSha)
@@ -190,10 +215,29 @@ newer_run_than() {
     git merge-base --is-ancestor "$1" "$other" 2>/dev/null || continue
     printf '%s\n' "$other"
     return 0
-  done < <(printf '%s' "$runs" | objects)
+  done <<< "$runs"
 }
 
 mins() { echo "$(($1 / 60)) min $(($1 % 60)) s"; }
+
+# The last five distinct green runs' lines: a run id kept twice (two watchers saw the same run go green, 2026-11-13) counts once, whatever the file holds.
+recent_times() { [ -s "$times" ] && awk -F'\t' '!seen[$3]++' "$times" | tail -5; return 0; }
+
+# Keeps a run's time unless that run is already kept. Two watchers can be here at once: the check and the write are one step under a lock directory (mkdir
+# is atomic, as in tools/check.sh's app-tier lock), the file is rewritten whole and moved into place, and a lock still there after 5 s is a dead taker's.
+keep_time() { # run id, sha, seconds
+  local i=0
+  until mkdir "$times.lock" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -gt 50 ]; then rmdir "$times.lock" 2>/dev/null; i=0; fi
+    sleep 0.1
+  done
+  if ! awk -F'\t' -v id="$1" '$3 == id { found = 1 } END { exit !found }' "$times" 2>/dev/null; then
+    { cat "$times" 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$3"; } > "$times.new.$$" && mv "$times.new.$$" "$times"
+  fi
+  rmdir "$times.lock" 2>/dev/null
+  return 0
+}
 
 # A green run's check job against the budget: its seconds are kept, and the median of the last five green runs is what counts, as one slow runner says
 # little. Over the budget is said loudly and fails nothing: a runner's speed isn't the commit's fault, but a median over it is the next task (AGENTS.md).
@@ -201,9 +245,9 @@ ci_time() {
   local secs median n
   secs=$(gh_bounded run view "$1" --json jobs --jq '[.jobs[] | select(.name == "check") | ((.completedAt | fromdate) - (.startedAt | fromdate))] | max // empty') || return 0
   [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -gt 0 ] || return 0
-  printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$secs" >> "$times"
-  n=$(tail -5 "$times" | wc -l | tr -d ' ')
-  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  keep_time "$1" "$2" "$secs"
+  n=$(recent_times | wc -l | tr -d ' ')
+  median=$(recent_times | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
   echo "push-main: CI's check took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
   budget_warning
 }
@@ -214,8 +258,8 @@ ci_time() {
 budget_warning() {
   [ -s "$times" ] || return 0
   local n median
-  n=$(tail -5 "$times" | wc -l | tr -d ' ')
-  median=$(tail -5 "$times" | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
+  n=$(recent_times | wc -l | tr -d ' ')
+  median=$(recent_times | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
   [[ "$median" =~ ^[0-9]+$ ]] && [ "$median" -gt "$CI_BUDGET" ] || return 0
   {
     echo "==================== WARNING: CI IS OVER ITS TIME BUDGET ===================="
@@ -230,33 +274,100 @@ budget_warning() {
   } >&2
 }
 
+# The paths the CI workflow ignores on a push, one a line, read from its `paths-ignore: [...]` line so the two can't drift. Nothing when it can't be read.
+ignore_globs() {
+  [ -f "$WORKFLOW_FILE" ] || return 0
+  sed -nE "s/^[[:space:]]*paths-ignore:[[:space:]]*\[(.*)\].*/\1/p" "$WORKFLOW_FILE" | head -1 | tr ',' '\n' | sed -E "s/^[[:space:]]*['\"]?//; s/['\"]?[[:space:]]*\$//" | grep -v '^$'
+}
+
+# Whether every file changed from $1 to $2 is one the workflow ignores, as GitHub decides for a push (the whole pushed range, not its last commit). False
+# for an empty or unreadable range, and when the ignore list can't be read: never "documents only" on a guess.
+range_ignored() {
+  local files globs f g all
+  globs=$(ignore_globs); [ -n "$globs" ] || return 1
+  files=$(git diff --name-only "$1" "$2" 2>/dev/null) || return 1
+  [ -n "$files" ] || return 1
+  while IFS= read -r f; do
+    all=1
+    while IFS= read -r g; do
+      # GitHub's `**` crosses folders, as a bare `*` does in a shell pattern.
+      g=${g//\*\*/\*}
+      # shellcheck disable=SC2254
+      case "$f" in $g) all=0; break ;; esac
+    done <<< "$globs"
+    [ "$all" = 0 ] || return 1
+  done <<< "$files"
+  return 0
+}
+
+# One watcher a repository: whether process $1 is alive and is a push-main.
+watcher_alive() { kill -0 "$1" 2>/dev/null && ps -p "$1" -o command= 2>/dev/null | grep -q push-main; }
+
+register_watcher() {
+  local opid="" osha=""
+  [ ! -f "$watcher_file" ] || read -r opid osha < "$watcher_file" || true
+  if [ -n "$opid" ] && [ "$opid" != "$$" ] && watcher_alive "$opid"; then
+    echo "push-main: another watcher is running here (process $opid, on $(printf '%s' "$osha" | cut -c1-12)); it stops once it sees this one has taken over, and this one reports the runs."
+  fi
+  printf '%s %s\n' "$$" "$sha" > "$watcher_file.new.$$" && mv "$watcher_file.new.$$" "$watcher_file"
+  trap 'unregister_watcher' EXIT
+}
+unregister_watcher() {
+  local opid=""
+  [ ! -f "$watcher_file" ] || read -r opid _ < "$watcher_file" || true
+  [ "$opid" != "$$" ] || rm -f "$watcher_file"
+}
+
+# Whether a newer watcher of this repository, on $sha or a commit after it, has taken over from this one: this one then has nothing left to say.
+taken_over() {
+  local opid="" osha=""
+  [ -f "$watcher_file" ] && read -r opid osha < "$watcher_file" || return 1
+  [ -n "$opid" ] && [ "$opid" != "$$" ] && watcher_alive "$opid" || return 1
+  git merge-base --is-ancestor "$sha" "$osha" 2>/dev/null || return 1
+  echo "push-main: stopping the watch of $(printf '%s' "$sha" | cut -c1-12): a newer watcher (process $opid, on $(printf '%s' "$osha" | cut -c1-12)) has taken over and reports the runs."
+}
+
+# watch <commit> [<base>]: base is the main the push replaced, so the pushed range is base..commit. Without it: origin/main's previous place when the
+# commit is origin/main (the push that put it there), else the commit's parent.
 watch() {
   sha=$(git rev-parse "$1") || { echo "push-main: $1 isn't a commit here." >&2; return 2; }
+  range_base=""
+  if [ -n "${2:-}" ]; then range_base=$(git rev-parse -q --verify "$2^{commit}" || true)
+  elif [ "$sha" = "$(git rev-parse -q --verify refs/remotes/origin/main || true)" ]; then range_base=$(git rev-parse -q --verify "refs/remotes/origin/main@{1}" || true)
+  fi
+  [ -n "$range_base" ] || range_base=$(git rev-parse -q --verify "$sha^" || true)
   began=$(date +%s) reruns=0
+  register_watcher
   echo "push-main: watching CI on main for $(printf '%s' "$sha" | cut -c1-12), up to $((LIMIT / 60)) min."
   watch_loop
 }
 
-# Follows $sha's run to its end, and says how it ended. Shares sha, began and reruns with `watch`.
+# Follows $sha's run to its end, and says how it ended. Shares sha, began, range_base and reruns with `watch`.
 watch_loop() {
-  local rc line id="" url="" status conclusion
+  local rc line id="" url="" status conclusion runs seen_running=0
   while :; do
+    if taken_over; then return 0; fi
     rc=0
-    line=$(gh_bounded run list --workflow "$WORKFLOW" --branch main --commit "$sha" -L 1 --json databaseId,status,conclusion,url | objects | head -1) || rc=$?
+    runs=$(runs_on_main) || rc=$?
     if [ "$rc" != 0 ]; then echo "push-main: $(gh_trouble "$rc"). Look again with tools/push-main.sh --watch $sha." >&2; return 2; fi
+    line=$(printf '%s\n' "$runs" | while IFS= read -r l; do [ "$(field "$l" headSha)" = "$sha" ] && { printf '%s\n' "$l"; break; }; done)
     if [ -n "$line" ]; then
       id=$(field "$line" databaseId); url=$(field "$line" url); status=$(field "$line" status); conclusion=$(field "$line" conclusion)
       [ "$status" != completed ] || break
-    elif [ $(($(date +%s) - began)) -ge 180 ]; then
-      if git rev-parse -q --verify "$sha^" >/dev/null && [ -z "$(git diff --name-only "$sha^" "$sha" | grep -vE '^docs/|\.md$')" ]; then
-        echo "push-main: no CI run for $(printf '%s' "$sha" | cut -c1-12) after 3 min: it changed only documents, which CI skips."
-        return 0
-      fi
-      echo "push-main: no CI run for $(printf '%s' "$sha" | cut -c1-12) after 3 min. Look on GitHub, or again with tools/push-main.sh --watch $sha." >&2
+      [ "$status" != in_progress ] || seen_running=1
+    elif [ -n "$range_base" ] && range_ignored "$range_base" "$sha"; then
+      echo "push-main: no CI run for $(printf '%s' "$sha" | cut -c1-12): everything pushed with it ($(git diff --name-only "$range_base" "$sha" | wc -l | tr -d ' ') files, $(printf '%s' "$range_base" | cut -c1-12)..$(printf '%s' "$sha" | cut -c1-12)) is documents, which CI's workflow skips."
+      return 0
+    elif [ $(($(date +%s) - began)) -ge "$NORUN" ]; then
+      echo "push-main: no CI run at all for $(printf '%s' "$sha" | cut -c1-12) after $((NORUN / 60)) min, and the pushed range ($(git diff --name-only "${range_base:-$sha}" "$sha" 2>/dev/null | wc -l | tr -d ' ') files) isn't only documents. Look on GitHub, or again with tools/push-main.sh --watch $sha." >&2
       return 2
     fi
     if [ $(($(date +%s) - began)) -ge "$LIMIT" ]; then
-      echo "push-main: CI for $(printf '%s' "$sha" | cut -c1-12) hadn't finished after $((LIMIT / 60)) min${url:+: $url}. Look again with tools/push-main.sh --watch $sha." >&2
+      if [ "$seen_running" = 0 ] && [ -n "$line" ]; then
+        echo "push-main: CI for $(printf '%s' "$sha" | cut -c1-12) never got a runner: still $status after $((LIMIT / 60)) min ($url). That's GitHub's runners, not the code: neither green nor red, and nothing is kept. Look again with tools/push-main.sh --watch $sha." >&2
+      else
+        echo "push-main: CI for $(printf '%s' "$sha" | cut -c1-12) hadn't finished after $((LIMIT / 60)) min${url:+: $url}. Look again with tools/push-main.sh --watch $sha." >&2
+      fi
       return 3
     fi
     sleep "$POLL"
@@ -271,6 +382,7 @@ watch_loop() {
   if [ "$conclusion" = cancelled ]; then
     local newer
     newer=$(newer_run_than "$sha")
+    if taken_over; then return 0; fi
     if [ -n "$newer" ]; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$sha" "$id" superseded "$(($(date +%s) - began))" >> "$results"
       echo "push-main: CI on main $(printf '%s' "$sha" | cut -c1-12) was superseded: a newer push ($(printf '%s' "$newer" | cut -c1-12)) cancelled its run ($url). Watching the newer run."
@@ -331,12 +443,14 @@ mark_known() {
 
 case "${1:-}" in
   "")
+    before=$(git rev-parse -q --verify refs/remotes/origin/main || true)
     git push origin main || exit $?
-    watch "$(git rev-parse refs/heads/main)"
+    watch "$(git rev-parse refs/heads/main)" "$before"
     ;;
   --watch) watch "${2:-refs/remotes/origin/main}" ;;
   --status) status ;;
   --budget) budget_warning ;;
+  --ignored) ignore_globs ;;
   --known) shift; mark_known "$@" ;;
   *) sed -n '2,13p' "$0" >&2; exit 2 ;;
 esac

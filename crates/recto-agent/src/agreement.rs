@@ -51,7 +51,20 @@ fn look_at(path: &Path, stamp: FileStamp, deadline: Instant) -> Option<Disagreem
     answer
 }
 
+/// **Both halves, of the one version `stamp` names, or `Unchecked`.** The structure's read through the file the renderer opened; but the renderer opens a file
+/// replaced at its path anew before a job (`DocRenderer::reopen_if_replaced`), so an answer any job gave after that is about another version than the
+/// structure's: two files compared, which says nothing of either (CI run 43465773035: ten pages against five, kept as the old version's lasting disagreement).
+/// That's about the moment, as a failed read is: it doesn't grey the window's Save, and a save looks again. A file that keeps changing never makes a loop: the
+/// window keeps the answer for the version and doesn't ask again ([`known_or_start`]), and a save makes one look of its own ([`check`]).
 fn look_with(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Option<Disagreement> {
+    let answer = compared(doc, stamp, deadline);
+    if doc.file_seen_changed() {
+        return Some(Disagreement::Unchecked);
+    }
+    answer
+}
+
+fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Option<Disagreement> {
     let read = doc.read_structure(|file, _| {
         // The version the renderer opened, by its descriptor, not by whatever's at the path now.
         if recto_platform::open_file_stamp(&file).ok() != Some(stamp) {
@@ -580,5 +593,26 @@ mod tests {
         // The version asked about isn't the one opened: unchecked, whatever's at the path.
         let other = FileStamp { size: stamp.size + 1, ..stamp };
         assert_eq!(look_at(&file.0, other, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Unchecked));
+    }
+
+    /// Failure (CI run 43465773035, 1 of 5): the look's structure was read through the file it opened, and then the renderer, finding the path replaced,
+    /// opened the new file before its first job, so the two halves were of different versions: ten pages against five was kept for the old version as a
+    /// lasting disagreement, Save was greyed for a tab whose edits are of that version, and the person's Save did nothing, with nothing said. Another
+    /// program replacing the file while it's looked at makes the answer about the moment, `Unchecked`, never a disagreement of the file's.
+    #[test]
+    fn a_file_replaced_while_its_looked_at_isnt_a_disagreement() {
+        let _lock = test_lock();
+        let page = |n: usize| (0..n).map(|_| recto_testpdf::Page::new("")).collect::<Vec<_>>();
+        let file = recto_testpdf::TempPdf::new("replaced.pdf", &recto_testpdf::pages(&page(10)));
+        let stamp = stamp_of(&file.0);
+        let config = ServiceConfig::discover().expect("the worker");
+        let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).expect("opened");
+        // Another program's save, after the look opened the file and before the renderer's first job.
+        let incoming = file.0.with_extension("incoming");
+        std::fs::write(&incoming, recto_testpdf::pages(&page(5))).expect("the new version");
+        std::fs::rename(&incoming, &file.0).expect("put in place");
+        let answer = look_with(&mut doc, stamp, Instant::now() + LOOK_DEADLINE);
+        doc.kill_worker();
+        assert_eq!(answer, Some(Disagreement::Unchecked), "about the moment, not the file");
     }
 }

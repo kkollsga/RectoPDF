@@ -19,6 +19,7 @@ impl<L: DocLoader> Session<L> {
             saves: _,
             recent,
         } = self;
+        let notices = self.notices();
         let tabs = open
             .all()
             .iter()
@@ -53,7 +54,7 @@ impl<L: DocLoader> Session<L> {
                 } = tab;
                 TabEntry {
                     id: id.0,
-                    path: PathField::from_path(&self.tabs.named_path(*id).unwrap_or_default()),
+                    path: PathField::from_path(&open.named_path_of(tab).unwrap_or_default()),
                     file: stamp.map(Into::into),
                     page: *page,
                     page_count: *page_count,
@@ -64,7 +65,7 @@ impl<L: DocLoader> Session<L> {
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
-                    notice: match self.notices().fit(*id) {
+                    notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
                         _ => tab.file.notice().cloned(),
                     },

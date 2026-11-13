@@ -420,6 +420,7 @@ const LISTED: &[&str] = &[
     "Tabs: pub fn for_path",
     "Tabs: pub fn needs_password",
     "Tabs: pub fn own_stamp",
+    "Tabs: pub fn own_stamps",
     "Tabs: pub fn path_of",
     "Tabs: pub fn place_to_show",
     "Tabs: pub fn spread_of",
