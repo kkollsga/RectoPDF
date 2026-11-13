@@ -352,11 +352,18 @@ fn a_tile_for_the_tab_just_left_is_cancelled_even_while_it_is_owed() {
 /// Failure: a draw for a tab left started in the moment between a change of tab and the host's first word of the new one's view (no height yet, or its jump not arrived), when the tab showing had nothing it could ask for only because it didn't know where it was. A size can't be stopped once started, so the person's view waited on it.
 #[test]
 fn nothing_is_drawn_for_a_tab_left_before_the_tab_showing_is_placed() {
-    let mut reader = reader_on(40);
+    // Tab 2, of one page, drawn: once it's where it's sent it wants nothing, so only being placed can hold the draw back.
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(2, 1, 0, other_tab(2), &[], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    settle(&mut reader);
+    reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+    reader.set_viewport(view(0.0));
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
     reader.set_viewport(view(20_000.0));
-    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.activate(2, 1, 0, other_tab(2), &[1], None, Spread::Single);
     assert_eq!(draws(&reader)["owed_tab"], 1);
     let job = reader.next_job();
     assert!(
@@ -381,12 +388,14 @@ fn nothing_is_drawn_for_a_tab_left_before_the_tab_showing_is_placed() {
 /// Failure: the pages drawn for a tab left aren't the pages its wake shows. Its place was taken to the pixel in a layout that the sizes learned for it since have moved, so what was drawn was a stretch of the document it isn't at. With pages of two sizes, what's drawn is what a return to it shows.
 #[test]
 fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
-    let tall = PageBox { width: 612.0, height: 1584.0 };
-    let size_of = |page: u32| if page >= 6 && page % 2 == 0 { tall } else { letter() };
+    // Page 20 turns out an eighth the height it was taken to be. Left with a sliver of it at the top, the rest of the view on page 21: once its size is known, there's too little of it in that view to be owed a picture.
+    let size_of = |page: u32| if page == 20 { PageBox { width: 612.0, height: 100.0 } } else { letter() };
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    reader.set_viewport(view(20_000.0));
+    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    reader.set_viewport(view(page.y + page.height * 0.92));
+    assert_eq!(reader.sleep_material(1, None).unwrap().in_view, vec![20, 21], "both owed as it was taken to be");
     let left_on = reader.place.last_view_page.expect("a page it's on");
     reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
     reader.set_viewport(view(0.0));
@@ -565,4 +574,13 @@ fn a_page_with_no_file_ends_the_asking_with_its_own_reason() {
     assert!(run_jobs(&mut reader, &[]).iter().all(|job| job.tab == 2));
     assert_eq!(draws(&reader)["ended"]["no_source"], 1, "{}", draws(&reader));
     assert_eq!(draws(&reader)["ended"]["cold"], 0, "{}", draws(&reader));
+}
+
+/// Failure: whoever waits for drawing for a tab left waits for ever once the thread that draws has given up, as nothing more is drawn. It's not under way then.
+#[test]
+fn a_tab_left_is_not_under_way_once_drawing_has_given_up() {
+    let mut reader = left_undrawn();
+    assert!(SleepDraws::under_way(&reader));
+    reader.thread_restarted(true);
+    assert!(!SleepDraws::under_way(&reader), "{}", draws(&reader));
 }
