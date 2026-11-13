@@ -881,6 +881,29 @@ mod tests {
         }
     }
 
+    /// Failure (found in review round 1 of the page view follow-ups): a jump to a page's top leaves the page a follow before it moved the view to as the
+    /// page the reader moved to, so the session's next look takes that page from the view (the view's own, as it's been given everything) while the view
+    /// sits at the jump: the session and the window disagree, and the reader is told they went to a page they're not on. A follow synced scroll sends while
+    /// the session thread's look is between reading the views and sending its jump does this. After a jump the page moved to is the jump's, or none.
+    #[test]
+    fn a_jump_to_a_pages_top_leaves_no_page_an_earlier_follow_moved_to() {
+        for by_page in [true, false] {
+            let engine = without_its_thread();
+            assert!(engine.follow_soon(60, 0.5), "free: it goes now");
+            if by_page {
+                engine.jump_to(12);
+            } else {
+                assert!(engine.jump_within(12, 0.0).is_some());
+            }
+            assert_eq!(engine.reading_anchor(), Some((12, 0.0)));
+            let moved = engine.take_moved_page();
+            assert!(
+                moved.is_none_or(|page| page == 12),
+                "the page the reader moved to is the jump's, or none, not the follow's: {moved:?} (by the page alone: {by_page})"
+            );
+        }
+    }
+
     /// Failure (review 1): another pane's zoom or a selection taken in another pane makes the UI thread wait on this pane's lock while its thread holds it. Both are left for that thread instead, and taken when it next holds its lock.
     #[test]
     fn zoom_and_a_selection_elsewhere_never_wait_for_a_busy_pane() {

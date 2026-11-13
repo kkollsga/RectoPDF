@@ -257,6 +257,9 @@ impl Reader {
         let seq = self.place.send();
         self.place.jump = Some(seq);
         self.place.last_view_page = Some(page);
+        // The session sent this, so it has this page: a page a move before it went to (a follow, say) is about a place it's left, and taken from the view
+        // after, it would send the session where the view isn't.
+        self.place.moved_page = None;
         self.host.ops.push_back(Op::ScrollTo { y, seq });
         true
     }
