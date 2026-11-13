@@ -12,6 +12,8 @@
 use crate::core::updates::{Patience, restore_patience, takes_input};
 use std::time::Duration;
 
+/// Keeping the record when its lock comes late: tried again quietly for ten seconds, or a minute after an update.
+pub mod keeping;
 #[cfg(test)]
 mod tests;
 
@@ -65,10 +67,15 @@ pub struct Life {
     patience_due_ms: Option<u64>,
     hand_off: HandOff,
     quit: Quit,
-    /// The window went up without the state and was made again from it when it came in: what a test of a late state asks, so it can't pass on the on-time path.
+    /// The window was made again from the state, as the host says ([`Event::WindowRemade`]), not inferred: what a test of a late state asks, so it can't pass
+    /// on the on-time path.
     remade: bool,
     /// The host's been told the control socket's session has ended ([`Out::SessionEnded`]): once in the app's life, as only this being false tells it.
     ended: bool,
+    /// Whether this copy keeps the record, and its tries when the lock didn't come at the start ([`keeping`]).
+    keeping: keeping::Keeping,
+    /// The record was kept late and its saved session taken in, and the window hasn't been made again from it yet ([`Self::may_remake_window`]).
+    late_kept: bool,
 }
 
 /// What happens to the app's life.
@@ -80,6 +87,8 @@ pub enum Event {
     StateRead,
     /// What the host shows has been made from the state.
     ShownWithState,
+    /// The host made the window again from the state, replacing the one that went up without it (`AppCore::window_replaced`): what it says, not inferred.
+    WindowRemade,
     /// A hand-off begins: nothing was in flight, and from here what's done wouldn't come back.
     HandOffWriting,
     /// The state's written, forced to the drive and read back, with still nothing in flight.
@@ -97,6 +106,8 @@ pub enum Event {
     QuitWritten { written: bool, unsaved_tabs: usize },
     /// The quit's question was answered with Stay.
     QuitStayed,
+    /// Keeping the record: the state taken in, a call taken, or a try at the lock ([`keeping::Event`]).
+    Keeping(keeping::Event),
 }
 
 /// What the caller does, once it has let go of the lock.
@@ -119,6 +130,9 @@ pub enum Out {
     HandOffQuit,
     /// The host's told the control socket's session has ended ([`crate::Listener::session_ended`]). At most once.
     SessionEnded,
+    /// Keeping the record came to something: restore the saved session now, keep the record from here (with the window made again from a late try's restore),
+    /// or say the window won't be remembered ([`keeping::Out`]). Settling either way is where the updater is told of a launch held back.
+    Keeping(keeping::Out),
 }
 
 impl Life {
@@ -158,13 +172,18 @@ impl Life {
                 })
             }
             // Made again from the state only while the window may still be: the rule the host asks (`may_remake_window`) before it makes it again.
+            Event::WindowRemade => {
+                self.remade = true;
+                None
+            }
             Event::ShownWithState => {
-                self.remade |= self.shown == Shown::WithoutState && !self.takes_input(now_ms);
                 self.shown = Shown::WithState;
+                self.late_kept = false;
                 None
             }
             Event::HandOffWriting => {
                 self.hand_off = HandOff::Writing;
+                let _ = self.keeping.step(keeping::Event::Stopped, now_ms);
                 Some(Out::Freeze(true))
             }
             // Only a hand-off that's writing has written: one that was undone, or has told the host to quit already, isn't written again by a late word.
@@ -188,10 +207,12 @@ impl Life {
             // Taken again, unless a quit that's writing or going holds it.
             Event::HandOffUndone => {
                 self.hand_off = HandOff::Idle;
+                let _ = self.keeping.step(keeping::Event::Resumed, now_ms);
                 (!self.frozen()).then_some(Out::Freeze(false))
             }
             Event::QuitAsked => {
                 self.quit = Quit::Writing;
+                let _ = self.keeping.step(keeping::Event::Stopped, now_ms);
                 Some(Out::QuitBegins)
             }
             Event::QuitWritten { written, unsaved_tabs } => {
@@ -206,10 +227,47 @@ impl Life {
             // Only a question asked has an answer: a Stay that comes with none changes nothing.
             Event::QuitStayed if self.quit == Quit::Asking => {
                 self.quit = Quit::No;
+                let _ = self.keeping.step(keeping::Event::Resumed, now_ms);
                 Some(Out::QuitStayed)
             }
             Event::QuitStayed => None,
+            // Kept late: the window may be made again from it, once ([`Self::may_remake_window`]); the caller tells the host as at a launch, and the updater.
+            Event::Keeping(event) => {
+                let out = self.keeping.step(event, now_ms);
+                if out.and_then(|out| out.settle) == Some(keeping::Settle::Kept { remake: true }) {
+                    self.late_kept = true;
+                }
+                out.map(Out::Keeping)
+            }
         }
+    }
+
+    /// How long until the next try at the record's lock, zero once it's due: the session thread's deadline while it's trying ([`keeping::Keeping::due`]).
+    #[must_use]
+    pub fn keeping_due(&self, now_ms: u64) -> Option<Duration> {
+        self.keeping.due(now_ms)
+    }
+
+    #[must_use]
+    pub fn keeping(&self) -> keeping::Keeping {
+        self.keeping
+    }
+
+    /// **Whether the window is made again from the state now,** asked by the host as it hears a state come in after its window went up ([`Out::RestoreReady`]
+    /// with `late`). A state that came after the window went up without it, while the window takes no input yet (as always). A saved session taken in on a late
+    /// try at the record's lock ([`keeping`]), once, unless the person has `touched` the window since the launch: then what they have stays as it is, its frame and
+    /// focus kept, and only what's in it comes back. Never for a state read without the lock, which has nothing to make a window from, while it's still trying
+    /// or restoring: so a launch makes its window again at most once. Never with a sheet up (`sheet_up`: a password, a link's question, an agent's permission
+    /// request), which would go with the window: the session still comes back into it.
+    #[must_use]
+    pub fn may_remake_window(&self, now_ms: u64, touched: bool, sheet_up: bool) -> bool {
+        if sheet_up || self.keeping.refuses_agents_changes() {
+            return false;
+        }
+        if self.late_kept {
+            return !touched;
+        }
+        !self.takes_input(now_ms)
     }
 
     /// How long until the patience for the state is over by the core's own deadline, if it's waiting on one: zero once it's due.

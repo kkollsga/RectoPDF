@@ -147,7 +147,7 @@ impl Updater {
             if st.status.is_under_way() {
                 return Err(InstallRefused::Underway);
             }
-            let facts = st.facts.clone().ok_or(InstallRefused::Underway)?;
+            let facts = st.facts.clone().ok_or(InstallRefused::Starting)?;
             if facts.version == version {
                 return Err(InstallRefused::SameVersion);
             }

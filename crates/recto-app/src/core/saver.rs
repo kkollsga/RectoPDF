@@ -32,8 +32,9 @@ pub struct Saver {
     /// In milliseconds of `clock`, plus one, and zero for none.
     first_edit: AtomicU64,
     last_edit: AtomicU64,
-    /// One pass at the disk at a time.
-    gate: Mutex<()>,
+    /// One pass at the disk at a time: held by every writer of the record from gathering what it writes to writing it, and taken only by one that may write
+    /// (`keeping::may_write`, looked at before and again under it), so a writer either writes nothing or gathers the session this copy keeps.
+    pub(super) gate: Mutex<()>,
     last_error: Mutex<Option<StoreError>>,
 }
 
@@ -171,7 +172,17 @@ impl Saver {
         inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer());
         let urgent = self.urgent.swap(false, Ordering::SeqCst);
         let due = app::pass(self.pending(urgent), now);
-        let _gate = lock(&self.gate);
+        // A copy that doesn't keep the record writes nothing, and that's what it's for, not a failure: the window says it won't be remembered, and not that its
+        // state couldn't be saved. Nor does one still trying for the lock, or whose saved session is being read back after a late try: what it would gather is
+        // the window before the restore (`keeping::may_write`). Looked at before the gate, so it never waits for it, and again under it, where it holds from
+        // gathering to writing. What's waiting goes, so nothing comes due again for it.
+        let gate = super::keeping::may_write(&inner).then(|| lock(&self.gate));
+        if gate.is_none() || !super::keeping::may_write(&inner) {
+            self.first_edit.store(0, Ordering::SeqCst);
+            self.view_changed.store(false, Ordering::Relaxed);
+            self.last_record_write.store(now, Ordering::SeqCst);
+            return;
+        }
         let mut failed = None;
         if due.journals {
             self.first_edit.store(0, Ordering::SeqCst);
@@ -181,6 +192,7 @@ impl Saver {
             self.view_changed.store(false, Ordering::Relaxed);
             self.last_record_write.store(self.now(), Ordering::SeqCst);
             let (record, delta) = inner.gather_record();
+            recto_platform::slow::pause(recto_platform::slow::Seam::RecordWrite);
             if let Err(error) = self.store.write_record(&record, &delta, false) {
                 self.store.next_write_whole();
                 failed = Some(error);
@@ -227,10 +239,16 @@ impl Saver {
         self.write_work(inner, &work, force)
     }
 
-    /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time.
+    /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time;
+    /// and by the rule every writer goes by ([`super::keeping::may_write`]), before the gate and under it.
     pub fn write_journals_now(&self, inner: &Inner) {
+        if !super::keeping::may_write(inner) {
+            return;
+        }
         let _gate = lock(&self.gate);
-        let _ = self.write_journals(inner, false);
+        if super::keeping::may_write(inner) {
+            let _ = self.write_journals(inner, false);
+        }
     }
 
     fn write_work(&self, inner: &Inner, work: &JournalWork, force: bool) -> Option<StoreError> {
@@ -282,7 +300,14 @@ impl Saver {
                 message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string(),
             });
         }
+        // Before the gate and under it, as `pass` decides (`keeping::may_write`): a copy that doesn't keep the record, or doesn't yet, writes nothing.
+        if let Some(refused) = refused(&inner) {
+            return Err(refused);
+        }
         let _gate = lock(&self.gate);
+        if let Some(refused) = refused(&inner) {
+            return Err(refused);
+        }
         self.first_edit.store(0, Ordering::SeqCst);
         self.view_changed.store(false, Ordering::Relaxed);
         self.urgent.store(false, Ordering::SeqCst);
@@ -290,6 +315,7 @@ impl Saver {
         let before = self.store.wrote_bytes();
         let (work, record, delta, lists) = inner.gather_for_flush();
         let gather_us = micros(gathered);
+        recto_platform::slow::pause(recto_platform::slow::Seam::RecordWrite);
         let written = Instant::now();
         if let Some(error) = self.write_work(&inner, &work, false) {
             return Err(error);
@@ -344,6 +370,27 @@ impl Saver {
             total_us: micros(began),
         })
     }
+}
+
+/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
+/// by the window before it; a copy that doesn't keep the record says so as the store does.
+fn refused(inner: &Inner) -> Option<StoreError> {
+    if super::keeping::may_write(inner) {
+        return None;
+    }
+    Some(if inner.life.keeping().refuses_agents_changes() {
+        StoreError {
+            code: "not_ready",
+            message: "The saved session is being read back in, so nothing's written over it until it's in.".to_string(),
+        }
+    } else {
+        StoreError {
+            code: "other_instance",
+            message: recto_session::record::notices::words(recto_session::record::notices::OTHER_INSTANCE)
+                .unwrap_or_default()
+                .to_string(),
+        }
+    })
 }
 
 fn micros(since: Instant) -> u64 {

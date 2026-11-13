@@ -158,7 +158,9 @@ fn edited_tabs(app: &HeadlessApp) -> Vec<u32> {
 fn edit_modes_rotate_by_an_agent_is_the_page_it_was_resolved_on() {
     let app = HeadlessApp::start();
     let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 5));
-    app.core().open_file(file);
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));
@@ -193,7 +195,9 @@ fn edit_modes_rotate_by_an_agent_is_the_page_it_was_resolved_on() {
 fn an_agents_copy_puts_nothing_of_a_protected_document_on_the_clipboard() {
     let app = HeadlessApp::start();
     let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 3));
-    app.core().open_file(file);
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));

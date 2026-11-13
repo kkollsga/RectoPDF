@@ -1,6 +1,30 @@
 //! **What a refused install says**, in Rust's words with the next step, for `recto update install`, the menu's alert and Settings. Moved here from the bridge (R1.2): wording is the feature's, the bridge only forwards.
 
-use super::InstallRefused;
+/// What a command's asked to install came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallRefused {
+    NotInThisBuild,
+    NothingOnOffer,
+    Underway,
+    /// Another copy of the app has the state, and it's the one that can.
+    AnotherCopy,
+    /// A development build handed over, and *Allow development builds* is off.
+    DevBuildsOff,
+    /// What was handed over isn't a `RectoPDF-<version>.zip`.
+    NotABuild,
+    /// It's the version that's running.
+    SameVersion,
+    /// This copy is signed by the team, and takes no build signed ad hoc: the first goes in by `tools/dev-build.sh --first-install --replace-release`.
+    TeamSignedCopy,
+    /// It was checked, and it isn't one to install: the code and our own words.
+    Refused {
+        code: &'static str,
+        why: String,
+    },
+    /// The app hasn't told the updater what it is yet ([`super::Updater::launched`]): a launch that didn't get the record's lock holds that back until whether it
+    /// keeps the record has settled, and nothing about an update can begin meanwhile, a check included (`recto-app`'s `update_command` refuses so).
+    Starting,
+}
 
 /// How a refusal is classed, for the exit code the command ends with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +95,12 @@ impl InstallRefused {
                 "This copy is a release signed by RectoPDF's developer, and never takes a development build, which is signed ad hoc.".into(),
                 "The coordinator puts the first one in with `tools/dev-build.sh --first-install --replace-release`, which keeps this copy aside.",
                 SaidKind::Failed,
+            ),
+            Self::Starting => (
+                "not_ready",
+                "RectoPDF is still starting, so it can't look for or install an update yet.".into(),
+                "Try again in a few seconds.",
+                SaidKind::Busy,
             ),
             Self::Refused { code, why } => (
                 code,

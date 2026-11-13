@@ -292,6 +292,19 @@ impl Disk {
         }
     }
 
+    /// **The installer, having seen the new version come up** (its launch-ok, read as started): its own files cleared and what it staged gone, as `install::run`
+    /// ends an update that went well.
+    pub fn installer_saw_it_up(&self) {
+        let files = self.update_files();
+        for file in [files.plan(), files.launch_ok(), files.launch_failed(), files.helper_pid()] {
+            let _ = std::fs::remove_file(file);
+        }
+        if let Some(beside) = beside_app(&self.app()) {
+            let _ = std::fs::remove_dir_all(beside.join("new"));
+            let _ = std::fs::remove_file(beside.join("staged.json"));
+        }
+    }
+
     /// **The installer going back** once the new version, swapped in by [`Installed::Swapped`] and perhaps run since, didn't come up: the record from before
     /// put back unless the plan said keep it, the kept app swapped back where the app is, the one that didn't work gone, and the outcome saying why.
     ///

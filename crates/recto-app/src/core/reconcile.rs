@@ -45,10 +45,10 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
     let Some(tab) = inner.panes.tab_of(pane) else { return };
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
-            Some(position) => inner.link_to_page(tab, position, within),
+            Some(position) => person::submit(inner, super::navigation::link_to_page(tab, position, within)),
             None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
         },
-        recto_core::nav::LinkTarget::History { back } => inner.step_for_person(back),
+        recto_core::nav::LinkTarget::History { back } => person::submit(inner, super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts.ask_link(&address);
             inner.core.push(CoreCall::Reconcile);

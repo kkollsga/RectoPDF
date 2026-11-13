@@ -36,3 +36,5 @@ recto-agent = { workspace = true, features = ["test-words"] }
 # For the headless tests' protected file, which only lopdf's writer encrypts.
 lopdf.workspace = true
 recto-testpdf.workspace = true
+# `tests/inner_allocations.rs` drives the headless app, which is the testkit's.
+recto-app = { workspace = true, features = ["testkit"] }

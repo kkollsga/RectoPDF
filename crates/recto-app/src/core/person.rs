@@ -23,19 +23,33 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
         return;
     }
     if command.waits() || command.route() != Runs::Session {
-        on_its_own_thread(inner, command);
+        // Counted first, and then looked: a late try at the record's lock decides on keeping it (and restoring) only with none counted, under the life's lock
+        // (`keeping::try_back`), so either it sees this one and tries again later, or this one sees it restoring and waits on the queue with what else the
+        // person does, to run on the restored session.
+        let counted = Running::start(Arc::clone(inner));
+        if inner.life.keeping().restoring() {
+            drop(counted);
+            inner.core.push(CoreCall::Run(PersonCommand::input(command)));
+            return;
+        }
+        on_its_own_thread(command, counted);
     } else {
         inner.core.push(CoreCall::Run(PersonCommand::input(command)));
     }
 }
 
+/// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
+/// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
+pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
+    run.origin == Origin::Input && run.fetched.is_none() && (run.command.waits() || run.command.route() != Runs::Session)
+}
+
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
-fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
-    let counted = Running::start(Arc::clone(inner));
+fn on_its_own_thread(command: Command, counted: Running) {
     let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
         let inner = Arc::clone(&counted.0);
         let mut events = Vec::new();
-        sent(&inner, &command);
+        sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
@@ -65,9 +79,9 @@ impl Drop for Running {
 /// **A command run for the person, kept for a test that asked** ([`crate::testkit::headless::HeadlessApp::keep_sent`]): every way one reaches the executor
 /// as theirs says so here. Nothing outside a test.
 #[allow(unused_variables)]
-pub fn sent(inner: &Inner, command: &Command) {
+pub fn sent(serving: &super::Serving, command: &Command) {
     #[cfg(any(test, feature = "testkit"))]
-    if let Some(sent) = lock(&inner.serving.heard).sent.as_mut() {
+    if let Some(sent) = lock(&serving.heard).sent.as_mut() {
         sent.push(command.clone());
     }
 }
@@ -167,7 +181,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         None => command,
     };
     if origin == Origin::Input {
-        sent(inner, &command);
+        sent(&inner.serving, &command);
         for before in BEFORE {
             before(inner, reads, &command);
         }

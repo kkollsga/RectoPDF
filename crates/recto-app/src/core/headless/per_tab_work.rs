@@ -39,7 +39,9 @@ fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
         let app = disk.start();
         // One protected file, opened with its password: what makes each look keep the passwords of the files open (a walk of its own).
         let locked = app.disk().file("locked.pdf", &super::files::locked_with("right", 1));
-        app.core().open_file(locked);
+        app.act(crate::core::controls::UiAction::Open {
+            path: locked.display().to_string(),
+        });
         app.settle();
         let asked = app.reader().password_prompt.expect("the protected file asks for its password");
         app.core().password_answered(asked.id, Some("right".into()));
