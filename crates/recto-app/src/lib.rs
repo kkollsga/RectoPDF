@@ -26,6 +26,7 @@ pub mod saver;
 pub mod saving;
 pub mod sidebar_access;
 pub mod sleep_queue;
+pub mod sleep_writer;
 pub mod sleeper;
 pub mod snapshot_menu;
 #[cfg(any(test, feature = "testkit"))]
