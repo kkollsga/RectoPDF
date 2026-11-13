@@ -76,6 +76,8 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
             tabs: Some(both.clone()),
             sync: None,
             off: false,
+            toggle: None,
+            reading: None,
         }),
     );
     assert_eq!(
@@ -94,7 +96,9 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
             Command::from(crate::commands::compare::Compare {
                 tabs: Some(both),
                 sync: None,
-                off: false
+                off: false,
+                toggle: None,
+                reading: None,
             })
         )
         .is_empty()
@@ -105,7 +109,9 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
             Command::from(crate::commands::compare::Compare {
                 tabs: None,
                 sync: Some("off".into()),
-                off: false
+                off: false,
+                toggle: None,
+                reading: None,
             })
         )
         .is_empty()
@@ -118,6 +124,8 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
             tabs: None,
             sync: Some("on".into()),
             off: false,
+            toggle: None,
+            reading: None,
         }),
     );
     assert_eq!(

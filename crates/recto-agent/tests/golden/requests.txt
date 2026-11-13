@@ -159,6 +159,14 @@
 {"cmd":"compare","off":null}
 ["compare"]
 ["compare","#1,#2","on",true]
+{"cmd":"compare","toggle":"#2"}
+{"cmd":"compare","reading":"#2"}
+{"cmd":"compare","toggle":"#2"}
+{"cmd":"compare","toggle":{}}
+{"cmd":"compare","toggle":null}
+{"cmd":"compare","reading":{}}
+{"cmd":"compare","reading":null}
+["compare",null,null,false,null,"#2"]
 {"cmd":"Compare"}
 {"cmd":"qa_read","verb":"state"}
 {"cmd":"qa_read","verb":"state","out":"/d/x.pdf","timeout_ms":3}

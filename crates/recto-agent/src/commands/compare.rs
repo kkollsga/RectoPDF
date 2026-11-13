@@ -7,8 +7,8 @@ use crate::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Tabs side by side: which, and separate or synced scroll. With nothing, only says.
-#[derive(Clone, Debug, Deserialize)]
+/// Tabs side by side: which, the one being read, and separate or synced scroll. With nothing, only says.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Compare {
     /// Tabs by selector, with commas between: `#1,#3`.
@@ -20,6 +20,12 @@ pub struct Compare {
     /// Back to one tab, the one being read.
     #[serde(default)]
     pub off: bool,
+    /// One tab into the comparison, or out of it, as ⌘-clicking its row does.
+    #[serde(default)]
+    pub toggle: Option<String>,
+    /// The pane to read, of those side by side, as moving the pointer into it does.
+    #[serde(default)]
+    pub reading: Option<String>,
 }
 
 impl Cmd for Compare {
@@ -28,8 +34,8 @@ impl Cmd for Compare {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
-    // It reads the panes' cold files in place.
-    const WAITS: bool = true;
+    // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         None
     }
@@ -40,6 +46,8 @@ impl Cmd for Compare {
                 tabs: None,
                 sync: None,
                 off: false,
+                toggle: None,
+                reading: None,
             } => row_access(Self::TAG),
             _ => Access::At(Level::Control),
         }
@@ -48,10 +56,16 @@ impl Cmd for Compare {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "sync": self.sync.as_deref().map(recto_core::clean_line), "off": self.off })
+        let mut details = json!({ "sync": self.sync.as_deref().map(recto_core::clean_line), "off": self.off });
+        for (key, tab) in [("toggle", &self.toggle), ("reading", &self.reading)] {
+            if let Some(tab) = tab {
+                details[key] = json!(super::log_tab(tab));
+            }
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        compare(cx.access, self.tabs.as_deref(), self.sync.as_deref(), self.off, cx.events)
+        compare(cx.access, self, cx.events)
     }
     fn human(data: &Value) -> String {
         match data["panes"].as_array() {
@@ -87,21 +101,48 @@ impl Cmd for Compare {
 /// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
 const MAX_COMPARE_SELECTORS: usize = 8;
 
-/// `recto compare`: what the sidebar's ⌘-click and the right-click menu's scroll items do, for an agent. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
-fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>, off: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let usage = |words: String| AgentError::new("usage", words, exit::USAGE);
+/// `recto compare`: what the sidebar's ⌘-click, moving into a pane and the right-click menu's scroll items do, for an agent and for the person alike. Owner,
+/// 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is
+/// always synced."
+///
+/// **Run again from the start once a pane's file is in** (`later`), on the window's session thread: so nothing changes before every read it needs is done,
+/// and each form is one change however many times it runs before then.
+fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let usage = |words: &str| AgentError::new("usage", words, exit::USAGE);
     let refused = |error: recto_session::compare::CompareError| AgentError::new(error.code(), error.message(), exit::FAILED);
-    if off && (tabs.is_some() || sync.is_some()) {
-        return Err(usage("`--off` goes alone: it ends the comparison.".into()));
+    let Compare {
+        tabs,
+        sync,
+        off,
+        toggle,
+        reading,
+    } = asked;
+    let others = |this: bool| {
+        [tabs.is_some(), sync.is_some(), *off, toggle.is_some(), reading.is_some()]
+            .into_iter()
+            .filter(|set| *set)
+            .count()
+            > usize::from(this)
+    };
+    if *off && others(true) {
+        return Err(usage("`--off` goes alone: it ends the comparison."));
     }
-    let sync = match sync {
+    if toggle.is_some() && others(true) {
+        return Err(usage("`--toggle` goes alone: it puts one tab side by side with the others, or takes it out."));
+    }
+    if reading.is_some() && others(true) {
+        return Err(usage("`--reading` goes alone: it chooses which of the tabs side by side is read."));
+    }
+    let sync = match sync.as_deref() {
         None => None,
         Some("on") => Some(true),
         Some("off") => Some(false),
-        Some(other) => return Err(usage(format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other)))),
+        Some(other) => {
+            return Err(usage(&format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other))));
+        }
     };
     let mut changed = false;
-    if off {
+    if *off {
         changed |= access.with(|s| s.end_compare());
     }
     if let Some(list) = tabs {
@@ -116,16 +157,30 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
         }
         let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
         recto_session::compare::Comparison::check(&ids).map_err(refused)?;
-        // Each pane is a live document, so each cold one is read here with the session free, as a tap's is, and none with it held.
+        // Each pane is a live document, so each cold one is read with the session free, as a tap's is, and none with it held.
         let reading = access.with(|s| s.active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
-        let cold = access.with(|s| s.wake_for_compare(&ids));
-        let loader = access.with(|s| s.loader().clone());
-        for (id, path) in cold {
-            let stamp = recto_platform::file_stamp(&path).ok();
-            let loaded = loader.load(&path);
-            access.with(|s| s.give_woken(id, loaded, stamp));
+        for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
+            read_ahead(access, |_| Some((id, path)))?;
         }
         changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
+    }
+    if let Some(selector) = toggle {
+        let id = access.with(|s| select(s, selector))?;
+        // The tab joining, or the pane read next if the one being read leaves.
+        read_ahead(access, |s| s.wake_for_compare_click(id))?;
+        let change = access.with(|s| s.toggle_compare(id)).map_err(refused)?;
+        changed |= change != recto_session::compare::CompareChange::Nothing;
+    }
+    if let Some(selector) = reading {
+        let id = access.with(|s| {
+            let id = select(s, selector)?;
+            match s.comparison() {
+                Some(comparison) if comparison.contains(id) => Ok(id),
+                _ => Err(not_side_by_side()),
+            }
+        })?;
+        read_ahead(access, |s| s.wake_for_tap(id))?;
+        events.extend(access.with(|s| s.focus_pane(id).then(|| event::tab_activated(s, id))));
     }
     if let Some(on) = sync {
         changed |= access.with(|s| s.set_compare_synced(on)).ok_or_else(|| {
@@ -133,11 +188,25 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
                 .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
         })?;
     }
-    let after = access.with(|s| compare_json(s));
     if changed {
         events.push(access.with(|s| event::comparison_changed(s)));
     }
-    Ok(after)
+    // The window's own, for the person, draws what the session publishes: SessionAccess::answer_read.
+    Ok(if access.answer_read() {
+        access.with(|s| compare_json(s))
+    } else {
+        Value::Null
+    })
+}
+
+/// `--reading` of a tab that isn't one of those side by side.
+fn not_side_by_side() -> AgentError {
+    AgentError::new(
+        "not_side_by_side",
+        "That tab isn't side by side with others, so it can't be the pane read.",
+        exit::NOT_FOUND,
+    )
+    .then("`recto compare` says which are. `recto tap` reads a tab alone.")
 }
 
 pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
@@ -145,7 +214,7 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
     tag: "compare",
     group: GROUP_MOVE,
     access: Access::At(Level::ReadOnly),
-    summary: "Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same. Separate scroll, or synced, which keeps them page for page from where it went on. A plain `tap` goes back to one. With no flags it only says. To change it needs Control.",
+    summary: "Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same. Separate scroll, or synced, which keeps them page for page from where it went on. One of them is read, for the contents and the page number, as moving the pointer into its pane makes it. A plain `tap` goes back to one. With no flags it only says. To change it needs Control.",
     args: &[
         Arg {
             key: "tabs",
@@ -168,15 +237,131 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
             required: false,
             help: "Back to one tab, the one being read.",
         },
+        Arg {
+            key: "toggle",
+            flag: Some("--toggle"),
+            kind: Kind::Text,
+            required: false,
+            help: "One tab in or out, as ⌘-clicking its row does: a tab not side by side joins at the right and is read, and one that is leaves. With one tab showing, it and that one go side by side; down to one, that one's alone again. Goes alone.",
+        },
+        Arg {
+            key: "reading",
+            flag: Some("--reading"),
+            kind: Kind::Text,
+            required: false,
+            help: "Which of the tabs side by side is read, as moving the pointer into its pane does. Nothing on screen moves. Goes alone.",
+        },
     ],
     data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length.",
-    emits: &["view_changed"],
+    emits: &["view_changed", "tab_activated"],
     examples: &[
         "recto compare",
         "recto compare --tabs \"#1,#2\"",
         "recto compare --tabs \"#1,#2,#4\" --sync on",
         "recto compare --sync off",
+        "recto compare --toggle \"#3\"",
+        "recto compare --reading \"#2\"",
         "recto compare --off",
     ],
     ..BASE
 }];
+
+#[cfg(test)]
+mod tests {
+    use crate::{Actor, AgentError, Event, Level, execute, parse};
+    use recto_core::{DocFacts, OpenError, Toc};
+    use recto_session::{DocLoader, Session, TabId};
+    use serde_json::Value;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct Fake;
+
+    impl DocLoader for Fake {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts {
+                page_count: 4,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
+        }
+    }
+
+    fn three_tabs() -> Mutex<Session<Fake>> {
+        let mut session = Session::new(Fake);
+        for name in ["a", "b", "c"] {
+            session.open(&PathBuf::from(format!("/d/{name}.pdf"))).expect("opened");
+        }
+        Mutex::new(session)
+    }
+
+    fn run(session: &Mutex<Session<Fake>>, level: Level, line: &str) -> (Result<Value, AgentError>, Vec<Event>) {
+        let mut events = Vec::new();
+        let result = execute(session, Actor::Agent(level), &parse(line).expect("a command"), &mut events);
+        (result, events)
+    }
+
+    fn side_by_side(session: &Mutex<Session<Fake>>) -> (Option<u32>, Vec<u32>) {
+        let session = session.lock().unwrap();
+        (
+            session.active().map(|id| id.0),
+            session
+                .comparison()
+                .map(|comparison| comparison.tabs.iter().map(|id| id.0).collect())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Failure (R2.3, C5e): `--toggle` does something other than the ⌘-click it is for the person (a tab that joins isn't the one read, one that leaves
+    /// leaves the rest, or down to one leaves a comparison of one), or says the view changed when the click did nothing: on the only tab showing.
+    #[test]
+    fn toggle_is_a_command_click_on_a_tabs_row() {
+        let session = three_tabs();
+        let toggle = |tab: u32| format!(r##"{{"cmd":"compare","toggle":"#{tab}"}}"##);
+        let (nothing, said) = run(&session, Level::Control, &toggle(3));
+        assert_eq!(nothing.expect("the tab showing")["comparing"], false);
+        assert!(said.is_empty(), "nothing changed, so nothing's said: {said:?}");
+        let (_, said) = run(&session, Level::Control, &toggle(1));
+        assert_eq!(side_by_side(&session), (Some(1), vec![3, 1]), "joins at the right and is read");
+        assert_eq!(said.iter().map(Event::name).collect::<Vec<_>>(), ["view_changed"]);
+        run(&session, Level::Control, &toggle(2)).0.expect("a third");
+        assert_eq!(side_by_side(&session), (Some(2), vec![3, 1, 2]));
+        run(&session, Level::Control, &toggle(2)).0.expect("out again");
+        assert_eq!(side_by_side(&session), (Some(3), vec![3, 1]), "the one read leaves, and the first is read");
+        run(&session, Level::Control, &toggle(1)).0.expect("down to one");
+        assert_eq!(side_by_side(&session), (Some(3), vec![]), "alone again");
+        let (refused, _) = run(&session, Level::ReadOnly, &toggle(1));
+        assert_eq!(refused.expect_err("Read-only").code, "permission_denied");
+    }
+
+    /// Failure (R2.3, C5e): `--reading` moves the reader into a tab that isn't a pane (which would end the comparison, as a tap does), or says a tab was
+    /// activated when it was read already; or a flag that goes alone is let through with another, so what's done depends on an order nobody asked for.
+    #[test]
+    fn reading_chooses_a_pane_and_the_new_flags_go_alone() {
+        let session = three_tabs();
+        run(&session, Level::Control, r##"{"cmd":"compare","tabs":"#1,#2"}"##).0.expect("side by side");
+        assert_eq!(side_by_side(&session), (Some(1), vec![1, 2]));
+        let (_, said) = run(&session, Level::Control, r##"{"cmd":"compare","reading":"#2"}"##);
+        assert_eq!(side_by_side(&session), (Some(2), vec![1, 2]));
+        assert!(matches!(said.as_slice(), [Event::TabActivated { tab: TabId(2), .. }]), "{said:?}");
+        let (again, said) = run(&session, Level::Control, r##"{"cmd":"compare","reading":"#2"}"##);
+        assert!(again.is_ok() && said.is_empty(), "read already: nothing said, {said:?}");
+        let (refused, _) = run(&session, Level::Control, r##"{"cmd":"compare","reading":"#3"}"##);
+        assert_eq!(refused.expect_err("not a pane").code, "not_side_by_side");
+        assert_eq!(side_by_side(&session), (Some(2), vec![1, 2]), "the comparison stands");
+        for line in [
+            r##"{"cmd":"compare","toggle":"#3","tabs":"#1,#2"}"##,
+            r##"{"cmd":"compare","toggle":"#3","sync":"on"}"##,
+            r##"{"cmd":"compare","reading":"#1","tabs":"#1,#2"}"##,
+            r##"{"cmd":"compare","reading":"#1","toggle":"#3"}"##,
+        ] {
+            assert_eq!(run(&session, Level::Control, line).0.expect_err(line).code, "usage", "{line}");
+        }
+        assert_eq!(side_by_side(&session), (Some(2), vec![1, 2]), "none of those did anything");
+    }
+}

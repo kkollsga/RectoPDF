@@ -282,6 +282,30 @@
   reply {"cmd":"compare","error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"compare","toggle":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","reading":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","toggle":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","toggle":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+{"cmd":"compare","reading":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+["compare",null,null,false,null,"#2"]
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
 {"cmd":"qa_read","verb":"state"}
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 

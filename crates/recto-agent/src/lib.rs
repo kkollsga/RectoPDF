@@ -1382,9 +1382,15 @@ mod tests {
         }
     }
 
-    /// What a command could have changed: the tabs, which is active, and each one's page.
-    fn looks(session: &Session<Fake>) -> (Option<TabId>, Vec<(TabId, u32)>) {
-        (session.active(), session.tabs().iter().map(|tab| (tab.id, tab.page)).collect())
+    /// What a command could have changed: the tabs, which is active, each one's page, and what's side by side.
+    type Looks = (Option<TabId>, Vec<(TabId, u32)>, Option<Vec<TabId>>);
+
+    fn looks(session: &Session<Fake>) -> Looks {
+        (
+            session.active(),
+            session.tabs().iter().map(|tab| (tab.id, tab.page)).collect(),
+            session.comparison().map(|comparison| comparison.tabs.clone()),
+        )
     }
 
     /// Failure (R2.3's riskiest part): a person's command on the window's session thread, waiting for a file to be read, changes something before its read, so
@@ -1404,7 +1410,16 @@ mod tests {
             path: PathBuf::from("/d/a.pdf"),
             page: Some(2),
         });
-        for command in [&tap, &open_new, &open_cold] {
+        // A ⌘-click on a cold tab's row, and two cold tabs put side by side, each read in turn (R2.3, C5e).
+        let toggle_cold = Command::from(crate::commands::compare::Compare {
+            toggle: Some("#1".into()),
+            ..Default::default()
+        });
+        let compare_cold = Command::from(crate::commands::compare::Compare {
+            tabs: Some("#1,#2".into()),
+            ..Default::default()
+        });
+        for command in [&tap, &open_new, &open_cold, &toggle_cold, &compare_cold] {
             let mut session = with_tabs(&names);
             let before = looks(&session);
             let deferring = Deferring {
@@ -1426,25 +1441,15 @@ mod tests {
                 );
                 assert!(events.is_empty(), "{}: and nothing said", command.tag());
             }
-            // The read, as the window's thread makes it.
-            let woke = deferring.woke.borrow_mut().drain(..).next_back();
-            if let Some((tab, path)) = woke {
-                deferring.with(|s| s.give_woken(tab, Fake.load(&path), None));
-            } else {
-                assert_eq!(
-                    deferring.loads.borrow().last().map(PathBuf::as_path),
-                    Some(Path::new("/d/new.pdf")),
-                    "{}",
-                    command.tag()
-                );
-                *deferring.ready.borrow_mut() = Some(later::Fetched {
-                    stamp: None,
-                    facts: Fake.load(Path::new("/d/new.pdf")),
-                    history: None,
-                    unlocked: false,
-                });
+            // The read, as the window's thread makes it, and the next one the command asks for as it runs again, if it needs two.
+            let mut answer = Err(later::later());
+            for _ in 0..3 {
+                let Err(waiting) = &answer else { break };
+                assert!(later::is_later(waiting), "{}: {waiting:?}", command.tag());
+                give_what_was_asked(&deferring);
+                answer = execute(&deferring, Actor::Person, command, &mut events);
             }
-            let answer = execute(&deferring, Actor::Person, command, &mut events).expect("once it's in");
+            let answer = answer.expect("once it's in");
             let after = deferring.with(|s| looks(s));
             let mut twin = with_tabs(&names);
             let mut twin_events = Vec::new();
@@ -1465,6 +1470,26 @@ mod tests {
         execute(&deferring, Actor::Person, &close, &mut Vec::new()).expect("closed at once");
         assert!(deferring.woke.borrow().is_empty(), "nothing read for it");
         assert_eq!(deferring.with(|s| s.tabs().len()), 5);
+    }
+
+    /// The read a command waiting on [`Deferring`] asked for last, made as the window's thread makes it: a cold tab's, or a new file's.
+    fn give_what_was_asked(deferring: &Deferring<'_>) {
+        let woke = deferring.woke.borrow_mut().drain(..).next_back();
+        if let Some((tab, path)) = woke {
+            deferring.with(|s| s.give_woken(tab, Fake.load(&path), None));
+            return;
+        }
+        assert_eq!(
+            deferring.loads.borrow().last().map(PathBuf::as_path),
+            Some(Path::new("/d/new.pdf")),
+            "a file asked for"
+        );
+        *deferring.ready.borrow_mut() = Some(later::Fetched {
+            stamp: None,
+            facts: Fake.load(Path::new("/d/new.pdf")),
+            history: None,
+            unlocked: false,
+        });
     }
 
     /// Failure (R2.3, input to frame): the window's tap, run for the person, builds the sidebar's every row for an answer nobody reads, 650 µs of a tap's
@@ -1674,11 +1699,15 @@ mod tests {
                 tabs: None,
                 sync: None,
                 off: false,
+                toggle: None,
+                reading: None,
             }),
             Command::from(crate::commands::compare::Compare {
                 tabs: None,
                 sync: None,
                 off: true,
+                toggle: None,
+                reading: None,
             }),
             Command::from(crate::commands::export::Render {
                 tab: tab(),
@@ -2021,6 +2050,8 @@ mod tests {
                 tabs: tabs.map(str::to_string),
                 sync: sync.map(str::to_string),
                 off,
+                toggle: None,
+                reading: None,
             })
         };
         let asked = run(&mut session, Level::ReadOnly, &compare(None, None, false)).unwrap();
@@ -3554,6 +3585,21 @@ mod protected_tests {
                     tabs: Some("#1,#2".into()),
                     sync: None,
                     off: false,
+                    toggle: None,
+                    reading: None,
+                }),
+                // The protected tab's pane read, and it out and in again, as the window's own moves are (R2.3, C5e): said as protected, as `--tabs` is.
+                Command::from(crate::commands::compare::Compare {
+                    reading: Some("#1".into()),
+                    ..Default::default()
+                }),
+                Command::from(crate::commands::compare::Compare {
+                    toggle: Some("#1".into()),
+                    ..Default::default()
+                }),
+                Command::from(crate::commands::compare::Compare {
+                    toggle: Some("#1".into()),
+                    ..Default::default()
                 }),
             ];
             for command in &commands {
@@ -3602,6 +3648,8 @@ mod protected_tests {
                     tabs: None,
                     sync: None,
                     off: true,
+                    toggle: None,
+                    reading: None,
                 }),
             );
             if session.active() != Some(id) {
