@@ -383,11 +383,13 @@ def compare(cur, base, bootstrap_ffi=False):
             shrunk.append((kind, key, v, 0))
     return fails, shrunk
 
-def wanted(cur):
-    """Entries the baseline should hold: everything over its budget, every fixed-sleep file, and the binding total."""
+def wanted(cur, base=None):
+    """Entries the baseline should hold: everything over its budget, every fixed-sleep file, the binding total, and every type that has had an entry (its
+    whole-type count is the record: a type that fell under the budget keeps its entry at the number it fell to, so it can't grow back to the budget unseen;
+    only a type that no longer exists drops out)."""
     out = {}
     for (kind, key), n in cur.items():
-        if kind in ('ffi', 'sleep', 'apptest') or n > BUDGET[kind]:
+        if kind in ('ffi', 'sleep', 'apptest') or n > BUDGET[kind] or (kind == 'type' and base and (kind, key) in base):
             out[(kind, key)] = n
     return out
 
@@ -603,8 +605,8 @@ def main(argv):
         print('A baseline number is raised only by a hand edit of %s, which a reviewer sees in the diff.' % os.path.relpath(bpath, root))
         return 1
     if mode == 'update':
-        write_baseline(bpath, wanted(cur))
-        print('ratchet: baseline rewritten, %d entries, %d lowered or dropped' % (len(wanted(cur)), len(shrunk)))
+        write_baseline(bpath, wanted(cur, base))
+        print('ratchet: baseline rewritten, %d entries, %d lowered or dropped' % (len(wanted(cur, base)), len(shrunk)))
         return 0
     if shrunk:
         print('ratchet: ok, and %d entries are now smaller than the baseline. Lock it in: tools/ratchet.sh --update' % len(shrunk))
