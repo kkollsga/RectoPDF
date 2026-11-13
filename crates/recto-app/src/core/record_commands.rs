@@ -26,18 +26,22 @@ impl Records for AppRecords {
     }
 
     /// Through the sleeper, as five minutes left alone would: its pictures and its journal too.
-    fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
+    fn put_to_sleep(&self, tab: TabId, actor: recto_agent::Actor) -> Result<Slept, AgentError> {
         let host = self.host()?;
-        host.core.push(CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked));
+        let inner = host.saver.inner();
+        let before = inner.as_ref().map(|inner| inner.sleeper.agent_share_used());
+        host.core.push(CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked(actor)));
         host.core.flush(Duration::from_secs(5));
+        let note = inner.zip(before).and_then(|(inner, before)| inner.sleeper.asked_words(before));
         Ok(host.session.with_session(|session| Slept {
             dormant: !session.warm().ids().any(|other| other == tab),
             list_asleep: session.lists().is_asleep(tab),
+            note,
         }))
     }
 
-    fn save(&self) -> Result<Saved, AgentError> {
-        let report = self.host()?.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
+    fn save(&self, actor: recto_agent::Actor) -> Result<Saved, AgentError> {
+        let report = self.host()?.saver.flush_by(false, Duration::from_secs(5), Some(actor)).map_err(store_error)?;
         Ok(Saved {
             tabs: report.tabs,
             edited_tabs: report.edited_tabs,

@@ -107,8 +107,9 @@ pub const BUSY_RETRY_MS: u64 = 5_000;
 pub enum By {
     /// A flush's, for the tab on screen: a quit's, a hand-off's or the saver's own. It doesn't wait for the gap or the hour: the next launch's first frame is it.
     Flush,
-    /// Being asked (`recto session sleep`, an agent): written in place, as it's looked at straight after, and kept to the gap and the hour like any other.
-    Asked,
+    /// Being asked (`recto session sleep`), by whoever sent it: written in place, as it's looked at straight after, and kept to the gap and the hour like any
+    /// other; an agent's to its share of the hour too.
+    Asked(recto_agent::Actor),
     /// The queue's one writer: a tab leaving the warm ones, or going dormant by itself. Kept to the gap and the hour.
     Queue,
 }
@@ -135,6 +136,8 @@ pub enum Event {
     SetWriteGap(u32),
     /// What sleep files may come to in an hour, in bytes: [`crate::sleeper::SLEEP_BYTES_PER_HOUR`], set small by a test of the cap.
     SetHourCap(u64),
+    /// What an agent's may come to of it: [`crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR`], set small by a test of the share.
+    SetAgentHourCap(u64),
     /// The deadline's worked out again: the next tab is due this many seconds from now by the session's clock, or none is.
     Rearm { in_seconds: Option<u32> },
     /// The deadline's come, on the session thread. `busy`: a file's being read, or the app's frozen, so nothing goes now.
@@ -208,6 +211,8 @@ pub struct Counts {
     pub writes_for_paper: u64,
     /// Written inside the gap, as the file there showed nothing of the place the tab was left at: once for each move between sleeps, at most, for each tab.
     pub writes_for_place: u64,
+    /// Asked for by an agent and not written, as agents' share of the hour was used: the person's routes keep the rest.
+    pub agent_share_used: u64,
     /// The tab on screen's file at a flush, not written as another was being written past the flush's time.
     pub writes_skipped_busy: u64,
     pub woken_from_file: u64,
@@ -229,6 +234,9 @@ pub struct SleepWriter {
     hour: Hour,
     /// Writes waiting for the one-at-a-time lock that someone's waiting on.
     others_waiting: u32,
+    /// The write just decided is at an agent's asking, so what it comes to counts against agents' share: decided and written under the one-at-a-time lock,
+    /// so nothing comes between.
+    writing_for_agent: bool,
     counts: Counts,
 }
 
@@ -243,6 +251,7 @@ impl Default for SleepWriter {
             // The hour starts with the clock, at its first millisecond.
             hour: Hour::starting(1),
             others_waiting: 0,
+            writing_for_agent: false,
             counts: Counts::default(),
         }
     }
@@ -270,6 +279,10 @@ impl SleepWriter {
                 self.hour.set_cap(bytes);
                 None
             }
+            Event::SetAgentHourCap(bytes) => {
+                self.hour.set_agent_cap(bytes);
+                None
+            }
             Event::Rearm { in_seconds } => Some(Out::Due(rules::due_at(now, in_seconds))),
             // Looked at again shortly, never dropped: a deadline let go of here would leave tabs left alone awake till something else rearms it.
             Event::DueNow { busy: true } => Some(Out::Due(now + BUSY_RETRY_MS)),
@@ -279,7 +292,7 @@ impl SleepWriter {
                 let tabs: Vec<TabId> = tabs.into_iter().filter_map(|(id, may)| may.then_some(id)).collect();
                 (!tabs.is_empty() && !frozen).then_some(Out::GoDormant {
                     tabs,
-                    in_place: why == Why::Asked,
+                    in_place: matches!(why, Why::Asked(_)),
                 })
             }
             Event::WentDormant { why, gone } => {
@@ -287,7 +300,7 @@ impl SleepWriter {
                     Why::LeftAlone => &mut self.counts.left_alone,
                     Why::Budget => &mut self.counts.budget,
                     Why::Pressure => &mut self.counts.pressure,
-                    Why::Asked => &mut self.counts.asked,
+                    Why::Asked(_) => &mut self.counts.asked,
                 };
                 *counter += gone as u64;
                 None
@@ -300,10 +313,12 @@ impl SleepWriter {
                 there_for_other_paper,
                 there_for_other_place,
             } => {
-                let mut may = by == By::Flush || self.may_write_pictures(id, now);
-                // A file whose pictures no page of this paper shows, or no page at this place, is worth one write inside the gap, still within the hour's cap:
-                // a wake from it would be bare. Once written, the file there is of this paper and place, so the next sleep there is held to the gap again.
-                if !may && there && pictures_allowed && (there_for_other_paper || there_for_other_place) && self.hour.has_room(now) {
+                let agent = matches!(by, By::Asked(recto_agent::Actor::Agent(_)));
+                let mut may = by == By::Flush || self.may_write_pictures(id, now, agent);
+                // A file whose pictures no page of this paper shows, or no page at this place, is worth one write inside the gap, still within the hour's cap
+                // (and an agent's share): a wake from it would be bare. Once written, the file there is of this paper and place, so the next sleep there is held
+                // to the gap again.
+                if !may && there && pictures_allowed && (there_for_other_paper || there_for_other_place) && self.hour.has_room(now, agent) {
                     may = true;
                     if there_for_other_paper {
                         self.counts.writes_for_paper += 1;
@@ -311,20 +326,25 @@ impl SleepWriter {
                         self.counts.writes_for_place += 1;
                     }
                 }
+                // Past an agent's share, what it asks for is its facts at most, and with a file there, nothing: the person's routes keep the rest of the hour.
+                let over_share = agent && !may && self.hour.agents_share_used();
+                self.counts.agent_share_used += u64::from(over_share);
                 if !may && there {
                     self.counts.writes_put_off += 1;
                     return Some(Out::Write(Write::PutOff));
                 }
+                self.writing_for_agent = agent;
                 Some(Out::Write(if pictures_allowed && may { Write::WithPictures } else { Write::FactsOnly }))
             }
             Event::Wrote { id, bytes } => {
                 if bytes > 0 {
                     // Only a write within the gap holds the next one back, so older ones go: without this every tab ever written stayed, closed ones too.
                     self.written.note(id, self.gap_ms(), now);
-                    self.hour.add(bytes);
+                    self.hour.add(bytes, self.writing_for_agent);
                     self.counts.sleep_files += 1;
                     self.counts.sleep_bytes += bytes;
                 }
+                self.writing_for_agent = false;
                 None
             }
             Event::LockWanted => {
@@ -370,15 +390,28 @@ impl SleepWriter {
         u64::from(self.write_gap_seconds) * 1000
     }
 
-    /// Whether a tab that's only moving about may have a new picture written now: past its gap, and with room in the hour. Both are asked, as asking the hour
-    /// starts a new one if this one's over.
-    fn may_write_pictures(&mut self, id: TabId, now: u64) -> bool {
+    /// Whether a tab that's only moving about may have a new picture written now: past its gap, and with room in the hour (and for an agent's asking, in its
+    /// share). Both are asked, as asking the hour starts a new one if this one's over.
+    fn may_write_pictures(&mut self, id: TabId, now: u64, agent: bool) -> bool {
         if self.write_gap_seconds == 0 {
             return true;
         }
         let soon = self.written.soon(id, self.gap_ms(), now);
-        let room = self.hour.has_room(now);
+        let room = self.hour.has_room(now, agent);
         !soon && room
+    }
+
+    /// **What an agent is told when its share of the hour is used**, in Rust's words, with when it comes back. `None` when it isn't.
+    #[must_use]
+    pub fn agents_share_words(&self, now: u64) -> Option<String> {
+        self.hour.agents_share_used().then(|| {
+            format!(
+                "Its sleep file wasn't written: agents' share of sleep files this hour ({} KiB of {} KiB) is used, and the rest is kept for the person's own switching. The tab is asleep either way; its file is written when the person next leaves it, or ask again in {} minutes.",
+                crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR / 1024,
+                crate::sleeper::SLEEP_BYTES_PER_HOUR / 1024,
+                self.hour.minutes_left(now)
+            )
+        })
     }
 
     /// Whether the queue's writer still holds back, `waited_ms` into holding back, for a write someone's waiting on.

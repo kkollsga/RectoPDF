@@ -518,6 +518,84 @@ fn a_tab_left_inside_the_gap_after_a_page_was_rotated_wakes_with_a_picture() {
     drop(app.quit());
 }
 
+/// Failure (the cool-down's review, 2026-11-13, S3): an agent looping a move and `session sleep` used the whole app's hour of sleep files, so every wake of the
+/// person's after was bare for the hour. With agents' share set small: the agent's first sleep is written, the next (at another place, which would otherwise be
+/// written) is put off and the agent is told why and what to do; then the person's own route, the tab pushed out of the warm ones, is still written.
+#[test]
+fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written() {
+    let disk = Disk::new();
+    let docs: Vec<_> = ["doc", "other", "c", "d", "e"]
+        .iter()
+        .map(|name| disk.pdf(&format!("{name}.pdf"), if *name == "doc" { 12 } else { 2 }))
+        .collect();
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for file in &docs[..2] {
+        app.open(file);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    app.core().sleeper.set_agent_hour_cap(1);
+    let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
+    let mut turn = |page: &str| {
+        full(&app, &["tap", &format!("#{doc}")]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["goto", page]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["tap", &format!("#{other}")]);
+        host_turns(&app, &mut view, true);
+        let answer = full(&app, &["session", "sleep", "--tab", &format!("#{doc}")]);
+        host_turns(&app, &mut view, true);
+        answer
+    };
+    let first = turn("3");
+    assert!(first.get("note").is_none(), "{first}");
+    let written = app.record_json()["sleep"]["sleep_files_written"].as_u64().unwrap();
+    assert_eq!(written, 1, "{}", app.record_json()["sleep"]);
+    let second = turn("5");
+    let note = second["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the agent isn't told its share is used: {second}"));
+    assert!(note.contains("agents' share"), "{note}");
+    let sleep = app.record_json()["sleep"].clone();
+    assert_eq!(sleep["sleep_files_written"], written, "{sleep}");
+    assert_eq!(sleep["agent_share_used"], 1, "{sleep}");
+    // The person reads on in doc and leaves it, and opens three more: doc is pushed out of the warm ones, and its file is written.
+    full(&app, &["tap", &format!("#{doc}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["goto", "7"]);
+    host_turns(&app, &mut view, true);
+    for file in &docs[2..] {
+        app.open(file);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    let after = app.record_json()["sleep"].clone();
+    assert!(
+        after["sleep_files_written"].as_u64().unwrap() > written,
+        "the person's push-out wasn't written past the agents' share: {after}"
+    );
+    drop(app.quit());
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S3): an agent's `session save` flushed as a quit does, draining the cool-down, so an agent could cut every
+/// pushed-out tab's wait short on demand. With a tab waiting its cool-down: an agent's save writes the record and leaves it waiting; a quit's flush still
+/// writes it.
+#[test]
+fn an_agents_save_leaves_the_cool_down_alone_and_a_quit_still_writes_it() {
+    let (app, _a, _view) = a_pushed_out_and_waiting(Disk::new(), crate::sleeper::LEAVING_WAIT_MS);
+    let saved = full(&app, &["session", "save"]);
+    assert_eq!(saved["saved"], true, "{saved}");
+    assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 1, "{}", app.record_json()["sleep"]);
+    app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
+    assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 0, "{}", app.record_json()["sleep"]);
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

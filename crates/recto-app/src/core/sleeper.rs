@@ -130,6 +130,25 @@ impl Sleeper {
         let _ = self.step(Event::SetHourCap(bytes));
     }
 
+    /// What agents' sleep files may come to of it, for a test of the share at the share and one past it.
+    pub fn set_agent_hour_cap(&self, bytes: u64) {
+        let _ = self.step(Event::SetAgentHourCap(bytes));
+    }
+
+    /// **What an agent's `session sleep` is told of its tab's sleep file:** the agents' share of the hour used, and when it comes back, if a write of its was
+    /// put off for that since `before` (`agent_share_used`, read before it asked); nothing otherwise.
+    pub fn asked_words(&self, before: u64) -> Option<String> {
+        let machine = lock(&self.machine);
+        (machine.counts().agent_share_used > before)
+            .then(|| machine.agents_share_words(self.millis()))
+            .flatten()
+    }
+
+    /// Agents' writes put off for their share so far: what [`Self::asked_words`] compares with.
+    pub fn agent_share_used(&self) -> u64 {
+        lock(&self.machine).counts().agent_share_used
+    }
+
     fn after_seconds(&self) -> u32 {
         lock(&self.machine).after_seconds()
     }
@@ -222,6 +241,7 @@ impl Sleeper {
             "writes_for_paper": counts.writes_for_paper,
             "writes_for_place": counts.writes_for_place,
             "writes_skipped_busy": counts.writes_skipped_busy,
+            "agent_share_used": counts.agent_share_used,
             "sleep_bytes_written": counts.sleep_bytes,
             "woken_from_file": counts.woken_from_file,
             "pressure_events": counts.pressure_events,
@@ -266,8 +286,8 @@ impl Inner {
         let mut gone = 0;
         for &id in &tabs {
             // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a flush doesn't wait (review).
-            if in_place {
-                self.write_sleep_for(id, By::Asked);
+            if let (true, Why::Asked(actor)) = (in_place, why) {
+                self.write_sleep_for(id, By::Asked(actor));
             } else {
                 self.queue_sleep_for(id);
             }
@@ -293,9 +313,19 @@ impl Inner {
         self.write_sleep_now_for(id, by, None);
     }
 
-    /// The same, as a quit or a hand-off has it, waiting for another sleep file being written only until `until`, and counted as skipped past it. These are only a way to be quick, and the state's already written by then: a quit waited its 5 s behind sleep files queued for a slow disk and went without the state (slow mode, 2026-11-11). Skipped, the next launch's first frame is bare paper, which the count says.
-    pub fn write_sleep_for_until(&self, id: TabId, until: Instant) {
-        self.write_sleep_now_for(id, By::Flush, Some(until));
+    /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written: what's waiting in the cool-down, hurried and
+    /// waited for within the flush's time, and the tab on screen's, the next launch's first frame, waiting for another being written only until `until` and
+    /// counted as skipped past it (a quit waited its 5 s behind sleep files queued for a slow disk and went without the state, slow mode 2026-11-11). Skipped,
+    /// the next launch's first frame is bare paper, which the count says. **Asked for by an agent** (`session save`), the cool-down is left alone (what waits
+    /// stays waiting) and the tab on screen's file is held to the agent's share of the hour: an agent's save in a loop cut every cool-down short on demand.
+    pub fn sleep_at_flush(&self, asked_by: Option<recto_agent::Actor>, until: Instant) {
+        let agent = asked_by.filter(|actor| matches!(actor, recto_agent::Actor::Agent(_)));
+        if agent.is_none() {
+            self.sleeper.drain_leaving(until, || self.start_sleep_writer());
+        }
+        if let Some(id) = self.host.session.with_session(|session| session.tabs().active()) {
+            self.write_sleep_now_for(id, agent.map_or(By::Flush, By::Asked), Some(until));
+        }
     }
 
     fn write_sleep_now_for(&self, id: TabId, by: By, until: Option<Instant>) {

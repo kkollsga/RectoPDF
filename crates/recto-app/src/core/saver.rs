@@ -253,6 +253,11 @@ impl Saver {
 
     /// **Writes everything now, reads it back, and says whether it's all there.** What's waiting and what's in memory are taken in one look, so an edit made in between can't be in one and not the other. `force` makes the drive itself flush everything a launch would read, older writes included, which only a hand-off needs. Waits for the session thread and the disk, so it's for a thread that can.
     pub fn flush(&self, force: bool, limit: Duration) -> Result<FlushReport, StoreError> {
+        self.flush_by(force, limit, None)
+    }
+
+    /// **The same, asked for by `asked_by`** (`session save`): an agent's leaves the sleep files' cool-down alone, as a quit's and a hand-off's don't ([`Inner::sleep_at_flush`]).
+    pub fn flush_by(&self, force: bool, limit: Duration, asked_by: Option<recto_agent::Actor>) -> Result<FlushReport, StoreError> {
         let Some(inner) = self.inner() else {
             return Err(StoreError {
                 code: "not_ready",
@@ -318,10 +323,7 @@ impl Saver {
         let verify_us = micros(verified);
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
         // What's waiting in the cool-down first, hurried and waited for within the same time.
-        inner.sleeper.drain_leaving(began + limit, || inner.start_sleep_writer());
-        if let Some(id) = inner.host.session.with_session(|session| session.tabs().active()) {
-            inner.write_sleep_for_until(id, began + limit);
-        }
+        inner.sleep_at_flush(asked_by, began + limit);
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         *lock(&self.last_error) = None;

@@ -6,7 +6,8 @@
 use super::*;
 use crate::sleeper::{OTHERS_FIRST_FOR_MS, SLEEP_BYTES_PER_HOUR};
 
-const WHYS: [Why; 4] = [Why::LeftAlone, Why::Budget, Why::Pressure, Why::Asked];
+const PERSON: recto_agent::Actor = recto_agent::Actor::Person;
+const WHYS: [Why; 4] = [Why::LeftAlone, Why::Budget, Why::Pressure, Why::Asked(PERSON)];
 const HOUR_MS: u64 = 3_600_000;
 
 /// Every way to put `lengths[i]` steps of each of the sequences in one order: each as a list of which sequence's next step comes.
@@ -55,7 +56,7 @@ fn going_dormant_by_itself_is_queued_and_only_being_asked_writes_in_place() {
             out,
             Some(Out::GoDormant {
                 tabs: vec![TabId(1), TabId(2)],
-                in_place: why == Why::Asked
+                in_place: matches!(why, Why::Asked(_))
             }),
             "{why:?}"
         );
@@ -156,7 +157,7 @@ fn every_order_of_writes_the_gap_and_the_hour_keeps_the_ssd_rule() {
     let (one, two, filler) = (TabId(1), TabId(2), TabId(9));
     let steps = [
         Happens::Write(one, By::Queue),
-        Happens::Write(one, By::Asked),
+        Happens::Write(one, By::Asked(PERSON)),
         Happens::Write(one, By::Flush),
         Happens::Write(two, By::Queue),
         Happens::Advance(gap_ms),
@@ -247,7 +248,7 @@ fn a_tab_with_no_file_gets_its_facts_and_a_protected_one_never_gets_pictures() {
         Some(Out::Write(Write::PutOff)),
         "within its gap, a file"
     );
-    for by in [By::Flush, By::Asked, By::Queue] {
+    for by in [By::Flush, By::Asked(PERSON), By::Queue] {
         assert_eq!(
             write(&mut machine, by, false, false),
             Some(Out::Write(Write::FactsOnly)),
@@ -529,7 +530,7 @@ fn a_file_of_another_place_is_written_once_a_move_inside_the_gap_and_never_past_
         machine.step(
             Event::Write {
                 id,
-                by: By::Asked,
+                by: By::Asked(PERSON),
                 there: true,
                 pictures_allowed,
                 there_for_other_paper: false,
@@ -660,4 +661,52 @@ fn a_file_of_another_list_pages_or_version_shows_nothing_of_the_place() {
     let mut unknown = file_with(&[5]);
     unknown.version = None;
     assert!(there_for_other_place(Some(&unknown), &now, &material), "a file that says no version");
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S3): one hour's cap anyone could use up: an agent looping a move and `session sleep` used the app's whole 4 MiB
+/// in about 57 writes, after which every wake of the person's was bare for the hour. With the caps set small: an agent's writes go up to its share and stop at
+/// the share plus one, said in words with when it comes back; the person's own routes (a tab pushed out, going dormant) still have the rest of the hour; and
+/// the person's own `session sleep` isn't held to the agents' share.
+#[test]
+fn an_agents_sleep_files_stop_at_its_share_and_the_persons_still_have_the_hour() {
+    let agent = By::Asked(recto_agent::Actor::Agent(recto_agent::Level::Full));
+    let mut machine = SleepWriter::default();
+    let _ = machine.step(Event::SetAgentHourCap(200), 10);
+    let _ = machine.step(Event::SetHourCap(1_000), 10);
+    let write = |machine: &mut SleepWriter, id: u32, by| {
+        let out = machine.step(
+            Event::Write {
+                id: TabId(id),
+                by,
+                there: true,
+                pictures_allowed: true,
+                there_for_other_paper: false,
+                there_for_other_place: false,
+            },
+            10,
+        );
+        if out == Some(Out::Write(Write::WithPictures)) {
+            let _ = machine.step(Event::Wrote { id: TabId(id), bytes: 100 }, 10);
+        }
+        out
+    };
+    // Each a tab of its own, so the gap holds nothing back: the share is what's asked.
+    assert_eq!(write(&mut machine, 1, agent), Some(Out::Write(Write::WithPictures)));
+    assert_eq!(
+        write(&mut machine, 2, agent),
+        Some(Out::Write(Write::WithPictures)),
+        "at its share less one write"
+    );
+    assert_eq!(write(&mut machine, 3, agent), Some(Out::Write(Write::PutOff)), "past its share");
+    assert_eq!(machine.counts().agent_share_used, 1);
+    let words = machine.agents_share_words(10).expect("the agent is told");
+    assert!(words.contains("60 minutes"), "{words}");
+    // The person's routes: the queue's writer, and their own asking.
+    assert_eq!(write(&mut machine, 4, By::Queue), Some(Out::Write(Write::WithPictures)), "a tab pushed out");
+    assert_eq!(
+        write(&mut machine, 5, By::Asked(PERSON)),
+        Some(Out::Write(Write::WithPictures)),
+        "the person's own asking"
+    );
+    assert_eq!(machine.counts().agent_share_used, 1);
 }
