@@ -586,7 +586,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     if let Some(selector) = about
         && !command.protected_ok()
         && !actor.sees_protected()
-        && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
+        && access.with(|s| select(s, selector).is_ok_and(|id| s.tabs().withheld_from_agents(id)))
     {
         return Err(protected_refusal());
     }
@@ -599,7 +599,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
             // always have (coordinator, 2026-11-13).
             let awake = s.wake_list(id);
             s.touch(id);
-            s.hold(id);
+            s.dormancy_mut().hold(id);
             Some((id, awake))
         })
     });

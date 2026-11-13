@@ -17,14 +17,14 @@ impl Inner {
         let result = match verb {
             // What a record brings back that no one action makes: text in Find's field that wasn't found for.
             "find_draft" => session.with_session(|session| {
-                let find = session.find().clone();
-                session.set_find(find.open, &find.query, value);
+                let find = session.viewing().find().clone();
+                session.viewing_mut().set_find(find.open, &find.query, value);
                 Ok(())
             }),
             "view_rotation" => match value.parse::<u8>() {
                 Ok(turns) if turns < 4 => session.with_session(|session| {
-                    if let Some(id) = session.active() {
-                        session.set_view_rotation(id, turns);
+                    if let Some(id) = session.tabs().active() {
+                        session.tabs_mut().set_view_rotation(id, turns);
                     }
                     Ok(())
                 }),
@@ -108,8 +108,9 @@ impl Inner {
             .session
             .with_session(|session| {
                 session
+                    .tabs()
                     .active()
-                    .and_then(|id| Some((session.path_of(id)?, session.own_stamp(id), session.is_saving(id))))
+                    .and_then(|id| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.is_saving(id))))
             })
             .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         if saving {
@@ -128,9 +129,9 @@ impl Inner {
             .host
             .session
             .with_session(|session| {
-                let id = session.active()?;
-                let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
-                Some((id, session.path_of(id)?, session.pages_in(id), needed))
+                let id = session.tabs().active()?;
+                let needed = session.lists().own_pages_needed(id);
+                Some((id, session.tabs().path_of(id)?, session.pages().count(id), needed))
             })
             .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         let kept = self.saver.store.keep_pages_of(&path, target, &needed);

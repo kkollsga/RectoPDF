@@ -351,7 +351,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| {
                 let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                acted_tab(&session, command).and_then(|id| session.path_of(id))
+                acted_tab(&session, command).and_then(|id| session.tabs().path_of(id))
             })
             .flatten();
         let result = recto_agent::execute(access, actor, command, events);
@@ -470,7 +470,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         session
             .tabs()
             .iter()
-            .filter(|tab| session.is_edited(tab.id) || session.undo_and_redo(tab.id).1)
+            .filter(|tab| session.lists().is_edited(tab.id) || session.lists().undo_and_redo(tab.id).1)
             .map(|tab| (tab.id, tab.name.to_string()))
             .collect()
     }

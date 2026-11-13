@@ -491,10 +491,10 @@ fn a_woken_list_naming_an_outside_file_is_unreadable() {
     s.confinement().confine(recto_platform::run_folders::RunFolders::of(&[&dir.join("run")]));
     let loads = s.loader().loads.get();
     assert!(!s.wake_list(a), "the list naming the outside file was woken");
-    assert!(s.page_edits(a).is_none(), "it's in memory");
+    assert!(s.lists().get(a).is_none(), "it's in memory");
     assert_eq!(s.tabs().tab_notice(a).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
-        (0..s.pages_in(a)).all(|page| s.page_source(a, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
+        (0..s.pages().count(a)).all(|page| s.page_source(a, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
         "a page comes from outside"
     );
     assert_eq!(s.loader().loads.get(), loads, "a file was read to wake it");

@@ -88,7 +88,7 @@ pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), Ag
     let open: Vec<PathBuf> = inner
         .host
         .session
-        .with_session(|session| session.tabs().iter().filter_map(|tab| session.path_of(tab.id)).collect());
+        .with_session(|session| session.tabs().iter().filter_map(|tab| session.tabs().path_of(tab.id)).collect());
     if open
         .iter()
         .map(PathBuf::as_path)

@@ -75,13 +75,14 @@ impl Running {
     /// Each page's added turns, as they stand now.
     fn turns(&self) -> Vec<u8> {
         self.host.with_session(|s| {
-            s.page_edits(TabId(1))
+            s.lists()
+                .get(TabId(1))
                 .map_or_else(Vec::new, |edits| edits.slots().iter().map(|slot| slot.quarter_turns).collect())
         })
     }
 
     fn tab_is_open(&self) -> bool {
-        self.host.with_session(|s| s.tab(TabId(1)).is_some())
+        self.host.with_session(|s| s.tabs().tab(TabId(1)).is_some())
     }
 }
 
@@ -107,7 +108,7 @@ fn over_the_socket_an_agent_cant_erase_the_owners_edits_at_any_step() {
     let holds_them = || {
         running
             .host
-            .with_session(|s| s.page_edits(TabId(1)).is_some_and(recto_session::edit::PageEdits::holds_owner_edits))
+            .with_session(|s| s.lists().get(TabId(1)).is_some_and(recto_session::edit::PageEdits::holds_owner_edits))
     };
     let edit = || json!({ "cmd": "page_rotate", "pages": "9", "degrees": 90 });
 

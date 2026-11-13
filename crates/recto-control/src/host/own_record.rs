@@ -31,7 +31,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
     fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
         Ok(self.with(|session| Slept {
             dormant: session.go_dormant(tab),
-            list_asleep: session.list_is_asleep(tab),
+            list_asleep: session.lists().is_asleep(tab),
         }))
     }
 

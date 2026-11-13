@@ -41,7 +41,7 @@ fn a_confined_session_adds_no_pages_from_outside() {
         s.insert_pdf_with_facts(tab, Author::Agent, 0, &dir.join("outside/b.pdf"), &facts, None),
         Err(SessionError::OutsideQuietRun)
     );
-    assert_eq!(s.pages_in(tab), 3, "nothing was added");
+    assert_eq!(s.pages().count(tab), 3, "nothing was added");
     assert!(s.insert_pdf(tab, 0, &dir.join("run/c.pdf")).is_ok());
 }
 
@@ -77,11 +77,11 @@ fn a_confined_tab_doesnt_follow_its_file_out() {
         inode: 9,
     };
     s.apply_file_status(tab, FileStatus::Moved(dir.join("outside/a.pdf"), now));
-    assert_eq!(s.path_of(tab), Some(dir.join("run/a.pdf")));
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/a.pdf")));
     assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // Inside, it follows as ever.
     s.apply_file_status(tab, FileStatus::Moved(dir.join("run/moved.pdf"), now));
-    assert_eq!(s.path_of(tab), Some(dir.join("run/moved.pdf")));
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/moved.pdf")));
 }
 
 /// Failure: a second confinement widens the first, so whatever makes a session can be talked into a wider one later; or a session that was never
@@ -107,10 +107,10 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     std::fs::create_dir(dir.join("run/docs")).unwrap();
     let tab = s.open(&dir.join("run/docs/a.pdf")).unwrap();
     s.open(&dir.join("run/b.pdf")).unwrap();
-    assert!(s.path_of(tab).is_some() && s.page_source(tab, 0).is_some());
+    assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
     std::fs::rename(dir.join("run/docs"), dir.join("run/docs-real")).unwrap();
     std::os::unix::fs::symlink(dir.join("outside"), dir.join("run/docs")).unwrap();
-    assert_eq!(s.path_of(tab), None, "the tab's file is handed out through the link");
+    assert_eq!(s.tabs().path_of(tab), None, "the tab's file is handed out through the link");
     assert_eq!(
         s.tabs().path_of(tab),
         None,
@@ -135,7 +135,7 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     assert!(s.tab_for_path(&dir.join("run/docs/a.pdf")).is_some());
     std::fs::remove_file(dir.join("run/docs")).unwrap();
     std::fs::rename(dir.join("run/docs-real"), dir.join("run/docs")).unwrap();
-    assert!(s.path_of(tab).is_some() && s.page_source(tab, 0).is_some());
+    assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
 }
 
 /// A loader that notes the path each read was made by.
@@ -171,7 +171,7 @@ fn the_first_read_is_by_the_path_that_was_checked() {
     let tab = s.open(&dir.join("run/link.pdf")).unwrap();
     let real = dir.join("run/real.pdf").canonicalize().unwrap();
     assert_eq!(s.loader().0.borrow().as_slice(), [real], "read by the name, not where the rule looked");
-    assert_eq!(s.path_of(tab), Some(dir.join("run/link.pdf")), "the tab keeps its name");
+    assert_eq!(s.tabs().path_of(tab), Some(dir.join("run/link.pdf")), "the tab keeps its name");
     let mut free = Session::new(Noting(std::cell::RefCell::default()));
     free.open(Path::new("/d/as/named.pdf")).unwrap();
     assert_eq!(free.loader().0.borrow().as_slice(), [PathBuf::from("/d/as/named.pdf")]);
@@ -193,10 +193,10 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     let mut back = journaled(3);
     back.confinement().confine(RunFolders::of(&[&dir.join("run")]));
     back.restore(&free.to_record(), back_from(&files)).unwrap();
-    assert!(back.page_edits(tab).is_none(), "the list naming the outside file came back");
+    assert!(back.lists().get(tab).is_none(), "the list naming the outside file came back");
     assert_eq!(back.tabs().tab_notice(tab).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
-        (0..back.pages_in(tab)).all(|page| back.page_source(tab, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
+        (0..back.pages().count(tab)).all(|page| back.page_source(tab, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
         "a page comes from outside"
     );
     // The same list, as a closed PDF's history taken up on its open.
@@ -206,7 +206,7 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     let facts = opening.loader().load(&dir.join("run/a.pdf")).unwrap();
     let taken = TakenHistory { name: "a".into(), restored };
     let reopened = opening.open_with_facts(&dir.join("run/a.pdf"), facts, None, Some(taken)).unwrap();
-    assert!(opening.page_edits(reopened).is_none(), "the history naming the outside file was taken up");
+    assert!(opening.lists().get(reopened).is_none(), "the history naming the outside file was taken up");
 }
 
 /// **Failure: a restore replaces the tabs' confinement cell, or makes one of its own** (R3.5a), so the session and its host's lock-free copy
