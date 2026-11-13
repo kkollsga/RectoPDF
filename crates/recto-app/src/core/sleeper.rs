@@ -340,7 +340,7 @@ impl Inner {
             there: there.is_some(),
             pictures_allowed,
             there_for_other_paper: crate::sleep_writer::there_for_other_paper(there.as_ref(), new_dark),
-            there_for_other_place: crate::sleep_writer::there_for_other_place(there.as_ref(), &material),
+            there_for_other_place: crate::sleep_writer::there_for_other_place(there.as_ref(), &sleep, &material),
         });
         let Some(Out::Write(write @ (Write::WithPictures | Write::FactsOnly))) = write else {
             return;

@@ -470,6 +470,54 @@ fn a_tab_left_again_at_another_page_within_a_minute_wakes_with_a_picture_of_that
     drop(app.quit());
 }
 
+/// Failure (the cool-down's review, 2026-11-13, S2): a tab's file written at page 5, then page 5 rotated and the tab left inside the minute's gap: the file's
+/// picture of page 5 counted as showing the place, so the write was put off, and the wake refused that file for its other list of pages and was bare, the bug
+/// the place rule fixes, for an edited tab. On the app's own core, the window up: a slept at page 5, woken, page 5 rotated, slept again inside the gap: written,
+/// for the place, and woken from a picture.
+#[test]
+fn a_tab_left_inside_the_gap_after_a_page_was_rotated_wakes_with_a_picture() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    engine.waking().window_up();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["goto", "5"]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["page", "rotate", "5", "--by", "90", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    let before = app.record_json()["sleep"].clone();
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    let after = app.record_json()["sleep"].clone();
+    assert_eq!(
+        after["writes_for_place"].as_u64().unwrap(),
+        before["writes_for_place"].as_u64().unwrap() + 1,
+        "put off on a file of the list before the rotation: {after}"
+    );
+    let wake = woken_at_once(&app, a, &mut view);
+    assert_eq!(wake["tab"], a, "{wake}");
+    assert_eq!(wake["had"], "sleep_file", "woken bare, its file of the list before: {wake}");
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

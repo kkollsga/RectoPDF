@@ -595,42 +595,69 @@ fn material_of(pages: &[u32], dark: bool, in_view: &[u32]) -> recto_reader::Slee
             })
             .collect(),
         in_view: in_view.to_vec(),
+        // The version `file_with`'s files are of.
+        version: Some(9),
         ..Default::default()
     }
 }
 
-/// Failure: the test of a file's place says it shows nothing of the place when it shows a page there on this paper (a second write on the same page, against
-/// the SSD rule), or says it does when its only picture of a page there is for the other paper, or of a page beside the place (a bare wake); or asks for a
-/// write when what's on hand has no picture of the place either.
+/// Failure: the test of a file's place says it shows nothing of the place when it shows every page there that has a picture on hand, on this paper (a second
+/// write of the same, against the SSD rule), or says it does when its only picture of a page there is for the other paper, or of a page beside the place (a
+/// bare wake); or asks for a write when what's on hand has no picture of the place either.
 #[test]
-fn a_file_is_of_another_place_only_when_no_picture_in_it_is_of_a_page_in_view_on_this_paper() {
+fn a_file_is_of_another_place_when_it_lacks_a_page_in_view_that_has_a_picture_on_hand() {
+    let now = file_with(&[]);
+    let other = |there: &SleepFile, material: &recto_reader::SleepMaterial| there_for_other_place(Some(there), &now, material);
     let at_two = file_with(&[2]);
+    assert!(other(&at_two, &material_of(&[4], false, &[4])), "left at page 4, a file of page 2");
+    assert!(!other(&at_two, &material_of(&[2], false, &[2])), "the same page");
+    assert!(!other(&file_with(&[2, 3, 4]), &material_of(&[3, 4], false, &[3, 4])), "every page there shown");
+    assert!(other(&file_with(&[2, 5]), &material_of(&[3, 4], false, &[3, 4])), "pages beside the place");
+    assert!(other(&at_two, &material_of(&[2], true, &[2])), "page 2 on white paper, dark now");
+    assert!(other(&file_with(&[]), &material_of(&[4], false, &[4])), "a file of facts only");
+    assert!(!other(&at_two, &material_of(&[], false, &[4])), "nothing on hand");
+    assert!(!other(&at_two, &material_of(&[5], false, &[4])), "nothing on hand of the place");
+    assert!(!other(&at_two, &material_of(&[4], false, &[])), "nothing in view");
+    assert!(!there_for_other_place(None, &now, &material_of(&[4], false, &[4])), "no file");
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S2): a two-page spread with one page pictured in the file there was put off, as "a page there is shown", and
+/// woke half bare though both pages were on hand. A page in view that has a picture on hand and none in the file makes the file another place's; a page in view
+/// with nothing on hand asks nothing (there'd be nothing to write of it).
+#[test]
+fn a_spread_with_one_page_pictured_is_written_when_both_are_on_hand() {
+    let now = file_with(&[]);
     assert!(
-        there_for_other_place(Some(&at_two), &material_of(&[4], false, &[4])),
-        "left at page 4, a file of page 2"
-    );
-    assert!(!there_for_other_place(Some(&at_two), &material_of(&[2], false, &[2])), "the same page");
-    assert!(
-        !there_for_other_place(Some(&file_with(&[2, 3])), &material_of(&[3, 4], false, &[3, 4])),
-        "a page there shown"
+        there_for_other_place(Some(&file_with(&[2])), &now, &material_of(&[2, 3], false, &[2, 3])),
+        "the spread's other page is on hand and not in the file"
     );
     assert!(
-        there_for_other_place(Some(&file_with(&[2, 5])), &material_of(&[3, 4], false, &[3, 4])),
-        "pages beside the place"
+        !there_for_other_place(Some(&file_with(&[2])), &now, &material_of(&[2], false, &[2, 3])),
+        "the other page has nothing on hand: a write would add nothing"
     );
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S2): a file written at page 5, then page 5 rotated and the tab left inside the gap: the file's picture of page 5
+/// made it "the place", so the write was put off, and the wake refused the file for its other list of pages and was bare. A file of another list, page count
+/// or version than now shows nothing of the place, whatever its pictures; and with nothing on hand to keep, the older pictures go by the same rule.
+#[test]
+fn a_file_of_another_list_pages_or_version_shows_nothing_of_the_place() {
+    let now = file_with(&[]);
+    let material = material_of(&[5], false, &[5]);
     assert!(
-        there_for_other_place(Some(&at_two), &material_of(&[2], true, &[2])),
-        "page 2 on white paper, dark now"
+        !there_for_other_place(Some(&file_with(&[5])), &now, &material),
+        "the same list, a picture of the place"
     );
-    assert!(
-        there_for_other_place(Some(&file_with(&[])), &material_of(&[4], false, &[4])),
-        "a file of facts only"
-    );
-    assert!(!there_for_other_place(Some(&at_two), &material_of(&[], false, &[4])), "nothing on hand");
-    assert!(
-        !there_for_other_place(Some(&at_two), &material_of(&[5], false, &[4])),
-        "nothing on hand of the place"
-    );
-    assert!(!there_for_other_place(Some(&at_two), &material_of(&[4], false, &[])), "nothing in view");
-    assert!(!there_for_other_place(None, &material_of(&[4], false, &[4])), "no file");
+    let mut rotated = file_with(&[5]);
+    rotated.list_seq += 1;
+    assert!(there_for_other_place(Some(&rotated), &now, &material), "another list: a page rotated since");
+    let mut fewer = file_with(&[5]);
+    fewer.pages -= 1;
+    assert!(there_for_other_place(Some(&fewer), &now, &material), "another page count");
+    let mut other_version = file_with(&[5]);
+    other_version.version = Some(10);
+    assert!(there_for_other_place(Some(&other_version), &now, &material), "another version");
+    let mut unknown = file_with(&[5]);
+    unknown.version = None;
+    assert!(there_for_other_place(Some(&unknown), &now, &material), "a file that says no version");
 }

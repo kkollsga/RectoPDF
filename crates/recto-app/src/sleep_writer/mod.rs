@@ -21,17 +21,37 @@ use recto_session::sleep::SleepFile;
 #[cfg(test)]
 mod tests;
 
-/// **What a sleep file keeps of its older pictures when the new material has none** (found 2026-11-13: a wake from a file whose two pictures were of a place the tab had left a visit before, so its first frame was bare, and the bytes were written and read for nothing). The older file's pictures stand only if it is of the same list and version, and then only if they are of the place the new file records: every page that needs a picture there (`in_view`) has one, and those are what's kept. If any lacks one, or the place has no pages, none is kept and the file is its facts only. Pictures that can't be shown are bytes on the disk, and in memory on a wake, for nothing.
+/// **Whether the sleep file there shows the place: the one definition**, used both to keep a file's older pictures ([`with_older_pictures`]) and to let a write
+/// inside the gap go ahead for a place the file doesn't show ([`there_for_other_place`]). It does when it is of the list, page count and version a wake now
+/// would take it for (a wake refuses any other, so its pictures show nothing), and it holds a picture of every page in `wanted`, on that page's paper where it's
+/// known. `wanted` is every page in view that has a picture on hand, so a two-page spread with both pages on hand isn't shown by a file of one; with nothing on
+/// hand, it's every page in view, as the older pictures are then all a wake will have. A page in view with nothing on hand asks nothing: no write would add it.
+/// An empty `wanted` (nothing in view) is a place nothing is owed at, which no file shows.
+#[must_use]
+pub fn shows_the_place(there: &SleepFile, list_seq: u64, pages: u32, version: Option<u64>, wanted: &[(u32, Option<bool>)]) -> bool {
+    there.list_seq == list_seq
+        && there.pages == pages
+        && there.version.is_some()
+        && there.version == version
+        && !wanted.is_empty()
+        && wanted.iter().all(|(page, dark)| {
+            there
+                .pictures
+                .iter()
+                .any(|picture| picture.page == *page && dark.is_none_or(|dark| picture.dark == dark))
+        })
+}
+
+/// **What a sleep file keeps of its older pictures when the new material has none** (found 2026-11-13: a wake from a file whose two pictures were of a place the
+/// tab had left a visit before, so its first frame was bare, and the bytes were written and read for nothing). The older file's pictures stand only if it
+/// [`shows_the_place`] the new file records, every page in view (`in_view`) wanted as nothing is on hand, and then only those of the place are kept; otherwise
+/// the file is its facts only. Pictures that can't be shown are bytes on the disk, and in memory on a wake, for nothing.
 pub fn with_older_pictures(mut sleep: SleepFile, there: Option<SleepFile>, in_view: &[u32]) -> SleepFile {
     if !sleep.pictures.is_empty() {
         return sleep;
     }
-    let Some(there) =
-        there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
-    else {
-        return sleep;
-    };
-    if !in_view.is_empty() && in_view.iter().all(|page| there.pictures.iter().any(|picture| picture.page == *page)) {
+    let wanted: Vec<(u32, Option<bool>)> = in_view.iter().map(|page| (*page, None)).collect();
+    if let Some(there) = there.filter(|there| shows_the_place(there, sleep.list_seq, sleep.pages, sleep.version, &wanted)) {
         sleep.pictures = there.pictures.into_iter().filter(|picture| in_view.contains(&picture.page)).collect();
     }
     sleep
@@ -62,25 +82,21 @@ pub fn there_for_other_paper(there: Option<&SleepFile>, new_dark: Option<bool>) 
 
 /// **Whether the sleep file there shows nothing of the place the pictures on hand are of** (found 2026-11-13 in a quiet run: a tab left at page 2, slept and
 /// woken, then left at page 4 and slept again inside its gap, kept a file whose one picture was of page 2, so its wake at page 4 was bare). True when a picture
-/// on hand is of a page in view (`material.in_view`), and no picture in the file there is of a page in view on that picture's paper: a write would turn a bare
-/// wake into one from a picture. A file that already shows a page there, on its paper, is what a wake can use, so a tab slept again at the same place is put
-/// off as before. With no file there, nothing in view, or nothing on hand of it, there's nothing a write would put right.
+/// on hand is of a page in view (`material.in_view`) and the file there doesn't [`shows_the_place`] for those pages, on their paper, against `now`'s list and
+/// pages and the material's version: a write would turn a bare or half-bare wake into one from pictures. A file that shows them is what a wake can use, so a tab
+/// slept again at the same place is put off as before. With no file there, nothing in view, or nothing on hand of it, there's nothing a write would put right.
 #[must_use]
-pub fn there_for_other_place(there: Option<&SleepFile>, material: &recto_reader::SleepMaterial) -> bool {
+pub fn there_for_other_place(there: Option<&SleepFile>, now: &SleepFile, material: &recto_reader::SleepMaterial) -> bool {
     let Some(there) = there else {
         return false;
     };
-    let on_hand = material.pictures.iter().filter(|picture| material.in_view.contains(&picture.page));
-    let mut wanted = on_hand.map(|picture| picture.paper == recto_reader::PaperKind::Dark).peekable();
-    if wanted.peek().is_none() {
-        return false;
-    }
-    !wanted.any(|dark| {
-        there
-            .pictures
-            .iter()
-            .any(|picture| picture.dark == dark && material.in_view.contains(&picture.page))
-    })
+    let wanted: Vec<(u32, Option<bool>)> = material
+        .pictures
+        .iter()
+        .filter(|picture| material.in_view.contains(&picture.page))
+        .map(|picture| (picture.page, Some(picture.paper == recto_reader::PaperKind::Dark)))
+        .collect();
+    !wanted.is_empty() && !shows_the_place(there, now.list_seq, now.pages, material.version, &wanted)
 }
 
 /// How soon a look at dormancy that couldn't go ahead, as a file's being read or the app's frozen, comes again.
