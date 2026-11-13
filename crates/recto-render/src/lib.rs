@@ -6,6 +6,7 @@
 mod classify;
 mod ink;
 mod pdfium;
+mod places;
 
 pub use classify::classify_bgrx;
 pub use ink::{INK_PADDING_PX, INK_RANGE, SAME_AS_GROUND, SEEN_PIXELS, adds_nothing_seen, box_has_ink, glyph_is_ground_coloured};
@@ -95,7 +96,7 @@ pub trait RenderBackend {
     /// The largest image on a page, in source pixels. Bounded: it looks at no more than a fixed number of objects. Loads the page, which drawing would do anyway.
     fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError>;
 
-    /// Where a page's images are, as parts of the page in 65535ths, `[left, top, right, bottom]`. Bounded like [`Self::largest_image_pixels`], and at most [`recto_proto::MAX_IMAGE_BOXES`], past which they're given as one.
+    /// Where a page's images are, as parts of the page in 65535ths, `[left, top, right, bottom]`, each distinct place once; past [`recto_proto::MAX_IMAGE_BOXES`] of them, images whose boxes overlap or share an edge given as one, the box round them (`places.rs`). Bounded like [`Self::largest_image_pixels`]. Past [`recto_proto::MAX_IMAGE_BOXES`] pictures still apart there are too many to tell apart: it stops looking and refuses with [`FailCode::TooLarge`], and the page is judged whole by its pixels.
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
 
     /// Reads a page's characters, in the order the backend understands them.

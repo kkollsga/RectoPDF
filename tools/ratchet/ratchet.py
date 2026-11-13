@@ -4,6 +4,7 @@ import bisect, os, re, subprocess, sys
 def env_int(name, default):
     return int(os.environ.get(name, default))
 
+ONLY_FOR_TESTS = re.compile(r'^[ \t]*#!\[cfg\(test\)\][ \t]*$', re.M)
 BUDGET = {
     "file": env_int("RATCHET_FILE_LINES", 1500),
     "fn": env_int("RATCHET_FN_LINES", 150),
@@ -259,6 +260,9 @@ def whole_fns(t, name):
             n += 1
     return n
 
+# a struct, enum or union defined, of any visibility and shape (braced, tuple or unit), in masked (no comments or strings), test-stripped text
+TYPE_DEF = re.compile(r'\b(?:struct|enum|union)\s+([A-Za-z_]\w*)')
+
 # ---- Measuring ----------------------------------------------------------------------------------------------------------------------------
 def walk(root, sub, exts, skip=()):
     base = os.path.join(root, sub)
@@ -308,8 +312,11 @@ def measure(root):
             test_mods.add(os.path.join(sub, name + '.rs'))
             test_mods.add(os.path.join(sub, name, 'mod.rs'))
     ffi_total = 0
+    # the types each crate defines, with or without an inherent impl: one whose methods all went to facades still exists, at 0, so its entry stays
+    defined = set()
     for rel, raw in srcs.items():
-        if rel in test_mods or '#![cfg(test)]' in raw:
+        # its own `#![cfg(test)]` line, not a comment that mentions one
+        if rel in test_mods or ONLY_FOR_TESTS.search(raw):
             continue
         t, removed, _ = strip_tests(mask(raw))
         nl = [i for i, ch in enumerate(t) if ch == '\n']
@@ -323,6 +330,9 @@ def measure(root):
             if rel.startswith(crate + '/') and not in_test_folder(rel, test_mods):
                 k = ('whole', crate + '::' + name)
                 m[k] = m.get(k, 0) + whole_fns(t, name)
+        crate = '/'.join(rel.split('/')[:3])
+        for d in TYPE_DEF.finditer(t):
+            defined.add(crate + '::' + d.group(1))
         for kind, key, n in scan_items(t, lineof):
             k = (kind, rel + '::' + key)
             m[k] = max(m.get(k, 0), n)
@@ -332,6 +342,8 @@ def measure(root):
                 TYPE_FILES.setdefault(tk, {})[rel] = n
     for tk, files in TYPE_FILES.items():
         m[('type', tk)] = sum(files.values())
+    for tk in defined:
+        m.setdefault(('type', tk), 0)
     m[('ffi', FFI_DIR)] = ffi_total
     if apptests:
         m[('apptest', APPTEST_DIR)] = apptests
@@ -440,11 +452,13 @@ def compare(cur, base, bootstrap_ffi=False):
             shrunk.append((kind, key, v, 0))
     return fails, shrunk
 
-def wanted(cur):
-    """Entries the baseline should hold: everything over its budget, every fixed-sleep file, and the binding total."""
+def wanted(cur, base=None):
+    """Entries the baseline should hold: everything over its budget, every fixed-sleep file, the binding total, and every type that has had an entry (its
+    whole-type count is the record: a type that fell under the budget keeps its entry at the number it fell to, so it can't grow back to the budget unseen,
+    at 0 when its methods all went to facades and it has no inherent impl left; only a type that no longer exists drops out)."""
     out = {}
     for (kind, key), n in cur.items():
-        if kind in ('ffi', 'sleep', 'apptest', 'whole') or n > BUDGET[kind]:
+        if kind in ('ffi', 'sleep', 'apptest', 'whole') or n > BUDGET[kind] or (kind == 'type' and base and (kind, key) in base):
             out[(kind, key)] = n
     return out
 
@@ -660,8 +674,8 @@ def main(argv):
         print('A baseline number is raised only by a hand edit of %s, which a reviewer sees in the diff.' % os.path.relpath(bpath, root))
         return 1
     if mode == 'update':
-        write_baseline(bpath, wanted(cur))
-        print('ratchet: baseline rewritten, %d entries, %d lowered or dropped' % (len(wanted(cur)), len(shrunk)))
+        write_baseline(bpath, wanted(cur, base))
+        print('ratchet: baseline rewritten, %d entries, %d lowered or dropped' % (len(wanted(cur, base)), len(shrunk)))
         return 0
     if shrunk:
         print('ratchet: ok, and %d entries are now smaller than the baseline. Lock it in: tools/ratchet.sh --update' % len(shrunk))

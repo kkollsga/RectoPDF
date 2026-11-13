@@ -98,6 +98,15 @@ fn every_decoder(payload: &[u8]) {
     if let Ok((job_id, page)) = decode_size_request(payload) {
         assert_eq!(decode_size_request(&encode_size_request(job_id, page)[HEADER_LEN..]), Ok((job_id, page)));
     }
+    if let Ok(images) = PageImages::decode(payload) {
+        assert!(images.boxes.len() <= MAX_IMAGE_BOXES);
+        assert!(
+            images.boxes.iter().all(|sides| sides[0] <= sides[2] && sides[1] <= sides[3]),
+            "a box inside out got past the decoder: {:?}",
+            images.boxes
+        );
+        assert_eq!(PageImages::decode(&images.encode()[HEADER_LEN..]).as_ref(), Ok(&images));
+    }
     if let Ok(traits) = PageTraits::decode(payload) {
         assert_eq!(PageTraits::decode(&traits.encode()[HEADER_LEN..]), Ok(traits));
     }
