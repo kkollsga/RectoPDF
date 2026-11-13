@@ -131,6 +131,11 @@ impl Sleeper {
         let _ = self.step(Event::SetWriteGap(seconds));
     }
 
+    /// What sleep files may come to in an hour, for a test of the cap at the cap and one past it.
+    pub fn set_hour_cap(&self, bytes: u64) {
+        let _ = self.step(Event::SetHourCap(bytes));
+    }
+
     fn after_seconds(&self) -> u32 {
         lock(&self.machine).after_seconds()
     }
@@ -226,6 +231,7 @@ impl Sleeper {
             "sleep_files_written": counts.sleep_files,
             "writes_put_off": counts.writes_put_off,
             "writes_for_paper": counts.writes_for_paper,
+            "writes_for_place": counts.writes_for_place,
             "writes_skipped_busy": counts.writes_skipped_busy,
             "sleep_bytes_written": counts.sleep_bytes,
             "woken_from_file": counts.woken_from_file,

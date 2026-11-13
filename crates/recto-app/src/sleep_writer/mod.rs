@@ -105,6 +105,8 @@ pub enum Event {
     SetBudget(u64),
     /// The least time between a tab's sleep files, in seconds; zero takes the hour's cap with it (QA's `sleep_write_gap`).
     SetWriteGap(u32),
+    /// What sleep files may come to in an hour, in bytes: [`crate::sleeper::SLEEP_BYTES_PER_HOUR`], set small by a test of the cap.
+    SetHourCap(u64),
     /// The deadline's worked out again: the next tab is due this many seconds from now by the session's clock, or none is.
     Rearm { in_seconds: Option<u32> },
     /// The deadline's come, on the session thread. `busy`: a file's being read, or the app's frozen, so nothing goes now.
@@ -234,6 +236,10 @@ impl SleepWriter {
             }
             Event::SetWriteGap(seconds) => {
                 self.write_gap_seconds = seconds;
+                None
+            }
+            Event::SetHourCap(bytes) => {
+                self.hour.set_cap(bytes);
                 None
             }
             Event::Rearm { in_seconds } => Some(Out::Due(rules::due_at(now, in_seconds))),

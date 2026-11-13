@@ -677,3 +677,66 @@ fn a_quit_writes_the_sleep_files_waiting_in_the_cool_down() {
     );
     drop(app.quit());
 }
+
+/// Failure (review follow-up 2, 2026-11-07, moved here from the app test `restore::session_sleep_keeps_to_the_limits_on_writing` on 2026-11-13): an agent going
+/// tap, move, `session sleep` wrote a new sleep file every time it asked, most of a megabyte in ten turns. It keeps to the limits anything else does: five
+/// sleeps at one page inside the gap write one file; five at a new page each write one each (the file there showing nothing of the place, counted as
+/// `writes_for_place`), which the hour's cap bounds: with the cap set at what's been written, the next move-and-sleep is put off and counted.
+#[test]
+fn session_sleep_keeps_to_the_limits_on_writing() {
+    let disk = Disk::new();
+    let (doc, other) = (disk.pdf("doc.pdf", 12), disk.pdf("other.pdf", 2));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for file in [&doc, &other] {
+        app.open(file);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
+    let counts = || app.record_json()["sleep"].clone();
+    let mut turn = |page: &str| {
+        full(&app, &["tap", &format!("#{doc}")]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["goto", page]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["tap", &format!("#{other}")]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["session", "sleep", "--tab", &format!("#{doc}")]);
+        host_turns(&app, &mut view, true);
+    };
+    // Once its file's there, every sleep at the same page is put off. (The first turn's sleep can come before the page view has the tab's version, when it has
+    // nothing to write: then the next turn's writes it.)
+    let mut before = counts();
+    for _ in 0..5 {
+        turn("3");
+        let now = counts();
+        if before["sleep_files_written"] == 1 {
+            assert_eq!(
+                now["writes_put_off"].as_u64().unwrap(),
+                before["writes_put_off"].as_u64().unwrap() + 1,
+                "a sleep at the same page inside the gap wasn't put off: {now}"
+            );
+        }
+        before = now;
+    }
+    let one_page = counts();
+    assert_eq!(one_page["sleep_files_written"], 1, "one page, one file: {one_page}");
+    assert!(one_page["writes_put_off"].as_u64().unwrap() >= 3, "{one_page}");
+    for page in ["5", "7", "9", "11"] {
+        turn(page);
+    }
+    let moved = counts();
+    assert_eq!(moved["sleep_files_written"], 5, "one for each new place: {moved}");
+    assert_eq!(moved["writes_for_place"], 4, "{moved}");
+    // At the hour's cap: the next is put off, and counted.
+    app.core().sleeper.set_hour_cap(moved["sleep_bytes_written"].as_u64().expect("bytes"));
+    let put_off = moved["writes_put_off"].as_u64().unwrap();
+    turn("2");
+    let capped = counts();
+    assert_eq!(capped["sleep_files_written"], 5, "past the hour's cap: {capped}");
+    assert_eq!(capped["writes_put_off"].as_u64().unwrap(), put_off + 1, "{capped}");
+    drop(app.quit());
+}

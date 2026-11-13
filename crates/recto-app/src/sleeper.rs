@@ -94,20 +94,32 @@ impl Written {
 pub struct Hour {
     began: u64,
     bytes: u64,
+    /// [`SLEEP_BYTES_PER_HOUR`], set small by a test of the cap.
+    cap: u64,
 }
 
 impl Hour {
     #[must_use]
     pub fn starting(now: u64) -> Self {
-        Self { began: now, bytes: 0 }
+        Self {
+            began: now,
+            bytes: 0,
+            cap: SLEEP_BYTES_PER_HOUR,
+        }
+    }
+
+    /// The cap, for a test of it at the cap and one past it.
+    pub fn set_cap(&mut self, cap: u64) {
+        self.cap = cap;
     }
 
     /// Whether this hour has room for another file, starting a new hour first if this one's over.
     pub fn has_room(&mut self, now: u64) -> bool {
         if now.saturating_sub(self.began) >= HOUR_MS {
-            *self = Self::starting(now);
+            self.began = now;
+            self.bytes = 0;
         }
-        self.bytes < SLEEP_BYTES_PER_HOUR
+        self.bytes < self.cap
     }
 
     pub fn add(&mut self, bytes: u64) {
