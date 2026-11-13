@@ -25,23 +25,6 @@ impl<L: DocLoader> Session<L> {
         &self.loader
     }
 
-    pub fn tabs(&self) -> &[TabRecord] {
-        self.tabs.all()
-    }
-
-    pub fn active(&self) -> Option<TabId> {
-        self.tabs.active()
-    }
-
-    pub fn tab(&self, id: TabId) -> Option<&TabRecord> {
-        self.tabs.get(id)
-    }
-
-    /// The tab's full path, rebuilt from its interned folder and name.
-    pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
-        self.tabs.path_of(id)
-    }
-
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
         if let Some(id) = self.go_to_open_file(path) {
@@ -69,7 +52,7 @@ impl<L: DocLoader> Session<L> {
     ///
     /// **A number is only the same file if the rest says so.** A move and a rewrite in place keep one, and another volume can have the same number under the same device. So its contents have to be what the tab knows, or the tab's own path has to lead to that number now, as it does for a file changed in place. Otherwise it's another PDF, and a tab's edits don't follow it. That stat is only for a tab with this very number, of which there's next to none. A link also leads where it leads: a tab whose file has been replaced under it, with a new number, is still what its own path is.
     pub fn tab_for_file(&self, path: &Path, stamp: Option<FileStamp>) -> Option<TabId> {
-        self.tab_for_path(path).or_else(|| {
+        self.tabs.for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
             let same_number = self.tabs.all().iter().find(|tab| {
                 tab.file.stamp.is_some_and(|known| {
@@ -77,6 +60,7 @@ impl<L: DocLoader> Session<L> {
                         && known.device == stamp.device
                         && (known.same_contents(stamp)
                             || self
+                                .tabs()
                                 .path_of(tab.id)
                                 .and_then(|own| file_stamp(&own).ok())
                                 .is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device))
@@ -84,18 +68,18 @@ impl<L: DocLoader> Session<L> {
             });
             same_number
                 .map(|tab| tab.id)
-                .or_else(|| path.canonicalize().ok().and_then(|real| self.tab_for_path(&real)))
+                .or_else(|| path.canonicalize().ok().and_then(|real| self.tabs.for_path(&real)))
         })
     }
 
     /// Goes to the tab a file is open in, reached by another name. If the name it was open under has gone, the file moved, and the tab goes with it. A stat on the volume this path has just answered from, so it can't be a dead one.
     fn reach_open_file(&mut self, id: TabId, path: &Path) {
-        let gone = self.path_of(id).is_some_and(|known| known != path && !known.exists());
+        let gone = self.tabs.path_of(id).is_some_and(|known| known != path && !known.exists());
         if gone {
             self.relocate(id, path);
         }
         self.activate(id);
-        if let Some(own) = self.path_of(id) {
+        if let Some(own) = self.tabs.path_of(id) {
             self.note_recent(&own);
         }
     }
@@ -112,7 +96,7 @@ impl<L: DocLoader> Session<L> {
             .map(|path| RecentFile {
                 path: path.clone(),
                 name: tab_name(path),
-                open: self.tab_for_path(path),
+                open: self.tabs.for_path(path),
             })
             .collect()
     }
@@ -129,15 +113,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
     pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
-        let id = self.tab_for_path(path)?;
+        let id = self.tabs.for_path(path)?;
         self.activate(id);
         self.note_recent(path);
         Some(id)
-    }
-
-    /// The tab already showing this file, if there is one.
-    pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
-        self.tabs.for_path(path)
     }
 
     /// The second half of [`Self::open`]: makes the tab from facts already read, and what's left of the PDF's history, if a [`HistorySource`] found any. It's the one way a tab comes to exist, so every route has to say. Someone may have opened the same file meanwhile, and then that's the tab, and the history stays where it is.
@@ -190,7 +169,7 @@ impl<L: DocLoader> Session<L> {
                 trail: None,
             },
         });
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.file.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
@@ -202,7 +181,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
-            if rolled_off && let Some(tab) = self.tab_mut(id) {
+            if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
             }
         }
@@ -211,10 +190,10 @@ impl<L: DocLoader> Session<L> {
 
     /// **A protected tab, opened with the password the person typed:** its facts, read with that password off this lock, take the place of the problem it had, as a wake does. The password itself never comes here.
     pub fn unlock(&mut self, id: TabId, facts: DocFacts, stamp: Option<FileStamp>) {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return;
         }
-        self.note_password_used(id);
+        self.tabs.note_password_used(id);
         self.give_woken(id, Ok(facts), stamp);
         if self.tabs.active() == Some(id) {
             self.activate(id);
@@ -224,50 +203,31 @@ impl<L: DocLoader> Session<L> {
     /// **A file opened with the password the person typed,** as [`Self::open_with_facts`] opens one: the tab is marked, so nothing read from it goes to an agent.
     pub fn open_unlocked(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>) -> Result<TabId, SessionError> {
         let id = self.open_with_facts(path, facts, stamp, None)?;
-        self.note_password_used(id);
+        self.tabs.note_password_used(id);
         Ok(id)
-    }
-
-    /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
-    pub fn note_password_used(&mut self, id: TabId) {
-        if let Some(tab) = self.tab_mut(id) {
-            tab.file.password = true;
-        }
     }
 
     /// **A tab's password went missing:** the renderer couldn't open its file with any password it has, as when the file moved to another volume or was replaced while it was open. What's held of it is let go, and the tab says it needs its password, so the app asks for it again with the sheet rather than showing pages it can't draw.
     pub fn needs_password_again(&mut self, id: TabId) {
-        if self.tab(id).is_none() || self.needs_password(id) {
+        if self.tabs.tab(id).is_none() || self.tabs.needs_password(id) {
             return;
         }
         self.forget_read(id);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.problem = Some(OpenError::PasswordNeeded);
         }
     }
 
-    /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
-    pub fn needs_password(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| tab.problem == Some(OpenError::PasswordNeeded))
-    }
-
-    /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
-    pub fn withheld_from_agents(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
-        })
-    }
-
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
     pub fn tap(&mut self, id: TabId) -> Result<Option<TabId>, SessionError> {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
         }
         let before = self.tabs.active();
         // A plain click on a tab during a comparison returns to one, that one (owner, 2026-11-08: comparison is by ⌘-click).
         let comparing = self.comparison.take().is_some();
         if self.tabs.active() == Some(id) && !comparing {
-            if let Some(tab) = self.tab_mut(id) {
+            if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.toc_open = !tab.toc_open;
             }
         } else {
@@ -278,13 +238,13 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
         // With no tab, or no file to move to, there'd be nothing in a new folder to let it go.
-        if self.tab(id).is_none() || path.file_name().is_none() {
+        if self.tabs.tab(id).is_none() || path.file_name().is_none() {
             return;
         }
         let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
         let mut left = None;
-        if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
+        if let (Some(tab), Some(file_name)) = (self.tabs.tab_mut(id), path.file_name()) {
             left = Some(tab.file.dir).filter(|was| *was != dir);
             tab.file.dir = dir;
             tab.file.file_name = file_name.into();
@@ -353,9 +313,5 @@ impl<L: DocLoader> Session<L> {
             }
         }
         Ok(Closed::after(id, before, self.tabs.active()))
-    }
-
-    pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
-        self.tabs.get_mut(id)
     }
 }

@@ -160,11 +160,12 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
             return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
         }
         let path = s
+            .tabs()
             .path_of(id)
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![PlanFile {
             path,
-            expected: s.page_edits(id).and_then(|_| s.own_stamp(id)),
+            expected: s.page_edits(id).and_then(|_| s.tabs().own_stamp(id)),
             added: false,
         }];
         let list = match s.page_edits(id) {

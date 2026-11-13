@@ -48,7 +48,7 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::EditsUnreadable);
         }
         self.touch(id);
-        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
+        let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
@@ -83,9 +83,12 @@ impl<L: DocLoader> Session<L> {
             Some(edits) => edits.slots().get(position as usize).map(|slot| (slot.source, slot.page)),
             None => Some((0, position)),
         };
-        let place = self.tab(id).and_then(|tab| source_of(tab.page).map(|(source, page)| (source, page, tab.page)));
+        let place = self
+            .tabs
+            .tab(id)
+            .and_then(|tab| source_of(tab.page).map(|(source, page)| (source, page, tab.page)));
         // Where each stop of the trail's page comes from, so it can follow it through the edit.
-        let stops = self.trail_of(id).map(|trail| {
+        let stops = self.tabs.trail_of(id).map(|trail| {
             trail
                 .back()
                 .iter()
@@ -116,7 +119,7 @@ impl<L: DocLoader> Session<L> {
                     (was, found)
                 })
                 .collect();
-            if let Some(trail) = self.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) {
+            if let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) {
                 trail.follow_pages(|page| now.get(&page).copied().flatten());
             }
         }
@@ -130,7 +133,7 @@ impl<L: DocLoader> Session<L> {
         let near = place.map_or(0, |(_, _, near)| near);
         self.mail.set_place_lost(place.is_some() && found.is_none());
         let last = pages.saturating_sub(1);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.page = found.unwrap_or(near).min(last);
             tab.place_dirty = true;
         }
@@ -204,7 +207,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
     pub fn page_source(&self, id: TabId, position: u32) -> Option<PageSource> {
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         if self.lists.is_asleep(id) {
             return None;
         }
@@ -212,7 +215,7 @@ impl<L: DocLoader> Session<L> {
             return (position < tab.page_count)
                 .then(|| {
                     Some(PageSource {
-                        path: self.path_of(id)?,
+                        path: self.tabs.path_of(id)?,
                         page: position,
                         quarter_turns: 0,
                         added: false,
@@ -224,7 +227,7 @@ impl<L: DocLoader> Session<L> {
         let slot = *edits.slots().get(position as usize)?;
         match slot.source {
             0 => Some(PageSource {
-                path: self.path_of(id)?,
+                path: self.tabs.path_of(id)?,
                 page: slot.page,
                 quarter_turns: slot.quarter_turns,
                 added: false,
@@ -245,21 +248,16 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab with edits still has the file those edits are about. A tab with none has no page numbers to get wrong: reading from the file as it is now is what's wanted.
     pub fn own_file_is_current(&self, id: TabId) -> bool {
-        let Some(tab) = self.tab(id) else { return true };
+        let Some(tab) = self.tabs.tab(id) else { return true };
         if !self.lists.has_list(id) {
             return true;
         }
-        tab.file.stamp.is_none() || self.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.file.stamp
-    }
-
-    /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
-    pub fn own_stamp(&self, id: TabId) -> Option<FileStamp> {
-        self.tab(id).and_then(|tab| tab.file.stamp)
+        tab.file.stamp.is_none() || self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.file.stamp
     }
 
     /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
     pub fn saved_from(&self, id: TabId) -> Option<FileStamp> {
-        let now = self.own_stamp(id)?;
+        let now = self.tabs.own_stamp(id)?;
         self.saves.saved_from(id, now)
     }
 
@@ -284,13 +282,14 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab's pages can be edited now: it's there, more than the renderer can read its file, and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
     pub fn can_edit_pages(&self, id: TabId) -> bool {
-        self.tab(id)
+        self.tabs
+            .tab(id)
             .is_some_and(|tab| !tab.renderer_only && !matches!(tab.file.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
     }
 
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
     pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
-        let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
+        let page = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?.page;
         let one_page = self.viewing.edit_mode();
         self.edit_pages_as(id, Author::Owner, |edits| {
             if one_page {

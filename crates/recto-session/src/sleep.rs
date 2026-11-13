@@ -353,14 +353,7 @@ impl<L: DocLoader> Session<L> {
     /// Somebody's using this tab, so it's not to go dormant for a while. Agents' commands say so too.
     pub fn touch(&mut self, id: TabId) {
         let now = self.seconds_now();
-        self.touch_at(id, now);
-    }
-
-    /// [`Self::touch`], at a given time.
-    pub fn touch_at(&mut self, id: TabId, now: u32) {
-        if let Some(tab) = self.tab_mut(id) {
-            tab.touched = now;
-        }
+        self.tabs.touch_at(id, now);
     }
 
     /// The tabs that could go dormant, as they hold something: not the one on screen, and not one a save's under way on. Next to none however many tabs there are: the warm ones, and those with a list in memory.
@@ -384,7 +377,7 @@ impl<L: DocLoader> Session<L> {
     /// When the next tab comes due to go dormant, in seconds of the session, this long after it was last touched. One deadline for all of them, kept by whoever's waiting anyway. There's no timer per tab.
     pub fn next_dormant_at(&self, after: u32) -> Option<u32> {
         self.dormant_candidates()
-            .filter_map(|id| self.tab(id))
+            .filter_map(|id| self.tabs.tab(id))
             .map(|tab| tab.touched.saturating_add(after))
             .min()
     }
@@ -393,7 +386,7 @@ impl<L: DocLoader> Session<L> {
     pub fn due_dormant(&self, now: u32, after: u32) -> Vec<TabId> {
         let mut due: Vec<TabId> = self
             .dormant_candidates()
-            .filter(|id| self.tab(*id).is_some_and(|tab| tab.touched.saturating_add(after) <= now))
+            .filter(|id| self.tabs.tab(*id).is_some_and(|tab| tab.touched.saturating_add(after) <= now))
             .collect();
         due.sort_unstable_by_key(|id| id.0);
         due.dedup();
@@ -403,7 +396,7 @@ impl<L: DocLoader> Session<L> {
     /// Every tab that could go dormant, oldest touched first, for when a budget or the system won't wait.
     pub fn dormant_oldest_first(&self) -> Vec<TabId> {
         let mut all: Vec<TabId> = self.dormant_candidates().collect();
-        all.sort_unstable_by_key(|id| (self.tab(*id).map_or(0, |tab| tab.touched), id.0));
+        all.sort_unstable_by_key(|id| (self.tabs.tab(*id).map_or(0, |tab| tab.touched), id.0));
         all.dedup();
         all
     }
@@ -451,7 +444,7 @@ impl<L: DocLoader> Session<L> {
                 let mut edits = restored.edits;
                 edits.set_journal_seq(restored.seq);
                 let said_unreadable = self.lists.woken(id, edits);
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     if said_unreadable && matches!(tab.file.notice.as_deref(), Some(FileNotice::EditsUnreadable)) {
                         tab.file.notice = None;
                     }
@@ -467,7 +460,7 @@ impl<L: DocLoader> Session<L> {
             }
             _ => {
                 self.lists.wake_failed(id);
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
                 }
                 false
@@ -498,7 +491,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub(crate) fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<SleepFacts> {
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         let stamp = tab.file.stamp?;
         // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
         if tab.file.encrypted
@@ -528,7 +521,7 @@ impl<L: DocLoader> Session<L> {
         // A page from a protected file on any page means pictures of none, and it's the same for each of them.
         Some(SleepFacts {
             id,
-            path: self.path_of(id)?,
+            path: self.tabs.path_of(id)?,
             sleep,
             pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages),
         })
@@ -541,11 +534,11 @@ impl<L: DocLoader> Session<L> {
 
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.
     pub fn sleep_to_read_awake(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         if !self.dormancy.sleep_files() || tab.file.encrypted {
             return None;
         }
-        Some((tab.file.stamp?, self.path_of(id)?))
+        Some((tab.file.stamp?, self.tabs.path_of(id)?))
     }
 
     /// What's on hand to wake a cold tab from its sleep file: which file, as far as anything's known, without looking at it. `None` for a tab that isn't cold.
@@ -553,11 +546,11 @@ impl<L: DocLoader> Session<L> {
         if self.warm.contains(id) {
             return None;
         }
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         if tab.file.encrypted || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword)) {
             return None;
         }
-        Some((tab.file.stamp?, self.path_of(id)?))
+        Some((tab.file.stamp?, self.tabs.path_of(id)?))
     }
 
     /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`Self::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].
@@ -600,14 +593,14 @@ impl<L: DocLoader> Session<L> {
             renderer_only: sleep.renderer_only,
         };
         self.give_woken(id, Ok(facts), Some(sleep.file));
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.from_sleep = Some(sleep.version.unwrap_or(0));
         }
     }
 
     /// **The worker has the file open, and says how long it is.** A sleep file's word goes only until now. If it's said something else, it's gone, and the file's read: says so, for that to be done. A list's own length is compared with what that read finds, on its way in. A file read in the usual way isn't looked at, as the two readers of a damaged PDF can differ, and neither is wrong.
     pub fn file_length_is(&mut self, id: TabId, pages: u32, version: u64) -> bool {
-        let Some(tab) = self.tab_mut(id) else { return false };
+        let Some(tab) = self.tabs.tab_mut(id) else { return false };
         let Some(said) = tab.from_sleep.take() else { return false };
         // The same length and, if it said, the same version: it was right. A sleep file that didn't say is right about the length only, which is all it's been used for, its pictures having gone if they weren't.
         if tab.page_count == pages && (said == 0 || said == version) {
@@ -621,7 +614,7 @@ impl<L: DocLoader> Session<L> {
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
         self.generated.forget(id);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.from_sleep = None;
         }
         self.warm.forget(id);

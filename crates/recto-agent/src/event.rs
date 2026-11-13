@@ -177,7 +177,7 @@ impl Event {
 
 /// A tab's name for an event: the file's, untrusted.
 fn name_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<String> {
-    session.tab(id).map(|tab| tab.name.to_string())
+    session.tabs().tab(id).map(|tab| tab.name.to_string())
 }
 
 /// A tab was opened.
@@ -213,18 +213,18 @@ pub fn switched<L: DocLoader>(session: &Session<L>, switched: Option<TabId>, eve
 
 /// What watchers are told when the person moves to another page: which tab, and its page, unless it's a protected document's, whose place was read with its password.
 pub fn page_changed<L: DocLoader>(session: &Session<L>, id: TabId, page: u32) -> Event {
-    let page = (!session.withheld_from_agents(id)).then_some(page);
+    let page = (!session.tabs().withheld_from_agents(id)).then_some(page);
     Event::PageChanged { tab: id, page }
 }
 
 /// The same, for the page the tab is on now: after a jump, a step back, a go-to or a link, the page the session landed on.
 pub fn page_now<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    page_changed(session, id, session.tab(id).map_or(1, |tab| tab.page + 1))
+    page_changed(session, id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
 }
 
 /// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
 pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = (!session.withheld_from_agents(id)).then(|| session.pages_in(id));
+    let pages = (!session.tabs().withheld_from_agents(id)).then(|| session.pages_in(id));
     Event::EditsChanged {
         tab: id,
         pages,

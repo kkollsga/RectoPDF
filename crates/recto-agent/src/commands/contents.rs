@@ -145,7 +145,7 @@ fn show<A: SessionAccess>(access: &A, tab: &str, which: &str) -> Result<Value, A
         s.choose_generated(id, generated);
         let shown = matches!(s.generated_view(id), Some(GeneratedView::Ready(_) | GeneratedView::Making));
         let look = (generated && !shown)
-            .then(|| Some((s.path_of(id)?, s.tab(id)?.page_count, s.own_stamp(id))))
+            .then(|| Some((s.tabs().path_of(id)?, s.tabs().tab(id)?.page_count, s.tabs().own_stamp(id))))
             .flatten();
         Ok::<_, AgentError>((id, look))
     })?;
@@ -189,7 +189,7 @@ impl Cmd for ContentsStop {
         let access = cx.access;
         let (id, path, making) = access.with(|s| {
             let id = select(s, &self.tab)?;
-            Ok::<_, AgentError>((id, s.path_of(id), s.generated_view(id) == Some(&GeneratedView::Making)))
+            Ok::<_, AgentError>((id, s.tabs().path_of(id), s.generated_view(id) == Some(&GeneratedView::Making)))
         })?;
         // Stopped: the helper goes, and the offer's back. Nothing's read for it.
         if let (Some(generating), Some(path)) = (access.generating(), path) {
@@ -336,8 +336,8 @@ mod tests {
         let session = one_tab();
         let generated = run(&session, Actor::Person, r#"{"cmd":"contents_show","which":"generated"}"#).expect_err("no helper here");
         assert_eq!(generated.code, "no_generated_contents");
-        let id = session.lock().unwrap().active().expect("a tab");
-        assert!(!session.lock().unwrap().tab(id).expect("its tab").generated_contents, "nothing chosen");
+        let id = session.lock().unwrap().tabs().active().expect("a tab");
+        assert!(!session.lock().unwrap().tabs().tab(id).expect("its tab").generated_contents, "nothing chosen");
         assert!(session.lock().unwrap().generated_view(id).is_none(), "and nothing waited for");
         let own = run(&session, Actor::Person, r#"{"cmd":"contents_show","which":"own"}"#).expect("the file's own");
         assert_eq!(own["shown"], "own");

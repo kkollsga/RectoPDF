@@ -158,7 +158,7 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
         let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
         recto_session::compare::Comparison::check(&ids).map_err(refused)?;
         // Each pane is a live document, so each cold one is read with the session free, as a tap's is, and none with it held.
-        let reading = access.with(|s| s.active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
+        let reading = access.with(|s| s.tabs().active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
         for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
             read_ahead(access, |_| Some((id, path)))?;
         }
@@ -309,7 +309,7 @@ mod tests {
     fn side_by_side(session: &Mutex<Session<Fake>>) -> (Option<u32>, Vec<u32>) {
         let session = session.lock().unwrap();
         (
-            session.active().map(|id| id.0),
+            session.tabs().active().map(|id| id.0),
             session
                 .comparison()
                 .map(|comparison| comparison.tabs.iter().map(|id| id.0).collect())

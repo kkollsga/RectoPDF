@@ -23,7 +23,7 @@ fn page(app: &HeadlessApp) -> u64 {
         .core()
         .host
         .session
-        .with_session(|s| s.active().and_then(|id| s.tab(id)).map(|tab| tab.page));
+        .with_session(|s| s.tabs().active().and_then(|id| s.tabs().tab(id)).map(|tab| tab.page));
     u64::from(page.expect("a tab being read")) + 1
 }
 
@@ -110,7 +110,7 @@ fn back_then_forward_then_back_ends_back() {
 #[test]
 fn the_persons_back_after_a_jump_stays_back() {
     let app = thirty_pages();
-    let tab = app.core().host.session.with_session(|session| session.active()).expect("a tab");
+    let tab = app.core().host.session.with_session(|session| session.tabs().active()).expect("a tab");
     app.core().link_to_page(tab, 8, Some(0.4));
     app.act(UiAction::Menu { id: "go.back".into() });
     app.settle();
@@ -146,11 +146,11 @@ fn forward_comes_back_to_a_jump_on_the_same_page_not_yet_shown() {
     // What Back marked for Forward, and the place kept, said with a failure: a mark of 0.3 is Back's look at where the reader is, a mark of 0.8 with the
     // page view at 0.3 is the jump lost on its way to the view.
     let marked = app.core().host.session.with_session(|s| {
-        let id = s.active().expect("a tab");
+        let id = s.tabs().active().expect("a tab");
         format!(
             "forward stops {:?}, place kept {:?}",
-            s.trail_of(id).map(|trail| trail.forward().to_vec()),
-            s.place_to_show(id)
+            s.tabs().trail_of(id).map(|trail| trail.forward().to_vec()),
+            s.tabs().place_to_show(id)
         )
     });
     agent(&app, r#"{"cmd":"forward"}"#);

@@ -109,7 +109,7 @@ fn a_tab_gone_dormant_holds_no_more_than_a_cold_one() {
     });
     s.set_generated_view(a, ready());
     assert!(s.view_told_of(a, place_on(0, 0.5), 1));
-    assert_eq!(s.active(), Some(b));
+    assert_eq!(s.tabs().active(), Some(b));
     assert!(holding(&s, a).contains(&"warm"));
     assert!(holding(&s, a).contains(&"view_word"));
     assert!(s.go_dormant(a));
@@ -169,7 +169,7 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
     s.set_generated_view(a, ready());
     s.forget_read(a);
     assert_eq!(holding(&s, a), ["active", "tabs"]);
-    assert!(s.tab(a).unwrap().from_sleep.is_none());
+    assert!(s.tabs().tab(a).unwrap().from_sleep.is_none());
 }
 
 /// Failure: a restore keeps something of the tabs of the session it replaces, so a restored tab with the same number, another file, takes it as its own.

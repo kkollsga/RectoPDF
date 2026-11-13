@@ -121,10 +121,10 @@ fn renderer_view(doc: &mut DocRenderer, page_count: u32, deadline: Instant) -> R
 fn files_of<A: SessionAccess>(access: &A, tab: &str) -> Result<Vec<(PathBuf, Option<FileStamp>, bool)>, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        if s.tab(id).is_some_and(|tab| tab.renderer_only) {
+        if s.tabs().tab(id).is_some_and(|tab| tab.renderer_only) {
             return Ok(Vec::new());
         }
-        let mut files: Vec<(PathBuf, Option<FileStamp>, bool)> = s.path_of(id).map(|path| (path, s.own_stamp(id), false)).into_iter().collect();
+        let mut files: Vec<(PathBuf, Option<FileStamp>, bool)> = s.tabs().path_of(id).map(|path| (path, s.tabs().own_stamp(id), false)).into_iter().collect();
         if let Some(edits) = s.page_edits(id) {
             files.extend(edits.added_sources().iter().map(|added| (added.path.to_path_buf(), added.stamp, true)));
         }
@@ -525,7 +525,7 @@ mod tests {
         let file = recto_testpdf::TempPdf::new("renderer-only.pdf", &bytes);
         let access = Mutex::new(recto_session::Session::new(crate::loader::DrawableLoader));
         let tab = access.lock().unwrap().open(&file.0).expect("PDFium reads it");
-        assert!(access.lock().unwrap().tab(tab).unwrap().renderer_only);
+        assert!(access.lock().unwrap().tabs().tab(tab).unwrap().renderer_only);
         let out = file.0.with_file_name("copy.pdf");
         let before = LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst);
         let refused = crate::saving::save(

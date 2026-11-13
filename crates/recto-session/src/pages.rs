@@ -43,7 +43,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(toc) = self.warm.toc(id)
             && !toc.labels.is_empty()
         {
-            let file_pages = self.tab(id).map_or(0, |tab| tab.page_count);
+            let file_pages = self.tabs.tab(id).map_or(0, |tab| tab.page_count);
             if let Some(file_page) = toc.labels.find(typed, file_pages) {
                 match self.lists.get(id) {
                     None => return Some(file_page),
@@ -75,6 +75,6 @@ impl<L: DocLoader> Session<L> {
 
     /// How many pages a tab has now, counting unsaved edits.
     pub fn pages_in(&self, id: TabId) -> u32 {
-        self.lists.pages(id).or_else(|| self.tab(id).map(|t| t.page_count)).unwrap_or(0)
+        self.lists.pages(id).or_else(|| self.tabs.tab(id).map(|t| t.page_count)).unwrap_or(0)
     }
 }

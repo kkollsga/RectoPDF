@@ -53,7 +53,7 @@ impl<L: DocLoader> Session<L> {
                 } = tab;
                 TabEntry {
                     id: id.0,
-                    path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
+                    path: PathField::from_path(&self.tabs.path_of(*id).unwrap_or_default()),
                     file: stamp.map(Into::into),
                     page: *page,
                     page_count: *page_count,
@@ -178,10 +178,10 @@ impl<L: DocLoader> Session<L> {
                 },
             });
         }
-        self.tabs.set_active(record.active.map(TabId).filter(|id| self.tab(*id).is_some()));
+        self.tabs.set_active(record.active.map(TabId).filter(|id| self.tabs.tab(*id).is_some()));
         // Side by side as it was, of the tabs that came back. A record's been checked, but one tab per file can take one out.
         self.comparison = record.comparison.as_ref().and_then(|saved| {
-            let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tab(*id).is_some()).collect()).ok()?;
+            let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tabs.tab(*id).is_some()).collect()).ok()?;
             if saved.synced && saved.sync_from.len() == saved.tabs.len() {
                 comparison.synced = true;
                 comparison.sync_from = saved

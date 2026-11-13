@@ -11,7 +11,7 @@ impl<L: DocLoader> Session<L> {
         }
         // Another version of the file now: the old one's generated contents and folds aren't about it.
         self.generated.forget(id);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.folds = None;
         }
         if !self.wake_list(id) {
@@ -19,9 +19,9 @@ impl<L: DocLoader> Session<L> {
         }
         let kept = kept.or_else(|| {
             saved_as?;
-            let tab = self.tab(id)?;
+            let tab = self.tabs.tab(id)?;
             Some(edit::AddedSource {
-                path: self.path_of(id)?.into_boxed_path(),
+                path: self.tabs.path_of(id)?.into_boxed_path(),
                 page_count: tab.page_count,
                 stamp: tab.file.stamp,
                 kept: false,
@@ -50,9 +50,9 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         // What's in the new version is what was shown, page for page, so the page view goes on from where it was.
-        let before = self.tab(id).and_then(|tab| tab.file.stamp);
+        let before = self.tabs.tab(id).and_then(|tab| tab.file.stamp);
         self.saves.saved_over(id, before, now);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.file.stamp = Some(now);
             tab.page_count = pages;
             tab.page = tab.page.min(pages.saturating_sub(1));
@@ -83,15 +83,15 @@ impl<L: DocLoader> Session<L> {
         if self.is_saving(id) || self.saves.must_wait(id) {
             return Err(SessionError::Saving);
         }
-        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
+        let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         if !self.wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
-        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
-        let path = self.path_of(id).ok_or(SessionError::NoSuchTab)?;
+        let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
+        let path = self.tabs.path_of(id).ok_or(SessionError::NoSuchTab)?;
         let snapshot = match self.lists.get(id).filter(|list| list.is_edited()) {
             Some(list) => SaveSnapshot {
                 path,
@@ -184,7 +184,7 @@ impl<L: DocLoader> Session<L> {
         }
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
-            if let Some(tab) = self.tab_mut(id) {
+            if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.notice = None;
             }
             return true;
@@ -208,7 +208,7 @@ impl<L: DocLoader> Session<L> {
         }
         let place = self.place_of(id);
         self.let_go_of_list(id);
-        if let Some(tab) = self.tab_mut(id)
+        if let Some(tab) = self.tabs.tab_mut(id)
             && matches!(
                 tab.file.notice.as_deref(),
                 Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff)

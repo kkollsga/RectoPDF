@@ -132,7 +132,10 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
     assert!(!s.wake_list(a));
     assert!(s.list_is_asleep(a));
-    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+    assert_eq!(
+        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
+        Some("edits_unreadable")
+    );
     assert!(s.is_edited(a), "what's known of it stands");
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(0, 1, 1)),
@@ -150,14 +153,14 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     files.lock().unwrap().insert(name.clone(), bytes);
     assert!(s.wake_list(a));
     assert!(s.page_edits(a).is_some());
-    assert_eq!(s.tab(a).unwrap().file.notice, None, "and it's stopped saying so");
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None, "and it's stopped saying so");
     // Gone for good, and given up on by saying so.
     assert!(s.go_dormant(a));
     files.lock().unwrap().clear();
     assert!(!s.wake_list(a));
     s.discard_edits(a);
     assert!(!s.list_is_asleep(a) && !s.is_edited(a));
-    assert_eq!(s.tab(a).unwrap().file.notice, None);
+    assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
     assert!(s.journal_work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
     let mut s = session(5);
@@ -293,12 +296,12 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     const AFTER: u32 = 300;
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.touch_at(a, 100);
+    s.tabs_mut().touch_at(a, 100);
     assert_eq!(s.next_dormant_at(AFTER), Some(400));
     assert!(s.due_dormant(399, AFTER).is_empty());
     assert_eq!(s.due_dormant(400, AFTER), [a]);
     assert!(!s.due_dormant(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
-    s.touch_at(a, 200);
+    s.tabs_mut().touch_at(a, 200);
     assert_eq!(s.next_dormant_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
     s.hold(a);
@@ -412,7 +415,10 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     s.tap(a).unwrap();
     assert!(s.page_edits(a).is_none(), "it's gone");
     assert_eq!(s.pages_in(a), 5);
-    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+    assert_eq!(
+        s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
+        Some("edits_unreadable")
+    );
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
 }

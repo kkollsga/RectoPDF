@@ -174,7 +174,7 @@ fn sequence(data: &[u8]) {
         for _ in 0..times {
             step(&mut session, &mut model, by, op);
             assert_state_holds(&session, &model);
-            if session.tab(model.id).is_none() {
+            if session.tabs().tab(model.id).is_none() {
                 model = Model::new(open(&mut session), file_pages);
             }
             cost += 1 + model.slots.len() / 512;
@@ -406,7 +406,7 @@ fn identity(pages: u32) -> Vec<PageSlot> {
 }
 
 fn assert_state_holds(session: &Session<NamedLoader>, model: &Model) {
-    let Some(tab) = session.tab(model.id) else { return };
+    let Some(tab) = session.tabs().tab(model.id) else { return };
     assert_eq!(session.pages_in(model.id) as usize, model.slots.len(), "the page count isn't the model's");
     assert!(
         tab.page < session.pages_in(model.id).max(1),

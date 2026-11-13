@@ -76,7 +76,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Notes where a tab's generated contents stand. The oldest note gives way past [`MAX_GENERATED_VIEWS`], but never the active tab's.
     pub fn set_generated_view(&mut self, id: TabId, view: GeneratedView) {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return;
         }
         self.generated.set(id, view, self.tabs.active());
@@ -89,7 +89,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The same, from a look at the file as it was at `version`: dropped if the tab's file has changed since, as a look that comes back late is about the old one.
     pub fn set_generated_view_for(&mut self, id: TabId, view: GeneratedView, version: Option<FileStamp>) {
-        if version.is_none() || self.own_stamp(id) == version {
+        if version.is_none() || self.tabs.own_stamp(id) == version {
             self.set_generated_view(id, view);
         }
     }
@@ -101,7 +101,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
     pub fn choose_generated(&mut self, id: TabId, generated: bool) {
-        if let Some(tab) = self.tab_mut(id)
+        if let Some(tab) = self.tabs.tab_mut(id)
             && tab.generated_contents != generated
         {
             tab.generated_contents = generated;
@@ -114,13 +114,13 @@ impl<L: DocLoader> Session<L> {
     /// Says whether the section's open now, or `None` if it isn't one: the entry has nothing under it, or the tab's contents aren't read.
     pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) -> Option<bool> {
         let toc = self.shown_contents(id)?;
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         let chain = following_chain(&toc, tab, self.lists.get(id));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;
         }
-        let tab = self.tab_mut(id)?;
+        let tab = self.tabs.tab_mut(id)?;
         let open_now = section_open(tab.folds.as_deref(), &chain, entry);
         let mut folds: Vec<(u32, bool)> = tab.folds.take().map(Vec::from).unwrap_or_default();
         folds.retain(|(at, _)| *at != entry);
@@ -138,7 +138,7 @@ impl<L: DocLoader> Session<L> {
     /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
     fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
         let own = self.warm.toc(id)?;
-        Some(match (self.tab(id).is_some_and(|tab| tab.generated_contents), self.generated_view(id)) {
+        Some(match (self.tabs.tab(id).is_some_and(|tab| tab.generated_contents), self.generated_view(id)) {
             (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
             _ => Arc::clone(own),
         })
@@ -147,7 +147,7 @@ impl<L: DocLoader> Session<L> {
     /// What's thought of a tab's own contents, once they've been read.
     pub fn contents_verdict(&self, id: TabId) -> Option<ContentsVerdict> {
         let known = self.warm.contains(id);
-        self.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
+        self.tabs.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
     }
 }
 

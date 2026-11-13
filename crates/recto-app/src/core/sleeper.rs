@@ -397,7 +397,7 @@ impl Inner {
         if self
             .host
             .session
-            .with_session(|session| session.own_stamp(id))
+            .with_session(|session| session.tabs().own_stamp(id))
             .is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode))
         {
             return;
@@ -431,7 +431,10 @@ impl Inner {
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
     pub fn look_at_budget(&self) {
-        let (warm, active) = self.host.session.with_session(|session| (session.dormant_oldest_first(), session.active()));
+        let (warm, active) = self
+            .host
+            .session
+            .with_session(|session| (session.dormant_oldest_first(), session.tabs().active()));
         // A change of tab is when a document comes to be off screen, so that's looked at straight away.
         if self
             .sleeper
@@ -520,7 +523,11 @@ pub use crate::version_of;
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub fn look_before_showing(inner: &Inner, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+    let Some((path, stamp)) = inner
+        .host
+        .session
+        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+    else {
         return;
     };
     // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
@@ -560,7 +567,11 @@ const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
 pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+    let Some((path, stamp)) = inner
+        .host
+        .session
+        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+    else {
         return;
     };
     if !inner.sleeper.looks.start(id) {

@@ -141,7 +141,7 @@ impl<L: DocLoader> Session<L> {
     /// Moves a tab to a zero-based page, clamped to the document. A jump its page view was sent is about the page it's left.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
         let pages = self.pages_in(id);
-        let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
+        let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
         if tab.page != page {
             tab.page = page;
@@ -158,7 +158,7 @@ impl<L: DocLoader> Session<L> {
     /// views was taken in after the session thread's look sent the jump, the read having been made before the send. Which read is newer, and whether it came
     /// after a send, goes by the place clock ([`Self::view_told_of`], [`Self::jump_sent`]): the newer read wins, whoever took it in.
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
         let on_page = |stop: &trail::Stop| stop.page == tab.page;
         if let Some(jump) = self
@@ -186,7 +186,7 @@ impl<L: DocLoader> Session<L> {
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages_in(id).saturating_sub(1)), within);
-        let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
+        let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)
     }
@@ -195,7 +195,7 @@ impl<L: DocLoader> Session<L> {
     pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
-        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
+        let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
         };
         let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
@@ -214,17 +214,6 @@ impl<L: DocLoader> Session<L> {
         self.go_to(id, to.page)?;
         self.mail.jump(id, to);
         Ok(())
-    }
-
-    /// Whether a tab can go back, and forward.
-    pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
-        self.trail_of(id)
-            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
-    }
-
-    /// A tab's trail, for QA and `recto where`.
-    pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
-        self.tab(id)?.reading.trail.as_deref()
     }
 
     /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.

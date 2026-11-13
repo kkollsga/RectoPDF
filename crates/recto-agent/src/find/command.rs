@@ -175,6 +175,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
     fn here_to_the_end(&self, query: &str) -> Result<(), AgentError> {
         let (plan, needle) = self.access.with(|s| {
             let id = s
+                .tabs()
                 .active()
                 .ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?;
             Ok::<_, AgentError>((plan(s, id)?, needle(query).unwrap_or_default()))
@@ -301,7 +302,7 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
     // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
     let mut about = None;
     finding.with_results(&mut |results| about = results.tab);
-    let withheld = about.is_some_and(|tab| access.with(|s| s.withheld_from_agents(TabId(tab))));
+    let withheld = about.is_some_and(|tab| access.with(|s| s.tabs().withheld_from_agents(TabId(tab))));
     let mut value = json!(null);
     finding.with_results(&mut |results| {
         let state = match &results.end {

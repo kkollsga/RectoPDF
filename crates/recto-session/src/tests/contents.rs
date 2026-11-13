@@ -67,7 +67,7 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
             inode: 2,
         }),
     );
-    let before = s.own_stamp(id);
+    let before = s.tabs().own_stamp(id);
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     s.apply_file_status(
         id,
@@ -80,10 +80,10 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
     );
     assert!(s.generated_view(id).is_none(), "an old version's list stayed");
     // A look that started before the change comes back after it: about the old version, so it's dropped.
-    assert!(before.is_some() && s.own_stamp(id) != before);
+    assert!(before.is_some() && s.tabs().own_stamp(id) != before);
     s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), before);
     assert!(s.generated_view(id).is_none(), "a late answer about the old version was shown");
-    s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), s.own_stamp(id));
+    s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), s.tabs().own_stamp(id));
     assert!(s.generated_view(id).is_some(), "an answer about this version is shown");
 
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
@@ -172,7 +172,7 @@ fn contents_sections_fold_and_their_folds_come_back() {
     assert_eq!(shown(&again), shown(&s), "the folds come back");
     // Another version of the file: its entries aren't these, so the folds go.
     again.apply_file_status(
-        again.active().unwrap(),
+        again.tabs().active().unwrap(),
         FileStatus::Changed(FileStamp {
             size: 9,
             mtime_ns: 9,

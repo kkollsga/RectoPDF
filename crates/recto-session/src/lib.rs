@@ -49,6 +49,7 @@ use record::{
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
+pub use registry::Tabs;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

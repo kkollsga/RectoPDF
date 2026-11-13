@@ -251,7 +251,7 @@ fn not_journaled(app: &HeadlessApp) -> Vec<String> {
         ids.into_iter()
             .map(|id| {
                 let waiting = session.page_edits(id).and_then(|edits| edits.journal_waiting()).map_or(0, |(_, ops)| ops.len());
-                (session.path_of(id), session.journal_of(id).map(str::to_owned), waiting)
+                (session.tabs().path_of(id), session.journal_of(id).map(str::to_owned), waiting)
             })
             .collect::<Vec<_>>()
     });

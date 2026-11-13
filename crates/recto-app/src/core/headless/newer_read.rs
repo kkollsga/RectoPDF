@@ -24,7 +24,7 @@ fn agent(app: &HeadlessApp, line: &str) -> serde_json::Value {
 /// How far down page 5 the last stop of a tab's trail is, back or forward, with the trail said for a failure.
 fn last_stop_on_page_5(app: &HeadlessApp, back: bool) -> (f32, String) {
     app.core().host.session.with_session(|s| {
-        let trail = s.active().and_then(|id| s.trail_of(id)).cloned().unwrap_or_default();
+        let trail = s.tabs().active().and_then(|id| s.tabs().trail_of(id)).cloned().unwrap_or_default();
         let stops = if back { trail.back() } else { trail.forward() };
         let last = stops.last().expect("a stop");
         assert_eq!(last.page, 4, "on page 5: {trail:?}");
@@ -34,7 +34,12 @@ fn last_stop_on_page_5(app: &HeadlessApp, back: bool) -> (f32, String) {
 
 /// Where the session has the reader in the tab being read, how far down page 5, which is what a step would mark.
 fn here_on_page_5(app: &HeadlessApp) -> f64 {
-    let here = app.core().host.session.with_session(|s| s.active().and_then(|id| s.here(id))).expect("a place");
+    let here = app
+        .core()
+        .host
+        .session
+        .with_session(|s| s.tabs().active().and_then(|id| s.here(id)))
+        .expect("a place");
     assert_eq!(here.page, 4, "on page 5: {here:?}");
     f64::from(here.within)
 }

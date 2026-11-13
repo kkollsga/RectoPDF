@@ -41,6 +41,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
         .with(|s| {
             let id = select(s, tab)?;
             let record = s
+                .tabs()
                 .tab(id)
                 .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
             let positions = s.page_edits(id).map(|edits| {
@@ -57,6 +58,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
             Ok(TabFile {
                 id: id.0,
                 path: s
+                    .tabs()
                     .path_of(id)
                     .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?,
                 name: record.name.to_string(),
@@ -65,7 +67,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                 renderer_only: record.renderer_only,
                 positions,
                 changed: false,
-                check_against: s.page_edits(id).is_some().then(|| s.own_stamp(id)).flatten(),
+                check_against: s.page_edits(id).is_some().then(|| s.tabs().own_stamp(id)).flatten(),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.

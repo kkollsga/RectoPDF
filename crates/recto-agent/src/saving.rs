@@ -205,8 +205,8 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         let there = recto_platform::file_stamp(out).ok();
         let (own, elsewhere) = access.with(|s| {
             let id = select(s, tab)?;
-            let own = s
-                .own_stamp(id)
+            let mine = s.tabs().own_stamp(id);
+            let own = mine
                 .zip(there)
                 .is_some_and(|(mine, theirs)| mine.inode == theirs.inode && mine.device == theirs.device);
             let elsewhere = there.is_some() && s.tab_for_file(out, there).is_some_and(|other| other != id);
@@ -410,7 +410,7 @@ fn answer<L: recto_session::DocLoader>(
     level: Level,
 ) -> Value {
     let mut data = crate::edit_state_json(s, id);
-    let name = s.path_of(id).map(|path| file_label(&path)).unwrap_or_default();
+    let name = s.tabs().path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
         Writer::Append => "The changes were added to the end of the file, so everything that was in it is still there.",
         Writer::Rewrite => "The file was written anew, so what was removed is gone from it.",

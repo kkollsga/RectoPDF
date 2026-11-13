@@ -97,15 +97,15 @@ impl Said {
         let mut went = Vec::new();
         for (pane, said) in self.panes.into_iter().enumerate() {
             let own = said.hot.filter(|hot| {
-                let was = session.tab(*hot).map(|tab| tab.page);
+                let was = session.tabs().tab(*hot).map(|tab| tab.page);
                 let waits = waiting.iter().any(|(id, _)| id == hot);
                 was.is_some_and(|was| is_views_own(given.get(pane).copied().flatten(), *hot, was, waits))
             });
             // A reader's move is the session's only for the tab the session still has in that pane.
             if let (Some(id), Some(page)) = (own.filter(|id| in_panes.get(pane) == Some(id)), said.moved) {
-                let was = session.tab(id).map(|tab| tab.page);
+                let was = session.tabs().tab(id).map(|tab| tab.page);
                 if session.go_to(id, page).is_ok() {
-                    let now = session.tab(id).map_or(page, |tab| tab.page);
+                    let now = session.tabs().tab(id).map_or(page, |tab| tab.page);
                     // Announced when the page changed, and only then: a page view settling on the page the session already has is no news.
                     if was != Some(now) {
                         events.push(recto_agent::page_changed(session, id, now + 1));

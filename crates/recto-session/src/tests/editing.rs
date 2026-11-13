@@ -7,21 +7,25 @@ fn the_place_follows_the_page_being_read() {
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     s.go_to(id, 3).unwrap();
     s.edit_pages(id, |e| e.move_pages(3, 1, 0)).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
     assert!(!s.take_place_lost());
     s.edit_pages(id, |e| e.move_pages(1, 1, 3)).unwrap();
-    assert_eq!(s.tab(id).unwrap().page, 0, "another page moved, so nothing changes");
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "another page moved, so nothing changes");
     s.edit_pages(id, |e| e.delete(0, 1)).unwrap();
     assert!(s.take_place_lost(), "the page being read was deleted");
     assert!(!s.take_place_lost(), "it's only said once");
-    assert_eq!(s.tab(id).unwrap().page, 0, "the nearest there is");
+    assert_eq!(s.tabs().tab(id).unwrap().page, 0, "the nearest there is");
     s.go_to(id, 3).unwrap();
     s.edit_pages(id, |e| e.delete(3, 1)).unwrap();
     assert!(s.take_place_lost());
-    assert_eq!(s.tab(id).unwrap().page, 2, "the last page, since that was the end");
-    let before = s.tab(id).unwrap().page;
+    assert_eq!(s.tabs().tab(id).unwrap().page, 2, "the last page, since that was the end");
+    let before = s.tabs().tab(id).unwrap().page;
     assert!(s.undo_edit(id));
-    assert_eq!(s.tab(id).unwrap().page, before, "undo keeps the page in view while one comes back behind it");
+    assert_eq!(
+        s.tabs().tab(id).unwrap().page,
+        before,
+        "undo keeps the page in view while one comes back behind it"
+    );
 }
 
 /// Failure: a tab back at its file through four quarter turns still reads as edited, and the sidebar's dot and the refusal to close stay with it. Its steps can still be undone, because the list isn't dropped while it has any. And a `page move` to where it already is must leave no list behind at all.
@@ -103,7 +107,7 @@ fn waking_an_edited_tab_keeps_its_place_in_the_edited_length() {
     }
     assert_eq!(s.tier(a), Tier::Cold);
     s.tap(a).unwrap();
-    assert_eq!(s.tab(a).unwrap().page, 8);
+    assert_eq!(s.tabs().tab(a).unwrap().page, 8);
 }
 
 /// Failure: after a move or a delete, reading "page 2" reads the file's second page rather than the one now in that place.
@@ -151,7 +155,7 @@ fn a_renderer_only_file_can_be_opened_but_not_edited_or_added() {
     let mut s = Session::new(RendererOnlyLoader);
     let id = s.open(Path::new("/d/damaged.pdf")).unwrap();
     assert_eq!(s.pages_in(id), 4);
-    assert!(s.tab(id).unwrap().renderer_only);
+    assert!(s.tabs().tab(id).unwrap().renderer_only);
     assert_eq!(s.edit_pages(id, |e| e.rotate(0, 1, 1)), Err(SessionError::RendererOnly));
     assert!(!s.is_edited(id));
     let mut other = session(3);

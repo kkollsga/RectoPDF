@@ -84,9 +84,12 @@ pub fn apply_restored(
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
-                holding = host
-                    .session
-                    .with_session(|session| session.active().and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                holding = host.session.with_session(|session| {
+                    session
+                        .tabs()
+                        .active()
+                        .and_then(|id| Some((id, session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+                });
             }
         }
         Loaded::Nothing if first_time => migrate_older_settings(inner),
@@ -453,7 +456,7 @@ impl FileReads {
         if read.unlocked
             && let Reading::Restored(tab) | Reading::Tab(tab) = &read.what
         {
-            host.session.with_session(|session| session.note_password_used(*tab));
+            host.session.with_session(|session| session.tabs_mut().note_password_used(*tab));
         }
         match read.what {
             Reading::Restored(tab) => {
@@ -465,7 +468,7 @@ impl FileReads {
                 if lock(&inner.life.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                     host.session.with_session(|session| {
-                        if session.active() == Some(tab) {
+                        if session.tabs().active() == Some(tab) {
                             session.wake_active()
                         }
                     });

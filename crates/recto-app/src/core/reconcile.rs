@@ -245,7 +245,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     for engine in inner.panes.engines(&inner.engine) {
         for path in engine.take_keyless() {
             inner.host.session.with_session(|session| {
-                if let Some(id) = session.tab_for_path(&path) {
+                if let Some(id) = session.tabs().for_path(&path) {
                     session.needs_password_again(id);
                 }
             });
@@ -253,10 +253,10 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     // A protected tab showing with no password given is asked about, unless the person said Cancel and hasn't gone to it again, or its tries have run out.
     let (wants, active_tab) = inner.host.session.with_session(|session| {
-        let active = session.active();
+        let tabs = session.tabs();
         (
-            active.filter(|id| session.needs_password(*id)).and_then(|id| Some((id, session.path_of(id)?))),
-            active,
+            tabs.active().filter(|id| tabs.needs_password(*id)).and_then(|id| Some((id, tabs.path_of(id)?))),
+            tabs.active(),
         )
     });
     let asked = lock(&inner.tools.prompts.passwords).tabs_asked();
@@ -266,7 +266,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         inner
             .host
             .session
-            .with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect())
+            .with_session(|session| asked.into_iter().filter(|id| session.tabs().tab(*id).is_none()).collect())
     };
     let password_prompt = {
         let mut asks = lock(&inner.tools.prompts.passwords);
@@ -284,7 +284,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             session
                 .tabs()
                 .iter()
-                .filter_map(|tab| session.own_stamp(tab.id))
+                .filter_map(|tab| session.tabs().own_stamp(tab.id))
                 .map(|stamp| (stamp.device, stamp.inode))
                 .collect()
         });

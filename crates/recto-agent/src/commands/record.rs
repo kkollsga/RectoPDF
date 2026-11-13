@@ -159,7 +159,7 @@ impl Cmd for SessionRestore {
             return Err(restore_would_lose_owners_edits());
         }
         let restored = records.restore()?;
-        let (count, active) = cx.access.with(|session| (session.tabs().len(), session.active().map(|id| id.0)));
+        let (count, active) = cx.access.with(|session| (session.tabs().len(), session.tabs().active().map(|id| id.0)));
         Ok(json!({ "restored": restored.restored, "count": count, "active": active, "notice": restored.notice }))
     }
     fn human(data: &Value) -> String {

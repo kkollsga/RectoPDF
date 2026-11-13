@@ -24,13 +24,13 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Act
     let Command::Edit(Edit::PageRotate(mut asked)) = command else {
         return Ok(command);
     };
-    let Some(id) = session.active() else { return Ok(asked.into()) };
-    if !actor.sees_protected() && session.withheld_from_agents(id) {
+    let Some(id) = session.tabs().active() else { return Ok(asked.into()) };
+    if !actor.sees_protected() && session.tabs().withheld_from_agents(id) {
         return Err(recto_agent::protected_refusal());
     }
     asked.tab = format!("#{}", id.0);
     if session.viewing().edit_mode()
-        && let Some(tab) = session.tab(id)
+        && let Some(tab) = session.tabs().tab(id)
     {
         asked.pages = (tab.page + 1).to_string();
     }

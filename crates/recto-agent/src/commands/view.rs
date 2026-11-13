@@ -209,7 +209,7 @@ pub(crate) fn set<A: SessionAccess>(
             let was = s.viewing().view();
             let laid_out = match tab {
                 Some(selector) => Some(select(s, selector)?),
-                None => s.active(),
+                None => s.tabs().active(),
             };
             // Everything asked is checked before anything's changed, so a refused `view` changes nothing (review, 2026-11-13).
             let spread = match layout.as_deref() {
@@ -229,7 +229,7 @@ pub(crate) fn set<A: SessionAccess>(
             view.sidebar_hidden = hidden_after(sidebar.as_deref(), view.sidebar_hidden, "the sidebar")?;
             view.agent_icon_hidden = hidden_after(agent_icon.as_deref(), view.agent_icon_hidden, "the agent icon")?;
             if let Some((id, spread)) = spread
-                && s.set_spread(id, spread)
+                && s.tabs_mut().set_spread(id, spread)
             {
                 events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
             }
@@ -237,7 +237,7 @@ pub(crate) fn set<A: SessionAccess>(
             if view != was {
                 events.push(view_changed(view));
             }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.filter(|id| actor.sees_protected() || !s.withheld_from_agents(*id)).and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.filter(|id| actor.sees_protected() || !s.tabs().withheld_from_agents(*id)).and_then(|id| s.tabs().spread_of(id)).map(recto_session::record::Spread::name) }))
         })
 }
 
@@ -382,11 +382,11 @@ mod tests {
             r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#,
             r#"{"cmd":"view","paper":"dark","sidebar":"sideways"}"#,
         ] {
-            let (view, layout) = (session.viewing().view(), session.spread_of(session.active().unwrap()));
+            let (view, layout) = (session.viewing().view(), session.tabs().spread_of(session.tabs().active().unwrap()));
             let (result, events) = run(&mut session, line);
             assert_eq!(result.map_err(|error| error.code), Err("usage"), "{line}");
             assert_eq!(
-                (session.viewing().view(), session.spread_of(session.active().unwrap())),
+                (session.viewing().view(), session.tabs().spread_of(session.tabs().active().unwrap())),
                 (view, layout),
                 "{line}: nothing changed"
             );
@@ -433,12 +433,12 @@ mod tests {
         let mut session = Session::new(Fake);
         let first = session.open(&PathBuf::from("/d/a.pdf")).unwrap();
         let second = session.open(&PathBuf::from("/d/b.pdf")).unwrap();
-        assert_eq!(session.active(), Some(second));
+        assert_eq!(session.tabs().active(), Some(second));
         let (result, events) = run(&mut session, &format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{}"}}"##, first.0));
         assert_eq!(result.expect("done")["layout"], "two-up", "the named tab's layout is said");
-        assert_eq!(session.spread_of(first), Some(recto_session::record::Spread::TwoUp));
+        assert_eq!(session.tabs().spread_of(first), Some(recto_session::record::Spread::TwoUp));
         assert_eq!(
-            session.spread_of(second),
+            session.tabs().spread_of(second),
             Some(recto_session::record::Spread::Single),
             "the active tab is left as it was"
         );

@@ -58,10 +58,10 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     );
     s.viewing_mut().set_find(true, "ran", "typed but not run");
     s.viewing_mut().set_edit_mode(true);
-    s.set_view_rotation(a, 1);
-    assert!(s.set_spread(a, record::Spread::TwoUpCover));
-    assert!(!s.set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
-    s.set_selection(
+    s.tabs_mut().set_view_rotation(a, 1);
+    assert!(s.tabs_mut().set_spread(a, record::Spread::TwoUpCover));
+    assert!(!s.tabs_mut().set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
+    s.tabs_mut().set_selection(
         a,
         Some(Selection {
             from_page: 1,
@@ -84,8 +84,8 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     assert_eq!(back.to_record(), s.to_record());
     assert_eq!(back.edits_record(a), s.edits_record(a));
     assert_eq!(back.viewing().view(), s.viewing().view());
-    assert_eq!(back.spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
-    assert_eq!(back.active(), s.active());
+    assert_eq!(back.tabs().spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
+    assert_eq!(back.tabs().active(), s.tabs().active());
     assert_eq!(back.tier(a), Tier::Hot, "it's the active one");
     assert!(back.warm_tabs().next().is_none(), "and nothing's been opened");
     assert_eq!(back.page_edits(a).unwrap().slots(), s.page_edits(a).unwrap().slots());
@@ -117,7 +117,7 @@ fn restoring_opens_no_file() {
     back.restore(&record, HashMap::new()).unwrap();
     assert_eq!(back.loader.loads.get(), 0, "nothing read");
     assert_eq!(back.tabs().len(), 1000);
-    assert_eq!(back.active(), Some(ids[500]));
+    assert_eq!(back.tabs().active(), Some(ids[500]));
     assert!(ids.iter().filter(|id| **id != ids[500]).all(|id| back.tier(*id) == Tier::Cold));
     assert_eq!(back.to_record(), record);
     assert_eq!(back.warm_tabs().count(), 0);
@@ -133,13 +133,13 @@ fn a_tab_whose_journal_cant_be_read_says_so() {
     write_journal(&mut s, &mut files);
     let mut back = journaled(5);
     back.restore(&s.to_record(), HashMap::new()).unwrap();
-    assert_eq!(back.tab_notice(a).unwrap().code(), "edits_unreadable");
+    assert_eq!(back.tabs().tab_notice(a).unwrap().code(), "edits_unreadable");
     assert!(!back.is_edited(a));
     let mut torn = back_from(&files);
     torn.values_mut().next().unwrap().lost_lines = true;
     let mut partly = journaled(5);
     partly.restore(&s.to_record(), torn).unwrap();
-    assert_eq!(partly.tab_notice(a).unwrap().code(), "edits_unreadable");
+    assert_eq!(partly.tabs().tab_notice(a).unwrap().code(), "edits_unreadable");
     assert!(partly.is_edited(a), "what could be read is here");
 }
 
@@ -152,7 +152,7 @@ fn a_restored_page_is_held_to_the_document() {
     saved.tabs[0].page = u32::MAX;
     let mut back = session(5);
     back.restore(&saved, HashMap::new()).unwrap();
-    assert_eq!(back.tab(a).unwrap().page, 4);
+    assert_eq!(back.tabs().tab(a).unwrap().page, 4);
     saved.active = Some(999);
     assert!(back.restore(&saved, HashMap::new()).is_err());
 }
@@ -178,7 +178,7 @@ fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
     s.restore(&record, HashMap::new()).unwrap();
     // As the agent's restore does next.
     s.wake_active();
-    assert_eq!(s.tab(a).unwrap().name.as_ref(), "other");
+    assert_eq!(s.tabs().tab(a).unwrap().name.as_ref(), "other");
     assert_eq!(s.generated_view(a), None, "nothing's known of the restored file's generated contents");
     let shown: Vec<&str> = s
         .sidebar()
@@ -258,7 +258,11 @@ fn a_restored_tab_wasnt_saved_over_by_the_tab_it_replaced() {
     }
     assert!(s.saved_from(a).is_some());
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
-    assert_eq!(s.own_stamp(a), Some(replaced_stamp(0)), "the restored tab is on the version the save wrote");
+    assert_eq!(
+        s.tabs().own_stamp(a),
+        Some(replaced_stamp(0)),
+        "the restored tab is on the version the save wrote"
+    );
     assert_eq!(s.saved_from(a), None);
 }
 

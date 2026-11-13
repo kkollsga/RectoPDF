@@ -68,7 +68,7 @@ fn the_windows_closes_are_the_agents_commands() {
         .core()
         .host
         .session
-        .with_session(|session| session.path_of(recto_session::TabId(tab)))
+        .with_session(|session| session.tabs().path_of(recto_session::TabId(tab)))
         .expect("its file");
     let before = std::fs::read(&file).expect("the file");
     twins.person.act(UiAction::CloseAnswered {

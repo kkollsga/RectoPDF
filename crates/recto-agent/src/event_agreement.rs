@@ -169,8 +169,8 @@ fn page_changed_is_the_real_page_and_nothing_for_a_protected_document() {
     session.jump(a, 0, 0.0).unwrap();
     session.jump(a, 99, 0.0).unwrap();
     assert_eq!(event::page_now(&session, a), Event::PageChanged { tab: a, page: Some(10) });
-    session.note_password_used(b);
-    assert!(session.withheld_from_agents(b));
+    session.tabs_mut().note_password_used(b);
+    assert!(session.tabs().withheld_from_agents(b));
     assert_eq!(event::page_now(&session, b), Event::PageChanged { tab: b, page: None });
     assert_eq!(event::page_now(&session, b).to_json()["page"], Value::Null);
 }
