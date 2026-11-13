@@ -226,7 +226,8 @@ mod tests {
         };
         std::fs::copy(&own, &elsewhere).unwrap();
         let refused = run(app.core(), &format!("open \"{}\"", elsewhere.display())).expect_err("opening a file that isn't a test's");
-        assert_eq!(refused.code, "usage");
+        // Refused by the confined session's one rule first, as every route refuses a file outside a quiet run's folders.
+        assert_eq!(refused.code, "outside_quiet_run");
         // A file that isn't a test's doesn't open in a quiet run at all (the session's wall, 2026-11-13), so the wall's "with one open" is a second line
         // nothing reaches now; it stays, for a session that was never confined.
         app.open(&elsewhere);
