@@ -1,52 +1,72 @@
-//! **Side by side, as the session thread does it:** a tab joining or leaving, the pane being read and synced scroll. Each pane's layout is `view`'s.
+//! **Side by side, as the person does it** (step R2.3, C5e): a ⌘-click or ⌃-click on a tab's row is `compare --toggle`, moving into a pane to read it is
+//! `compare --reading`, and the context menu's separate or synced scroll is `compare --sync`, the commands an agent sends, run for the person. A pane's cold
+//! file is read off the session thread, and the command runs again once it's in, as a tap's does. Each pane's layout is `view`'s.
 
-use super::*;
+use super::{Inner, lock, person};
+use recto_agent::commands::{Move, compare::Compare};
+use recto_agent::{AgentError, Command};
+use recto_session::TabId;
+use recto_session::compare::CompareError;
+use std::sync::Arc;
 
-/// `CoreCall::CompareClick`, on the session thread.
-pub fn compare_click(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    // The tab joining, or the pane read next if the one read leaves, is read first with the session free, as a tap's is.
-    let cold = host.session.with_session(|session| session.wake_for_compare_click(id));
-    match cold {
-        Some((tab, path)) => {
-            reads.wanted_tab = Some(tab);
-            reads.start(inner, Reading::Compare(id, tab), path);
-        }
-        None => compare_click_now(inner, id, events),
+/// **What the window says when a person's ⌘-click couldn't be done:** why, by the page, in the session's words for a comparison (a fourth pane), as the
+/// ⌘-click always said. A pane that couldn't be read, or scroll with no comparison to sync, said nothing and says nothing.
+pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+    if let (Command::Move(Move::Compare(Compare { toggle: Some(_), .. })), Some(error)) = (ran.command, ran.refused())
+        && let Some(words) = compare_words(error)
+    {
+        *lock(&inner.window.action_notice) = Some(words.to_string());
     }
 }
 
-/// `CoreCall::FocusPane`, on the session thread.
-pub fn focus_pane(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    let cold = host.session.with_session(|session| {
-        session
-            .comparison()
-            .is_some_and(|comparison| comparison.contains(id))
-            .then(|| session.wake_for_tap(id))
-            .flatten()
-    });
-    match cold {
-        Some((tab, path)) => {
-            reads.wanted_tab = Some(tab);
-            reads.start(inner, Reading::Pane(tab), path);
-        }
-        None => {
-            events.extend(
-                host.session
-                    .with_session(|session| session.focus_pane(id).then(|| recto_agent::event::tab_activated(session, id))),
-            );
-        }
-    }
+/// The session's words for a comparison that can't be as asked, by the refusal's code.
+fn compare_words(error: &AgentError) -> Option<&'static str> {
+    [CompareError::TooMany, CompareError::TooFew, CompareError::NoSuchTab, CompareError::SameTabTwice]
+        .into_iter()
+        .find(|known| known.code() == error.code)
+        .map(CompareError::message)
 }
 
-/// `CoreCall::SetSynced`, on the session thread.
-pub fn set_synced(inner: &Arc<Inner>, on: bool, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    events.extend(host.session.with_session(|session| {
-        session
-            .set_compare_synced(on)
-            .filter(|changed| *changed)
-            .map(|_| recto_agent::event::comparison_changed(session))
-    }));
+/// **A person's comparison runs once its pane's read is in,** whatever they've asked for meanwhile, as the window's ⌘-click and move into a pane always did:
+/// unlike a tap, it isn't dropped for a tab asked for since.
+pub fn runs_once_read(command: &Command) -> bool {
+    matches!(command, Command::Move(Move::Compare(_)))
+}
+
+impl Inner {
+    /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
+    pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {
+        person::submit(
+            self,
+            Compare {
+                toggle: Some(format!("#{}", tab.0)),
+                ..Compare::default()
+            }
+            .into(),
+        );
+    }
+
+    /// The reader's moved into another pane, by the pointer or a scroll: `compare --reading`, that pane's tab the one read. Nothing on screen moves.
+    pub fn pane_read_for_person(self: &Arc<Self>, tab: TabId) {
+        person::submit(
+            self,
+            Compare {
+                reading: Some(format!("#{}", tab.0)),
+                ..Compare::default()
+            }
+            .into(),
+        );
+    }
+
+    /// The context menu's separate or synced scroll: `compare --sync off|on`.
+    pub fn synced_for_person(self: &Arc<Self>, on: bool) {
+        person::submit(
+            self,
+            Compare {
+                sync: Some(if on { "on" } else { "off" }.into()),
+                ..Compare::default()
+            }
+            .into(),
+        );
+    }
 }

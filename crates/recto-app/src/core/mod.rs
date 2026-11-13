@@ -34,7 +34,6 @@ mod unlocking;
 mod viewing;
 pub mod zoom;
 
-use comparison::*;
 pub use host::*;
 use opening::*;
 pub use reconcile::*;

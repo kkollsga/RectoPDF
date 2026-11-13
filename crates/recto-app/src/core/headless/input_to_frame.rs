@@ -141,8 +141,9 @@ fn measure(tabs: usize) {
     app.act(UiAction::Row { row: b.clone(), adding: true });
     app.settle();
     case(&app, "pane focus", tabs, nothing, |app, first| {
-        let tab = recto_session::TabId(if first { a.tab } else { b.tab });
-        app.core().core.push(crate::queue::CoreCall::FocusPane(tab));
+        app.act(UiAction::PaneRead {
+            tab: if first { a.tab } else { b.tab },
+        });
     });
     app.act(UiAction::Row { row: a.clone(), adding: false });
     app.settle();

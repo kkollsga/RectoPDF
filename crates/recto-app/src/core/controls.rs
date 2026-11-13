@@ -18,6 +18,8 @@ pub enum UiAction {
     Menu { id: String },
     /// A sidebar row tapped, or ⌘- or ⌃-clicked (`adding`).
     Row { row: SidebarRow, adding: bool },
+    /// The reader's moved into another pane, by the pointer or a scroll, as the page views report it: that pane's tab.
+    PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.
     Chevron { first: u32 },
     /// A file to open: the Open panel's, a drop, the Finder's.
@@ -81,6 +83,10 @@ impl Inner {
             }
             UiAction::Row { row, adding: true } => {
                 self.tap_row_adding(row);
+                Acted::DONE
+            }
+            UiAction::PaneRead { tab } => {
+                self.pane_read_for_person(recto_session::TabId(tab));
                 Acted::DONE
             }
             UiAction::Chevron { first } => {

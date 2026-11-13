@@ -256,7 +256,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::Read(read) => {
                 // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
-                if let Some(run) = reads.finished(inner, *read, &mut events) {
+                if let Some(run) = reads.finished(inner, *read) {
                     let _ = person::run(inner, &mut reads, run, &mut events);
                 }
             }
@@ -277,9 +277,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
-            CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
-            CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
@@ -446,13 +443,13 @@ impl FileReads {
     }
 
     /// Takes a read in, and says the person's command it was for, if one's to run again now.
-    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) -> Option<crate::queue::PersonCommand> {
+    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
         inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
         let host = &inner.host;
         // Read with a password: the tab's marked before anything read takes its place, so no agent can see it.
         if read.unlocked
-            && let Reading::Restored(tab) | Reading::Tab(tab) | Reading::Compare(_, tab) | Reading::Pane(tab) = &read.what
+            && let Reading::Restored(tab) | Reading::Tab(tab) = &read.what
         {
             host.session.with_session(|session| session.note_password_used(*tab));
         }
@@ -474,31 +471,16 @@ impl FileReads {
             }
             Reading::Tab(tab) => {
                 let then = self.then.remove(&Reading::Tab(tab));
-                // Only if it's still what's wanted. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
+                // Only if it's still what's wanted, or a comparison's. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
                 if let Some(command) = then
-                    && self.wanted_tab == Some(tab)
+                    && (self.wanted_tab == Some(tab) || super::comparison::runs_once_read(&command))
                 {
-                    self.wanted_tab = None;
+                    if self.wanted_tab == Some(tab) {
+                        self.wanted_tab = None;
+                    }
                     host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
                     return Some(person::read_in(*command, None));
                 }
-            }
-            Reading::Compare(clicked, tab) => {
-                host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                if self.wanted_tab == Some(tab) {
-                    self.wanted_tab = None;
-                }
-                compare_click_now(inner, clicked, events);
-            }
-            Reading::Pane(tab) => {
-                host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                if self.wanted_tab == Some(tab) {
-                    self.wanted_tab = None;
-                }
-                events.extend(
-                    host.session
-                        .with_session(|session| session.focus_pane(tab).then(|| recto_agent::event::tab_activated(session, tab))),
-                );
             }
             Reading::File(path) => {
                 let command = self.then.remove(&Reading::File(path.clone()))?;

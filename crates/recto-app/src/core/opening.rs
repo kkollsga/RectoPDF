@@ -152,7 +152,7 @@ impl Inner {
     /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
     pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow) {
         match row.kind {
-            crate::RowKind::Tab => self.core.push(CoreCall::CompareClick(TabId(row.tab))),
+            crate::RowKind::Tab => self.compare_toggle_for_person(TabId(row.tab)),
             crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),
         }
     }

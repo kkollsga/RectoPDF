@@ -16,16 +16,6 @@ pub fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut
     }
 }
 
-/// What a ⌘-click on a tab does, once whatever it needs from disk is here. Too many panes is said by the page, and goes by itself.
-pub fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
-    let outcome = inner.host.session.with_session(|session| session.toggle_compare(id));
-    match outcome {
-        Ok(recto_session::compare::CompareChange::Nothing) => {}
-        Ok(_) => events.push(inner.host.session.with_session(|session| recto_agent::event::comparison_changed(session))),
-        Err(error) => *lock(&inner.window.action_notice) = Some(error.message().to_string()),
-    }
-}
-
 /// The session's word for a layout, as the page view has it.
 pub fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
     match spread {

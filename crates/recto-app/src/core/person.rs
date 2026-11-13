@@ -65,6 +65,7 @@ const ANSWERED: &[fn(&Inner, &Ran<'_>)] = &[
     super::opening::answered,
     super::closing::answered,
     super::editing::answered,
+    super::comparison::answered,
 ];
 
 fn answered(inner: &Inner, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {

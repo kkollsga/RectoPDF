@@ -1593,7 +1593,7 @@ impl AppCore {
 impl AppCore {
     /// The pane being read changed, by the pointer or a scroll: the session's told on its own thread, and nothing waits.
     fn focus_moved(&self, tab: TabId) {
-        self.inner.core.push(CoreCall::FocusPane(tab));
+        self.inner.act(UiAction::PaneRead { tab: tab.0 });
     }
 }
 

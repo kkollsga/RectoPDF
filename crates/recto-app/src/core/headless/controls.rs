@@ -13,24 +13,25 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::Menu { .. } => 0,
         UiAction::Row { adding: false, .. } => 1,
         UiAction::Row { adding: true, .. } => 2,
-        UiAction::Chevron { .. } => 3,
-        UiAction::Open { .. } => 4,
-        UiAction::OpenRecent { .. } => 5,
-        UiAction::FindTyped { .. } => 6,
-        UiAction::FindOpen => 7,
-        UiAction::FindClose => 8,
-        UiAction::FindReturn { .. } => 9,
-        UiAction::FindChoose { .. } => 10,
-        UiAction::PageTyped { .. } => 11,
-        UiAction::Swiped { .. } => 12,
-        UiAction::ZoomTyped { .. } => 13,
-        UiAction::ToggleSidebar => 14,
-        UiAction::PaletteRun { .. } => 15,
-        UiAction::CloseAnswered { .. } => 16,
-        UiAction::SaveAs { .. } => 17,
-        UiAction::SettingChosen { .. } => 18,
+        UiAction::PaneRead { .. } => 3,
+        UiAction::Chevron { .. } => 4,
+        UiAction::Open { .. } => 5,
+        UiAction::OpenRecent { .. } => 6,
+        UiAction::FindTyped { .. } => 7,
+        UiAction::FindOpen => 8,
+        UiAction::FindClose => 9,
+        UiAction::FindReturn { .. } => 10,
+        UiAction::FindChoose { .. } => 11,
+        UiAction::PageTyped { .. } => 12,
+        UiAction::Swiped { .. } => 13,
+        UiAction::ZoomTyped { .. } => 14,
+        UiAction::ToggleSidebar => 15,
+        UiAction::PaletteRun { .. } => 16,
+        UiAction::CloseAnswered { .. } => 17,
+        UiAction::SaveAs { .. } => 18,
+        UiAction::SettingChosen { .. } => 19,
     };
-    (place, 19)
+    (place, 20)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -61,9 +62,11 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
     actions.extend([
         UiAction::Row { row: contents, adding: false },
         UiAction::Row {
-            row: row.clone(),
+            row: rows[1].clone(),
             adding: true,
         },
+        // A ⌘-click puts the two side by side, and the reader moves into the other pane: `compare --toggle` and `--reading` (C5e).
+        UiAction::PaneRead { tab },
         UiAction::Chevron { first: 0 },
         UiAction::Open { path: a.clone() },
         UiAction::OpenRecent { key: "0".repeat(16) },
