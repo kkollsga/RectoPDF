@@ -158,7 +158,8 @@ impl Drop for SessionThreadHeldAside {
 
 impl HeadlessApp {
     /// **[`Self::hold_session_thread`], held from a thread of its own,** so it can be let go from inside a command the test runs, which the test's own
-    /// hold, a lock on its thread, can't be.
+    /// hold, a lock on its thread, can't be. Asked, like that one, with nothing queued for the session thread: a call queued ahead of the hold's own stops at
+    /// its look at what's overheard, which the hold has, and never gets to the held call.
     ///
     /// # Panics
     ///
@@ -168,15 +169,18 @@ impl HeadlessApp {
         let inner = std::sync::Arc::clone(self.core());
         let (held_tx, held_rx) = std::sync::mpsc::channel();
         let (go, go_rx) = std::sync::mpsc::channel::<()>();
-        let holder = std::thread::spawn(move || {
-            let overheard = crate::lock(&inner.serving.heard);
-            let parked = std::sync::Arc::new(crate::queue::Flushed::default());
-            inner.core.push(crate::queue::CoreCall::Flush(std::sync::Arc::clone(&parked)));
-            let _ = held_tx.send(parked.wait(super::headless::WAIT_LIMIT));
-            // Held until the sender's let go of.
-            let _ = go_rx.recv();
-            drop(overheard);
-        });
+        let holder = std::thread::Builder::new()
+            .name("recto-test-hold".into())
+            .spawn(move || {
+                let overheard = crate::lock(&inner.serving.heard);
+                let parked = std::sync::Arc::new(crate::queue::Flushed::default());
+                inner.core.push(crate::queue::CoreCall::Flush(std::sync::Arc::clone(&parked)));
+                let _ = held_tx.send(parked.wait(super::headless::WAIT_LIMIT));
+                // Held until the sender's let go of.
+                let _ = go_rx.recv();
+                drop(overheard);
+            })
+            .expect("the hold's thread");
         assert_eq!(
             held_rx.recv().ok(),
             Some(true),
