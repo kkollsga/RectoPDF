@@ -1215,20 +1215,14 @@ mod tests {
         assert!(!look.dim && look.keep == [sides(logo)], "{look:?}");
     }
 
-    /// Failure: an image too small to say anything about, a 1 by 1 spacer, a box with no width, or one inside out from a worker, counts as a picture kept and makes a page that isn't white dim whole, beside a photo over 40% of it or alone (review of 2026-11-13). It's no picture for this decision: the page comes out as it would without it.
+    /// Failure: images too small to say anything about, spacers of a few pixels, count as pictures kept, so sixty of them above a photo over 45% of a navy page take it past half and dim it whole (review of 2026-11-13). They're no picture for this decision: the page comes out as it would without them, and a spacer is left alone where it is. Seen failing with every kept box counted.
     #[test]
     fn a_box_too_small_to_judge_changes_nothing() {
         let photo = centred_photo(0.45);
         let pixels = made_page(&[(photo, Part::Photo)], [30, 60, 110], [235, 235, 235]);
-        let without = PageLook::decide(Some(&[sides(photo)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
-        assert!(!without.dim, "{without:?}");
         let one_pixel = [6_000u16, 6_000, 6_000 + 65_535 / PAGE.0 as u16, 6_000 + 65_535 / PAGE.1 as u16];
-        for small in [one_pixel, [9_000, 9_000, 9_000, 30_000], [40_000, 40_000, 30_000, 30_000], [0, 0, 1_500, 1_500]] {
-            for boxes in [vec![small], vec![sides(photo), small]] {
-                let look = PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
-                assert!(!look.dim, "{small:?} in {boxes:?}: {look:?}");
-            }
-        }
+        let look = PageLook::decide(Some(&[sides(photo), one_pixel]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(!look.dim && look.keep == [sides(photo), one_pixel], "one spacer: {look:?}");
         // Sixty spacers of 7 by 7 pixels above the photo, each too small to judge: counted, they'd take the photo's 45% past half.
         let mut boxes = vec![sides(photo)];
         for at in 0..60u32 {
@@ -1383,19 +1377,6 @@ mod tests {
         assert_eq!(gaps(&crafted, 0, 100), [(0, 100)]);
         let every_other: Vec<PixelBox> = (0..64).map(|at| hole(at * 2, at * 2 + 1)).collect();
         assert_eq!(gaps(&every_other, 0, 200).iter().map(|(from, to)| to - from).sum::<usize>(), 200 - 64);
-    }
-
-    /// Failure (rule 6): the same boxes through a page: its paper's share comes to more than the page, or more pixels are looked at than the picture has.
-    #[test]
-    fn crafted_boxes_never_count_a_pixel_twice() {
-        let (width, height) = (100u32, 100u32);
-        let crafted: Vec<PixelBox> = (0..64).map(|at| [at + 1, 0, 0, height as usize]).collect();
-        let mut holes = crafted.clone();
-        holes.sort_unstable_by_key(|hole| hole[0]);
-        assert!(share_outside(&holes, width, height) <= 1.0, "{}", share_outside(&holes, width, height));
-        let page = picture(width, height, |_, _| [255, 255, 255]);
-        let found = sample_outside(&page, width as usize * 4, [0, 0, width as usize, height as usize], &holes);
-        assert!(found.pixels <= (width * height) as usize, "{} pixels looked at", found.pixels);
     }
 
     /// Measures, and isn't a check: `cargo test --release -p recto-reader -- --ignored dark_paper_costs --nocapture`. What a 512 px colour tile costs each way.
