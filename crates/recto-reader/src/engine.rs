@@ -297,7 +297,7 @@ impl Engine {
         let when = asked();
         self.shared.after_asking(Ask::Activate);
         let mut reader = lock(&self.shared.reader);
-        lock(&self.shared.pending).follow = None;
+        drop_follows_asked_before(&self.shared, when);
         newest(&self.shared.applied.place, when);
         reader.activate(tab, pages, page, map, warm, saved, spread);
         self.after(reader);
@@ -1152,7 +1152,8 @@ mod tests {
     }
 
     /// Failure: a follow asked for the tab a pane showed before another tab moved into it reaches the view after the tab change by the UI thread's own way
-    /// (the lock free when it got there), and lands that tab's place on the new one; and the guard must not stop a follow asked after the tab change.
+    /// (the lock free when it got there), and lands that tab's place on the new one; and the guard must not stop a follow asked after the tab change, by
+    /// either route: now, or (review round 2) left pending while the tab change, asked first, waited for the lock, which then dropped it.
     #[test]
     fn a_follow_asked_before_another_tab_comes_isnt_applied_to_it_and_one_after_is() {
         let other = || PageMap {
@@ -1171,6 +1172,23 @@ mod tests {
         assert_eq!(engine.reading_anchor(), Some((3, 0.0)), "the new tab stays on its page");
         assert!(engine.follow_soon(20, 0.25), "free: now");
         assert_eq!(engine.reading_anchor(), Some((20, 0.25)), "a follow asked after the tab change lands");
+        let engine = without_its_thread();
+        engine.qa().hold_asks(Ask::Activate, true);
+        std::thread::scope(|scope| {
+            let activating = scope.spawn(|| engine.activate(2, 40, 3, other(), &[], None, crate::layout::Spread::Single));
+            assert!(engine.qa().wait_for_held_asks(1), "the tab change asked");
+            engine.qa().hold_busy(true);
+            assert!(!engine.follow_soon(20, 0.25), "busy: left pending");
+            engine.qa().hold_busy(false);
+            engine.qa().hold_asks(Ask::Activate, false);
+            activating.join().unwrap();
+        });
+        assert_eq!(engine.hot_tab(), Some(2));
+        assert_eq!(
+            engine.reading_anchor(),
+            Some((20, 0.25)),
+            "a follow asked after the tab change and left pending lands"
+        );
     }
 
     /// Failure (review round 1, note 8): an agent's zoom from another thread, asked before the person's pinch settled in another pane, gets the lock after
