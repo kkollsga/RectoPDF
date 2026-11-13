@@ -22,6 +22,8 @@ mod workers;
 pub use keys::{FileIdentity, Keyring, MAX_KEYS};
 pub use links::Links;
 pub use points::Points;
+#[cfg(any(test, feature = "qa"))]
+pub use qa_holds::Qa;
 use run::run_guarded;
 pub use selection::Selection;
 pub use waking::Wake;
@@ -74,9 +76,16 @@ struct Shared {
     stopping: AtomicBool,
     /// What a comparison's other panes asked of this view from the UI thread while its own thread held it: the latest of each, taken by that thread the next time it holds its lock. See [`Engine::follow_soon`].
     pending: Mutex<Pending>,
-    /// For QA ([`Engine::hold_busy`]): this view acts as though its own thread held it at every call from the UI thread and hadn't come round since. Only with the `qa` feature (or in this crate's tests): a release app has no such field.
+    /// For QA ([`Qa::hold_busy`]): this view acts as though its own thread held it at every call from the UI thread and hadn't come round since. Only with the `qa` feature (or in this crate's tests): a release app has no such field.
     #[cfg(any(test, feature = "qa"))]
     qa_busy: AtomicBool,
+}
+
+/// A tick of the order in which things are asked of a page view, taken before its lock is waited for, so "newer" is when something was asked and not who got
+/// the lock. Its own count: the place clock ([`crate::tiles::place_stamp`]) ticks when a place is sent, and nothing asked here sends one yet.
+fn asked() -> u64 {
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    ASKED.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// What's waiting for a page view that was busy when the UI thread asked. Only the latest of each counts.
@@ -84,6 +93,8 @@ struct Shared {
 struct Pending {
     /// Synced scroll's place: a page and how far down it.
     follow: Option<(u32, f64)>,
+    /// When `follow` was asked for ([`asked`]): a jump drops only a follow asked before the jump was, whoever then gets the lock first.
+    follow_asked: u64,
     /// The one zoom of a comparison.
     zoom: Option<f64>,
     /// Another pane took the selection.
@@ -196,9 +207,9 @@ impl Engine {
         self.after(reader);
     }
 
-    /// The tab showing's magnification.
+    /// The tab showing's magnification, counting what's pending ([`Self::places`]): it's read to decide by (the one zoom of a comparison), so a zoom another pane left for this view counts.
     pub fn magnification(&self) -> Option<f64> {
-        lock(&self.shared.reader).docs.shown().map(|doc| doc.magnification())
+        read_place(&self.shared, |reader| reader.docs.shown().map(|doc| doc.magnification()))
     }
 
     /// Where the reader is in the tab showing, as a page and how far down it, counting what's pending ([`Self::places`]).
@@ -208,8 +219,12 @@ impl Engine {
 
     /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
     pub fn follow_soon(&self, page: u32, within: f64) -> bool {
+        let when = asked();
         self.now_or_soon(
-            |pending| pending.follow = Some((page, within)),
+            |pending| {
+                pending.follow = Some((page, within));
+                pending.follow_asked = when;
+            },
             |reader, pending| {
                 pending.follow = None;
                 reader.follow(page, within);
@@ -311,6 +326,8 @@ impl Engine {
     /// Zooms, wherever it's asked from. Says what to.
     pub fn zoom(&self, zoom: Zoom) -> Option<f64> {
         let mut reader = lock(&self.shared.reader);
+        // This is newer than a zoom (or a place) another pane left for this view: it goes first, so a step is from where the view was asked to be and the older ask doesn't land after.
+        apply_pending(&self.shared, &mut reader);
         let value = reader.zoom(zoom);
         self.after(reader);
         value
@@ -348,9 +365,10 @@ impl Engine {
     }
 
     pub fn jump_to(&self, page: u32) {
+        let when = asked();
         let mut reader = lock(&self.shared.reader);
-        // Newer than any place synced scroll left for this view, which would otherwise land after it.
-        lock(&self.shared.pending).follow = None;
+        // Newer than any place synced scroll left for this view before this was asked, which would otherwise land after it.
+        drop_follows_asked_before(&self.shared, when);
         reader.jump_to(page, 0.0);
         self.after(reader);
     }
@@ -359,12 +377,7 @@ impl Engine {
     /// place clock had come to once it was sent, taken with the lock still held, so every read of this view's places after it carries that stamp or a later
     /// one and every read before it an earlier one; `None` if it wasn't sent, with no tab showing.
     pub fn jump_within(&self, page: u32, within: f64) -> Option<u64> {
-        let mut reader = lock(&self.shared.reader);
-        // Newer than any place synced scroll left for this view, to a page's top as much as a way down it.
-        lock(&self.shared.pending).follow = None;
-        let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
-        self.after(reader);
-        sent
+        jump_after(self, asked(), page, within)
     }
 
     pub fn set_paper(&self, paper: PaperKind) {
@@ -512,9 +525,26 @@ fn read_place<T>(shared: &Shared, read: impl FnOnce(&Reader) -> T) -> T {
     value
 }
 
-/// The view's own thread takes what the UI thread left for this view, with the lock held. Says whether there was any. Held off by [`Engine::hold_busy`].
+/// The view's own thread takes what the UI thread left for this view, with the lock held. Says whether there was any. Held off by [`Qa::hold_busy`].
 fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
     !shared.held_busy() && apply_pending(shared, reader)
+}
+
+/// A jump to a place in a page, with the tick of when it was asked taken before the lock was waited for: drops only a follow asked before it.
+fn jump_after(engine: &Engine, when: u64, page: u32, within: f64) -> Option<u64> {
+    let mut reader = lock(&engine.shared.reader);
+    drop_follows_asked_before(&engine.shared, when);
+    let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
+    engine.after(reader);
+    sent
+}
+
+/// Drops a follow synced scroll left that was asked before `when`. One asked after stays, whoever got the lock first.
+fn drop_follows_asked_before(shared: &Shared, when: u64) {
+    let mut pending = lock(&shared.pending);
+    if pending.follow_asked < when {
+        pending.follow = None;
+    }
 }
 
 /// Applies what the UI thread left for this view, with the lock held. Says whether there was any.
@@ -779,6 +809,62 @@ mod tests {
         let held = engine.shared.reader.lock().unwrap();
         drop(held);
         assert!(lock(&engine.shared.pending).follow.is_none());
+    }
+
+    /// Failure: an older synced zoom lands after a newer one. A pinch in another pane leaves `zoom_soon(1.5)` pending for this busy pane, the person then
+    /// presses ⌘+ here: the zoom stepped from the magnification before the pending one, then the pane's thread applied 1.5 over it, so this pane ended at 1.5
+    /// while the others got the ⌘+ value. The newer ask applies what's pending first, and what's read to decide anything (`magnification`) counts it.
+    #[test]
+    fn a_newer_zoom_goes_from_and_over_a_zoom_left_pending() {
+        let engine = without_its_thread();
+        let held = engine.shared.reader.lock().unwrap();
+        assert!(!engine.zoom_soon(1.5));
+        drop(held);
+        assert_eq!(engine.magnification(), Some(1.5), "a read to decide by counts what the pane was asked");
+        assert!(lock(&engine.shared.pending).zoom.is_none(), "and takes it in");
+        let held = engine.shared.reader.lock().unwrap();
+        assert!(!engine.zoom_soon(1.2));
+        drop(held);
+        let value = engine.zoom(Zoom::In).expect("zoomed");
+        assert!(
+            (value - 1.2 * crate::tiles::ZOOM_STEP).abs() < 1e-9,
+            "a step from the zoom the pane was asked for, not from before it: {value}"
+        );
+        let mut reader = lock(&engine.shared.reader);
+        assert!(
+            !take_pending_follow(&engine.shared, &mut reader),
+            "nothing older left to land after the newer zoom"
+        );
+        assert_eq!(reader.docs.shown().map(|doc| doc.magnification()), Some(value));
+    }
+
+    /// Failure: a jump drops a follow the person asked for after it. The jump blocks on the lock while the person's scroll in another pane leaves a newer
+    /// follow pending, and then clears it: "newer" went by who got the lock. A follow is dropped only if it was asked before the jump was.
+    #[test]
+    fn a_jump_drops_only_a_follow_asked_before_it() {
+        for follow_first in [true, false] {
+            let engine = without_its_thread();
+            let held = engine.shared.reader.lock().unwrap();
+            let jump_asked = if follow_first {
+                assert!(!engine.follow_soon(60, 0.5));
+                asked()
+            } else {
+                let jump_asked = asked();
+                assert!(!engine.follow_soon(60, 0.5));
+                jump_asked
+            };
+            drop(held);
+            jump_after(&engine, jump_asked, 12, 0.0);
+            let mut reader = lock(&engine.shared.reader);
+            take_pending_follow(&engine.shared, &mut reader);
+            let want = if follow_first { (12, 0.0) } else { (60, 0.5) };
+            assert_eq!(
+                reader.docs.shown().map(|doc| doc.reading_anchor()),
+                Some(want),
+                "the follow was asked {} the jump was",
+                if follow_first { "before" } else { "after" }
+            );
+        }
     }
 
     /// Failure (review 1): another pane's zoom or a selection taken in another pane makes the UI thread wait on this pane's lock while its thread holds it. Both are left for that thread instead, and taken when it next holds its lock.

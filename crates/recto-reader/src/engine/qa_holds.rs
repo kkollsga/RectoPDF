@@ -6,7 +6,7 @@ use super::{Engine, Shared, lock};
 use std::sync::atomic::Ordering;
 
 impl Shared {
-    /// Whether QA holds this view busy ([`Engine::hold_busy`]). Never, in a build without the `qa` feature.
+    /// Whether QA holds this view busy ([`Qa::hold_busy`]). Never, in a build without the `qa` feature.
     #[inline]
     pub(super) fn held_busy(&self) -> bool {
         #[cfg(any(test, feature = "qa"))]
@@ -27,22 +27,37 @@ impl Engine {
         self.unpark_thread();
     }
 
-    /// **For QA: a busy page view, made to last.** While on, what the UI thread asks of this view from another pane (synced scroll's place, the one zoom,
+    /// **QA's seams that force an ordering** (the `qa` feature only: a release app doesn't contain them).
+    #[cfg(any(test, feature = "qa"))]
+    #[inline]
+    pub fn qa(&self) -> Qa<'_> {
+        Qa { engine: self }
+    }
+}
+
+/// The seams of a page view for QA, a facade borrowed from [`Engine::qa`], as the others are: its own methods, so [`Engine`] has two the fewer.
+#[cfg(any(test, feature = "qa"))]
+#[derive(Clone, Copy)]
+pub struct Qa<'a> {
+    engine: &'a Engine,
+}
+
+#[cfg(any(test, feature = "qa"))]
+impl Qa<'_> {
+    /// **A busy page view, made to last.** While on, what the UI thread asks of this view from another pane (synced scroll's place, the one zoom,
     /// a selection taken elsewhere) is left pending as though its own thread held its lock, and that thread leaves it there as though it hadn't come round:
     /// what a pane's thread does for as long as a drawing job takes when the UI thread's call met it holding the lock. A read of the view still counts what's
-    /// pending ([`Self::places`]). Let go, the thread takes it.
-    #[cfg(any(test, feature = "qa"))]
+    /// pending ([`Engine::places`]). Let go, the thread takes it.
     pub fn hold_busy(&self, on: bool) {
-        self.shared.qa_busy.store(on, Ordering::SeqCst);
+        self.engine.shared.qa_busy.store(on, Ordering::SeqCst);
         if !on {
-            self.unpark_thread();
+            self.engine.unpark_thread();
         }
     }
 
-    /// For QA: whether synced scroll's place is left pending for this view's own thread, so a test that forces the busy ordering can see that the follow
-    /// really was left and the round didn't quietly become the free one.
-    #[cfg(any(test, feature = "qa"))]
+    /// Whether synced scroll's place is left pending for this view's own thread, so a test that forces the busy ordering can see that the follow really
+    /// was left and the round didn't quietly become the free one.
     pub fn follow_is_pending(&self) -> bool {
-        lock(&self.shared.pending).follow.is_some()
+        lock(&self.engine.shared.pending).follow.is_some()
     }
 }

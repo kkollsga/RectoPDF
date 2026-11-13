@@ -400,10 +400,8 @@ Engine::pub fn drain(&self) -> Vec<Op>
 Engine::pub fn empty_discardable(&self) -> usize
 Engine::pub fn fit(&self) -> Option<f64>
 Engine::pub fn follow(&self, page: u32, within: f64) -> Option<u32>
-Engine::pub fn follow_is_pending(&self) -> bool
 Engine::pub fn follow_soon(&self, page: u32, within: f64) -> bool
 Engine::pub fn has_thread(&self) -> bool
-Engine::pub fn hold_busy(&self, on: bool)
 Engine::pub fn hold_drawing(&self, on: bool)
 Engine::pub fn hot_tab(&self) -> Option<u32>
 Engine::pub fn jump_to(&self, page: u32)
@@ -416,6 +414,7 @@ Engine::pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self
 Engine::pub fn note(&self) -> Option<String>
 Engine::pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>)
 Engine::pub fn points(&self) -> Points<'_>
+Engine::pub fn qa(&self) -> Qa<'_>
 Engine::pub fn reading_anchor(&self) -> Option<(u32, f64)>
 Engine::pub fn report(&self) -> ReaderReport
 Engine::pub fn same_as(&self, other: &Self) -> bool
@@ -515,6 +514,9 @@ Points::pub fn on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::Pa
 Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
+Qa (pub struct, derives Clone, Copy)
+Qa::pub fn follow_is_pending(&self) -> bool
+Qa::pub fn hold_busy(&self, on: bool)
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>
 RawPicture.pub height: u32

@@ -142,7 +142,7 @@ fn finds_jump_after_the_persons_scroll_past_a_sent_jump_marks_where_they_scrolle
 /// Failure (one run of a full check, 2026-11-13, at a load of 16 to 22): the follow is sent to a's page view "now or soon", and soon when a's own thread
 /// holds its lock at that instant, as it does for moments throughout a drawing job; it's taken by that thread only at the job's end. A read of a's places
 /// in between, as `back` takes them in to mark where the reader is, said 0.9, where the person's scroll in b had already sent a on: the mark lost the
-/// person's newer move for an older read. Forced with a's page view held busy (`Engine::hold_busy`), so the follow is left pending until after `back`.
+/// person's newer move for an older read. Forced with a's page view held busy (`Engine::qa().hold_busy`), so the follow is left pending until after `back`.
 #[test]
 fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
     for busy in [false, true] {
@@ -181,7 +181,7 @@ fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
             ..recto_reader::Viewport::default()
         };
         drop(inner.panes.viewport(&inner.engine, b_pane, false, scroll(b_place.y, u64::MAX - 1)));
-        a_engine.hold_busy(busy);
+        a_engine.qa().hold_busy(busy);
         drop(
             inner
                 .panes
@@ -194,7 +194,7 @@ fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
         );
         // Only the busy round is held to it: a free round that meets a's own thread at work leaves the follow pending too, which is the same ordering and no failure.
         assert!(
-            !busy || a_engine.follow_is_pending(),
+            !busy || a_engine.qa().follow_is_pending(),
             "the follow is left pending for a's own thread in the busy round"
         );
         // The window would make b's pane the one read, by a call of its own still to come: the agent's `back` here is on a, ahead of it.
@@ -208,7 +208,7 @@ fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
         }
         assert_eq!(app.looks_done(), looks, "no look since the scroll");
         agent(&app, r#"{"cmd":"back"}"#);
-        a_engine.hold_busy(false);
+        a_engine.qa().hold_busy(false);
         app.settle();
         let (marked, trail) = last_stop_on_page_5(&app, false);
         assert!(
