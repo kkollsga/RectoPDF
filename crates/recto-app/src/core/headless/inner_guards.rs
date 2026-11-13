@@ -1,0 +1,374 @@
+//! **What `Inner`'s moves must not change, pinned before they start** (R3.7; AGENTS.md, "guards go in before a move"): the size of the app's state and of
+//! each of its parts, what each lets other code reach, and what a person's action allocates on the thread that makes it, the window's. What every control
+//! sends and the host is told is held by the coverage test's golden (`coverage.rs`).
+#![allow(unsafe_code)]
+
+use crate::RowKind;
+use crate::core::controls::UiAction;
+use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, WindowParts};
+use crate::testkit::headless::{Disk, HeadlessApp};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::mem::size_of;
+
+/// Failure: a move adds a field, a lock or a buffer to the app's state or one of its parts (a part given its own `Arc` of the queue, a `Mutex` where an
+/// atomic was), which nothing else sees, as there's one of each in the app. Each is held at its size on the day the moves began, in this test build (whose
+/// `Serving` has two fields more than the app's): one that grows is a change to say, and one that shrinks is written down here.
+#[test]
+fn the_apps_state_and_its_parts_keep_their_size() {
+    let sizes = [
+        ("Inner", size_of::<Inner>()),
+        ("Lifecycle", size_of::<Lifecycle>()),
+        ("Serving", size_of::<Serving>()),
+        ("WindowParts", size_of::<WindowParts>()),
+        ("Tools", size_of::<Tools>()),
+        ("Published", size_of::<Published>()),
+        ("AppState", size_of::<AppState>()),
+    ];
+    let now = sizes.iter().map(|(name, size)| format!("{name} {size}")).collect::<Vec<_>>().join(", ");
+    assert_eq!(now, SIZES, "the app's state and its parts, in bytes");
+}
+
+/// The sizes on 2026-11-13, before the moves.
+const SIZES: &str = "Inner 4864, Lifecycle 296, Serving 1064, WindowParts 464, Tools 1440, Published 808, AppState 248";
+
+/// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
+/// or replaced from outside, a method made `pub(crate)` that only its part should call; or takes away what a caller needs. The list is changed by hand, in
+/// the commit that means it, so each widening and narrowing is in a diff.
+#[test]
+fn what_the_apps_state_lets_other_code_reach_is_listed() {
+    let types = ["Inner", "Lifecycle", "Serving", "WindowParts", "Tools", "Published", "AppState"];
+    let files = recto_testpdf::surface::rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core"));
+    let now = recto_testpdf::surface::listing(
+        &files,
+        recto_testpdf::surface::Scope {
+            only: Some(&types),
+            fields_of: &types,
+        },
+    );
+    if let Err(changed) = recto_testpdf::surface::same_as(SURFACE, &now, "the app's state") {
+        panic!("{changed}");
+    }
+}
+
+/// What the app's state and its parts let other code reach, sorted. Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
+const SURFACE: &str = r"
+AppState (pub struct, derives Clone, Debug)
+AppState.pub app_hidden: bool
+AppState.pub appearance: Appearance
+AppState.pub contents_resume: Option<(TabId, ContentsScroll)>
+AppState.pub contents_y: Option<f64>
+AppState.pub focus: FocusRecord
+AppState.pub from_state: Option<Box<AppState>>
+AppState.pub hidden_decided: bool
+AppState.pub minimised_decided: bool
+AppState.pub selection_resume: Option<(TabId, record::Selection)>
+AppState.pub selections_held: Vec<(usize, recto_index::select::Range)>
+AppState.pub settings_window: Option<SettingsWindow>
+AppState.pub sidebar_width: f64
+AppState.pub window: Option<WindowRecord>
+AppState.pub window_closed: bool
+AppState.pub window_decided: bool
+Inner (pub struct)
+Inner.pub core: Arc<CoreQueue>
+Inner.pub engine: Engine
+Inner.pub host: Arc<AppHost>
+Inner.pub life: Arc<Lifecycle>
+Inner.pub panes: panes::Panes
+Inner.pub published: Mutex<Published>
+Inner.pub qa: Option<Arc<QaBridge>>
+Inner.pub saver: Arc<Saver>
+Inner.pub serving: Serving
+Inner.pub tools: Tools
+Inner.pub updates: Arc<recto_update::updater::Updater>
+Inner.pub window: WindowParts
+Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
+Inner.pub(crate) listener: Arc<dyn crate::Listener>
+Inner.pub(crate) sleeper: sleeper::Sleeper
+Inner::pub fn act(self: &Arc<Self>, action: UiAction) -> Acted
+Inner::pub fn app_record(&self) -> AppRecord
+Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
+Inner::pub fn begin_restore(self: &Arc<Self>)
+Inner::pub fn can_save(&self) -> bool
+Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
+Inner::pub fn check_woken_files(&self)
+Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
+Inner::pub fn close_prompt(&self) -> ClosePrompt
+Inner::pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId)
+Inner::pub fn contents_note_for_person(self: &Arc<Self>, tab: TabId, action: ContentsAction)
+Inner::pub fn contents_tapped(self: &Arc<Self>, tab: TabId, page: u32)
+Inner::pub fn dismiss_selection_notice(&self)
+Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
+Inner::pub fn edit_mode_for_person(self: &Arc<Self>, on: bool)
+Inner::pub fn find_choose_for_person(self: &Arc<Self>, row: u32)
+Inner::pub fn find_close_for_person(self: &Arc<Self>)
+Inner::pub fn find_open_for_person(self: &Arc<Self>)
+Inner::pub fn find_step_for_person(self: &Arc<Self>, forward: bool, jump: bool)
+Inner::pub fn find_typed_for_person(self: &Arc<Self>, text: String)
+Inner::pub fn forget_a_quiet_copy(&self)
+Inner::pub fn frontmost_changed(&self, app: bool, window_key: bool)
+Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
+Inner::pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId)
+Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
+Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
+Inner::pub fn hand_off_cancelled(&self)
+Inner::pub fn hand_off_check(&self) -> HandOffCheck
+Inner::pub fn hand_off_quit_now(&self) -> bool
+Inner::pub fn has_setting(&self, id: &str) -> bool
+Inner::pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String>
+Inner::pub fn link_to_page(self: &Arc<Self>, tab: TabId, position: u32, within: Option<f32>)
+Inner::pub fn look_at_budget(&self)
+Inner::pub fn memory_pressure(&self, critical: bool)
+Inner::pub fn menu_item_enabled(&self, id: String) -> bool
+Inner::pub fn note_input(&self)
+Inner::pub fn note_nearby(&self)
+Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
+Inner::pub fn notice_read(&self)
+Inner::pub fn open_file(&self, path: PathBuf)
+Inner::pub fn open_recent(&self, key: String)
+Inner::pub fn page_typed(self: &Arc<Self>, text: &str) -> bool
+Inner::pub fn password_answered(&self, id: u64, password: Option<String>)
+Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
+Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
+Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
+Inner::pub fn queue_those_leaving(&self)
+Inner::pub fn quit_requested(self: &Arc<Self>)
+Inner::pub fn quit_stayed(&self)
+Inner::pub fn ready(&self, open: &[PathBuf])
+Inner::pub fn ready_to_show(&self) -> bool
+Inner::pub fn rearm_dormancy(&self)
+Inner::pub fn recent_files(&self) -> Vec<RecentFile>
+Inner::pub fn record_report(&self) -> Value
+Inner::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str)
+Inner::pub fn restore_patience_over(&self)
+Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
+Inner::pub fn save_panel(&self) -> SavePanelModel
+Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
+Inner::pub fn set_frozen(&self, frozen: bool)
+Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
+Inner::pub fn settings_model(&self) -> SettingsModel
+Inner::pub fn settings_window(&self) -> Option<SettingsWindow>
+Inner::pub fn settings_window_changed(&self, place: Option<SettingsWindow>)
+Inner::pub fn sheet_changed(&self, open: bool)
+Inner::pub fn show_sidebar(self: &Arc<Self>)
+Inner::pub fn shown_with_state(&self)
+Inner::pub fn shutdown(&self)
+Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
+Inner::pub fn start(start: Start) -> Result<Arc<Self>, String>
+Inner::pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Result<Arc<Self>, String>
+Inner::pub fn state_json(&self) -> Value
+Inner::pub fn state_read(&self) -> bool
+Inner::pub fn step_for_person(self: &Arc<Self>, back: bool)
+Inner::pub fn swiped(self: &Arc<Self>, delta_x: f64)
+Inner::pub fn system_pressure(&self, critical: bool)
+Inner::pub fn take_places(&self)
+Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
+Inner::pub fn tap_row(self: &Arc<Self>, row: SidebarRow)
+Inner::pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow)
+Inner::pub fn tap_tab(self: &Arc<Self>, tab: TabId)
+Inner::pub fn toggle_contents_section(self: &Arc<Self>, first: u32)
+Inner::pub fn toggle_sidebar(self: &Arc<Self>)
+Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
+Inner::pub fn update_report(&self) -> Value
+Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
+Inner::pub fn update_timer_fired(&self)
+Inner::pub fn window_closed(&self)
+Inner::pub fn window_interactive(&self) -> bool
+Inner::pub fn window_opened(&self)
+Inner::pub fn window_replaced(&self)
+Inner::pub fn window_should_open(&self) -> bool
+Inner::pub fn write_sleep_for(&self, id: TabId, by: By)
+Inner::pub fn write_sleep_for_until(&self, id: TabId, until: Instant)
+Inner::pub fn zoom_for_person(&self, zoom: Zoom) -> bool
+Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
+Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
+Lifecycle (pub struct)
+Lifecycle.pub first_shown: Mutex<Option<Value>>
+Lifecycle.pub holding_tab: Mutex<Option<TabId>>
+Lifecycle.pub sheets: AtomicU32
+Lifecycle.pub shown_by_cap: AtomicBool
+Lifecycle.pub started: Instant
+Lifecycle.pub window_opened_at: Mutex<Option<Instant>>
+Lifecycle.pub(crate) clock: Arc<dyn crate::clock::Clock>
+Lifecycle.pub(crate) last_input_ms: AtomicU64
+Lifecycle.pub(crate) others_looking: AtomicU32
+Lifecycle.pub(crate) persons_running: AtomicU32
+Lifecycle.pub(crate) qa_hold_reads: AtomicBool
+Lifecycle.pub(crate) reads_running: AtomicU32
+Lifecycle.pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>
+Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
+Lifecycle::pub fn state_read(&self) -> bool
+Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>
+Lifecycle::pub(crate) fn due(&self) -> Option<Duration>
+Lifecycle::pub(crate) fn now_ms(&self) -> u64
+Lifecycle::pub(crate) fn remade(&self) -> bool
+Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
+Lifecycle::pub(crate) fn takes_input(&self) -> bool
+Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
+Published (pub struct)
+Published.pub contents: Arc<Vec<ContentsEntry>>
+Published.pub pane_tocs: Vec<Option<Arc<recto_core::Toc>>>
+Published.pub rail_filled: u32
+Published.pub reader: ReaderView
+Published.pub recent: Arc<Vec<RecentFile>>
+Published.pub recent_key: Option<(u64, u64)>
+Published.pub sidebar: Arc<crate::SidebarView>
+Published.pub tabs: Arc<Vec<crate::SidebarRow>>
+Published::pub fn empty() -> Self
+Serving (pub struct)
+Serving.pub paths: Option<StatePaths>
+Serving.pub(crate) announcer: Mutex<Option<Announcer>>
+Serving.pub(crate) heard: Mutex<crate::testkit::heard::Overheard>
+Serving.pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams
+Serving.pub(crate) socket: bool
+Serving.pub(crate) stopper: Mutex<Option<Stopper>>
+Serving.pub(crate) waiting_server: Mutex<Option<Server>>
+Tools (pub struct)
+Tools.pub chrome: crate::chrome::Chrome
+Tools.pub folds: crate::sidebar_access::Folds
+Tools.pub printing: printing::Printing
+Tools.pub tool: snapshot_tool::Tool
+Tools.pub(crate) find_field: Mutex<crate::find::Field>
+Tools.pub(crate) palette: crate::palette::Palette
+Tools.pub(crate) prompts: crate::prompts::Prompts
+Tools.pub(crate) save_ui: saving::SaveUi
+Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
+WindowParts (pub struct)
+WindowParts.pub app: Mutex<AppState>
+WindowParts.pub contents_follow: Mutex<ContentsFollow>
+WindowParts.pub dark: AtomicBool
+WindowParts.pub panel_open: AtomicBool
+WindowParts.pub watchdog: Watchdog
+WindowParts.pub(crate) action_notice: Mutex<Option<String>>
+WindowParts.pub(crate) notice_tab: AtomicU32
+WindowParts.pub(crate) open_failure: Mutex<Option<String>>
+WindowParts::pub fn new(watchdog: Watchdog) -> Self
+";
+
+struct Counting;
+
+thread_local! {
+    /// This thread's allocations: the test's own, the window's in the app, and not the session thread's or a worker's.
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn allocations() -> u64 {
+    ALLOCATIONS.with(Cell::get)
+}
+
+// SAFETY: forwards to the system allocator, counting each allocation on the thread that makes it.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // A thread on its way out has no counter any more; what it allocates isn't an action's.
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+        // SAFETY: the caller's layout, passed on.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: given back as it was given.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+/// Every test of this crate's test binary allocates through it; a count is one thread-local add, and the measurements of time made in this binary say so.
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// The most allocations the window's call made, of `runs` calls alternating between two forms, each after the app has settled.
+fn most_allocated(app: &HeadlessApp, runs: usize, action: impl Fn(bool) -> UiAction) -> u64 {
+    let mut most = 0;
+    for run in 0..runs {
+        let made = action(run % 2 == 0);
+        app.settle();
+        let before = allocations();
+        app.act(made);
+        most = most.max(allocations() - before);
+    }
+    app.settle();
+    most
+}
+
+/// Failure: a move puts an allocation on the window's path for a person's action (a string cloned to pass a control on, a box for a call that was direct, a
+/// list built to find a feature), which no test of behaviour sees and input-to-frame shows only as noise. The window's call for each hot action, as
+/// input-to-frame times them, allocates no more on its thread than it did before the moves.
+#[test]
+fn a_persons_action_allocates_no_more_on_the_windows_thread() {
+    let disk = Disk::new();
+    let (a_file, b_file) = (disk.file("a.pdf", &super::files::with_sections(10)), disk.pdf("b.pdf", 10));
+    let app = disk.start();
+    app.open(&b_file);
+    app.open(&a_file);
+    let rows = app.tabs();
+    let (a, b) = (rows[rows.len() - 1].clone(), rows[rows.len() - 2].clone());
+    let contents = |page: u32| crate::SidebarRow {
+        kind: RowKind::Contents,
+        page: Some(page),
+        ..a.clone()
+    };
+    let menu = |id: &str| UiAction::Menu { id: id.into() };
+    let mut now = Vec::new();
+    let mut measure = |name: &'static str, action: &dyn Fn(bool) -> UiAction| now.push((name, most_allocated(&app, 6, action)));
+    measure("tap row", &|first| UiAction::Row {
+        row: if first { b.clone() } else { a.clone() },
+        adding: false,
+    });
+    app.act(UiAction::Row { row: a.clone(), adding: false });
+    measure("contents jump", &|first| UiAction::Row {
+        row: contents(if first { 7 } else { 3 }),
+        adding: false,
+    });
+    measure("typed page", &|first| UiAction::PageTyped {
+        text: (if first { "5" } else { "2" }).into(),
+    });
+    measure("find typed", &|first| UiAction::FindTyped {
+        text: (if first { "page 1" } else { "page" }).into(),
+    });
+    app.act(UiAction::FindTyped { text: "page".into() });
+    measure("find step", &|first| menu(if first { "find.next" } else { "find.previous" }));
+    app.act(UiAction::FindClose);
+    measure("compare click", &|_| UiAction::Row { row: b.clone(), adding: true });
+    app.act(UiAction::Row { row: b.clone(), adding: true });
+    measure("pane read", &|first| UiAction::PaneRead {
+        tab: if first { a.tab } else { b.tab },
+    });
+    app.act(UiAction::Row { row: a.clone(), adding: false });
+    measure("zoom", &|first| menu(if first { "view.zoom_in" } else { "view.zoom_out" }));
+    measure("sidebar toggle", &|_| menu("view.sidebar"));
+    measure("rotate", &|first| menu(if first { "rotate.right" } else { "rotate.left" }));
+    measure("undo", &|_| menu("edit.undo"));
+    measure("swipe", &|first| UiAction::Swiped {
+        delta_x: if first { 1.0 } else { -1.0 },
+    });
+    measure("chevron", &|_| UiAction::Chevron { first: 0 });
+    let over: Vec<String> = now
+        .iter()
+        .zip(ALLOCATED)
+        .filter(|((_, made), (_, was))| made > was)
+        .map(|((name, made), (_, was))| format!("{name}: {made} allocations, {was} before"))
+        .collect();
+    let names: Vec<&str> = now.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, ALLOCATED.map(|(name, _)| name), "the actions measured");
+    assert!(
+        over.is_empty(),
+        "more allocations on the window's thread, the most of six calls each: {over:#?}"
+    );
+}
+
+/// The window's thread's allocations for each action on 2026-11-13, before the moves: one is the person's command boxed for the session thread's queue.
+/// Fewer is fine, and is written down here.
+const ALLOCATED: [(&str, u64); 13] = [
+    ("tap row", 1),
+    ("contents jump", 1),
+    ("typed page", 2),
+    ("find typed", 1),
+    ("find step", 1),
+    ("compare click", 1),
+    ("pane read", 1),
+    ("zoom", 13),
+    ("sidebar toggle", 1),
+    ("rotate", 2),
+    ("undo", 1),
+    ("swipe", 1),
+    ("chevron", 0),
+];

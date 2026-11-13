@@ -1,0 +1,112 @@
+app.about | sent [] | host ShowAbout understood true | heard nothing
+app.quit | sent [] | host Quit understood true | heard nothing
+app.services | sent [] | host None understood true | heard nothing
+app.settings | sent [] | host ShowSettings understood true | heard nothing
+app.update | sent [{"cmd":"update_check"}] | host None understood true | heard nothing
+compare.separate | sent [{"cmd":"compare","tabs":null,"sync":"off","off":false,"toggle":null,"reading":null}] | host None understood true | heard nothing
+compare.synced | sent [{"cmd":"compare","tabs":null,"sync":"on","off":false,"toggle":null,"reading":null}] | host None understood true | heard nothing
+edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
+edit.copy | sent [] | host None understood true | heard nothing
+edit.copy_anyway | sent [] | host None understood true | heard nothing
+edit.redo | sent [{"cmd":"redo","tab":"active"}] | host None understood true | heard nothing
+edit.select_all | sent [] | host None understood true | heard nothing
+edit.undo | sent [{"cmd":"undo","tab":"active"}] | host None understood true | heard nothing
+edit_mode.done | sent [{"cmd":"edit_mode","set":"off"}] | host None understood true | heard nothing
+file.close | sent [{"cmd":"close","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+file.close_window | sent [] | host CloseWindow understood true | heard nothing
+file.open | sent [] | host ShowOpenPanel understood true | heard nothing
+file.open_recent | sent [] | host None understood true | heard nothing
+file.print | sent [] | host ShowPrintPanel understood true | heard nothing
+file.save | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed ops_ready
+file.save_as | sent [] | host ShowSavePanel understood true | heard nothing
+file.settings | sent [] | host ShowSettings understood true | heard nothing
+find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
+find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
+go.back | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing
+go.forward | sent [{"cmd":"forward","tab":"active"}] | host None understood true | heard nothing
+go.page | sent [] | host ShowGoTo understood true | heard nothing
+layout.single | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"single","tab":"#3"}] | host None understood true | heard nothing
+layout.two_up | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+layout.two_up_cover | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up-cover","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+palette.open | sent [] | host FocusPalette understood true | heard model_changed
+panel.toggle | sent [] | host None understood true | heard model_changed
+paper.dark | sent [{"cmd":"view","paper":"dark","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+paper.warm | sent [{"cmd":"view","paper":"warm","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+paper.white | sent [{"cmd":"view","paper":"white","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard nothing
+recent.0123456789abcdef | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard model_changed ops_ready
+recent.clear | sent [{"cmd":"recent_clear"}] | host None understood true | heard model_changed
+rotate.left | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":-90}] | host None understood true | heard model_changed ops_ready
+rotate.right | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":90}] | host None understood true | heard model_changed ops_ready
+save.button | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed ops_ready
+tools.snapshot | sent [] | host None understood true | heard model_changed
+view.actual_size | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"actual","layout":null,"tab":null}] | host None understood true | heard ops_ready
+view.agent_icon | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":"toggle","zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+view.fit | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"fit","layout":null,"tab":null}] | host None understood true | heard ops_ready
+view.paper | sent [] | host None understood true | heard nothing
+view.sidebar | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+view.zoom_in | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"in","layout":null,"tab":null}] | host None understood true | heard ops_ready
+view.zoom_out | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"out","layout":null,"tab":null}] | host None understood true | heard ops_ready
+palette app.about | sent [] | host ShowAbout understood true | heard nothing
+palette app.quit | sent [] | host Quit understood true | heard nothing
+palette app.settings | sent [] | host ShowSettings understood true | heard nothing
+palette app.update | sent [{"cmd":"update_check"}] | host None understood true | heard nothing
+palette edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
+palette edit.copy | sent [] | host None understood true | heard nothing
+palette edit.redo | sent [{"cmd":"redo","tab":"active"}] | host None understood true | heard nothing
+palette edit.select_all | sent [] | host None understood true | heard nothing
+palette edit.undo | sent [{"cmd":"undo","tab":"active"}] | host None understood true | heard nothing
+palette edit_mode.done | sent [{"cmd":"edit_mode","set":"off"}] | host None understood true | heard nothing
+palette file.close | sent [{"cmd":"close","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+palette file.close_window | sent [] | host CloseWindow understood true | heard nothing
+palette file.open | sent [] | host ShowOpenPanel understood true | heard nothing
+palette file.print | sent [] | host ShowPrintPanel understood true | heard nothing
+palette file.save | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed ops_ready
+palette file.save_as | sent [] | host ShowSavePanel understood true | heard nothing
+palette find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+palette find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+palette find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+palette go.back | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing
+palette go.forward | sent [{"cmd":"forward","tab":"active"}] | host None understood true | heard nothing
+palette go.page | sent [] | host ShowGoTo understood true | heard nothing
+palette layout.single | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"single","tab":"#3"}] | host None understood true | heard nothing
+palette layout.two_up | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+palette layout.two_up_cover | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up-cover","tab":"#3"}] | host None understood true | heard model_changed ops_ready
+palette paper.dark | sent [{"cmd":"view","paper":"dark","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+palette paper.warm | sent [{"cmd":"view","paper":"warm","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+palette paper.white | sent [{"cmd":"view","paper":"white","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard nothing
+palette recent:<recent> | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard model_changed ops_ready
+palette rotate.left | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":-90}] | host None understood true | heard model_changed ops_ready
+palette rotate.right | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":90}] | host None understood true | heard model_changed ops_ready
+palette tab:2 | sent [{"cmd":"tap","tab":"#2"}] | host None understood true | heard model_changed ops_ready
+palette tools.snapshot | sent [] | host None understood true | heard model_changed
+palette view.actual_size | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"actual","layout":null,"tab":null}] | host None understood true | heard ops_ready
+palette view.agent_icon | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":"toggle","zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+palette view.fit | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"fit","layout":null,"tab":null}] | host None understood true | heard ops_ready
+palette view.sidebar | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+palette view.zoom_in | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"in","layout":null,"tab":null}] | host None understood true | heard ops_ready
+palette view.zoom_out | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"out","layout":null,"tab":null}] | host None understood true | heard ops_ready
+UiAction::Menu | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+UiAction::Row | sent [{"cmd":"tap","tab":"#2"}] | host None understood true | heard model_changed ops_ready
+UiAction::Row | sent [{"cmd":"goto","tab":"#2","page":2,"label":null,"within":null}] | host None understood true | heard nothing
+UiAction::Row(adding) | sent [{"cmd":"compare","tabs":null,"sync":null,"off":false,"toggle":"#3","reading":null}] | host None understood true | heard nothing
+UiAction::PaneRead | sent [{"cmd":"compare","tabs":null,"sync":null,"off":false,"toggle":null,"reading":"#2"}] | host None understood true | heard nothing
+UiAction::Chevron | sent [{"cmd":"contents_fold","entry":0,"tab":"#3"}] | host None understood true | heard model_changed
+UiAction::Open | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard model_changed ops_ready
+UiAction::OpenRecent | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard model_changed ops_ready
+UiAction::FindTyped | sent [{"cmd":"find","query":"page","next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
+UiAction::FindOpen | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host None understood true | heard model_changed
+UiAction::FindClose | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":true,"limit":null}] | host None understood true | heard model_changed
+UiAction::FindReturn | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":true,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
+UiAction::FindChoose | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":0,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed ops_ready
+UiAction::PageTyped | sent [{"cmd":"goto","tab":"#3","page":null,"label":"2","within":null}] | host None understood true | heard model_changed ops_ready
+UiAction::Swiped | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing
+UiAction::ZoomTyped | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"150%","layout":null,"tab":null}] | host None understood true | heard ops_ready
+UiAction::ToggleSidebar | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
+UiAction::PaletteRun | sent [{"cmd":"tap","tab":"#2"}] | host None understood true | heard model_changed ops_ready
+UiAction::CloseAnswered(Cancel) | sent [] | host None understood true | heard nothing
+UiAction::CloseAnswered(Save) | sent [{"cmd":"save","tab":"#2","out":null,"replace":false}] | host None understood true | heard model_changed
+UiAction::CloseAnswered(DontSave) | sent [{"cmd":"discard","tab":"#2"} ; {"cmd":"close","tab":"#2"}] | host None understood true | heard model_changed
+UiAction::CloseAnswered(SaveAs) | sent [] | host ShowSavePanel understood true | heard nothing
+UiAction::SaveAs | sent [{"cmd":"save","tab":"#2","out":"<files>/copy.pdf","replace":false}] | host None understood true | heard model_changed
+UiAction::SettingChosen | sent [{"cmd":"settings","auto_update":"off"}] | host None understood true | heard model_changed
