@@ -134,7 +134,7 @@ impl AppHost {
             ));
         }
         // What the app's own commands name (a build's zip, a QA verb's file) is held to a quiet run's folders as the session's are.
-        if let Some(folders) = self.session.with_session(|session| session.confinement().folders().cloned()) {
+        if let Some(folders) = self.session.confinement() {
             recto_agent::quiet_files::check_paths(&folders, &recto_agent::quiet_files::named_paths(command))?;
         }
         match command {

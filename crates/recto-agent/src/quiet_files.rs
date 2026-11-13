@@ -50,9 +50,9 @@ pub fn files_in(tag: &str, fields: &Map<String, Value>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The folders this session is confined to, if it is. A short look at the session; the files themselves are looked at after, with nothing held.
+/// The folders this session is confined to, if it is: [`SessionAccess::confinement`], with no lock where the host keeps the fact beside the session.
 pub fn confinement<A: SessionAccess>(access: &A) -> Option<Arc<RunFolders>> {
-    access.with(|session| session.confinement().folders().cloned())
+    access.confinement()
 }
 
 /// **The check:** refused if the session is confined and the command names a file outside its folders. Nothing to do, and nothing read, for a session

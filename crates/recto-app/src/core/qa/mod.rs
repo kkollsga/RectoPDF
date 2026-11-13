@@ -420,10 +420,7 @@ impl QaBridge {
         let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
         let out = Path::new(out);
         // A file in a compound value the table can't see as one, so it's put through the session's one rule here (2026-11-13).
-        if let Some(folders) = self
-            .inner()
-            .and_then(|inner| inner.host.session.with_session(|session| session.confinement().folders().cloned()))
-        {
+        if let Some(folders) = self.inner().and_then(|inner| inner.host.session.confinement()) {
             recto_agent::quiet_files::check_paths(&folders, &[out.to_path_buf()])?;
         }
         recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;

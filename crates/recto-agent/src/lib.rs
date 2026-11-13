@@ -465,6 +465,12 @@ pub trait SessionAccess {
     /// the session hasn't heard yet, so Back comes back to the place that was showing (R2.3, accident A1). Called without the session held, as it takes it
     /// itself. A session with no window has nothing to take in.
     fn take_places(&self) {}
+    /// **The folders this session is confined to, if it is** ([`quiet_files`]): set when the session was made and never changed, so a host that keeps
+    /// the session's [`recto_session::confined::Confinement::shared`] answers without the session's lock, and a free session's command pays only a branch for
+    /// it. Asked of the session here otherwise.
+    fn confinement(&self) -> Option<std::sync::Arc<recto_platform::run_folders::RunFolders>> {
+        self.with(|session| session.confinement().folders().cloned())
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {

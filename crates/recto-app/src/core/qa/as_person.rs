@@ -135,7 +135,7 @@ pub(super) fn run(inner: &Arc<Inner>, line: &str) -> Result<(), AgentError> {
     let named = named_files(&command);
     // A confined session's one rule first, so a file outside its folders is refused as every route refuses one; the person's command would meet it
     // only later, on the session thread, with nobody to hear.
-    if let Some(folders) = inner.host.session.with_session(|session| session.confinement().folders().cloned()) {
+    if let Some(folders) = inner.host.session.confinement() {
         recto_agent::quiet_files::check_paths(&folders, &named)?;
     }
     check_tests_files(inner, &named.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;

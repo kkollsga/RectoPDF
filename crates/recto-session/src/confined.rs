@@ -13,11 +13,19 @@ use std::sync::{Arc, OnceLock};
 pub const OUTSIDE_WORDS: &str =
     "A quiet run only uses files in its own folders, the system's temp folders. That file isn't in them, so nothing was opened or written.";
 
-/// The folders a session is confined to, once it is: [`Session::confinement`](super::Session::confinement).
+/// The folders a session is confined to, once it is: [`Session::confinement`](super::Session::confinement). One cell, which whatever holds the session
+/// can share ([`Self::shared`]), so the question is answered without the session's lock (review of the branch, round 2, F-d).
 #[derive(Debug, Default)]
-pub struct Confinement(OnceLock<Arc<RunFolders>>);
+pub struct Confinement(Arc<OnceLock<Arc<RunFolders>>>);
 
 impl Confinement {
+    /// **The same cell, for whatever holds the session** (its host, the executor's check): what it reads is what the session goes by, confined later or
+    /// not, as there's only the one, and reading it takes no lock, as it's set once and never changed.
+    #[must_use]
+    pub fn shared(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+
     /// **Confines the session to these folders,** for good: a second call keeps the first, so nothing can widen them.
     pub fn confine(&self, folders: RunFolders) {
         let _ = self.0.set(Arc::new(folders));
