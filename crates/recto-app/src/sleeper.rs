@@ -24,6 +24,19 @@ pub const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 pub const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A flush (a quit's, a hand-off's) doesn't wait; being asked does, as the queue's writer does. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of; unless no picture in it is of the place it's left at on its paper, when one write goes ahead within the hour's cap ([`crate::sleep_writer::there_for_other_place`]).
 pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
+/// **How long a tab pushed out of the warm ones waits before its sleep file is written** (owner, 2026-11-13, agreeing to the coordinator's recommendation: "the
+/// cool-down is on the write"). The push out stays immediate, for memory; the write waits in the one queue there is, and a tab shown again inside the wait has
+/// what it was copied with back for its first frame, with nothing written. A quit, a hand-off, going to the background, memory pressure and being asked don't
+/// wait. A crash inside it costs that tab only its quick way back.
+pub const LEAVING_WAIT_MS: u64 = 20_000;
+
+/// When a sleep file queued at `now` may be written, by the app's clock: a tab pushed out of the warm ones after `wait_ms`, and one going dormant (left
+/// alone, the budget, memory pressure) at once, as zero.
+#[must_use]
+pub fn leaving_due(now: u64, pushed_out: bool, wait_ms: u64) -> u64 {
+    if pushed_out { now.saturating_add(wait_ms) } else { 0 }
+}
+
 /// What sleep files may come to in an hour, all told, for the whole app, for the same reason. 4 MiB (owner, 2026-11-13, "I agree with your recommendation",
 /// over 1 and 2): a text page's file at a Retina window's fit is about 72 KB and a photograph page's about 100 KiB, so about 57 text files an hour for all tabs,
 /// and at worst about 32 MiB written in an eight-hour day. At 1 MiB ordinary switching used it in about 14 writes, and every wake after was bare for the hour.

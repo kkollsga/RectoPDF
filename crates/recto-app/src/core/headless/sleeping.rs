@@ -503,3 +503,177 @@ fn a_tab_shown_again_before_its_queued_sleep_file_is_written_has_none_written() 
     assert!(!on_disk.is_empty(), "x's is written: {on_disk:?}");
     drop(app.quit());
 }
+
+/// **Measures what flicking through tabs writes,** and asserts nothing: ten tabs opened, then each shown in turn for three seconds of the app's clock, twice
+/// round, the window up; then what the sleep writer wrote and what its queue held at most. For the cool-down on a pushed-out tab's write (owner, 2026-11-13),
+/// before and after: `cargo nextest run -p recto-app -p recto-render-service --run-ignored only --no-capture -E 'test(=core::headless::sleeping::flicking_through_tabs_writes)'`.
+#[test]
+#[ignore = "a measurement, run when asked"]
+fn flicking_through_tabs_writes() {
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..10).map(|at| disk.pdf(&format!("t{at}.pdf"), 6)).collect();
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    engine.waking().window_up();
+    let mut view = window_view();
+    for doc in &docs {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+        app.advance(3_000);
+    }
+    let ids: Vec<u64> = (0..10).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
+    let mut wakes = (0, 0);
+    for _round in 0..2 {
+        for id in &ids {
+            let wake = woken_at_once(&app, *id, &mut view);
+            if wake["tab"] == *id && wake["from_sleep"] == true {
+                wakes.0 += 1;
+                wakes.1 += u64::from(wake["had"] == "sleep_file");
+            }
+            app.advance(3_000);
+        }
+    }
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    let sleep = app.record_json()["sleep"].clone();
+    let leaving = &sleep["leaving"];
+    println!(
+        "flicking 10 tabs twice, 3 s each: sleep files written {}, bytes written {}, writes put off {}, peak queued {} tabs / {} bytes, dropped {}, \
+         wakes from a sleep file {} of {} woken cold",
+        sleep["sleep_files_written"],
+        sleep["sleep_bytes_written"],
+        sleep["writes_put_off"],
+        leaving["peak_tabs"],
+        leaving["peak_bytes"],
+        leaving["dropped"],
+        wakes.1,
+        wakes.0
+    );
+    drop(app.quit());
+}
+
+/// The name of `tab`'s sleep file, as its facts say now.
+fn sleep_file_of(app: &crate::testkit::headless::HeadlessApp, tab: u64) -> String {
+    app.core()
+        .host
+        .session
+        .with_session(|session| {
+            let id = recto_session::TabId(u32::try_from(tab).expect("a tab id"));
+            Some(recto_session::record::sleep_file_name(
+                session.tabs().own_stamp(id)?,
+                &session.tabs().path_of(id)?,
+            ))
+        })
+        .expect("a sleep file name")
+}
+
+/// Four tabs opened with the cool-down on, so the first, a, is pushed out of the warm ones and its sleep file waits. Says the app and a's tab.
+fn a_pushed_out_and_waiting(disk: Disk, wait_ms: u64) -> (crate::testkit::headless::HeadlessApp, u64, recto_reader::Viewport) {
+    let docs: Vec<_> = ["a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 6)).collect();
+    let app = disk.builder().leaving_wait(wait_ms).start();
+    let engine = app.core().engine.clone();
+    engine.waking().window_up();
+    let mut view = window_view();
+    for doc in &docs {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let a = tab_named(&app, "a.pdf");
+    assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 1, "a waits: {}", app.record_json()["sleep"]);
+    (app, a, view)
+}
+
+/// Failure (the cool-down on a pushed-out tab's write, owner 2026-11-13): written at once, a tab flicked past and back wrote a sleep file each time (the drive's
+/// wear), and with the wait but nothing handed back it would wake bare, as the page view let go of its pictures when they were copied. Shown again inside the
+/// wait, a wakes at once from what it was copied with, drawing held, and nothing's written for it; left and pushed out again, its file is written at the wait
+/// and not a millisecond before.
+#[test]
+fn a_tab_shown_again_inside_its_cool_down_wakes_from_memory_and_nothing_is_written() {
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let (app, a, mut view) = a_pushed_out_and_waiting(Disk::new(), wait);
+    app.advance(wait / 2);
+    app.settle();
+    let wake = woken_at_once(&app, a, &mut view);
+    assert_eq!(wake["tab"], a, "{wake}");
+    assert_eq!(wake["had"], "sleep_file", "from what it was copied with: {wake}");
+    assert!(wake["first_frame_us"].is_u64(), "the first frame, drawing held, isn't covered: {wake}");
+    let sleep = app.record_json()["sleep"].clone();
+    assert_eq!(sleep["leaving"]["handed_back"], 1, "{sleep}");
+    assert!(
+        !sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)),
+        "written for a tab shown again inside its wait"
+    );
+    // Pushed out again, by showing the other three: written at the wait, not before.
+    for name in ["b.pdf", "c.pdf", "d.pdf"] {
+        full(&app, &["tap", &format!("#{}", tab_named(&app, name))]);
+        host_turns(&app, &mut view, true);
+    }
+    app.advance(wait - 1);
+    app.settle();
+    assert!(!sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)), "written before its wait was up");
+    app.advance(1);
+    app.wait_until("a's sleep file written at its wait", || {
+        sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
+    });
+    app.wait_until("and the writer gone", || {
+        app.record_json()["sleep"]["leaving"]["writer"] == false && sleep_writers() == 0
+    });
+    drop(app.quit());
+}
+
+/// Failure: what's handed back to a tab shown inside its wait is of the version it was copied from, so a file changed meanwhile showed the old version's
+/// picture. a's file is written over inside the wait, then a's shown: its first frame is never from what was waiting.
+#[test]
+fn a_tab_whose_file_changed_inside_its_cool_down_is_never_shown_the_old_picture() {
+    let disk = Disk::new();
+    let (app, a, mut view) = a_pushed_out_and_waiting(disk, crate::sleeper::LEAVING_WAIT_MS);
+    let path = app.session_json()["tabs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tab| tab["id"] == a)
+        .and_then(|tab| tab["path"].as_str().map(std::path::PathBuf::from))
+        .expect("a's path");
+    let other = app.disk().pdf("other.pdf", 9);
+    std::fs::copy(&other, &path).expect("written over");
+    let wake = woken_at_once(&app, a, &mut view);
+    assert_eq!(wake["tab"], a, "{wake}");
+    assert_ne!(wake["had"], "sleep_file", "the old version's picture: {wake}");
+    drop(app.quit());
+}
+
+/// Failure: a quit with sleep files waiting in the cool-down went without them, so tabs the person had just left came back bare at the next launch. With
+/// eight tabs waiting, a quit writes them, within its own time.
+#[test]
+fn a_quit_writes_the_sleep_files_waiting_in_the_cool_down() {
+    let disk = Disk::new();
+    let tabs = recto_session::MAX_WARM + crate::sleep_queue::MAX_LEAVING_TABS;
+    let docs: Vec<_> = (0..tabs).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
+    let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).start();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    assert_eq!(
+        app.record_json()["sleep"]["leaving"]["queued"],
+        crate::sleep_queue::MAX_LEAVING_TABS,
+        "{}",
+        app.record_json()["sleep"]
+    );
+    let began = std::time::Instant::now();
+    let report = app.core().saver.flush(false, std::time::Duration::from_secs(5)).expect("the state written");
+    println!("a flush with {} tabs waiting took {:?}", crate::sleep_queue::MAX_LEAVING_TABS, began.elapsed());
+    assert_eq!(report.tabs, tabs);
+    let leaving = app.record_json()["sleep"]["leaving"].clone();
+    assert_eq!(leaving["queued"], 0, "{leaving}");
+    // Those waiting, and the tab on screen's.
+    assert!(
+        sleep_files_on_disk(&app).len() > crate::sleep_queue::MAX_LEAVING_TABS,
+        "{:?}",
+        sleep_files_on_disk(&app)
+    );
+    drop(app.quit());
+}

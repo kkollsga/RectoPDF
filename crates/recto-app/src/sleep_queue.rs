@@ -26,6 +26,20 @@ struct Leaving {
     material: SleepMaterial,
     /// What its pictures hold.
     bytes: u64,
+    /// When it may be written, in the app's clock's milliseconds: a tab pushed out of the warm ones waits ([`crate::sleeper::leaving_due`]), and is handed
+    /// back if it's shown again meanwhile; zero is now.
+    due: u64,
+}
+
+/// What the writer does next.
+#[derive(Debug)]
+pub enum Next {
+    /// Writes this one, counted till [`LeavingQueue::done`].
+    Write(SleepFacts, SleepMaterial),
+    /// Nothing's due yet: waits this many milliseconds of the clock, or till it's told something changed.
+    Wait(u64),
+    /// Nothing's queued: the writer ends.
+    End,
 }
 
 /// The one the writer's taken, till its write's done.
@@ -65,6 +79,13 @@ pub struct LeavingQueue {
     peak_bytes: u64,
     peak_tabs: usize,
     peak_running: u32,
+    /// What's come of the tabs queued, for `qa state`.
+    counts: Counts,
+}
+
+/// What's come of the tabs queued, counted for `qa state`.
+#[derive(Default)]
+struct Counts {
     writers_started: u64,
     /// Tabs queued again, whose older one went for the newer.
     replaced: u64,
@@ -76,6 +97,8 @@ pub struct LeavingQueue {
     stale_skipped: u64,
     /// Queued, and gone as their files were retired.
     retired: u64,
+    /// Queued, and handed back to a tab shown again inside its wait.
+    handed_back: u64,
     writer_panics: u64,
 }
 
@@ -83,16 +106,22 @@ impl LeavingQueue {
     /// Queues a tab's sleep file, by the rules above. Says whether a writer has to be started: only when there isn't one.
     #[must_use]
     pub fn push(&mut self, facts: SleepFacts, material: SleepMaterial) -> bool {
+        self.push_due(facts, material, 0)
+    }
+
+    /// The same, to be written no sooner than `due` by the clock.
+    #[must_use]
+    pub fn push_due(&mut self, facts: SleepFacts, material: SleepMaterial, due: u64) -> bool {
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
             self.remove(at);
-            self.replaced += 1;
+            self.counts.replaced += 1;
         }
         let bytes = bytes_of(&facts, &material);
-        self.queue.push_back(Leaving { facts, material, bytes });
+        self.queue.push_back(Leaving { facts, material, bytes, due });
         self.bytes += bytes;
         while self.queue.len() > MAX_LEAVING_TABS {
             self.remove(0);
-            self.dropped += 1;
+            self.counts.dropped += 1;
         }
         // The oldest first, and the one just queued too if it's more than what's left by itself. The one in flight was under the cap when it was queued.
         let mut at = 0;
@@ -103,7 +132,7 @@ impl LeavingQueue {
                 leaving.facts.sleep.pictures = Vec::new();
                 self.bytes -= leaving.bytes;
                 leaving.bytes = 0;
-                self.pictures_dropped += 1;
+                self.counts.pictures_dropped += 1;
             }
             at += 1;
         }
@@ -113,17 +142,33 @@ impl LeavingQueue {
             return false;
         }
         self.writer = true;
-        self.writers_started += 1;
+        self.counts.writers_started += 1;
         true
     }
 
-    /// The writer's next, oldest first, which stays counted till [`Self::done`]. `None` is the writer's end, said here under the same lock as [`Self::push`], so whatever's queued after starts another.
+    /// The writer's next, oldest first, whatever's due. `None` is the writer's end. See [`Self::take_due`].
     pub fn take_next(&mut self) -> Option<(SleepFacts, SleepMaterial)> {
+        match self.take_due(u64::MAX) {
+            Next::Write(facts, material) => Some((facts, material)),
+            Next::Wait(_) | Next::End => None,
+        }
+    }
+
+    /// **The writer's next at `now`:** the oldest that's due, which stays counted till [`Self::done`]; or how long till the soonest is; or the writer's end,
+    /// said here under the same lock as [`Self::push`], so whatever's queued after starts another.
+    pub fn take_due(&mut self, now: u64) -> Next {
         self.done();
-        let Some(leaving) = self.queue.pop_front() else {
+        if self.queue.is_empty() {
             self.writer = false;
             self.running = self.running.saturating_sub(1);
-            return None;
+            return Next::End;
+        }
+        let Some(at) = self.queue.iter().position(|leaving| leaving.due <= now) else {
+            let soonest = self.queue.iter().map(|leaving| leaving.due).min().unwrap_or(now);
+            return Next::Wait(soonest.saturating_sub(now));
+        };
+        let Some(leaving) = self.queue.remove(at) else {
+            return Next::Wait(0);
         };
         self.in_flight = Some(InFlight {
             id: leaving.facts.id,
@@ -132,13 +177,39 @@ impl LeavingQueue {
             stale: false,
             retired: false,
         });
+        Next::Write(leaving.facts, leaving.material)
+    }
+
+    /// Everything queued is due now: a quit, a hand-off, the app going to the background, or memory pressure won't wait for the cool-down.
+    pub fn hurry(&mut self) {
+        for leaving in &mut self.queue {
+            leaving.due = 0;
+        }
+    }
+
+    /// **A tab shown again while its sleep file waits:** what it was copied with comes back, for its first frame, and isn't written; the tab's queued again when
+    /// it next leaves. The one in flight can't be taken back: it isn't written ([`Self::forget`]'s way), and the wake reads what's on disk.
+    pub fn take_back(&mut self, id: TabId) -> Option<(SleepFacts, SleepMaterial)> {
+        if let Some(flight) = self.in_flight.as_mut().filter(|flight| flight.id == id) {
+            flight.stale = true;
+        }
+        let at = self.queue.iter().position(|leaving| leaving.facts.id == id)?;
+        let leaving = self.queue.remove(at)?;
+        self.bytes -= leaving.bytes;
+        self.counts.handed_back += 1;
         Some((leaving.facts, leaving.material))
+    }
+
+    /// Whether nothing's queued or being written.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.queue.is_empty() && self.in_flight.is_none()
     }
 
     /// Whether the one in flight is still to be written: asked with the one-at-a-time lock held, so a newer write either came before, and this isn't written, or comes after it.
     pub fn still_wanted(&mut self) -> bool {
         let stale = self.in_flight.as_ref().is_some_and(|flight| flight.stale || flight.retired);
-        self.stale_skipped += u64::from(stale);
+        self.counts.stale_skipped += u64::from(stale);
         !stale
     }
 
@@ -179,7 +250,7 @@ impl LeavingQueue {
         }
         while let Some(at) = self.queue.iter().position(|leaving| names.contains(&file_name(&leaving.facts))) {
             self.remove(at);
-            self.retired += 1;
+            self.counts.retired += 1;
         }
         if let Some(flight) = self.in_flight.as_mut().filter(|flight| names.contains(&flight.name)) {
             flight.retired = true;
@@ -202,15 +273,16 @@ impl LeavingQueue {
             "peak_tabs": self.peak_tabs,
             "peak_bytes": self.peak_bytes,
             "peak_writers": self.peak_running,
-            "writers_started": self.writers_started,
+            "writers_started": self.counts.writers_started,
             "cap_tabs": MAX_LEAVING_TABS,
             "cap_bytes": MAX_LEAVING_BYTES,
-            "replaced": self.replaced,
-            "pictures_dropped": self.pictures_dropped,
-            "dropped": self.dropped,
-            "stale_skipped": self.stale_skipped,
-            "retired": self.retired,
-            "writer_panics": self.writer_panics,
+            "replaced": self.counts.replaced,
+            "pictures_dropped": self.counts.pictures_dropped,
+            "dropped": self.counts.dropped,
+            "stale_skipped": self.counts.stale_skipped,
+            "retired": self.counts.retired,
+            "handed_back": self.counts.handed_back,
+            "writer_panics": self.counts.writer_panics,
         })
     }
 }
@@ -239,7 +311,7 @@ impl Drop for WriterRunning<'_> {
         queue.done();
         queue.writer = false;
         queue.running = queue.running.saturating_sub(1);
-        queue.writer_panics += 1;
+        queue.counts.writer_panics += 1;
     }
 }
 
@@ -383,6 +455,34 @@ mod tests {
         assert_eq!(queue.queue.len(), 1);
         assert_eq!(queue.bytes, MIB as u64);
         assert_eq!(queue.take_next().unwrap().0.id, TabId(2));
+    }
+
+    /// Failure (the cool-down, owner 2026-11-13): a pushed-out tab's file written before its wait is up (the drive's wear for a tab about to be shown again), or
+    /// left waiting past it, or a quit's hurry not taking it, or a tab shown again getting nothing back and its file written anyway. At the wait less one it
+    /// waits, and says how long; at the wait it's written; one due now goes before one waiting; hurried, all are due; taken back, it's the tab's and not written.
+    #[test]
+    fn a_sleep_file_waits_its_cool_down_unless_hurried_or_taken_back() {
+        let wait = 5;
+        let mut queue = LeavingQueue::default();
+        let _ = queue.push_due(facts(1), material(10, 1), crate::sleeper::leaving_due(100, true, wait));
+        assert!(matches!(queue.take_due(100 + wait - 1), Next::Wait(1)), "at the wait less one");
+        let _ = queue.push_due(facts(2), material(10, 2), crate::sleeper::leaving_due(101, false, wait));
+        assert!(
+            matches!(queue.take_due(101), Next::Write(facts, _) if facts.id == TabId(2)),
+            "going dormant doesn't wait"
+        );
+        assert!(
+            matches!(queue.take_due(100 + wait), Next::Write(facts, _) if facts.id == TabId(1)),
+            "at the wait"
+        );
+        let _ = queue.push_due(facts(3), material(10, 3), crate::sleeper::leaving_due(200, true, wait));
+        let _ = queue.push_due(facts(4), material(10, 4), crate::sleeper::leaving_due(200, true, wait));
+        let (back, material) = queue.take_back(TabId(3)).expect("handed back");
+        assert_eq!((back.id, material.pictures[0].bgra[0]), (TabId(3), 3));
+        queue.hurry();
+        assert!(matches!(queue.take_due(200), Next::Write(facts, _) if facts.id == TabId(4)), "hurried");
+        assert!(matches!(queue.take_due(200), Next::End));
+        assert_eq!(queue.report()["handed_back"], 1);
     }
 
     /// Failure (the sleeper's review, 2026-11-13): a tab's sleep file retired (closed, saved, its file changed) was still written from what the queue held, after
