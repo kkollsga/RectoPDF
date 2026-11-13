@@ -190,8 +190,8 @@ pub struct Inner {
 /// **Where the app is in its life:** launch, the state's coming in, the window going up, the person's last touch, and a hand-off with what it waits for. What step
 /// R1.4 makes a state machine on the clock.
 pub struct Lifecycle {
-    /// What the host knows of this copy, for the thread that reads the state.
-    pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>,
+    /// What the host knows of this copy, for the thread that reads the state, held back while the record's lock hasn't come ([`updates::LaunchFacts`]).
+    pub(crate) update_facts: Mutex<updates::LaunchFacts>,
     /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
     pub started: Instant,
     /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
@@ -216,6 +216,9 @@ pub struct Lifecycle {
     pub sheets: AtomicU32,
     /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
     pub(crate) last_input_ms: AtomicU64,
+    /// The person has touched the app since the launch: a click, a key, a scroll or a pinch, which moving or resizing the window begins with. Not the pointer only
+    /// passing over it.
+    pub(crate) touched: AtomicBool,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
     /// When the window was last put up, for how long the patience had run when it was shown.
@@ -291,7 +294,8 @@ impl Lifecycle {
             window_opened_at: Mutex::new(None),
             shown_by_cap: AtomicBool::new(false),
             last_input_ms: AtomicU64::new(0),
-            update_facts: Mutex::new(None),
+            touched: AtomicBool::new(false),
+            update_facts: Mutex::new(updates::LaunchFacts::default()),
             reads_running: AtomicU32::new(0),
             persons_running: AtomicU32::new(0),
             others_looking: AtomicU32::new(0),
@@ -353,6 +357,26 @@ impl Lifecycle {
     pub(crate) fn keeping_due(&self) -> Option<Duration> {
         let now = self.now_ms();
         self.life().keeping_due(now)
+    }
+
+    /// **A try at the record's lock, if one's due** ([`crate::lifecycle::keeping`]), made under the life's lock so a quit or a hand-off beginning can't come
+    /// between the look at whether it's due and the try. `busy` is looked at first: an agent's change under way makes it a try that didn't get the lock.
+    pub(crate) fn try_keeping(&self, busy: impl FnOnce() -> bool, try_lock: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
+        let now = self.now_ms();
+        let mut life = lock(&self.life);
+        if !life.keeping_due(now).is_some_and(|wait| wait.is_zero()) {
+            return None;
+        }
+        let got = !busy() && try_lock();
+        life.step(crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got }), now)
+    }
+
+    /// Whether the window is made again from the state now ([`crate::lifecycle::Life::may_remake_window`]): what the host asks on the UI thread, cheap and
+    /// bounded.
+    pub fn may_remake_window(&self) -> bool {
+        let now = self.now_ms();
+        let touched = self.touched.load(Ordering::Relaxed);
+        self.life().may_remake_window(now, touched)
     }
 
     /// Whether the host's been told to quit for a hand-off that's written.
@@ -627,6 +651,7 @@ impl Inner {
 
     pub fn note_input(&self) {
         self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
+        self.life.touched.store(true, Ordering::Relaxed);
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }

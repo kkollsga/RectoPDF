@@ -551,3 +551,70 @@ fn the_host_is_told_to_quit_for_a_hand_off_and_that_the_session_ended_at_most_on
     }
     assert!(orders > 10_000, "{orders} orders");
 }
+
+/// A life whose state was read without the record's lock, at `0`, the window made from it: trying again for the lock.
+fn trying_for_the_lock() -> Life {
+    let mut life = Life::default();
+    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: false, as_read: 7 }), 0), None);
+    let _ = life.step(Event::StateRead, 0);
+    let _ = life.step(Event::ShownWithState, 0);
+    life
+}
+
+/// Failure (owner, 2026-11-13: "restored as a launch would have"; the coordinator's conditions on the window made again): a late try's restore isn't made into
+/// the window, so the window keeps a frame the record doesn't; or it's made again when the person has touched the window, closing what they're using; or twice;
+/// or a state read without the lock (empty) is made into the window while it tries, which makes a second remake later. Both sides, on numbers: untouched, once;
+/// touched, never; never while trying or restoring; and the ordinary late state's rule as it was.
+#[test]
+fn a_late_keep_is_made_into_the_window_once_unless_touched() {
+    for touched in [false, true] {
+        let mut life = trying_for_the_lock();
+        assert!(!life.may_remake_window(500, false), "nothing to make while it tries");
+        assert_eq!(
+            life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000),
+            Some(Out::Keeping(keeping::Out::Restore))
+        );
+        assert!(!life.may_remake_window(3_000, false), "nor while the saved session's read");
+        assert_eq!(
+            life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 3_050),
+            Some(Out::RestoreReady { with_state: true, late: true }),
+            "the host's told, as at a launch"
+        );
+        assert_eq!(life.may_remake_window(3_060, touched), !touched, "touched {touched}");
+        let _ = life.step(Event::ShownWithState, 3_070);
+        assert!(!life.may_remake_window(3_080, false), "once a launch");
+    }
+}
+
+/// Failure: the rule for a state that came late with the lock got at once changes with this: the window not made again from it while it takes no input yet, or
+/// made again once it does.
+#[test]
+fn the_ordinary_late_state_is_made_into_the_window_as_before() {
+    let mut life = Life::default();
+    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 0), None);
+    let _ = life.step(
+        Event::PatienceOver {
+            may_be_reopened_by_update: false,
+        },
+        ms(RESTORE_PATIENCE),
+    );
+    let _ = life.step(Event::StateRead, ms(RESTORE_PATIENCE) + 200);
+    assert!(life.may_remake_window(ms(RESTORE_PATIENCE) + 300, false), "late, before it takes input");
+    assert!(
+        life.may_remake_window(ms(RESTORE_PATIENCE) + 300, true),
+        "the ordinary rule goes by input taken, not touches"
+    );
+    assert!(!life.may_remake_window(ms(INPUT_PATIENCE), false), "not once it takes input");
+}
+
+/// Failure (review, 2026-11-13, route 1): a quit or a hand-off begins while it tries for the lock, and a try after that takes the lock and restores under the
+/// quit's write. Either one stops the trying, with nothing said.
+#[test]
+fn a_quit_or_a_hand_off_stops_trying_for_the_lock() {
+    for event in [Event::QuitAsked, Event::HandOffWriting] {
+        let mut life = trying_for_the_lock();
+        let _ = life.step(event, 400);
+        assert_eq!(life.keeping(), keeping::Keeping::NotKept, "{event:?}");
+        assert_eq!(life.keeping_due(1_000), None, "{event:?}: no more tries");
+    }
+}

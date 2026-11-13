@@ -73,6 +73,8 @@ pub struct Life {
     ended: bool,
     /// Whether this copy keeps the record, and its tries when the lock didn't come at the start ([`keeping`]).
     keeping: keeping::Keeping,
+    /// The record was kept late and its saved session taken in, and the window hasn't been made again from it yet ([`Self::may_remake_window`]).
+    late_kept: bool,
 }
 
 /// What happens to the app's life.
@@ -169,10 +171,12 @@ impl Life {
             Event::ShownWithState => {
                 self.remade |= self.shown == Shown::WithoutState && !self.takes_input(now_ms);
                 self.shown = Shown::WithState;
+                self.late_kept = false;
                 None
             }
             Event::HandOffWriting => {
                 self.hand_off = HandOff::Writing;
+                let _ = self.keeping.step(keeping::Event::Stopped, now_ms);
                 Some(Out::Freeze(true))
             }
             // Only a hand-off that's writing has written: one that was undone, or has told the host to quit already, isn't written again by a late word.
@@ -200,6 +204,7 @@ impl Life {
             }
             Event::QuitAsked => {
                 self.quit = Quit::Writing;
+                let _ = self.keeping.step(keeping::Event::Stopped, now_ms);
                 Some(Out::QuitBegins)
             }
             Event::QuitWritten { written, unsaved_tabs } => {
@@ -217,7 +222,14 @@ impl Life {
                 Some(Out::QuitStayed)
             }
             Event::QuitStayed => None,
-            Event::Keeping(event) => self.keeping.step(event, now_ms).map(Out::Keeping),
+            // Kept late: the host's told as at a launch, and makes the window again from it once ([`Self::may_remake_window`]).
+            Event::Keeping(event) => match self.keeping.step(event, now_ms) {
+                Some(keeping::Out::Kept) => {
+                    self.late_kept = true;
+                    Some(Out::RestoreReady { with_state: true, late: true })
+                }
+                other => other.map(Out::Keeping),
+            },
         }
     }
 
@@ -230,6 +242,22 @@ impl Life {
     #[must_use]
     pub fn keeping(&self) -> keeping::Keeping {
         self.keeping
+    }
+
+    /// **Whether the window is made again from the state now,** asked by the host as it hears a state come in after its window went up ([`Out::RestoreReady`]
+    /// with `late`). A state that came after the window went up without it, while the window takes no input yet (as always). A saved session taken in on a late
+    /// try at the record's lock ([`keeping`]), once, unless the person has `touched` the window since the launch: then what they have stays as it is, its frame and
+    /// focus kept, and only what's in it comes back. Never for a state read without the lock, which has nothing to make a window from, while it's still trying
+    /// or restoring: so a launch makes its window again at most once.
+    #[must_use]
+    pub fn may_remake_window(&self, now_ms: u64, touched: bool) -> bool {
+        if self.keeping.refuses_agents_changes() {
+            return false;
+        }
+        if self.late_kept {
+            return !touched;
+        }
+        !self.takes_input(now_ms)
     }
 
     /// How long until the patience for the state is over by the core's own deadline, if it's waiting on one: zero once it's due.

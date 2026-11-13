@@ -58,6 +58,13 @@ impl Host for AppHost {
                         .then("Try again in a moment, when it's back."),
                 );
             }
+            // Counted first, and then looked, as above: a late try at the record's lock that sees no count can't have this slip past (`lifecycle::keeping`).
+            if matches!(actor, Actor::Agent(_)) && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes()) {
+                self.running.fetch_sub(1, Ordering::SeqCst);
+                return Err(
+                    AgentError::new("busy", "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
+                );
+            }
         }
         let result = self.run_counted(actor, command, events);
         if !asks_only {

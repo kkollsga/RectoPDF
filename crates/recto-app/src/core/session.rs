@@ -35,6 +35,8 @@ pub fn apply_restored(
     host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
     let other_instance = matches!(loaded, Loaded::OtherInstance);
+    // A late keep's restore: the window keeps its own until it's made again from what was saved (`keeping::window_as_it_is`).
+    let real_window = inner.life.keeping().restoring().then(|| lock(&inner.window.app).clone());
     match loaded {
         Loaded::Restored(restored) => {
             let restored = *restored;
@@ -82,6 +84,9 @@ pub fn apply_restored(
                         };
                         app.from_state = Some(Box::new(state));
                     }
+                    if let Some(real) = &real_window {
+                        keeping::window_as_it_is(&mut app, real);
+                    }
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
@@ -96,7 +101,8 @@ pub fn apply_restored(
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
     }
-    if !keeping::taken_in(inner, other_instance, first_time) {
+    let (say_notice, kept) = keeping::taken_in(inner, other_instance, first_time, reads);
+    if !say_notice {
         notice = None;
     }
     if let Some(words) = notice {
@@ -115,11 +121,11 @@ pub fn apply_restored(
         look_at_other_files(inner, id);
     }
     inner.saver.start();
-    let ready = inner.life.step(crate::lifecycle::Event::StateRead);
-    if !first_time {
-        return ready;
+    let ready = inner.life.step(crate::lifecycle::Event::StateRead).or(kept);
+    if first_time {
+        start_serving(inner);
     }
-    start_serving(inner);
+    // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
     for run in deferred.drain(..) {
         inner.core.push(CoreCall::Run(run));
     }
@@ -246,7 +252,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
-            keeping::when_due(inner, &mut synced, &mut reads, &mut deferred);
+            keeping::when_due(inner, &reads);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
@@ -275,8 +281,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
             CoreCall::RestorePatienceOver => restore_patience_over(inner),
-            // An open waits for the state to be read, as what's opened goes over what comes back.
-            CoreCall::Run(run) if !inner.life.state_read() && opening::is_open(&run.command) => {
+            // An open waits for the state to be read, as what's opened goes over what comes back; and anything the person does, for a late keep's restore.
+            CoreCall::Run(run) if (!inner.life.state_read() && opening::is_open(&run.command)) || inner.life.keeping().restoring() => {
                 deferred.push(run);
                 continue;
             }
@@ -326,7 +332,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
-    keeping::look_after_call(inner);
+    keeping::look_after_call(inner, reads);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);

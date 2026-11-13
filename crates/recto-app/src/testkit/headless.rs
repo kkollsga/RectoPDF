@@ -289,13 +289,14 @@ impl Builder {
 }
 
 /// **What the host does on `restore_ready`,** as `App.swift`'s `restoreReady` and `restoredLate` do it, by the same calls: the first time, the window's opened or
-/// not and the launch goes on; a later time, the state's come in after the window went up without it, and the window's made again from it, unless it's been
-/// taking input meanwhile.
+/// not and the launch goes on; a later time, the state's come in after the window went up without it (or a late try at the record's lock has restored the saved
+/// session), and the window's made again from it if Rust's rule says so now ([`crate::core::Lifecycle::may_remake_window`]), with the appearance taken either way.
 #[derive(Default)]
-struct HostPlay {
+pub(crate) struct HostPlay {
     heard: usize,
     launch_done: bool,
-    late_taken_in: bool,
+    /// How many times the window was made again from the state: at most once a launch.
+    pub(crate) remade: usize,
 }
 
 impl HostPlay {
@@ -308,7 +309,6 @@ impl HostPlay {
             if !self.launch_done {
                 self.launch_done = true;
                 let with_state = inner.state_read();
-                self.late_taken_in = with_state;
                 if inner.window_should_open() {
                     inner.window_opened();
                 } else {
@@ -318,8 +318,8 @@ impl HostPlay {
                     inner.shown_with_state();
                 }
                 inner.ready(open);
-            } else if inner.state_read() && !self.late_taken_in && !inner.window_interactive() {
-                self.late_taken_in = true;
+            } else if inner.state_read() && inner.life.may_remake_window() {
+                self.remade += 1;
                 // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
                 // new one opens.
                 if !crate::lock(&inner.window.app).window_closed {
@@ -391,8 +391,8 @@ pub struct HeadlessApp {
     clock_at_start: u64,
     listener: Arc<FakeListener>,
     disk: Option<Disk>,
-    /// What the host has made of what it's heard: `App.swift`'s part of a launch.
-    host: std::sync::Mutex<HostPlay>,
+    /// What the host has made of what it's heard: `App.swift`'s part of a launch ([`HostPlay`]).
+    pub(crate) host: std::sync::Mutex<HostPlay>,
     /// Files named at launch.
     open: Vec<PathBuf>,
     /// The page being read's view as the host has it, by [`Self::person_scrolls`]: where it's scrolled to and the last scroll it was sent that it's

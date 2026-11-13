@@ -189,7 +189,6 @@ final class Bridge: AppListener, @unchecked Sendable {
         launchDone = true
         // Asked first: a state that comes in while this runs is taken in by `restoredLate` after.
         let withState = core.stateRead()
-        if withState { lateTakenIn = true }
         applyAppearanceChoice()
         if core.windowShouldOpen() {
             openWindow()
@@ -209,7 +208,6 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// Whether the launch's window has been decided on, with or without the state.
     private var launchDone = false
-    private var lateTakenIn = false
     /// A window being made again, so its closing isn't the user closing it.
     private var replacingWindow = false
 
@@ -221,14 +219,17 @@ final class Bridge: AppListener, @unchecked Sendable {
         }
     }
 
-    /// The state's come in after the window went up without it, past the patience (CI, 2026-11-11: the contents came back with no height; with a slow disk the window's size and full screen, the appearance and Settings didn't come back either). Everything an on-time read brings back comes back now, made from it as a launch makes it: the appearance, the window made again from the state, and Settings. What the host chose already of what's out of sight stays as chosen, which Rust keeps in the state.
+    /// The state's come in after the window went up without it, past the patience (CI, 2026-11-11: the contents came back with no height; with a slow disk the window's size and full screen, the appearance and Settings didn't come back either), or the saved session's been taken in once a late try got the record's lock. Everything an on-time read brings back comes back now, made from it as a launch makes it: the appearance, the window made again from the state, and Settings. What the host chose already of what's out of sight stays as chosen, which Rust keeps in the state.
     private func restoredLate() {
-        // Not once the window's been taking input without it, past its patience: what's been done there stays.
-        guard core.stateRead(), !lateTakenIn, core.mayRemakeWindow() else {
-            if core.stateRead() { core.shownWithState() }
+        // Whether it's made again is Rust's rule, asked now: not once the window's been taking input without it, or touched, and at most once a launch.
+        guard core.stateRead(), core.mayRemakeWindow() else {
+            // What's in the window comes back without it being made again: the appearance with it, as Rust's state now has it.
+            if core.stateRead() {
+                applyAppearanceChoice()
+                core.shownWithState()
+            }
             return
         }
-        lateTakenIn = true
         applyAppearanceChoice()
         if let old = windowController {
             replacingWindow = true

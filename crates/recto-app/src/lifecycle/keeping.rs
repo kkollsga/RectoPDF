@@ -4,17 +4,33 @@
 //! A launch asks for the record's lock as it reads the state, and waits up to the store's patience for it (600 ms, `record_store::LOCK_PATIENCE`). One that still
 //! hasn't got it says nothing yet, and tries again: one `try_lock` every [`TRY_EVERY_MS`] from the moment the state was taken in, the last at [`KEEP_TRYING_MS`],
 //! so [`TRIES`] tries in all, each on the session thread's own deadline ([`Keeping::due`]): no thread of its own, no timer, and nothing at all once it's settled.
-//! Then one of three:
-//! - **The lock comes, and the person has done nothing in the window:** this copy keeps the record from here, as if it had got it at the start, and the saved
-//!   session is read and restored as a launch would have ([`Out::Restore`]). The notice never shows. The common case: the copy before it was still quitting, or
-//!   an update's hand-off was letting go.
+//! Then one of four:
+//! - **The lock comes, and the person has done nothing in the window:** this copy keeps the record from here, as if it had got it at the start ([`Out::Restore`]):
+//!   the saved session is read off the session thread and taken in as a launch's is ([`Keeping::Restoring`]), and once it's in ([`Event::Read`] with the lock)
+//!   the window is made again from it, once ([`Out::Kept`]). The notice never shows. The common case: the copy before it was still quitting, or an update's
+//!   hand-off was letting go.
 //! - **The person opens or changes something first:** trying stops at once, and the window is one that won't be remembered, said at once ([`Out::SayNotKept`]):
 //!   they've started working in it, and should know. Restoring now would replace what they have, and keeping the record with their window would write over the
 //!   saved session, so neither is done (the coordinator's choice on 2026-11-13, until the saved session can be added beside theirs).
 //! - **The tries run out:** another RectoPDF really is keeping it, said as today ([`Out::SayNotKept`]), and nothing's tried again.
+//! - **A quit or an update's hand-off begins first** ([`Event::Stopped`]): no more tries, and nothing said, as the window's going. Nothing in it can be unsaved
+//!   (anything in it would have stopped the trying), so a quit always goes.
 //!
-//! "Done something" is what the window has, as one number ([`Event::Read`]'s `as_read`): the session as it would be recorded and the app's settings a person
-//! chooses, so anything a person can do that a restore would replace counts, and nothing the host does by itself does.
+//! **What "done something" is.** What the window has, as one number ([`Event::Read`]'s `as_read`, then [`Event::Looked`]): the session as the record would have it
+//! (its tabs and each one's place, zoom, rotation and edits; the paper; Find; edit mode; the agent icon shown or hidden; the recent files), the appearance the
+//! person chose, and any file being opened. So opening a file counts from the moment it's asked for, before it's read, a file named at the launch or dropped on
+//! the app included: double-clicking a PDF while the copy before is still quitting opens that PDF in a window that won't be remembered, and the saved session
+//! waits for the next launch (the narrowed rule). What doesn't count, and is replaced by the restore as a launch would set it: the window's frame, full screen and
+//! focus, the sidebar shown or hidden and its width, the panel, and the Settings window.
+//!
+//! **While it's settling an agent changes nothing** ([`Keeping::refuses_agents_changes`]: trying, or restoring): its commands that change anything are refused
+//! `busy`, to try again in a moment, and those that only ask are answered. An agent's action never counts as the person's, so it can neither stop the trying (and
+//! show the person a notice) nor be replaced by the restore, its tab number then naming one of the owner's tabs. The app counts a change of an agent's that's
+//! under way, and a try that finds one is a try that didn't get the lock (`core::keeping`).
+//!
+//! **Nothing writes over the record between the try and the restore.** The try is made under the saver's gate, which every writer of the record holds from
+//! gathering what it writes to writing it, and while it's restoring the writers write nothing (`core::saver`): so a writer either gathered first and is refused
+//! (it doesn't keep the record yet), or gathers the restored session.
 //!
 //! Pure: the state, an event and `now` in milliseconds of the app's clock. The app holds it in [`super::Life`] and carries out the [`Out`]
 //! (`core::keeping`).
@@ -34,30 +50,37 @@ pub enum Keeping {
     /// The state hasn't been taken in yet.
     #[default]
     NotAsked,
-    /// It keeps the record: from the start, or since a late try.
+    /// It keeps the record: from the start, or since a late try's restore was taken in.
     Keeps,
     /// Trying again, quietly: since when, how many tries so far, and what the window had when the state was taken in.
     Trying { since_ms: u64, tries: u32, as_read: u64 },
-    /// It doesn't, and that's been said: the tries ran out, or the person started working in the window first. For good.
+    /// A try got the lock, and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's done.
+    Restoring,
+    /// It doesn't, for good: the tries ran out or the person started working in the window first (both said), or a quit or a hand-off began (not said).
     NotKept,
 }
 
 /// What happens to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The state's been taken in for the first time, with the lock or without it. `as_read` is what the window had then.
+    /// The state's been taken in, with the lock (`keeps`) or without it. The first time, `as_read` is what the window had then. Taken in with the lock while it's
+    /// trying or restoring, it keeps the record from here: a late try's restore, or one read by any other way.
     Read { keeps: bool, as_read: u64 },
     /// A call's been taken on the session thread: what the window has now.
     Looked { now_as: u64 },
     /// A try at the lock, made because [`Keeping::due`] said so, with nothing taken between the [`Event::Looked`] before it and this.
     Tried { got: bool },
+    /// A quit or an update's hand-off has begun.
+    Stopped,
 }
 
 /// What the app does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Out {
-    /// It keeps the record now: the saved session is read and restored, as at a launch.
+    /// It has the lock: the saved session is read and taken in, as at a launch.
     Restore,
+    /// The saved session's in: the window is made again from it, once, as a launch's is.
+    Kept,
     /// The window won't be remembered: the notice is shown, in today's words.
     SayNotKept,
 }
@@ -79,12 +102,21 @@ impl Keeping {
                 };
                 None
             }
+            (Self::Restoring, Event::Read { keeps: true, .. }) => {
+                *self = Self::Keeps;
+                Some(Out::Kept)
+            }
+            // Read with the lock by another way while it tries: the state can't say it's trying in a window that keeps the record.
+            (Self::Trying { .. }, Event::Read { keeps: true, .. }) => {
+                *self = Self::Keeps;
+                None
+            }
             (Self::Trying { as_read, .. }, Event::Looked { now_as }) if now_as != as_read => {
                 *self = Self::NotKept;
                 Some(Out::SayNotKept)
             }
             (Self::Trying { .. }, Event::Tried { got: true }) => {
-                *self = Self::Keeps;
+                *self = Self::Restoring;
                 Some(Out::Restore)
             }
             (Self::Trying { since_ms, tries, as_read }, Event::Tried { got: false }) => {
@@ -96,7 +128,12 @@ impl Keeping {
                 *self = Self::Trying { since_ms, tries, as_read };
                 None
             }
-            // A second state taken in (`session restore`), a look at a window as it was, or a try that comes when nothing's trying: nothing changes.
+            (Self::Trying { .. }, Event::Stopped) => {
+                *self = Self::NotKept;
+                None
+            }
+            // A state taken in again without the lock, a look at a window as it was, a try that comes when nothing's trying, or a quit once it's settled or
+            // restoring (whose writer waits for the restore, and writes it): nothing changes.
             _ => None,
         }
     }
@@ -113,6 +150,19 @@ impl Keeping {
     #[must_use]
     pub fn trying(&self) -> bool {
         matches!(self, Self::Trying { .. })
+    }
+
+    /// Whether the saved session is being read and taken in after a late try: nothing's written to the record, and what the person does waits for it, as at a
+    /// launch.
+    #[must_use]
+    pub fn restoring(&self) -> bool {
+        *self == Self::Restoring
+    }
+
+    /// **Whether an agent's change is refused now:** while it's trying or restoring. See the module's words.
+    #[must_use]
+    pub fn refuses_agents_changes(&self) -> bool {
+        matches!(self, Self::Trying { .. } | Self::Restoring)
     }
 }
 
@@ -149,15 +199,28 @@ mod tests {
         assert_eq!(keeping.step(Event::Tried { got: true }, now + 1), None, "a straggler changes nothing");
     }
 
-    /// Failure: a lock got on a try isn't taken as keeping the record (the saved session isn't restored, or the notice shows anyway), or a launch that kept it from
-    /// the start is ever told to restore again or that it isn't kept.
+    /// Failure: a lock got on a try isn't taken as keeping the record (the saved session isn't restored, or the notice shows anyway), or the window isn't made
+    /// again from it once it's in, or made again twice; or a launch that kept it from the start is ever told to restore again or that it isn't kept.
     #[test]
     fn a_lock_got_late_restores_and_is_never_said() {
         let mut keeping = trying_from(0);
         assert_eq!(keeping.step(Event::Tried { got: false }, 1_000), None);
         assert_eq!(keeping.step(Event::Tried { got: true }, 2_000), Some(Out::Restore));
+        assert_eq!(keeping, Keeping::Restoring);
+        assert_eq!(keeping.due(2_000), None, "no more tries while it restores");
+        assert_eq!(
+            keeping.step(Event::Looked { now_as: 99 }, 2_001),
+            None,
+            "nothing the window has stops a restore under way"
+        );
+        assert_eq!(keeping.step(Event::Stopped, 2_002), None, "nor a quit, whose write waits for it");
+        assert_eq!(
+            keeping.step(Event::Read { keeps: true, as_read: 0 }, 2_050),
+            Some(Out::Kept),
+            "the window made again from it"
+        );
         assert_eq!(keeping, Keeping::Keeps);
-        assert_eq!(keeping.due(2_000), None);
+        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 2_060), None, "and only once");
         assert_eq!(
             keeping.step(Event::Looked { now_as: 99 }, 3_000),
             None,
@@ -172,6 +235,47 @@ mod tests {
             "a second read changes nothing"
         );
         assert_eq!(from_the_start, Keeping::Keeps);
+    }
+
+    /// Failure (review, 2026-11-13: an agent's `session restore` took the lock outside the machine, which stayed trying and then said "won't be remembered" in a
+    /// window that kept and wrote the record): the state says trying while the store keeps the record. Taken in with the lock by any way while it's trying, it
+    /// keeps the record, with nothing restored again over it and nothing said.
+    #[test]
+    fn a_read_with_the_lock_while_it_tries_keeps_the_record() {
+        let mut keeping = trying_from(0);
+        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 500), None);
+        assert_eq!(keeping, Keeping::Keeps);
+        assert_eq!(keeping.due(500), None);
+        assert_eq!(keeping.step(Event::Looked { now_as: 8 }, 600), None, "and nothing's said after");
+    }
+
+    /// Failure (review, 2026-11-13): a quit or an update's hand-off begins while it tries, and a try after that takes the lock and restores under the quit's write,
+    /// which had gathered the empty window and then writes it as the newest record; or the quit shows the notice. It stops, says nothing, and tries no more.
+    #[test]
+    fn a_quit_or_a_hand_off_stops_the_trying_quietly() {
+        let mut keeping = trying_from(0);
+        assert_eq!(keeping.step(Event::Stopped, 400), None, "nothing said");
+        assert_eq!(keeping, Keeping::NotKept);
+        assert_eq!(keeping.due(1_000), None, "no more tries");
+        assert_eq!(keeping.step(Event::Tried { got: true }, 1_000), None, "nor a restore");
+    }
+
+    /// Failure (review, 2026-11-13): an agent's open or edit lands while it's trying, stopping the retry and showing the person a notice for what an agent did, or
+    /// while the saved session's being read, and the restore then replaces it and its tab number names one of the owner's tabs. Refused exactly while it's trying
+    /// or restoring, and never once it keeps the record or has settled not to.
+    #[test]
+    fn agents_changes_are_refused_while_it_settles_and_only_then() {
+        let mut keeping = Keeping::default();
+        assert!(!keeping.refuses_agents_changes(), "before the state's read, the socket isn't served at all");
+        let _ = keeping.step(Event::Read { keeps: false, as_read: 7 }, 0);
+        assert!(keeping.refuses_agents_changes(), "trying");
+        let _ = keeping.step(Event::Tried { got: true }, 1_000);
+        assert!(keeping.refuses_agents_changes(), "restoring");
+        let _ = keeping.step(Event::Read { keeps: true, as_read: 0 }, 1_050);
+        assert!(!keeping.refuses_agents_changes(), "kept");
+        let mut not_kept = trying_from(0);
+        let _ = not_kept.step(Event::Looked { now_as: 8 }, 10);
+        assert!(!not_kept.refuses_agents_changes(), "settled not to keep it");
     }
 
     /// Failure (the coordinator's choice, 2026-11-13): the person starts working in the window before the lock comes, and it goes on trying, so a late lock would

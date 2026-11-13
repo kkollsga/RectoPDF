@@ -154,9 +154,10 @@ impl Host for Hooks {
         TestLaunch { args, env, direct: false }
     }
 
-    /// Asked on the thread that reads the state, before it does: so it waits for the lock as long as reading would, as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't a second copy.
+    /// Whether this copy keeps the record as the updater's told of the launch ([`tell_launch`], which has waited for the lock as long as reading would before it,
+    /// or held the launch back until whether it's kept has settled): never asking for the lock here, so a launch told it's a second copy can't take it after.
     fn keeps_the_record(&self) -> bool {
-        self.inner().is_some_and(|inner| inner.saver.store.wait_for_lock())
+        self.inner().is_some_and(|inner| inner.saver.store.holds_the_record())
     }
 
     /// A build goes in only while agent access is Full, as it was when an agent handed it over: read from the level's file now.
@@ -190,9 +191,66 @@ impl Host for Hooks {
     }
 }
 
-/// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on. Then a test's broken release ends here, as a new version that crashes once it's up would.
-pub fn first_frame_shown(updates: &recto_update::updater::Updater) {
-    updates.first_frame(updates.wall_ms());
+/// **What the host knows of this copy, for the updater, until the updater's told of the launch** ([`tell_launch`]): told at once when the record's lock came at
+/// the launch, as always; held back when it didn't, until whether this copy keeps the record has settled ([`crate::lifecycle::keeping`]), with a first frame shown
+/// meanwhile, so the updater hears of the launch once, as it turned out, and a copy that keeps the record late says it came up with the tabs it read then.
+#[derive(Default)]
+pub struct LaunchFacts {
+    pub facts: Option<Facts>,
+    /// Held back: the record's lock didn't come at the launch.
+    pub held: bool,
+    /// The first frame, shown while they were held, by the updater's wall clock.
+    pub first_frame_at: Option<u64>,
+}
+
+/// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]), on the thread that reads the state, before it reads: so a version that
+/// keeps failing goes back here, and not by reading on. At the launch it waits for the record's lock as long as reading would, as an app that's just quit can still
+/// be letting go of it, and a quick quit and reopen isn't a second copy; not got by then, what's known is held back and nothing about an update can begin (the
+/// updater has no version to go by: a check or an install is answered that it's still starting, and its timer isn't set). Told again once that's settled: by the
+/// late try that got the lock, before the saved session is read, as a launch is, or as a second copy once it's said the window won't be remembered. A quit or a
+/// hand-off before then tells it nothing, and nothing of the updater's is written.
+pub fn tell_launch(inner: &Inner) -> recto_update::updater::AtLaunch {
+    let Some(facts) = lock(&inner.life.update_facts).facts.take() else {
+        return recto_update::updater::AtLaunch::GoOn;
+    };
+    if inner.life.keeping() == crate::lifecycle::keeping::Keeping::NotAsked && !inner.saver.store.wait_for_lock() {
+        let mut launch = lock(&inner.life.update_facts);
+        launch.facts = Some(facts);
+        launch.held = true;
+        return recto_update::updater::AtLaunch::GoOn;
+    }
+    inner.updates.launched(facts)
+}
+
+/// The updater's been told of a launch that was held back, and the tabs are read: a first frame shown meanwhile is told now. On a thread that can wait.
+pub fn first_frame_after_launch(inner: &Inner) {
+    let held = {
+        let mut launch = lock(&inner.life.update_facts);
+        launch.held = false;
+        launch.first_frame_at.take()
+    };
+    if let Some(at) = held {
+        tell_first_frame(&inner.updates, at);
+    }
+}
+
+/// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on, unless the launch is held back
+/// ([`LaunchFacts`]), when it's kept for then.
+pub fn first_frame_shown(inner: &Inner) {
+    let at = inner.updates.wall_ms();
+    {
+        let mut launch = lock(&inner.life.update_facts);
+        if launch.held {
+            launch.first_frame_at.get_or_insert(at);
+            return;
+        }
+    }
+    tell_first_frame(&inner.updates, at);
+}
+
+/// The updater's told of the first frame. Then a test's broken release ends here, as a new version that crashes once it's up would.
+fn tell_first_frame(updates: &recto_update::updater::Updater, at: u64) {
+    updates.first_frame(at);
     let Some(app) = updates.app() else { return };
     if recto_update::test_breakage(&app, recto_update::TestBreakage::EndsAfterFirstFrame) {
         std::thread::sleep(Duration::from_millis(300));
@@ -211,10 +269,11 @@ static TABS_READ: AtomicU64 = AtomicU64::new(NOT_READ);
 /// What this launch was asked to open before the state was read, at most [`recto_update::plan::MAX_OPEN`].
 static ASKED_TO_OPEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// The record's been read: how many tabs it held, for the installer's look at whether this version misread it.
+/// The record's been read: how many tabs it held, for the installer's look at whether this version misread it. Not read at all, for the lock, says nothing.
 pub fn note_tabs_read(loaded: &Loaded) {
     let tabs = match loaded {
         Loaded::Restored(restored) => restored.record.tabs.len() as u64,
+        Loaded::OtherInstance => return,
         _ => 0,
     };
     TABS_READ.store(tabs.min(NOT_READ - 1), Ordering::SeqCst);
@@ -232,17 +291,16 @@ pub fn note_asked_to_open(paths: &[PathBuf]) {
 
 /// **Back from a version that kept ending,** the record's as it left it, as that holds whatever was done since. If this version can't read it, damaged or of a newer kind, the record from before the update is put back, where this version reads, and read instead. Only at that one launch.
 pub fn fall_back_if_unreadable(inner: &Inner, loaded: Loaded) -> Loaded {
-    let into = match &loaded {
+    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
+        return loaded;
+    };
+    let into = match loaded {
         // Damaged, whether or not anything could be brought back from its journals beside it.
         Loaded::Damaged => inner.saver.store.main_folder(),
         Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => inner.saver.store.main_folder(),
         // A newer kind is never written over: this version's own folder beside it is where it reads.
         Loaded::Newer => inner.saver.store.own_folder(),
-        // Nothing to fall back from, and what's kept to fall back on stays: a launch refused the lock reads the state again once it has it.
-        _ => return loaded,
-    };
-    let Some(before) = inner.updates.take_record_to_fall_back_on() else {
-        return loaded;
+        other => return other,
     };
     recto_update::install::restore_record(&before, &into);
     inner.updates.fell_back();
@@ -348,7 +406,7 @@ impl Inner {
         match command {
             Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(self.updates.report()),
             Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
-                self.updates.check_here(Asked::ByHand);
+                self.updates.check_here(Asked::ByHand).map_err(|refused| refused_words(&refused))?;
                 Ok(self.updates.report())
             }
             Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
@@ -565,7 +623,7 @@ impl Inner {
 
     pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
         // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
-        *lock(&self.life.update_facts) = Some(Facts {
+        lock(&self.life.update_facts).facts = Some(Facts {
             version: recto_update::version::running(&version, dev_version.as_deref()),
             app: PathBuf::from(bundle_path),
             system: system_version,

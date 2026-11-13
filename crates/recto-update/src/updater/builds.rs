@@ -147,7 +147,7 @@ impl Updater {
             if st.status.is_under_way() {
                 return Err(InstallRefused::Underway);
             }
-            let facts = st.facts.clone().ok_or(InstallRefused::Underway)?;
+            let facts = st.facts.clone().ok_or(InstallRefused::Starting)?;
             if facts.version == version {
                 return Err(InstallRefused::SameVersion);
             }
@@ -934,7 +934,7 @@ mod tests {
         bed.server
             .set("/releases/latest/download/latest.json", Answer::Body(latest_json("0.1.0", &sha)));
         assert_eq!(
-            bed.updater.check_here(Asked::ByHand),
+            bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"),
             Status::Available("0.1.0".into()),
             "the way back is on offer"
         );
@@ -972,11 +972,11 @@ mod tests {
         let (_, sha) = zip_of(&app_of(&built, "0.1.0", crate::BUNDLE_ID), &built.join("r.zip"));
         bed.server
             .set("/releases/latest/download/latest.json", Answer::Body(latest_json("0.1.0", &sha)));
-        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
+        assert_eq!(bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"), Status::UpToDate);
         bed.server
             .set("/releases/latest/download/latest.json", Answer::Body(latest_json("0.1.1", &sha)));
         assert_eq!(
-            bed.updater.check_here(Asked::ByHand),
+            bed.updater.check_here(Asked::ByHand).expect("the app has said what it is"),
             Status::Available("0.1.1".into()),
             "a newer one is, as usual"
         );

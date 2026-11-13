@@ -14,21 +14,10 @@ impl Inner {
     /// Reads the state, on a thread of its own, and hears `restore_ready` when it's applied. It's what the window waits for, up to `restore_patience_seconds`: its frame and the place on it come from what's read.
     pub fn begin_restore(self: &Arc<Self>) {
         let inner = Arc::clone(self);
-        let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
-            // Before the record: a version that keeps failing goes back here, and not by reading on.
-            let facts = lock(&inner.life.update_facts).take();
-            let misreads = updates::misreads_the_record(facts.as_ref());
-            if let Some(facts) = facts
-                && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
-            {
-                std::process::exit(0);
-            }
-            recto_platform::slow::pause(recto_platform::slow::Seam::State);
-            let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
-            let loaded = updates::fall_back_if_unreadable(&inner, loaded);
-            updates::note_tabs_read(&loaded);
-            inner.core.push(CoreCall::Restored(Box::new(loaded)));
-        });
+        let spawned = std::thread::Builder::new()
+            .name("recto-restore".into())
+            .stack_size(1024 * 1024)
+            .spawn(move || read_state(&inner));
         if spawned.is_err() {
             self.core.push(CoreCall::Restored(Box::new(Loaded::Nothing)));
         }
@@ -187,4 +176,19 @@ impl Inner {
             Some(crate::lifecycle::Out::Keeping(_)) => {}
         }
     }
+}
+
+/// **The state read and handed to the session thread,** on a thread that can wait: at the launch ([`Inner::begin_restore`]), and once a late try has got the
+/// record's lock ([`super::keeping`]), the one way the state is read for a launch. The updater's told of the launch first ([`updates::tell_launch`]), before
+/// anything's read, so a version that keeps failing goes back here and not by reading on.
+pub(super) fn read_state(inner: &Arc<Inner>) {
+    let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
+    if updates::tell_launch(inner) == recto_update::updater::AtLaunch::Exit {
+        std::process::exit(0);
+    }
+    recto_platform::slow::pause(recto_platform::slow::Seam::State);
+    let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
+    let loaded = updates::fall_back_if_unreadable(inner, loaded);
+    updates::note_tabs_read(&loaded);
+    inner.core.push(CoreCall::Restored(Box::new(loaded)));
 }
