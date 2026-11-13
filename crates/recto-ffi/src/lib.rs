@@ -1139,18 +1139,18 @@ impl AppCore {
         self.inner.window_interactive()
     }
 
-    /// Whether a state that's come in late may still have the window made again from it: not once the window's taken input without it.
+    /// Whether a state that's come in late has the window made again from it now: Rust's rule, [`recto_app::lifecycle::Life::may_remake_window`].
     pub fn may_remake_window(&self) -> bool {
-        !self.window_interactive()
+        self.inner.life.may_remake_window()
     }
 
     /// There's no window to wait for, so this launch has come up as far as it goes.
     pub fn no_window_to_show(&self) {
-        let updates = Arc::clone(&self.inner.updates);
+        let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates::first_frame_shown(&updates));
+            .spawn(move || updates::first_frame_shown(&inner));
     }
 
     /// The UI thread has woken, or (`block`) a block of the host's begins on it. True if no stretch was under way and this began one, which `main_idle` ends.
@@ -1199,11 +1199,11 @@ impl AppCore {
         }
         self.inner.record_window_shown(home, tile_layers, &why);
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
-        let updates = Arc::clone(&self.inner.updates);
+        let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates::first_frame_shown(&updates));
+            .spawn(move || updates::first_frame_shown(&inner));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.

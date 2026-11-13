@@ -49,6 +49,16 @@ impl AppHost {
 impl Host for AppHost {
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let asks_only = command.only_asks();
+        // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
+        // (`keeping::answers_agents`).
+        if matches!(actor, Actor::Agent(_))
+            && !super::keeping::answers_agents(command)
+            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
+        {
+            return Err(
+                AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
+            );
+        }
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
@@ -80,13 +90,14 @@ impl Host for AppHost {
         self.qa.is_none().then(recto_agent::only_the_user_quits)
     }
 
-    /// Nothing's lost by this session ending: its edits are in the state record, if it's the one keeping it.
+    /// Nothing's lost by this session ending: its edits are in the state record, if it's the one keeping it and writing it (`keeping::may_write`: not while a
+    /// late try is back with the lock and not yet decided on, when the person may have started working in a window that won't be remembered).
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
-        if self.saver.store.holds_the_record() {
-            Vec::new()
-        } else {
-            self.session.unsaved_tabs()
-        }
+        let writes = self
+            .saver
+            .inner()
+            .map_or_else(|| self.saver.store.holds_the_record(), |inner| super::keeping::may_write(&inner));
+        if writes { Vec::new() } else { self.session.unsaved_tabs() }
     }
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {

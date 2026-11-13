@@ -319,7 +319,9 @@ impl RecordStore {
             version,
         };
         match prepared {
-            Ok(()) => store.ask_for_lock(),
+            Ok(()) => {
+                let _ = store.ask_for_lock();
+            }
             Err(error) => {
                 *store.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("the state folder was refused: {}", error.message))
             }
@@ -1740,6 +1742,27 @@ mod tests {
             first.write_record(&sample(1), &PlaceDelta::default(), false).unwrap_err().code,
             "other_instance"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (owner, 2026-11-13: a launch refused the lock tries again for about ten seconds): a try waits out the load's patience as `wait_for_lock` does, so
+    /// a try a second holds the session thread for most of each; or a try doesn't take the lock once the copy holding it has gone; or an ended store takes it
+    /// back by a try. One `try_lock`: refused without waiting the patience while another keeps it, kept once that one's gone, and never for a store that has let go.
+    #[test]
+    fn a_try_at_the_lock_never_waits_and_takes_it_once_it_is_free() {
+        let (root, paths) = state();
+        let first = RecordStore::open(&paths, Flavor::App);
+        let second = RecordStore::open(&paths, Flavor::App);
+        let began = std::time::Instant::now();
+        assert!(!second.try_to_keep());
+        assert!(began.elapsed() < LOCK_PATIENCE, "a try waited {:?}", began.elapsed());
+        assert!(second.why_not_keeping().is_some_and(|why| why.contains("still keeps it")));
+        drop(first);
+        assert!(second.try_to_keep(), "{:?}", second.why_not_keeping());
+        assert!(!second.try_to_keep(), "a lock already held isn't the next try's to take");
+        assert!(second.holds_the_record(), "and stays kept");
+        second.let_go();
+        assert!(!second.try_to_keep(), "an ended store doesn't take it back");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
