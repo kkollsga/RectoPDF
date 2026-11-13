@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# QA seams that force an ordering a window meets only now and then (`Engine::hold_busy`). A release build of the app doesn't have them; `recto-app`'s test builds turn it on.
+# QA seams that force an ordering a window meets only now and then (`Engine::qa()`: a busy view made to last, an ask held between its tick and the lock). A release build of the app doesn't have them; `recto-app`'s test builds turn it on.
 qa = []
 
 [lints]

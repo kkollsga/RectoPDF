@@ -4,41 +4,47 @@
 //! of [`SURFACE`] that a reviewer sees, not a side effect of a move (the lesson of `Session`'s R3.5: a public `Default` and a `_mut` accessor let outside
 //! code replace a whole part, and nothing listed it).
 //!
-//! A text scan of the sources, as the ratchet's is: an item under `#[cfg(test)]` isn't listed, a signature is joined onto one line, an inline `mod` is read as if its items were at the top, and an `impl` header over several lines (a `where` line) is joined. A `pub(super)` field isn't listed: it reaches only the `tiles` module the parts live in.
+//! A text scan of the sources, as the ratchet's is: an item under `#[cfg(test)]` isn't listed, a signature is joined onto one line, an inline `mod` is read as if its items were at the top, and an `impl` header over several lines (a `where` line) is joined. It sees an `unsafe impl` (`Send`, `Sync`), `pub(in …)` as visible, a derive inside `cfg_attr` or over several lines, the files in any folder under `tiles/` and `engine/` (but `tests`), and passes over only a file whose own `#![cfg(test)]` line says it's for tests. A `pub(super)` field isn't listed: it reaches only the `tiles` module the parts live in.
+//!
+//! **What it doesn't see,** being a scan of lines and not the compiler: an `impl` inside a function body or a `const _: () = { … }` block (indented, so
+//! read as neither an item nor a method), anything a macro generates, the fields of a struct whose `where` clause stands at column 0 before its brace
+//! (the `where` line ends the item), the fields of a tuple struct written over several lines (only a one-line tuple struct's are read), and a `cfg` other
+//! than `test` (an item under `#[cfg(feature = "qa")]` is listed as though it were always there).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// The files of the page view's state and its engine.
+/// The files of the page view's state and its engine, in `tiles/` and `engine/` and any folder under them but a `tests` one.
 fn sources() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    sources_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+/// [`sources`], in a crate's `src` at `root`.
+fn sources_in(root: &Path) -> Vec<PathBuf> {
     let mut files = vec![root.join("tiles.rs"), root.join("engine.rs")];
     for dir in ["tiles", "engine"] {
-        let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "rs") {
-                files.push(path);
-            }
-        }
+        walk(&root.join(dir), &mut files);
     }
+    files.retain(|file| !file.components().any(|part| part.as_os_str() == "tests"));
     files.sort();
     files
 }
 
-/// Every `.rs` file of the crate outside the page view's own: where an `impl` of one of its types could hide.
-fn other_sources() -> Vec<PathBuf> {
-    fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, into);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                into.push(path);
-            }
+/// Every `.rs` file under `dir`, in any folder.
+fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(&path, into);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            into.push(path);
         }
     }
+}
+
+/// Every `.rs` file of the crate outside the page view's own: where an `impl` of one of its types could hide.
+fn other_sources() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     walk(&root, &mut files);
@@ -46,6 +52,11 @@ fn other_sources() -> Vec<PathBuf> {
     files.retain(|file| !own.contains(file) && !file.ends_with("surface.rs") && !file.components().any(|part| part.as_os_str() == "tests"));
     files.sort();
     files
+}
+
+/// Whether a file is built only for tests: its own `#![cfg(test)]` line, not one a comment mentions.
+fn only_for_tests(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == "#![cfg(test)]")
 }
 
 /// The names of the structs and enums a page view file defines, of any visibility and wherever they stand: the types an `impl` elsewhere is held against.
@@ -57,10 +68,12 @@ fn defined_types(text: &str, into: &mut BTreeSet<String>) {
     }
 }
 
-/// Whether a line, trimmed, says its item is reached past its module.
-fn visibility(line: &str) -> Option<&'static str> {
+/// Whether a line, trimmed, says its item is reached past its module: `pub`, `pub(crate)` or `pub(in …)`, as written.
+fn visibility(line: &str) -> Option<&str> {
     if line.starts_with("pub(crate) ") {
         Some("pub(crate)")
+    } else if line.starts_with("pub(in ") {
+        line.find(')').map(|end| &line[..=end])
     } else if line.starts_with("pub ") {
         Some("pub")
     } else {
@@ -68,9 +81,19 @@ fn visibility(line: &str) -> Option<&'static str> {
     }
 }
 
+/// The traits a derive names, wherever it's written: `#[derive(A, B)]`, or inside `#[cfg_attr(…, derive(A, B))]`.
+fn derived_in(attribute: &str) -> Vec<String> {
+    let Some((_, rest)) = attribute.split_once("derive(") else {
+        return Vec::new();
+    };
+    let list = rest.split(')').next().unwrap_or("");
+    list.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()
+}
+
 /// The type an `impl` header is for, and the trait if it's a trait's: `impl<'a> Selection<'a> {` is `Selection`, `impl Default for Reader {` is `Reader: Default`.
 fn impl_of(header: &str) -> String {
-    let header = header.trim_end_matches('{').trim();
+    let header = header.trim_end_matches(['{', '}']).trim();
+    let header = header.strip_prefix("unsafe ").unwrap_or(header);
     let header = header.strip_prefix("impl").unwrap_or(header);
     let header = strip_generics(header.trim_start());
     let name = |text: &str| strip_generics(text.trim()).split("::").last().unwrap_or("").trim().to_string();
@@ -118,8 +141,14 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
             at += 1;
             continue;
         }
-        if let Some(list) = trimmed.strip_prefix("#[derive(").and_then(|rest| rest.strip_suffix(")]")) {
-            derives.extend(list.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()));
+        if trimmed.starts_with("#[derive(") || (trimmed.starts_with("#[cfg_attr(") && trimmed.contains("derive(")) {
+            // Over several lines, joined to its `)]`.
+            let mut attribute = String::from(trimmed);
+            while !attribute.ends_with(")]") && at + 1 < lines.len() {
+                at += 1;
+                attribute.push_str(lines[at].trim());
+            }
+            derives.extend(derived_in(&attribute));
             at += 1;
             continue;
         }
@@ -162,15 +191,15 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
                     listing_in(&inner, into, only);
                     at += 1;
                 }
-            } else if trimmed.starts_with("impl") && !trimmed.ends_with(';') {
-                // The header may run over lines (a `where` clause): joined to its opening brace.
+            } else if (trimmed.starts_with("impl") || trimmed.starts_with("unsafe impl")) && !trimmed.ends_with(';') {
+                // The header may run over lines (a `where` clause): joined to its opening brace, or to its empty body (`impl Send for Docs {}`).
                 let mut header = String::from(trimmed);
-                while !header.ends_with('{') && at + 1 < lines.len() {
+                while !header.ends_with('{') && !header.ends_with("{}") && at + 1 < lines.len() {
                     at += 1;
                     header.push(' ');
                     header.push_str(lines[at].trim());
                 }
-                let header = header.split(" where ").next().unwrap_or("").trim_end_matches('{').trim().to_string();
+                let header = header.split(" where ").next().unwrap_or("").trim_end_matches(['{', '}']).trim().to_string();
                 let of = impl_of(&header);
                 let named = of.split(':').next().unwrap_or("");
                 if only.is_none_or(|types| types.contains(named)) {
@@ -243,7 +272,16 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
 }
 
 /// A struct or an enum, of any visibility: how visible, which, and the rest of its line.
-fn type_item(line: &str) -> Option<(&'static str, &'static str, &str)> {
+fn type_item(line: &str) -> Option<(&str, &'static str, &str)> {
+    if let Some(shown) = visibility(line).filter(|shown| shown.starts_with("pub(in "))
+        && let Some(rest) = line[shown.len()..]
+            .trim_start()
+            .strip_prefix("struct ")
+            .map(|rest| (rest, "struct"))
+            .or_else(|| line[shown.len()..].trim_start().strip_prefix("enum ").map(|rest| (rest, "enum")))
+    {
+        return Some((shown, rest.1, rest.0));
+    }
     const SHOWN: [(&str, &str); 4] = [("pub(crate) ", "pub(crate)"), ("pub(super) ", "pub(super)"), ("pub ", "pub"), ("", "private")];
     for (prefix, shown) in SHOWN {
         for (keyword, kind) in [("struct ", "struct"), ("enum ", "enum")] {
@@ -278,7 +316,7 @@ fn listing() -> String {
     let mut types = BTreeSet::new();
     for file in sources() {
         let text = read(&file);
-        if text.contains("#![cfg(test)]") {
+        if only_for_tests(&text) {
             continue;
         }
         defined_types(&text, &mut types);
@@ -286,7 +324,7 @@ fn listing() -> String {
     }
     for file in other_sources() {
         let text = read(&file);
-        if text.contains("#![cfg(test)]") {
+        if only_for_tests(&text) {
             continue;
         }
         listing_in(&text, &mut lines, Some(&types));
@@ -334,11 +372,14 @@ fn the_listing_reads_what_rust_says() {
 
 /// Failure it catches: the listing not seeing a part's field widened (`Docs.views` from `pub(super)` to `pub(crate)`), a trait impl on a part written under
 /// an inline `mod` or with its header on a `where` line, or an `impl` of a page view type in a file the listing doesn't read (the second pass, with `only`).
+/// And (review round 1 of the page view follow-ups): an `unsafe impl` (`Send` or `Sync` for a part, which lets it cross threads), a method or field made
+/// `pub(in …)`, or a derive written inside `cfg_attr` or over several lines, each of which the listing passed over; and a one-line `impl … {}` swallowing
+/// the items after it.
 #[test]
 fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
     let mut lines = BTreeSet::new();
     listing_of(
-        "pub(crate) struct Docs {\n    pub(super) kept: u32,\n    pub(crate) views: Vec<u8>,\n}\n\nmod inner {\n    impl Default for Docs {\n        fn default() -> Self {\n            todo!()\n        }\n    }\n}\n\nimpl<T> Clone for Docs\nwhere\n    T: Copy,\n{\n    fn clone(&self) -> Self {\n        todo!()\n    }\n}\n",
+        "pub(crate) struct Docs {\n    pub(super) kept: u32,\n    pub(crate) views: Vec<u8>,\n}\n\nmod inner {\n    impl Default for Docs {\n        fn default() -> Self {\n            todo!()\n        }\n    }\n}\n\nimpl<T> Clone for Docs\nwhere\n    T: Copy,\n{\n    fn clone(&self) -> Self {\n        todo!()\n    }\n}\n\nunsafe impl Send for Docs {}\n\n#[cfg_attr(feature = \"qa\", derive(Default))]\npub(crate) struct Work {\n    pub(in crate::tiles) jobs: u32,\n}\n\n#[derive(\n    Clone,\n    Debug,\n)]\npub(super) struct Pointer;\n\nimpl Work {\n    pub(in crate::tiles) fn widened(&self) {}\n}\n",
         &mut lines,
     );
     let got: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -351,6 +392,11 @@ fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
             "Docs: Clone::fn clone(&self) -> Self",
             "Docs: Default (trait impl)",
             "Docs: Default::fn default() -> Self",
+            "Docs: Send (trait impl)",
+            "Pointer (pub(super) struct, derives Clone, Debug)",
+            "Work (pub(crate) struct, derives Default)",
+            "Work.pub(in crate::tiles) jobs: u32",
+            "Work::pub(in crate::tiles) fn widened(&self)",
         ]
     );
     let mut outside = BTreeSet::new();
@@ -362,6 +408,29 @@ fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
     );
     let got: Vec<&str> = outside.iter().map(String::as_str).collect();
     assert_eq!(got, ["Reader::pub(crate) fn sneak(&mut self)"]);
+}
+
+/// Failure it catches (review round 1 of the page view follow-ups): a file of the page view in a folder under `tiles/` or `engine/` going unread (only their
+/// own files were), and a file passed over as built only for tests because a comment of it mentions `#![cfg(test)]`.
+#[test]
+fn the_listing_reads_every_file_it_should() {
+    assert!(only_for_tests("//! A test file.\n#![cfg(test)]\n\nuse super::*;\n"));
+    assert!(!only_for_tests("//! Unlike `tests.rs`, this isn't `#![cfg(test)]`.\npub fn shipped() {}\n"));
+    let root = std::env::temp_dir().join(format!("recto-surface-walk-{}", std::process::id()));
+    for dir in ["tiles/part", "engine", "tiles/tests"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for file in ["tiles.rs", "engine.rs", "tiles/part/hidden.rs", "engine/run.rs", "tiles/tests/mod.rs"] {
+        std::fs::write(root.join(file), "").unwrap();
+    }
+    let found = sources_in(&root);
+    std::fs::remove_dir_all(&root).unwrap();
+    let found: Vec<_> = found.iter().map(|file| file.strip_prefix(&root).unwrap().to_path_buf()).collect();
+    let want: Vec<PathBuf> = ["engine/run.rs", "engine.rs", "tiles/part/hidden.rs", "tiles.rs"]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(found, want, "a file in a folder under tiles/ is read, and a tests folder isn't");
 }
 
 /// What the page view lets other code reach, sorted. Each change to it is deliberate: see [`what_the_page_view_lets_other_code_reach_is_listed`].
