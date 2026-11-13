@@ -757,7 +757,10 @@ mod cost {
         for round in 0..5 {
             let mut steps = Vec::with_capacity(5_000);
             for step in 0..5_000u32 {
-                let y = f64::from(step % 25) * 280.0;
+                // Down 24 steps of 280 points and back up, a scroll both ways: `step % 25` alone fell from 6,720 to 0 every 25th step, a jump across
+                // the whole document that made the 99th percentile a jump's cost, not a scroll step's.
+                let at_step = step % 48;
+                let y = f64::from(if at_step <= 24 { at_step } else { 48 - at_step }) * 280.0;
                 let began = std::time::Instant::now();
                 let ops = reader.set_viewport(view(y));
                 let more = reader.drain(MAX_ATTACH_PER_TURN);

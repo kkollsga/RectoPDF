@@ -16,6 +16,7 @@
 
 #![allow(unsafe_code, non_snake_case, non_camel_case_types, clippy::too_many_arguments)]
 
+use crate::places::ImagePlaces;
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
 use recto_proto::contents::{ContentsJob, Mat};
@@ -720,7 +721,7 @@ impl RenderBackend for PdfiumBackend {
             return Err(FailCode::Internal);
         };
         let api = self.api;
-        let mut boxes: Vec<[u16; 4]> = Vec::new();
+        let mut places = ImagePlaces::default();
         let mut looked_at = 0usize;
         // Where a point of the page lands, as a part of the page. By PDFium's own mapping, so a rotated page and a cropped one come out right, however they got that way.
         const PARTS: c_int = 65_535;
@@ -750,8 +751,8 @@ impl RenderBackend for PdfiumBackend {
                             && let (Some(one), Some(two)) = (place(left, top_edge), place(right, bottom))
                         {
                             let found = [one.0.min(two.0), one.1.min(two.1), one.0.max(two.0), one.1.max(two.1)];
-                            if !boxes.contains(&found) {
-                                boxes.push(found);
+                            if places.add(found).is_break() {
+                                return Err(FailCode::TooLarge);
                             }
                         }
                     }
@@ -765,13 +766,7 @@ impl RenderBackend for PdfiumBackend {
                 }
             }
         }
-        if boxes.len() > recto_proto::MAX_IMAGE_BOXES {
-            let all = boxes.iter().fold([u16::MAX, u16::MAX, 0, 0], |all, found| {
-                [all[0].min(found[0]), all[1].min(found[1]), all[2].max(found[2]), all[3].max(found[3])]
-            });
-            boxes = vec![all];
-        }
-        Ok(boxes)
+        Ok(places.into_places())
     }
 
     fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError> {

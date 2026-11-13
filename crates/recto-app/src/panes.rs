@@ -5,7 +5,7 @@
 //! The session decides what's side by side and what synced scroll does: [`recto_session::compare`]. This keeps what the UI thread needs to act on that with no lock on the session: which tab each pane shows, the comparison as last laid out, and the one zoom. **Synced scroll** follows the reader's own scroll in a pane, never a pane arriving where it was sent, so panes can't send each other back and forth. **Zoom** is one magnification for every pane, taken from whichever pane it changed in once it's settled, a pinch's end or a pause in ⌘-scroll, so nothing's drawn for every step of a gesture in each pane.
 
 use crate::lock;
-use recto_reader::engine::EngineEvents;
+use recto_reader::engine::{Asked, EngineEvents};
 use recto_reader::layout::{CORNER_MARGIN, MIN_SIDE_MARGIN, PANE_MARGIN};
 use recto_reader::tiles::{Viewport, Zoom};
 use recto_reader::{Engine, EngineConfig, PaperKind};
@@ -30,6 +30,8 @@ struct Plan {
     pages: Vec<u32>,
     /// The one zoom, once panes are side by side.
     magnification: Option<f64>,
+    /// When the last zoom of every pane that set `magnification` was asked ([`Panes::zoom_all`]), so an older one doesn't set it after a newer.
+    zoom_asked: Option<Asked>,
 }
 
 pub struct Panes {
@@ -166,15 +168,24 @@ impl Panes {
     }
 
     /// A zoom from a key, the menu, the field or an agent: in the pane being read, and then the same in each other.
+    ///
+    /// **One tick for the whole zoom** ([`Asked`]), taken before any pane's lock is waited for: each pane, and the one zoom kept here, orders it against
+    /// another zoom by that one moment, so a person's and an agent's zooms that interleave end at the newer asked in every pane.
     pub fn zoom_all(&self, primary: &Engine, zoom: Zoom) -> Option<f64> {
+        let asked = Asked::now();
         let reading = self.reading_engine(primary);
-        let value = reading.zoom(zoom)?;
+        let value = asked.zoom(&reading, zoom)?;
         if self.count() > 1 {
-            lock(&self.plan).magnification = Some(value);
+            let mut plan = lock(&self.plan);
+            if plan.zoom_asked.is_none_or(|was| was < asked) {
+                plan.magnification = Some(value);
+                plan.zoom_asked = Some(asked);
+            }
+            drop(plan);
             // The others never hold the UI thread up: a busy one takes the zoom from its own thread.
             for engine in self.engines(primary) {
                 if !engine.same_as(&reading) {
-                    engine.zoom_soon(value);
+                    asked.zoom_soon(&engine, value);
                 }
             }
         }
@@ -298,5 +309,77 @@ mod tests {
         assert_eq!(margins(1, 3), (PANE_MARGIN, PANE_MARGIN));
         assert_eq!(margins(2, 3), (PANE_MARGIN, CORNER_MARGIN));
         assert_eq!(margins(1, 2), (PANE_MARGIN, CORNER_MARGIN));
+    }
+
+    struct Quiet;
+    impl EngineEvents for Quiet {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Makes a pane's page view show a tab of 100 pages with no thread of its own, so what it's asked is applied only by the asks themselves.
+    fn showing(engine: &Engine, tab: u32) {
+        engine.shut_down();
+        let map = recto_reader::tiles::PageMap {
+            files: vec![std::path::PathBuf::from(format!("/nowhere/{tab}.pdf"))],
+            ..recto_reader::tiles::PageMap::default()
+        };
+        engine.activate(tab, 100, 0, map, &[], None, recto_reader::layout::Spread::Single);
+        let view = |y: f64, scrolled_to: u64| Viewport {
+            x: 0.0,
+            y,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to,
+        };
+        let (mut y, mut seq) = (0.0, 0);
+        for _ in 0..3 {
+            for op in engine.set_viewport(view(y, seq)) {
+                if let recto_reader::Op::ScrollTo { y: to, seq: sent } = op {
+                    (y, seq) = (to, sent);
+                }
+            }
+        }
+    }
+
+    /// Failure (review round 2 of the page view follow-ups): the comparison's one zoom ends different in different panes. An agent's zoom and the person's
+    /// interleave: the agent's lands in the pane being read and is preempted on its way through the others; the person, now reading another pane, zooms
+    /// every pane; the agent's goes on and lands over the person's in the panes it hadn't reached, as each view's zoom took a tick of its own, so the agent's
+    /// later views were "newer" than the person's zoom. One tick for each zoom of every pane, so each view orders the two the same way, and the plan's one
+    /// zoom is the newer's too. Forced: the agent's zoom is held at the middle pane between its tick and the lock while the person's goes, and then both go.
+    #[test]
+    fn two_zooms_of_every_pane_that_interleave_end_the_same_in_every_pane() {
+        let primary = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        let panes = Panes::new(Arc::new(Quiet), EngineConfig::default());
+        panes.set_count(&primary, 3, PaperKind::White, true);
+        panes.lay_out(vec![TabId(1), TabId(2), TabId(3)], 0, None, vec![100; 3]);
+        let engines = panes.engines(&primary);
+        for (tab, engine) in (1..).zip(&engines) {
+            showing(engine, tab);
+        }
+        let middle = engines[1].qa();
+        middle.hold_asks(recto_reader::engine::Ask::ZoomSoon, true);
+        std::thread::scope(|scope| {
+            let agents = scope.spawn(|| panes.zoom_all(&primary, Zoom::To(1.2)));
+            assert!(middle.wait_for_held_asks(1), "the agent's zoom reached the middle pane");
+            assert_eq!(panes.focus(2), Some(TabId(3)), "the person reads the right pane");
+            let persons = scope.spawn(|| panes.zoom_all(&primary, Zoom::To(2.0)));
+            assert!(middle.wait_for_held_asks(2), "the person's zoom reached the middle pane");
+            middle.hold_asks(recto_reader::engine::Ask::ZoomSoon, false);
+            agents.join().unwrap();
+            assert_eq!(persons.join().unwrap(), Some(2.0));
+        });
+        let each: Vec<Option<f64>> = engines.iter().map(Engine::magnification).collect();
+        assert_eq!(each, [Some(2.0); 3], "every pane at the newer zoom");
+        assert_eq!(lock(&panes.plan).magnification, Some(2.0), "and the one zoom is the newer's");
+        for engine in &engines {
+            engine.shut_down();
+        }
     }
 }

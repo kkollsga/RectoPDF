@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
-use super::{Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
+use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
 const MAX_OPENINGS: usize = 4;
@@ -85,7 +85,7 @@ fn run(shared: &Shared) {
             publish_workers(shared, &mut renderers);
             return;
         }
-        let plan = {
+        let (plan, changed) = {
             let mut reader = lock(&shared.reader);
             let files = reader.work.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
@@ -96,11 +96,13 @@ fn run(shared: &Shared) {
                 renderers.remove(&file);
                 openings.remove(&file);
             }
-            if take_pending_follow(shared, &mut reader) && reader.host.has_ops() {
-                signal_ops(shared);
-            }
-            reader.next_plan()
+            // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
+            let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
+            (reader.next_plan(), changed)
         };
+        if let Some(changed) = changed {
+            changed.tell(shared);
+        }
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
         let job = plan.and_then(JobPlan::ready);
         // Only hot and warm tabs' files keep a renderer. Dropping one kills its worker and closes its file.

@@ -21,7 +21,7 @@ pub(super) struct Placement {
     pub(super) turns: u8,
 }
 
-/// Built only in the tiles module ([`HostQueue::new`]), with no `Default`: the engine reaches it through `Reader`'s field to ask whether there are ops, and to hand it to the cache, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`HostQueue::new`]), with no `Default`, as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field to ask whether there are ops, and to hand it to the cache.
 #[derive(Debug)]
 pub(crate) struct HostQueue {
     pub(super) shown: HashMap<u32, Placement>,

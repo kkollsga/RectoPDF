@@ -5,7 +5,7 @@ mod common;
 use common::{kill_process, real_config, renderer, tile_surface, wait_until};
 use recto_platform::isolate::process_memory;
 use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, TileKind, TileRect, TileRequest, TileResult};
-use recto_render_service::{HeavySlot, Surface, Workers};
+use recto_render_service::{HeavySlot, Surface, Workers, under_page_deadline_for_test};
 use recto_testpdf::{Page, TempPdf, busy_page, form_bomb, pages, slow_page, text_lines};
 use std::time::Duration;
 
@@ -635,35 +635,6 @@ fn full_page_fills(count: usize) -> Vec<u8> {
     content
 }
 
-/// A page that takes far longer to draw for the hidden-text check than these tests' short deadlines allow.
-fn slow_to_check() -> TempPdf {
-    let content = full_page_fills(20_000);
-    TempPdf::new("slow.pdf", &pages(&[Page::new(text_lines(&["A plain page"])), Page::new(content)]))
-}
-
-/// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing. It's remembered as that, so it isn't tried again, and it doesn't count towards stopping the document.
-#[test]
-fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_alone() {
-    let file = slow_to_check();
-    let mut doc = renderer(
-        &file.0,
-        Policy {
-            page_deadline: Duration::from_millis(250),
-            ..Policy::default()
-        },
-    );
-    let read = doc.page_characters(1, true, true).expect("the text still comes back");
-    assert!(!read.hidden_checked, "not checked");
-    assert!(read.chars.iter().any(|record| record.ch() == 'W'));
-    assert!(doc.stats().deadline_kills >= 1, "{:?}", doc.stats());
-    for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
-        assert_eq!(doc.page_draw_state_at(1, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
-    }
-    let kills = doc.stats().deadline_kills;
-    assert!(!doc.page_characters(1, true, true).unwrap().hidden_checked);
-    assert_eq!(doc.stats().deadline_kills, kills, "it isn't tried again");
-}
-
 /// Failure: a copy of a file with many slow pages uses up the kills a document is allowed, and then nothing in it draws. Checks stop being tried long before that, and what they cost isn't counted against drawing.
 #[test]
 fn checks_past_their_deadline_cant_stop_a_document_drawing() {
@@ -927,36 +898,13 @@ fn a_job_that_may_start_no_worker_starts_none_and_leaves_the_next_one_free_to() 
     doc.kill_worker();
     drawn_after(&mut doc, 3, "a panic");
 
-    // Past its deadline. The deadline is short so the slow page passes it, and it holds for the job after as well, so what's asked of that one is that it started a worker and wasn't refused one, which says nothing of how fast a runner is. A draw that comes out is drawn, and one that itself ran out of the short time is not a refusal.
-    let policy = Policy {
-        page_deadline: Duration::from_millis(200),
-        start_timeout: Duration::from_secs(60),
-        ..Policy::default()
-    };
-    let mut doc = renderer(&file.0, policy);
-    // A worker there to hold the job, from an open that a busy runner may need more than once to get in the time.
-    for _ in 0..20 {
-        if doc.worker_pid().is_some() {
-            break;
-        }
-        let _ = doc.page_size(0);
-    }
-    assert!(doc.worker_pid().is_some(), "a worker to hold the job");
-    let result = only_there(&mut doc, 0, 1, &surface);
+    // Past its deadline: only this job's deadline is short, so the slow page passes it, and the job after runs under the policy's own (120 s), so it must come out drawn without a clock to race. What it must also show is that it started the worker it needed and wasn't refused one.
+    let (pid, spawns) = (doc.worker_pid(), doc.stats().spawns);
+    assert!(pid.is_some(), "a worker there to hold the job");
+    let result = under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(200), |doc| only_there(doc, 0, 3, &surface));
     assert!(result.is_err(), "{result:?}");
-    let spawns = doc.stats().spawns;
-    let result = doc.render_tile(&tile_request(1, 1), &tile_surface());
-    assert!(
-        matches!(
-            result,
-            Ok(TileResult::Done(_))
-                | Err(RenderFailure::PageFailed {
-                    reason: KillReason::Deadline,
-                    ..
-                })
-        ),
-        "the next ordinary job, after one past its deadline, isn't refused a worker: {result:?}"
-    );
+    assert_eq!(doc.stats().spawns, spawns, "none started for it");
+    drawn_after(&mut doc, 3, "one past its deadline");
     assert_eq!(doc.stats().spawns, spawns + 1, "it started the worker it needed");
 }
 

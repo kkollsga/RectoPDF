@@ -28,7 +28,7 @@ impl Links<'_> {
         let mut reader = lock(&self.engine.shared.reader);
         let hit = reader.pointer_link(x, y);
         drop(reader);
-        self.engine.wake();
+        self.engine.unpark_thread();
         hit
     }
 
