@@ -1198,6 +1198,26 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (R2.5): a refused file name is taken for the page failing to draw, so a wait on the page hears it failed; or a page that couldn't be drawn is
+    /// taken for a refused file name, and nobody waiting hears of it. Routed by named codes: the output's own refusals, and nothing else.
+    #[test]
+    fn only_an_outputs_refusals_are_about_the_output() {
+        for code in [
+            Code::OUTPUT_EXISTS,
+            Code::BAD_OUTPUT,
+            Code::BAD_SCALE,
+            Code::BAD_RECT,
+            Code::BAD_TEXT_MODE,
+            Code::WRITE_FAILED,
+            Code::OUTPUT_TOO_LARGE,
+        ] {
+            assert!(is_about_the_output(Some(code)), "{code}");
+        }
+        for code in [Some(Code::NO_SUCH_PAGE), Some(Code::PAGE_TOO_HEAVY), Some(Code::RENDER_TOOK_TOO_LONG), None] {
+            assert!(!is_about_the_output(code), "{code:?}");
+        }
+    }
     use recto_core::{DocFacts, OpenError, Toc};
     use std::path::Path;
 

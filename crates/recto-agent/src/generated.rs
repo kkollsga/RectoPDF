@@ -185,6 +185,11 @@ pub fn failure_words(code: &str) -> &'static str {
     }
 }
 
+/// Whether a tab a wait asks about isn't open yet, so it may be: no tab by that name, which an ambiguous name isn't.
+fn not_open_yet(error: &AgentError) -> bool {
+    error.code == Code::NO_SUCH_TAB && error.exit != exit::AMBIGUOUS
+}
+
 /// `recto wait contents-generated`: asking counts as wanting them, or a wait could run out its time on something nobody started.
 pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState {
     let Some(generating) = access.generating() else {
@@ -193,7 +198,7 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
     let (file, keyed) = match crate::reading::tab_file_keyed(access, tab) {
         Ok(found) => found,
         // A tab that isn't open yet may be; a file that's changed under its edits or can't be looked at won't be, so the wait ends now rather than at its time.
-        Err(error) if error.code == Code::NO_SUCH_TAB && error.exit != exit::AMBIGUOUS => return ConditionState::Waiting,
+        Err(error) if not_open_yet(&error) => return ConditionState::Waiting,
         Err(error) => return ConditionState::Failed(error),
     };
     match not_ready(generating, &keyed, file.pages, true) {
@@ -209,6 +214,20 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
 #[cfg(test)]
 mod tests {
     use super::failure_words;
+
+    /// Failure (R2.5): a wait for generated contents on a tab not open yet ends at once as failed, so an agent opening it next waits for nothing; or one on
+    /// a name that matches two tabs, or a file changed under its edits, waits out its time. Routed by a named code: only no such tab waits.
+    #[test]
+    fn only_a_tab_not_open_yet_is_waited_for() {
+        use super::{AgentError, Code, exit, not_open_yet};
+        assert!(not_open_yet(&AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND)));
+        assert!(!not_open_yet(&AgentError::new(
+            Code::AMBIGUOUS,
+            "More than one tab matches that name.",
+            exit::AMBIGUOUS
+        )));
+        assert!(!not_open_yet(&AgentError::new(Code::FILE_CHANGED, "changed", exit::FAILED)));
+    }
 
     /// Failure: a refusal or failure the helper names says the same as one it doesn't, so the pointer on the note can't say a protected file is never read, or that the helper's missing; or an unknown code says nothing.
     #[test]

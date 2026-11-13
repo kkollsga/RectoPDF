@@ -294,6 +294,25 @@ pub fn iso8601(ms: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Failure (R2.5): the log's repeats are told apart by a code's string, and a refusal an agent repeats for nothing (a level too low, a busy session) is
+    /// written each time, or one worth a line is counted away. Routed by named codes: these collapse, and a refusal with something to say doesn't.
+    #[test]
+    fn the_refusals_an_agent_repeats_for_nothing_are_counted() {
+        for outcome in [
+            "permission_denied",
+            "needs_terminal",
+            "would_clear_redo",
+            "would_discard_user_edits",
+            "sign_refused",
+            "busy",
+        ] {
+            assert!(collapses("text", outcome), "{outcome}");
+        }
+        for outcome in ["ok", "usage", "no_such_tab", "unsaved_changes"] {
+            assert!(!collapses("text", outcome), "{outcome}");
+        }
+    }
+
     fn temp_paths(name: &str) -> (recto_testpdf::TempDir, StatePaths) {
         // The state folder itself isn't made: a test puts a file there instead.
         let root = recto_testpdf::TempDir::new(&format!("recto-log-{name}-"));

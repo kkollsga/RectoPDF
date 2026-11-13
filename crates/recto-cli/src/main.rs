@@ -392,12 +392,7 @@ fn serve_in_background(paths: &StatePaths) -> Result<Value, AgentError> {
             return Ok(json!({ "running": true, "pid": status["data"]["pid"], "socket": paths.socket, "already": true }));
         }
         if let (Some(_), Some(message)) = (value["error"]["code"].as_str(), value["error"]["message"].as_str()) {
-            let code = if code == Some(Code::STATE_REFUSED) {
-                Code::STATE_REFUSED
-            } else {
-                Code::SERVE_FAILED
-            };
-            return Err(AgentError::new(code, message.to_string(), exit::FAILED).then(
+            return Err(AgentError::new(start_refused(code), message.to_string(), exit::FAILED).then(
                 value["error"]["next"]
                     .as_str()
                     .unwrap_or("Run `recto serve` in the foreground to see why.")
@@ -737,9 +732,28 @@ fn error_from(value: &Value) -> AgentError {
     .then(error["next"].as_str().unwrap_or("").to_string())
 }
 
+/// What a background start that was refused says: the state folder's refusal as it is, and anything else as a start that failed.
+fn start_refused(said: Option<Code>) -> Code {
+    if said == Some(Code::STATE_REFUSED) {
+        Code::STATE_REFUSED
+    } else {
+        Code::SERVE_FAILED
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (R2.5): a background start refused for its state folder is said as a start that failed, or another refusal as the state folder's, as the
+    /// reply's code was told apart by its string. By named codes.
+    #[test]
+    fn a_refused_start_keeps_only_the_state_folders_code() {
+        use recto_agent::Code;
+        assert_eq!(super::start_refused(Some(Code::STATE_REFUSED)), Code::STATE_REFUSED);
+        assert_eq!(super::start_refused(Some(Code::NOT_RUNNING)), Code::SERVE_FAILED);
+        assert_eq!(super::start_refused(None), Code::SERVE_FAILED);
+    }
 
     /// Failure: `recto qa wait-settled --timeout 2m` gives up after the client's own 35 s and says the session didn't answer, while the app is still waiting as it was asked to: found printing 300 pages, whose pages take longer than that to prepare.
     #[test]
