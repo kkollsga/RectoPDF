@@ -311,7 +311,7 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
 /// Failure: anything the user can see or has changed doesn't survive a quit and a launch. **The test that matters most:** the whole of `qa state` is compared, across a normal quit, with a short named list of exceptions. A field added to `qa state` fails this until it's carried over or named, so state is complete by construction. In dark too, with light and dark screenshots to look at when `RECTO_RESTORE_SHOTS` names a folder. And going round twice loses nothing the first time didn't (what `quitting_twice_in_a_row_changes_nothing` held with a rich state of its own): in light, a record written from a restored session is the one before it, a second quit and launch later.
 #[test]
 fn everything_comes_back_after_a_quit() {
-    comes_back_after_a_quit([&[], &[]], true);
+    comes_back_after_a_quit([None, None], true);
 }
 
 /// Failure (CI, main at faa9180: "⌘F gives the field the keyboard"): ⌘F and typing in the moment a window was up without the state, read late, were lost when the state came in and the window was made again from it, the new one with the page focused. **Acting within that gap,** the state read 1.5 s late and the window made again from it a second later: what's done waits for the window made from the state, and all of it is there after: Find open with what was typed, and its field with the keyboard.
@@ -325,15 +325,9 @@ fn what_is_done_before_a_late_state_comes_in_isnt_lost() {
     run.ok(&["goto", "9"]);
     run.settled();
     run.quit();
-    // The state 1.5 s late, and the window made again from it a second after that: commands are taken once the state's in, so these come in that second, as on CI they did in a moment of it.
-    let run = Run::on_with_env(
-        &state,
-        &[
-            ("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500")),
-            ("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("1000")),
-        ],
-    )
-    .unwrap();
+    // The state let in once the window's up without it, and the window made again from it a second after that: commands are taken once the state's in, so
+    // these come in that second, as on CI they did in a moment of it.
+    let run = launch_with_the_state_late(&state, LetIn::AsTheWindowGoesUp, &[("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("1000"))]);
     run.ok(&["qa", "menu", "find.open"]);
     run.ok(&["qa", "find-type", "words"]);
     run.settled();
@@ -354,22 +348,48 @@ fn what_is_done_before_a_late_state_comes_in_isnt_lost() {
 /// **The real app's test of a window made again from a state that came in late,** for the slow stage's tests retired for headless twins (R1.4): it says, on each
 /// launch, that the window did go up without the state and was made again (`record.remade`), so it can't pass on the on-time path.
 ///
-/// Failure (CI, main at f4b4d22): on a slower machine the state was read after the window's second of patience, the window went up without it, and what came in later didn't bring everything back: the sidebar's contents with no height there, and here, with the disk slow on purpose, the window's size and full screen, the appearance, Settings, every pane's place and the contents' scroll. Just past the patience, the window that went up without the state also wrote its own default size over what had come in. **The whole of `qa state` across a quit, with the state read 1.05 s and 1.5 s late**, so it comes in after the window's up. Everything comes back as from an on-time read.
+/// Failure (CI, main at f4b4d22): on a slower machine the state was read after the window's second of patience, the window went up without it, and what came in later didn't bring everything back: the sidebar's contents with no height there, and here, with the disk slow on purpose, the window's size and full screen, the appearance, Settings, every pane's place and the contents' scroll. Just past the patience, the window that went up without the state also wrote its own default size over what had come in. **The whole of `qa state` across a quit, with the state held until the window's up without it** ([`launch_with_the_state_late`]). Everything comes back as from an on-time read.
 #[test]
 fn everything_comes_back_when_the_state_is_read_late() {
-    // Just past the patience, where the window that went up without it can still be saying its own size and focus as the state comes in; and well past it.
-    comes_back_after_a_quit(
-        [
-            &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1050"))],
-            &[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))],
-        ],
-        false,
-    );
+    // As the window goes up, where it can still be saying its own size and focus as the state comes in; and well past it.
+    comes_back_after_a_quit([Some(LetIn::AsTheWindowGoesUp), Some(LetIn::WellAfterTheWindowIsUp)], false);
 }
 
-/// A rich state, a quit, and a launch with this in its environment, and the whole of `qa state` compared, in light and in dark; with `twice`, a second quit and launch in light, compared with the first.
-fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twice: bool) {
-    for ((look, paper), second_launch) in [("light", "warm"), ("dark", "dark")].into_iter().zip(second_launch) {
+/// When a launch's state, held at its seam until the window's up without it, is let in.
+#[derive(Clone, Copy, Debug)]
+enum LetIn {
+    /// As the window goes up, while it can still be laying itself out and saying its own size and focus.
+    AsTheWindowGoesUp,
+    /// Half a second after it's up: well past the patience.
+    WellAfterTheWindowIsUp,
+}
+
+/// **A launch whose state comes in after its window went up without it, on a machine of any speed.** The state's read is held at its seam until the app says
+/// its window is up (`RECTO_QA_SLOW_HOLD=state:window`), and then let in, as `let_in` says. `env` is anything else for the app's environment.
+///
+/// Held, not slowed by a time (CI run 43490698420, main at a5f01f04, 1 failure in 5; 3 in 20 here under `--like-ci`): the state slowed 1.05 s against the
+/// window's 1 s patience is 50 ms of margin, and on a starved runner (load 44 on 3 cores, a 1.25 s stall of the UI thread) the patience's timer ran after the
+/// state was in, so the window went up with it (`record.first_shown.when_shown.state_read` true). That's right for a person, but the test then never took the
+/// late path it's about. The test can't open a hold itself once it sees the window, as the socket answers only once the state's in.
+fn launch_with_the_state_late<'a>(state: &'a State, let_in: LetIn, env: &[(&str, &std::ffi::OsStr)]) -> Run<'a> {
+    let hold = format!("state:{}", recto_platform::slow::UNTIL_WINDOW);
+    let mut env = env.to_vec();
+    env.push((recto_platform::slow::HOLD_SWITCH, std::ffi::OsStr::new(&hold)));
+    if let LetIn::WellAfterTheWindowIsUp = let_in {
+        env.push((recto_platform::slow::SWITCH, std::ffi::OsStr::new("state=500")));
+    }
+    let run = Run::on_with_env(state, &env).unwrap();
+    let (reply, code) = state.json(&["qa", "state"]);
+    assert_eq!(
+        code, 0,
+        "the state was held until the window was up (`{hold}`), and nothing answered: the window never went up, or the hold didn't let go when it did: {reply}"
+    );
+    run
+}
+
+/// A rich state, a quit, and a launch, with its state late as `late` says, or not, and the whole of `qa state` compared, in light and in dark; with `twice`, a second quit and launch in light, compared with the first.
+fn comes_back_after_a_quit(late: [Option<LetIn>; 2], twice: bool) {
+    for ((look, paper), late) in [("light", "warm"), ("dark", "dark")].into_iter().zip(late) {
         let state = State::new();
         let Some(run) = Run::on(&state) else { return };
         let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
@@ -385,7 +405,10 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twic
         }
         let before = run.report();
         run.quit();
-        let run = Run::on_with_env(&state, second_launch).unwrap();
+        let run = match late {
+            Some(let_in) => launch_with_the_state_late(&state, let_in, &[]),
+            None => Run::on_with_env(&state, &[]).unwrap(),
+        };
         // Read late on purpose, it's waited for: what's compared is what's there once it has been.
         let tabs = before["session"]["tabs"].as_array().unwrap().len();
         common::app::wait_for_long(&run, |report| report["session"]["tabs"].as_array().is_some_and(|now| now.len() == tabs));
@@ -411,8 +434,12 @@ fn comes_back_after_a_quit(second_launch: [&[(&str, &std::ffi::OsStr)]; 2], twic
         );
         // Read late, the window went up without the state and was made again from it: what's compared above is Swift's window made from a late state, and
         // not an on-time launch on a quick machine.
-        let late = !second_launch.is_empty();
-        assert_eq!(after["record"]["remade"], late, "{look}: went up without the state and made again from it");
+        assert_eq!(
+            after["record"]["remade"],
+            late.is_some(),
+            "{look}: went up without the state and made again from it: {}",
+            after["record"]["first_shown"]
+        );
         // Round again: what a restored session writes is what it was restored from.
         let run = if twice && look == "light" {
             run.quit();
@@ -1983,16 +2010,16 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
 /// Failure: what's selected is lost across a restart: SPEC decision 23 has it as part of what comes back. On the page it was on, the same characters, and highlighted again.
 #[test]
 fn a_selection_comes_back() {
-    selection_comes_back(&[]);
+    selection_comes_back(false);
 }
 
 /// Failure (late-restore-2): with the state read late, the selection came back on the window that went up without it and went with that window when it was made again from the state, and so did Find's hit. Selected again on the new one.
 #[test]
 fn a_selection_comes_back_when_the_state_is_read_late() {
-    selection_comes_back(&[("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500"))]);
+    selection_comes_back(true);
 }
 
-fn selection_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
+fn selection_comes_back(late: bool) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let file = long_document("selected", 8);
@@ -2005,7 +2032,11 @@ fn selection_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let before = run.report();
     assert_eq!(before["reader"]["selection"]["selected"], true, "{}", before["reader"]["selection"]);
     run.quit();
-    let run = Run::on_with_env(&state, second_launch).unwrap();
+    let run = if late {
+        launch_with_the_state_late(&state, LetIn::AsTheWindowGoesUp, &[])
+    } else {
+        Run::on_with_env(&state, &[]).unwrap()
+    };
     run.settled();
     let after = run.report();
     assert_eq!(after["reader"]["selection"]["selected"], true, "{}", after["reader"]["selection"]);
@@ -2255,17 +2286,8 @@ fn a_restore_after_the_window_is_up_keeps_what_the_host_did() {
         (&json!(true), &json!(true))
     );
     run.quit();
-    // A slow disk: the state comes 2.5 s after the launch, past the window's patience.
-    let app = app_path().unwrap();
-    let output = state
-        .command()
-        .env("RECTO_QA_RESTORE_DELAY_MS", "2500")
-        .args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "2m", "--json"])
-        .output()
-        .unwrap();
-    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(reply["ok"], true, "{reply}");
-    let run = Run::attach(&state, reply["data"]["pid"].as_u64().unwrap() as u32);
+    // A slow disk: the state comes after the window's up without it, past the window's patience.
+    let run = launch_with_the_state_late(&state, LetIn::AsTheWindowGoesUp, &[]);
     let restored = common::app::wait_for_long(&run, |report| report["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
     assert_eq!(restored["app"]["hidden"], false, "the host showed it");
     assert_eq!(restored["app"]["window"]["minimised"], false);
@@ -2411,20 +2433,17 @@ fn finds_field_has_the_keyboard_again_when_the_session_is_late_after_the_state()
 /// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once. In the slow stage too (R1.4): Rust asks as soon as the tab's restored, before the window's made from the state, so which window has the sheet and where its Cancel goes is the window's, and the headless kit has none to see it.
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {
-    protected_tab_asks_again(&[]);
+    protected_tab_asks_again(false);
 }
 
-/// Failure (slow mode, 2026-11-11): with the state read late, the password sheet went up on the window that was up without it, and that window went for one made from the state. Cancel on the sheet went to the old window's ending, after it had gone, so it was never answered: the sheet came straight back, and stayed counted open, so `session check` would say a sheet's in the way of every hand-off. The state read 1.5 s late and the window made again 300 ms after it: Cancel holds, and nothing's left counted.
+/// Failure (slow mode, 2026-11-11): with the state read late, the password sheet went up on the window that was up without it, and that window went for one made from the state. Cancel on the sheet went to the old window's ending, after it had gone, so it was never answered: the sheet came straight back, and stayed counted open, so `session check` would say a sheet's in the way of every hand-off. The state let in once the window's up without it, and the window made again 300 ms after it: Cancel holds, and nothing's left counted.
 #[test]
 fn a_protected_tab_asks_again_when_the_state_is_read_late() {
-    protected_tab_asks_again(&[
-        ("RECTO_QA_RESTORE_DELAY_MS", std::ffi::OsStr::new("1500")),
-        ("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("300")),
-    ]);
+    protected_tab_asks_again(true);
 }
 
-/// A protected tab, a quit, and a launch with this in its environment: asked again, and Cancel holds.
-fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
+/// A protected tab, a quit, and a launch, with its state late or not: asked again, and Cancel holds.
+fn protected_tab_asks_again(late: bool) {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
@@ -2448,7 +2467,11 @@ fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
     });
     run.settled();
     run.quit();
-    let run = Run::on_with_env(&state, second_launch).unwrap();
+    let run = if late {
+        launch_with_the_state_late(&state, LetIn::AsTheWindowGoesUp, &[("RECTO_QA_REMAKE_DELAY_MS", std::ffi::OsStr::new("300"))])
+    } else {
+        Run::on_with_env(&state, &[]).unwrap()
+    };
     let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
     run.ok(&["qa", "sheet-answer", "second"]);
