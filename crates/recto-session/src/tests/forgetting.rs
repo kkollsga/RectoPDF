@@ -96,6 +96,22 @@ fn closing_a_tab_leaves_nothing_of_it() {
     assert!(holding(&s, b).contains(&"tabs"), "the other tab is still there");
 }
 
+/// Failure (the sleeper's review, 2026-11-13): a tab pushed out of the warm ones, with sleep files on, waits with its contents for its sleep file to be
+/// written; closed before that's taken, its contents stayed held (up to [`crate::dormancy::MAX_LEFT_WARM`] tabs' `Arc<Toc>`) until the next take. Closing it
+/// leaves nothing of it.
+#[test]
+fn closing_a_tab_on_its_way_to_a_sleep_file_leaves_nothing_of_it() {
+    let mut s = session(10);
+    s.dormancy_mut().set_sleep_files(true);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    for at in 0..MAX_WARM {
+        s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap();
+    }
+    assert!(holding(&s, a).contains(&"left_warm"), "it's on its way to a sleep file: {:?}", holding(&s, a));
+    s.close(a).unwrap();
+    assert_eq!(holding(&s, a), Vec::<&str>::new(), "closing leaves nothing of it");
+}
+
 /// Failure: a tab that goes dormant keeps what it was shown with, its contents, draws, generated contents or a read of its file, so a thousand tabs left alone cost what a thousand open ones do.
 #[test]
 fn a_tab_gone_dormant_holds_no_more_than_a_cold_one() {
