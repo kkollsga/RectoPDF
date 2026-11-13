@@ -118,6 +118,7 @@ pub const WAKE_REPORT_BYTES: usize = 48;
 const _: () = assert!(std::mem::size_of::<WakeReport>() <= WAKE_REPORT_BYTES);
 
 /// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`DocView::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
+// R3.6: a `Reader` operation the ratchet's method count can't see, as a free function taking the whole page view (it reads the viewport and the tab's view).
 pub(super) fn left_place(reader: &Reader, doc: &DocView) -> (Vec<u32>, f64, f64) {
     let y = doc.place_y();
     let window_height = reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE);
@@ -254,6 +255,7 @@ impl Waking {
     }
 
     /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
+    // R3.6: a `Reader` operation the ratchet's method count can't see: an associated function of `Waking` taking the whole page view, which reaches every field `Reader`'s own methods do.
     pub(super) fn pictures_exist_for(reader: &Reader, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {
         let (top, bottom) = (reader.viewport.y, reader.viewport.y + reader.viewport.height);
         let have: std::collections::HashSet<u32> = reader
@@ -271,6 +273,7 @@ impl Waking {
     }
 
     /// **What the wake under way had to show,** once, as its tab is made the hot one and has been sent to its place: the pages in view there, as a sleep file would have taken them, and whether a picture of each is here and where from.
+    // R3.6: a `Reader` operation the ratchet's method count can't see, as `pictures_exist_for` above.
     pub(super) fn note_stock(reader: &mut Reader, tab: u32) {
         let Some((_, report)) = reader.wake.waking else { return };
         if report.tab != tab || report.had != WakeStock::NotLooked {

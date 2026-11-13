@@ -204,6 +204,7 @@ fn picture_bytes(doc: &DocView) -> usize {
 }
 
 /// The pages at a tab's place it has no picture of, but for those passed over.
+// R3.6: a `Reader` operation the ratchet's method count can't see, as a free function taking the whole page view; so are `preview_of` and the associated functions of `SleepDraws` that take `reader` below.
 fn owed_pages(reader: &Reader, doc: &DocView, passed: &[u32]) -> Vec<u32> {
     let (pages, from, height) = left_place(reader, doc);
     let have = doc.drawing.left_pictures.as_deref().unwrap_or_default();
@@ -230,6 +231,9 @@ fn fits(held: usize, width: u32, height: u32) -> bool {
     held as u64 + preview_bytes(width, height) <= MAX_LEFT_PICTURE_BYTES as u64
 }
 
+// R3.6: every associated function here that takes `reader: &Reader` or `&mut Reader` (`left`, `view_waits`, `plan`, `is_for`, `wants`, `unstarted`,
+// `drawn`, `under_way`, `report`) is a `Reader` operation the ratchet's method count can't see: it takes the whole page view, not this part, and reaches
+// every field `Reader`'s own methods do. Its decisions are `next`'s, a pure step tested without the page view; what's here gathers what `next` is given.
 impl SleepDraws {
     /// **A tab's just left the screen,** with what it showed taken as its pictures and its place noted: the pages there it has no picture of are asked for. Nothing for a tab with no version said (its sleep file can't have pictures), or under pressure, and one whose pictures are at their cap takes nothing's place.
     pub(super) fn left(reader: &mut Reader, tab: u32) {

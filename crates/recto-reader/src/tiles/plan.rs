@@ -290,6 +290,7 @@ impl Reader {
 }
 
 /// What the tab showing wants next, most wanted first.
+// R3.6: a `Reader` operation the ratchet's method count can't see, as a free function taking the whole page view: it reaches every field `Reader`'s own methods do.
 fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
     let tab = reader.hot?;
     let doc = reader.docs.get(&tab)?;
