@@ -16,7 +16,9 @@ fn answer(app: &HeadlessApp, id: u64, password: Option<&str>) {
 }
 
 fn open(app: &HeadlessApp, path: &Path) {
-    app.core().open_file(path.to_path_buf());
+    app.act(crate::core::controls::UiAction::Open {
+        path: path.to_path_buf().display().to_string(),
+    });
     app.settle();
 }
 
@@ -55,8 +57,12 @@ fn two_protected_files_opened_together_each_get_their_own_password() {
     let app = HeadlessApp::start();
     let first = app.disk().file("first.pdf", &locked_with("one", 1));
     let second = app.disk().file("second.pdf", &locked_with("two", 2));
-    app.core().open_file(first);
-    app.core().open_file(second);
+    app.act(crate::core::controls::UiAction::Open {
+        path: first.display().to_string(),
+    });
+    app.act(crate::core::controls::UiAction::Open {
+        path: second.display().to_string(),
+    });
     app.settle();
     let mut opened = Vec::new();
     for _ in 0..2 {

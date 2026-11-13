@@ -99,6 +99,14 @@ impl FakeListener {
         std::mem::take(&mut *crate::lock(&self.heard))
     }
 
+    /// Forgets every call so far and keeps room for `room` more, so recording the next ones allocates nothing: for a test that counts allocations, whose
+    /// count would otherwise carry this record's growing, by how many calls came before and on which thread.
+    pub fn forget_keeping_room(&self, room: usize) {
+        let mut heard = crate::lock(&self.heard);
+        heard.clear();
+        heard.reserve(room);
+    }
+
     fn hear(&self, what: Heard) {
         if let Some(check) = &self.check {
             check(what.clone());

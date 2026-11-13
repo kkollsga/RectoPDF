@@ -111,7 +111,7 @@ fn back_then_forward_then_back_ends_back() {
 fn the_persons_back_after_a_jump_stays_back() {
     let app = thirty_pages();
     let tab = app.core().host.session.with_session(|session| session.tabs().active()).expect("a tab");
-    app.core().link_to_page(tab, 8, Some(0.4));
+    crate::core::person::submit(app.core(), crate::core::navigation::link_to_page(tab, 8, Some(0.4)));
     app.act(UiAction::Menu { id: "go.back".into() });
     app.settle();
     assert_eq!(page(&app), 1, "⌘[ after the link to page 9: on page {}", page(&app));
