@@ -160,10 +160,11 @@ struct Bed {
 impl Bed {
     fn new() -> Option<Self> {
         super::app_path()?;
-        let folder = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("recto-update-e2e-{}-{}.noindex", std::process::id(), wall_ms()));
+        let folder = std::env::temp_dir().canonicalize().unwrap().join(crate::common::bed_folder::name(
+            std::process::id(),
+            wall_ms(),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap().as_path(),
+        ));
         std::fs::create_dir_all(&folder).unwrap();
         let app = copy_app(&folder.join("install"), OLD);
         Some(Self {
@@ -479,12 +480,14 @@ impl Bed {
 }
 
 impl Drop for Bed {
+    /// Every process of the bed's copies ended, and the system made to forget the folder's bundles until its dump says so twice in a row, before the folder goes. Once, without a look, was not enough: an update's new app is started a moment before a test ends, and its registration lands after a forgetting that came first (2026-11-13: `install/RectoPDF.app` left registered, found by another tree's stage).
     fn drop(&mut self) {
-        for pid in local::processes_running(&self.app.join("Contents/MacOS/RectoPDF")) {
-            local::signal_process(pid, true);
-        }
-        // `open` told the system about these, and a scan may have found the kept copy and its helper. It forgets every one of them here, before they go, rather than at some later tidying.
-        recto_platform::registry::forget_all_under(&self.folder);
+        let kept = recto_update::plan::previous_app_in(&recto_update::plan::beside_app(&self.app).unwrap());
+        let programs: Vec<PathBuf> = [&self.app, &kept]
+            .into_iter()
+            .flat_map(|app| ["RectoPDF", "recto-updater"].map(|name| app.join("Contents/MacOS").join(name)))
+            .collect();
+        crate::common::app::end_and_forget(&self.folder, &programs);
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
