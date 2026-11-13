@@ -1051,9 +1051,13 @@ fn skill_install_needs_a_real_terminal_and_show_doesnt() {
         assert!(reply["error"]["next"].as_str().unwrap().contains("recto skill show"), "{reply}");
     }
     assert!(!folder.exists(), "something was written without a terminal");
-    // Pointed at the real home by a test state folder, it's refused before it even asks.
+    // Pointed at the real home by a test state folder, it's refused before it even asks, by the run's own rule (review of the quiet-run wall, F6).
     let (reply, code) = state.json(&["skill", "install", "--target", "claude-code"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("outside_quiet_run"), exit::PERMISSION),
+        "{reply}"
+    );
     // However the path is written.
     let home = recto_platform::local::real_home().unwrap();
     let climbing = format!("/usr/..{}/recto-should-never-exist", home.display());
