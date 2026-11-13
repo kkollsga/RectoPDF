@@ -8,6 +8,10 @@
 |---|---|---|---|
 | `recto-reader` | **Started** | The page view with no toolkit: where pages sit, which tiles are wanted, what's kept, what the host is told, dark paper, a selection and what's been read for it. One thread that runs the renderer | Name a UI toolkit; wait on the UI thread |
 
+## Parts, and how they're reached (R3.6, 2026-11-13)
+
+`Reader` (`tiles.rs`, the crate's own, `pub(crate)`) is a composition of parts, each in `tiles/<part>.rs`: `Docs` (the tabs held and the tab showing) with each tab's `DocView` (its points, pages, place and zoom in `tiles/geometry.rs`), `Pointer`, `Place`, `Work`, `Waking` (with `SleepDraws`), `TileCache`, `HostQueue` and `Scratch`. What reads or changes one part is that part's method; `Reader`'s own methods (82, most of them `refresh`, `plan`, `activate` and the pointer's, place's and wake's operations) change several parts together. The engine reaches a part through `Reader`'s `pub(crate)` field and calls only that part's `pub(crate)` methods: no part has a `Default` or a constructor outside `tiles`, so nothing else builds or replaces one, and `src/surface.rs` lists what each lets other code reach. Outside the crate, `Engine` is the page view: its own methods for the view (activate, viewport, zoom, jumps, drain and applied, the window) and five facades, borrows of it built inline, for a concern a caller can take alone: `selection()`, `links()`, `points()`, `waking()` and `workers()`, each taking the page view's lock as the `Engine` method it replaced did. `engine/run.rs` is the thread that draws and `engine/keys.rs` the keyring.
+
 ## Per-item sizes
 
 | Struct | Held per | Limit |

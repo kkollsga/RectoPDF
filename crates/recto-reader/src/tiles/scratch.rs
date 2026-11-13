@@ -26,6 +26,10 @@ pub(super) struct Scratch {
     pub(super) going_pages: Vec<u32>,
 }
 
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Scratch>() <= 192, "the lists a scroll step fills grew");
+
 impl Scratch {
     /// Empties every list for the next step, giving back room past the caps.
     pub(super) fn reset(&mut self) {

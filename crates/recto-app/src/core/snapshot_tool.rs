@@ -206,7 +206,7 @@ impl Tool {
     pub fn press(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
         self.dismiss_notice();
         let mut state = lock(&self.state);
-        if let Some((point, size)) = engine.point_on_page(x, y) {
+        if let Some((point, size)) = engine.points().on_page(x, y) {
             state.press(point, size);
         }
         let shown = state.shown_box();
@@ -217,7 +217,7 @@ impl Tool {
     /// A drag goes on the page the box was pressed on, wherever the pointer is, held to that page's edges.
     pub fn drag(&self, engine: &Engine, pane: usize, x: f64, y: f64) -> Vec<ReaderOp> {
         let mut state = lock(&self.state);
-        if let Some(point) = state.pressed_page().and_then(|page| engine.point_on_given_page(page, x, y)) {
+        if let Some(point) = state.pressed_page().and_then(|page| engine.points().on_given_page(page, x, y)) {
             state.drag(point);
         }
         let shown = state.shown_box();
@@ -246,7 +246,7 @@ impl Tool {
                     rect: [rect.x, rect.y, rect.width, rect.height],
                 },
                 anyway: false,
-                turns: engine.page_turns(page),
+                turns: engine.points().page_turns(page),
             },
             Taken::Nothing => return ops,
         };

@@ -23,7 +23,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         page_size: Some(letter()),
     };
     // For another tab: not used.
-    reader.give_sleep(
+    reader.wake.give_sleep(
         9,
         SleepView {
             version: None,
@@ -32,8 +32,8 @@ fn the_tabs_sleep_view_is_its_first_frame() {
             pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())],
         },
     );
-    reader.note_wake(1, Instant::now());
-    reader.give_sleep(
+    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
+    reader.wake.give_sleep(
         1,
         SleepView {
             version: None,
@@ -43,7 +43,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         },
     );
     reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
-    let doc = reader.doc().unwrap();
+    let doc = reader.docs.shown().unwrap();
     assert!(doc.layout.is_known(0));
     assert!(doc.layout.is_known(3), "the page table's taken up");
     assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
@@ -59,16 +59,16 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     reader.host.take_ops();
     reader.host.unapplied = true;
     reader.applied();
-    let wake = reader.last_wake().unwrap();
+    let wake = reader.wake.last_wake().unwrap();
     assert!(wake.from_sleep);
     assert!(wake.first_frame_us.is_some(), "{wake:?}");
     assert_eq!(wake.sharp_us, None, "not sharp yet");
     assert_eq!(wake.blank_frames, 0);
     // With no sleep file and the window up, a bare page is counted, which is what the budget's about.
     let mut bare = Reader::new();
-    bare.window_up();
+    bare.wake.window_up();
     bare.set_viewport(view(0.0));
-    bare.note_wake(1, Instant::now());
+    bare.wake.note_wake(bare.docs.hot, 1, Instant::now());
     bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     bare.host.take_ops();
     let scrolled = bare.place.jump.unwrap_or(0);
@@ -79,7 +79,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     bare.host.take_ops();
     bare.host.unapplied = true;
     bare.applied();
-    assert_eq!(bare.last_wake().unwrap().blank_frames, 1);
+    assert_eq!(bare.wake.last_wake().unwrap().blank_frames, 1);
     // A worker's asked for what's sharp, as if there'd been none of this, and no preview as it's got one.
     let jobs = settle(&mut reader);
     assert!(
@@ -99,7 +99,7 @@ fn a_sleep_file_covers_the_view_side_by_side_too() {
     far.height = 2400.0;
     reader.set_viewport(far);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).collect();
     assert!(shown.len() > 6 && shown.len() <= 12, "the view shows {} pages", shown.len());
     let pictures: Vec<u32> = reader.sleep_material(1, &map()).unwrap().pictures.iter().map(|picture| picture.page).collect();
     assert_eq!(pictures, shown, "a picture for each page shown");
@@ -118,7 +118,7 @@ fn a_tab_off_screen_gets_pictures_for_its_own_view() {
     low.height /= 0.4;
     reader.set_viewport(low);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(12).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).take(12).collect();
     assert!(shown.len() > 6, "the low zoom shows {} pages", shown.len());
     // Another tab comes to the screen at its own zoom, and the first is held, off screen.
     reader.activate(
@@ -145,7 +145,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(MAX_SLEEP_SHOTS).collect();
+    let shown: Vec<u32> = reader.visible_pages(reader.docs.shown().unwrap()).take(MAX_SLEEP_SHOTS).collect();
     reader.activate(
         2,
         10,
@@ -168,7 +168,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
         "what the tab left showed is discardable now"
     );
     // What the kernel does to discardable memory when it needs pages.
-    assert!(reader.empty_discardable() > 0);
+    assert!(reader.cache.empty_discardable() > 0);
     assert!(
         reader
             .cache
@@ -182,7 +182,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
     // Shown again, it's drawn again, and what was kept for its sleep file goes.
     reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
-    assert!(reader.docs[&1].drawing.left_pictures.is_none());
+    assert!(reader.docs.views[&1].drawing.left_pictures.is_none());
     assert_eq!(reader.report().0["left_picture_bytes"], 0);
 }
 
@@ -211,7 +211,7 @@ fn pictures_kept_of_a_tab_left_go_with_its_version() {
         "kept as it was left, within its limit: {kept}"
     );
     reader.note_version(Path::new("/d/a.pdf"), 2);
-    assert!(reader.docs[&1].drawing.left_pictures.is_none());
+    assert!(reader.docs.views[&1].drawing.left_pictures.is_none());
     assert!(
         reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
         "nothing of version 1 is left to give"
@@ -284,7 +284,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         magnification: 1.0,
         page_size: Some(letter()),
     };
-    reader.give_sleep(
+    reader.wake.give_sleep(
         1,
         SleepView {
             version: None,
@@ -310,7 +310,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         paper: PaperKind::White,
         surface: PixelSurface::create(153, 198).unwrap(),
     };
-    reader.give_sleep(
+    reader.wake.give_sleep(
         2,
         SleepView {
             version: None,
@@ -335,9 +335,9 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
 /// A tab woken with the window up, from a sleep file with a picture for each of `pages` (none if empty), up to the host's first apply of what it was sent. The reader and its report.
 fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
     let mut reader = Reader::new();
-    reader.window_up();
+    reader.wake.window_up();
     reader.set_viewport(view(0.0));
-    reader.note_wake(1, Instant::now());
+    reader.wake.note_wake(reader.docs.hot, 1, Instant::now());
     let saved = SavedPlace {
         page: 0,
         anchor: (0, 0.0),
@@ -348,7 +348,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
         page_size: Some(letter()),
     };
     if !pages.is_empty() {
-        reader.give_sleep(
+        reader.wake.give_sleep(
             1,
             SleepView {
                 version: None,
@@ -380,7 +380,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
     }
     reader.host.unapplied = true;
     reader.applied();
-    let wake = reader.last_wake().unwrap();
+    let wake = reader.wake.last_wake().unwrap();
     (reader, wake)
 }
 

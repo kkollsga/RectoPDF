@@ -48,7 +48,7 @@ fn run_jobs(reader: &mut Reader, heavy: &[(u32, u32)]) -> Vec<Did> {
                 low_res: None,
             },
         };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         reader.finish(job, outcome);
     }
     did
@@ -98,7 +98,7 @@ fn a_tab_left_at_an_undrawn_place_has_it_drawn_after_the_tab_showing() {
     let preview_scale = did.iter().find(|job| job.tab == 2 && job.kind == "preview").unwrap().scale;
     assert!(for_left.iter().filter(|job| job.kind == "preview").all(|job| job.scale == preview_scale));
     // What a tab off screen has drawn is discardable, and the system takes it back whenever it likes: its sleep file has its place all the same.
-    assert!(reader.empty_discardable() > 0);
+    assert!(reader.cache.empty_discardable() > 0);
     let material = reader.sleep_material(1, &map()).unwrap();
     let pictured: Vec<u32> = material
         .pictures
@@ -163,7 +163,7 @@ fn settle_tab(reader: &mut Reader, tab: u32) -> Option<Job> {
         reader.host.take_ops();
         reader.applied();
         let job = reader.next_job()?;
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         if job.tab != tab {
             return Some(job);
         }
@@ -325,7 +325,7 @@ fn a_tile_for_the_tab_just_left_is_cancelled_even_while_it_is_owed() {
         reader.host.take_ops();
         reader.applied();
         let job = reader.next_job().expect("tab 1 wants its new place drawn");
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         if matches!(
             job.kind,
             JobKind::Draw {
@@ -393,7 +393,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    let page = reader.docs.views.get(&1).unwrap().layout.rect(20);
     reader.set_viewport(view(page.y + page.height * 0.92));
     assert_eq!(
         reader.sleep_material(1, &map()).unwrap().in_view,
@@ -411,7 +411,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
         if job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) {
             previews.push(job.position);
         }
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let outcome = answer(&job, size_of);
         reader.finish(job, outcome);
     }
@@ -425,7 +425,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
         .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
         .expect("sent to its place");
     reader.set_viewport(view(y));
-    let doc = reader.docs.get(&1).unwrap();
+    let doc = reader.docs.views.get(&1).unwrap();
     let visible: Vec<u32> = reader.visible_pages(doc).collect();
     let shown = in_view_of(doc, &visible, y, 900.0);
     previews.sort_unstable();
@@ -448,7 +448,7 @@ fn picture_of_bytes(bytes: usize) -> RawPicture {
 #[test]
 fn a_preview_that_would_not_fit_under_the_cap_is_not_drawn() {
     let mut reader = left_undrawn();
-    let doc = reader.docs.get_mut(&1).unwrap();
+    let doc = reader.docs.views.get_mut(&1).unwrap();
     doc.drawing
         .left_pictures
         .get_or_insert_with(Vec::new)
@@ -474,7 +474,7 @@ fn memory_pressure_stops_a_draw_for_a_tab_left_that_is_running() {
 fn a_tab_left_with_no_room_for_a_picture_takes_no_other_tab_s_place() {
     let mut reader = left_undrawn();
     reader.note_version(Path::new("/d/2.pdf"), 1);
-    reader.docs.get_mut(&2).unwrap().drawing.left_pictures = Some(vec![picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024)]);
+    reader.docs.views.get_mut(&2).unwrap().drawing.left_pictures = Some(vec![picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024)]);
     SleepDraws::left(&mut reader, 2);
     let report = draws(&reader);
     assert_eq!(report["owed_tab"], 1, "{report}");
@@ -486,7 +486,7 @@ fn a_tab_left_with_no_room_for_a_picture_takes_no_other_tab_s_place() {
 #[test]
 fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
     let mut reader = Reader::new();
-    reader.set_share(8);
+    reader.cache.set_share(8, &mut reader.host);
     let previews_of = |reader: &Reader, tab: u32| reader.cache.entries.values().filter(|entry| entry.tab == tab && entry.preview).count();
     reader.set_viewport(view(0.0));
     reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
@@ -518,7 +518,7 @@ fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
 
 /// Tab 2 shown with its fill of previews in a cache at an eighth's share, then tab 1 drawn at its top and left far down for tab 2: the start of a test of what tab 1's previews push out. Says how many previews tab 2 has.
 fn tab_showing_full_of_previews_and_tab_left(reader: &mut Reader) -> usize {
-    reader.set_share(8);
+    reader.cache.set_share(8, &mut reader.host);
     reader.set_viewport(view(0.0));
     reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
     reader.note_version(Path::new("/d/2.pdf"), 1);
@@ -566,7 +566,7 @@ fn a_preview_for_a_tab_left_that_goes_nowhere_never_pushes_out_the_tab_showing_s
             let outcome = answer(&job, |_| letter());
             reader.finish(job, outcome);
             job = reader.next_job().expect("the tab left's next job");
-            reader.note_started(&job, None);
+            reader.work.note_started(&job, None);
         }
         assert_eq!(job.tab, 1);
         before_landing(&mut reader);
@@ -594,7 +594,7 @@ fn a_tab_left_is_asked_for_no_longer_than_its_time() {
     began(&mut reader, ASKING_FOR - Duration::from_secs(1));
     let job = reader.next_job().expect("within its time");
     assert_eq!(job.tab, 1);
-    reader.note_started(&job, None);
+    reader.work.note_started(&job, None);
     let outcome = answer(&job, |_| letter());
     reader.finish(job, outcome);
     began(&mut reader, ASKING_FOR + Duration::from_millis(1));
@@ -609,7 +609,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
     let mut reader = reader_on(40);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    let page = reader.docs.views.get(&1).unwrap().layout.rect(20);
     reader.set_viewport(view(page.y + page.height - 450.0));
     reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
     reader.set_viewport(view(0.0));
@@ -620,7 +620,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
         reader.host.take_ops();
         reader.applied();
         let Some(job) = reader.next_job() else { break };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let preview = job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. });
         let outcome = if preview && job.position == owed[0] {
             Outcome::Unstarted { heavy: true }
@@ -641,7 +641,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
 #[test]
 fn a_page_with_no_file_ends_the_asking_with_its_own_reason() {
     let mut reader = left_undrawn();
-    reader.docs.get_mut(&1).unwrap().map.slots = Some(Vec::new());
+    reader.docs.views.get_mut(&1).unwrap().map.slots = Some(Vec::new());
     assert!(run_jobs(&mut reader, &[]).iter().all(|job| job.tab == 2));
     assert_eq!(draws(&reader)["ended"]["no_source"], 1, "{}", draws(&reader));
     assert_eq!(draws(&reader)["ended"]["cold"], 0, "{}", draws(&reader));
@@ -691,7 +691,7 @@ fn a_warm_tab_whose_pages_change_shows_nothing_kept_from_before() {
                 .map(|entry| entry.page),
         );
         let Some(job) = reader.next_job() else { break };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let outcome = answer(&job, |_| letter());
         reader.finish(job, outcome);
     }

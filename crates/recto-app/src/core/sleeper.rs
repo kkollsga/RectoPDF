@@ -263,7 +263,7 @@ impl Inner {
         else {
             return;
         };
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, &now) else {
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now) else {
             return;
         };
         // What's queued for it is older than this.
@@ -317,7 +317,7 @@ impl Inner {
             let Some(now) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
                 continue;
             };
-            if let Some(material) = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, &now) {
+            if let Some(material) = self.panes.engine_for_tab(&self.engine, facts.id).waking().sleep_material(facts.id.0, &now) {
                 start |= lock(&self.sleeper.leaving).push(facts, material);
             }
         }
@@ -335,7 +335,7 @@ impl Inner {
         else {
             return;
         };
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, &now) else {
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now) else {
             return;
         };
         if lock(&self.sleeper.leaving).push(facts, material) {
@@ -426,7 +426,7 @@ impl Inner {
                 });
             }
         }
-        engine.give_sleep(
+        engine.waking().give_sleep(
             id.0,
             SleepView {
                 version: sleep.version,
@@ -459,7 +459,7 @@ impl Inner {
             .map(|id| {
                 (
                     *id,
-                    self.panes.engine_for_tab(&self.engine, *id).worker_bytes(id.0)
+                    self.panes.engine_for_tab(&self.engine, *id).workers().bytes(id.0)
                         + self
                             .host
                             .session
