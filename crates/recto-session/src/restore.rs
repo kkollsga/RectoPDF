@@ -18,6 +18,8 @@ impl<L: DocLoader> Session<L> {
             comparison,
             saves: _,
             recent,
+            // Which session this is, never what it holds: a state folder says it again when the record is read back.
+            confinement: _,
         } = self;
         let tabs = open
             .all()
@@ -120,6 +122,10 @@ impl<L: DocLoader> Session<L> {
         self.viewing.restore(&record.view, &record.find, record.edit_mode);
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
+            // A quiet run's record naming a file outside its folders doesn't bring that tab back: see [`confined`].
+            if !self.confinement.admits(&path) {
+                continue;
+            }
             let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
             let Some(file_name) = path.file_name() else { continue };
             let id = TabId(entry.id);

@@ -177,6 +177,9 @@ impl<L: DocLoader> Session<L> {
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.
     pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
+        if !self.confinement.admits(path) {
+            return Err(SessionError::OutsideQuietRun);
+        }
         let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
         self.insert_pdf_with_facts(id, Author::Owner, at, path, &facts, stamp)
@@ -192,6 +195,9 @@ impl<L: DocLoader> Session<L> {
         facts: &DocFacts,
         stamp: Option<FileStamp>,
     ) -> Result<(), SessionError> {
+        if !self.confinement.admits(path) {
+            return Err(SessionError::OutsideQuietRun);
+        }
         if facts.renderer_only {
             return Err(SessionError::RendererOnly);
         }

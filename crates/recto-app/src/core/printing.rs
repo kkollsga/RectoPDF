@@ -127,7 +127,7 @@ impl Printing {
 
     /// The system's printing is done with a file, however it went: it goes, if it's one of ours, and a QA print to a file is published where it was asked for.
     pub fn finished(&self, path: &str) {
-        remove_if_ours(Path::new(path), &std::env::temp_dir(), std::process::id());
+        remove_if_ours(Path::new(path), &print_folder(), std::process::id());
         if let Some((written, out)) = lock(&self.qa_target).take() {
             if written.exists() && recto_agent::publish_picture(&written, &out).is_err() {
                 self.say("The print couldn't be put there: a file is already there, and it won't be replaced.", false);
@@ -155,9 +155,15 @@ impl Printing {
     }
 }
 
+/// The folder a print's file goes in: the system's own temp folder, from `confstr`, and not `$TMPDIR`, which whoever started the app sets: a quiet run's
+/// files are in its own folders (2026-11-13). The same folder for a launch from the Finder, whose `$TMPDIR` is that.
+fn print_folder() -> PathBuf {
+    recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir)
+}
+
 /// Where a print's file goes: the system's temp folder, a name of this process's own, made new.
 fn temp_path(generation: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("{FILE_PREFIX}{}-{generation}.pdf", std::process::id()))
+    print_folder().join(format!("{FILE_PREFIX}{}-{generation}.pdf", std::process::id()))
 }
 
 /// The process a print file's name says made it, if it's one of ours.
@@ -195,7 +201,7 @@ pub fn sweep_at_launch() {
         return;
     }
     let _ = std::thread::Builder::new().name("recto-print-sweep".into()).stack_size(128 * 1024).spawn(|| {
-        sweep_stale(&std::env::temp_dir(), |pid| recto_platform::local::process_path(pid).is_some());
+        sweep_stale(&print_folder(), |pid| recto_platform::local::process_path(pid).is_some());
     });
 }
 

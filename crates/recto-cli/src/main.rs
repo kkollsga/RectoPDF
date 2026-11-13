@@ -226,6 +226,12 @@ fn stream(mut client: Client, line: &str, wait: Duration, json_wanted: bool) -> 
 fn here(invocation: &Invocation) -> i32 {
     let tag = invocation.spec.tag;
     let json_wanted = invocation.json;
+    // On a test state folder, what this process opens or writes is in the run's own folders, as a session's is.
+    if let Ok(paths) = paths()
+        && let Err(error) = recto_control::quiet::check_here(&paths, invocation)
+    {
+        return finish(tag, json_wanted, &Err(error));
+    }
     let result = match tag {
         "help" => return help(invocation),
         "version" => Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "api": VERSION })),
@@ -338,16 +344,7 @@ fn serve(invocation: &Invocation) -> i32 {
     };
     let ready = json!({ "running": true, "pid": std::process::id(), "socket": paths.socket, "already": false });
     finish("serve", json_wanted, &Ok(ready));
-    match server.run(
-        Arc::new(
-            SessionHost::default()
-                .with_indexing(&paths)
-                .with_generating(&paths)
-                .with_own_record(&paths)
-                .with_backups(&paths),
-        ),
-        Limits::default(),
-    ) {
+    match server.run(Arc::new(SessionHost::serving(&paths)), Limits::default()) {
         Ok(()) => exit::OK,
         Err(_) => {
             print_err("The session stopped because its socket failed.");
@@ -473,6 +470,7 @@ fn session() -> i32 {
     };
     let mut log = ActivityLog::new(&paths);
     let mut session = Session::new(DrawableLoader);
+    recto_control::quiet::confine(&mut session, &paths);
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -557,6 +555,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         }
         let corpus = recto_agent::index::ReadOnlyCorpus(root.clone());
         let mut session = Session::new(DrawableLoader);
+        recto_control::quiet::confine(&mut session, &paths);
         recto_agent::run(
             &mut session,
             Level::Full,
@@ -621,6 +620,7 @@ fn make_link(file: &Path, dir: &Path, index: u64) -> Result<PathBuf, AgentError>
 
 fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -> Result<Value, AgentError> {
     let mut session = Session::new(DrawableLoader);
+    recto_control::quiet::confine(&mut session, paths);
     let mut log = ActivityLog::new(paths);
     let start_footprint = recto_platform::footprint_bytes();
     let start_handles = recto_platform::open_handle_count();

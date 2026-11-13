@@ -9,6 +9,8 @@ use serde_json::Value;
 
 /// Runs a command in this process, at the level the user set, and logs it. Nothing about this route raises a level.
 pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePaths, log: &mut ActivityLog, command: &Command) -> Result<Value, AgentError> {
+    // A session on a test state folder uses only files in its own folders, however many commands it's given.
+    crate::quiet::confine(session, paths);
     let level = levels::current(paths);
     let acted = acted_tab(session, command);
     // What's been built gets read. Nothing lives long enough here to build one.

@@ -23,6 +23,7 @@ pub mod index;
 pub mod linking;
 mod loader;
 pub mod print;
+pub mod quiet_files;
 mod reading;
 mod render;
 pub mod saving;
@@ -327,6 +328,7 @@ impl From<SessionError> for AgentError {
                 exit::NOT_FOUND
             }
             SessionError::Open(recto_core::OpenError::PasswordNeeded) => exit::PROTECTED,
+            SessionError::OutsideQuietRun => exit::PERMISSION,
             _ => exit::FAILED,
         };
         Self::new(error.code(), error.message(), exit)
@@ -563,6 +565,8 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     if !actor.may(needed) {
         return Err(refusal(table::display_name(command.tag()), actor.level(), needed));
     }
+    // A quiet run's session uses only files in its own folders, whoever asks and at whatever level: every file this command names, before it runs.
+    quiet_files::check(access, command)?;
     // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
     if command.route() == Runs::Record {
         return execute_held(access, actor, command, events);

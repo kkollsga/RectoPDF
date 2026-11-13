@@ -441,7 +441,7 @@ fn edits_are_refused_plainly_and_never_touch_the_file() {
     assert_eq!((far["error"]["code"].as_str(), code), (Some("page_out_of_range"), exit::NOT_FOUND), "{far}");
     let (last, code) = state.json(&["page", "delete", "1-3"]);
     assert_eq!((last["error"]["code"].as_str(), code), (Some("last_page"), exit::FAILED));
-    let (missing, code) = state.json(&["page", "insert", "/no/such/file.pdf", "--at", "1"]);
+    let (missing, code) = state.json(&["page", "insert", file.0.with_file_name("no-such-file.pdf").to_str().unwrap(), "--at", "1"]);
     assert_eq!((missing["error"]["code"].as_str(), code), (Some("not_found"), exit::NOT_FOUND));
     let (nothing, code) = state.json(&["undo"]);
     assert_eq!((nothing["error"]["code"].as_str(), code), (Some("nothing_to_undo"), exit::FAILED));
@@ -692,15 +692,16 @@ fn what_cant_be_read_is_refused_and_nothing_hangs() {
     let junk = TempPdf::new("junk.pdf", b"this isn't a pdf at all");
     let (reply, code) = state.json(&["open", path_of(&junk)]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("not_pdf"), exit::FAILED));
-    let (reply, code) = state.json(&["open", "/no/such/file.pdf"]);
+    let (reply, code) = state.json(&["open", junk.0.with_file_name("no-such-file.pdf").to_str().unwrap()]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("not_found"), exit::NOT_FOUND));
     let fifo = junk.0.with_file_name("pipe.pdf");
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
     let (reply, code) = state.json(&["open", fifo.to_str().unwrap()]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("not_pdf"), exit::FAILED));
     std::fs::remove_file(&fifo).unwrap();
+    // A device is outside a test state folder's run, so it's refused before anything reads it, as any file outside is (2026-11-13).
     let (reply, code) = state.json(&["open", "/dev/zero"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("not_pdf"), exit::FAILED));
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("outside_quiet_run"), exit::PERMISSION));
     let (tabs, _) = state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 0);
 }

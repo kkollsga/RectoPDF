@@ -38,8 +38,9 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Moved(path, now) => {
-                // Another tab having it means this one isn't a move of that file so much as a second look at it.
-                if self.tab_for_path(&path).is_some_and(|other| other != id) {
+                // Another tab having it means this one isn't a move of that file so much as a second look at it. And a quiet run's tab doesn't
+                // follow its file out of the run's folders: see [`confined`].
+                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.confinement.admits(&path) {
                     if let Some(tab) = self.tab_mut(id) {
                         tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }

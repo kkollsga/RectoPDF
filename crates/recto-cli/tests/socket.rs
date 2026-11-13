@@ -375,7 +375,10 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         (json!({ "cmd": "page_delete", "pages": "1-4294967295" }), "page_out_of_range"),
         (json!({ "cmd": "page_rotate", "pages": "1", "degrees": i32::MAX }), "bad_rotation"),
         (json!({ "cmd": "page_rotate", "pages": "1", "degrees": i32::MIN }), "bad_rotation"),
-        (json!({ "cmd": "page_insert", "path": "/no/such.pdf", "at": u32::MAX }), "not_found"),
+        (
+            json!({ "cmd": "page_insert", "path": file.0.with_file_name("no-such.pdf"), "at": u32::MAX }),
+            "not_found",
+        ),
         (json!({ "cmd": "render", "page": 1, "scale": 1e30, "out": "/tmp/x.png" }), "bad_scale"),
         (json!({ "cmd": "render", "page": 1, "out": "relative.png" }), "bad_path"),
         (json!({ "cmd": "budget_viewport", "viewport": "99999999x99999999" }), "bad_viewport"),
@@ -1059,9 +1062,10 @@ fn skill_install_needs_a_real_terminal_and_show_doesnt() {
     let through_link = link.join("recto-should-never-exist");
     for path in [climbing.as_str(), through_link.to_str().unwrap()] {
         let (reply, code) = state.json(&["skill", "install", "--path", path]);
+        // A path named outside a test state folder's run is refused as any is, before the home's own rule (2026-11-13).
         assert_eq!(
             (reply["error"]["code"].as_str(), code),
-            (Some("state_refused"), exit::PERMISSION),
+            (Some("outside_quiet_run"), exit::PERMISSION),
             "{path}: {reply}"
         );
     }

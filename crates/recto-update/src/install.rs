@@ -525,8 +525,14 @@ pub fn plan_refusal(plan: &Plan, own_bundle: Option<&Path>, release_build: bool,
     if crate::plan::beside_app(&plan.app).as_deref() != Some(plan.beside.as_path()) {
         return Some("not_beside_this_app");
     }
-    if release_build && real_root.is_none_or(|root| real(root) != real(&plan.root)) {
+    let on_the_users_state = real_root.is_some_and(|root| real(root) == real(&plan.root));
+    if release_build && !on_the_users_state {
         return Some("not_the_users_state");
+    }
+    // A plan on a test state folder is a quiet run's, which replaces only an app in its own folders: a development build at Full in a quiet run
+    // started from the installed copy would otherwise put any build over the user's app (2026-11-13).
+    if !on_the_users_state && !recto_platform::run_folders::RunFolders::for_state(&plan.root).admits(&plan.app) {
+        return Some("outside_quiet_run");
     }
     None
 }
@@ -858,6 +864,23 @@ mod tests {
             ..good.clone()
         };
         assert_eq!(plan_refusal(&root, Some(own), true, Some(real)), Some("not_the_users_state"));
-        assert_eq!(plan_refusal(&root, Some(own), false, Some(real)), None, "a test's build has its own state");
+        // Failure (2026-11-13): a quiet run's plan, on a test state, replaces an app outside its folders, as a development build's quiet run started
+        // from the installed copy would put any build over the user's app.
+        assert_eq!(
+            plan_refusal(&root, Some(own), false, Some(real)),
+            Some("outside_quiet_run"),
+            "a test's state, the user's app"
+        );
+        let in_temp = Path::new("/private/tmp/recto-plan-test/install/RectoPDF.app");
+        let test_copy = Plan {
+            app: in_temp.to_path_buf(),
+            beside: crate::plan::beside_app(in_temp).expect("a folder beside it"),
+            ..root.clone()
+        };
+        assert_eq!(
+            plan_refusal(&test_copy, Some(in_temp), false, Some(real)),
+            None,
+            "a test's build has its own state, and its own copy"
+        );
     }
 }

@@ -2703,7 +2703,7 @@ fn a_protected_file_moved_while_open_keeps_its_password() {
     std::fs::rename(&moved, &file.0).ok();
 }
 
-/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it.
+/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it. Since 2026-11-13 a file outside the run's folders doesn't even open, so that's what's held for it.
 #[test]
 fn qa_password_is_only_for_a_tests_own_file() {
     let Some(run) = Run::start() else { return };
@@ -2711,11 +2711,13 @@ fn qa_password_is_only_for_a_tests_own_file() {
     std::fs::create_dir_all(&outside).unwrap();
     let file = outside.join("locked.pdf");
     std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
-    sheet_of(&run, "password");
-    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], "open sesame");
-    assert_ne!(code, 0, "{reply}");
-    assert!(reply["error"]["message"].as_str().unwrap().contains("test's own file"), "{reply}");
+    // A file outside the run's folders doesn't open in a quiet run at all (2026-11-13), so no sheet asks for its password.
+    let (reply, code) = run.state.json(&["qa", "open-file", file.to_str().unwrap()]);
+    assert_eq!(
+        (code, reply["error"]["code"].as_str()),
+        (exit::PERMISSION, Some("outside_quiet_run")),
+        "{reply}"
+    );
     assert_eq!(run.report()["session"]["tabs"].as_array().map_or(0, Vec::len), 0, "nothing opened");
     let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
     assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
