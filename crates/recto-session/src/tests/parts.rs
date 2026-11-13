@@ -24,6 +24,7 @@ const WATCHED: &[&str] = &[
     "PartMut",
     "Held",
     "HeldGuard",
+    "Comparison",
 ];
 
 /// The last path segment of a type, without its generic arguments, except the handle's, which says which component it's for: `PartMut<Tabs>`.
@@ -82,100 +83,193 @@ fn outward(line: &str) -> Option<(&str, &str)> {
     public.then_some((vis, rest))
 }
 
-/// **Everything a caller outside the crate could reach of the watched types and of `Session`'s ways to them,** from the crate's own files, outside their
-/// test modules, sorted so moving a method doesn't change it: each type's public methods (with `const`, `pub(super)` and the rest said), public fields,
-/// derived and implemented traits, the files its `impl` blocks are in, and every `Session` method whose return names a watched type, `Confinement` or a
-/// `&mut`.
-fn listing() -> Vec<String> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+/// The crate's source files, in every folder under `src` but the tests', sorted.
+fn source_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name != "tests") {
+                source_files(&path, out);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The traits an attribute derives: `#[derive(A, B)]`, or `#[cfg_attr(cond, derive(A, B))]`, which derives them in some builds.
+fn derived(attribute: &str) -> Vec<String> {
+    let Some(at) = attribute.find("derive(") else { return Vec::new() };
+    let list = &attribute[at + "derive(".len()..];
+    let list = list.split(')').next().unwrap_or(list);
+    list.split(',').map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect()
+}
+
+/// What the closures and functions a signature takes are handed `&mut`: the `&mut` arguments of each `Fn(..)`, `FnMut(..)`, `FnOnce(..)` and `fn(..)`
+/// in it, a way to reach into a component as sure as returning one (`edit_pages`' shape).
+fn handed_mut(signature: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect();
-    files.sort();
-    for path in files {
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        let source = std::fs::read_to_string(&path).unwrap();
-        let code = source.split("#[cfg(test)]\nmod ").next().unwrap_or(&source);
-        let mut derives: Vec<String> = Vec::new();
-        // The type whose block this is: its name, and whether it's an inherent `impl` (methods) or the struct (fields).
-        let mut block: Option<(String, bool)> = None;
-        let mut lines = code.lines().peekable();
-        while let Some(line) = lines.next() {
-            if let Some(list) = line.strip_prefix("#[derive(") {
-                derives.extend(list.trim_end_matches(")]").split(',').map(|d| d.trim().to_string()));
+    for opener in ["FnOnce(", "FnMut(", "Fn(", "fn("] {
+        for (at, _) in signature.match_indices(opener) {
+            if opener == "fn(" && signature[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
                 continue;
             }
-            if line.starts_with("impl") {
-                let (tr, ty) = impl_header(line);
+            let args = &signature[at + opener.len()..];
+            let mut depth = 0;
+            let end = args
+                .char_indices()
+                .find(|&(_, c)| {
+                    depth += match c {
+                        '(' | '<' => 1,
+                        ')' | '>' => -1,
+                        _ => 0,
+                    };
+                    depth < 0
+                })
+                .map_or(args.len(), |(end, _)| end);
+            // The arguments, split at the commas between them and not those inside one's generics.
+            let (mut depth, mut start) = (0, 0);
+            for (at, c) in args[..end].char_indices().chain([(end, ',')]) {
+                match c {
+                    '(' | '<' => depth += 1,
+                    ')' | '>' => depth -= 1,
+                    ',' if depth == 0 => {
+                        let arg = args[start..at].trim();
+                        if arg.starts_with("&mut") {
+                            out.push(arg.to_string());
+                        }
+                        start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether a return type reaches a component: a `&mut`, the confinement cell, or a watched type by name.
+fn reaches(ret: &str) -> bool {
+    ret.contains("&mut")
+        || ret.contains("Confinement")
+        || WATCHED
+            .iter()
+            .any(|w| ret.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == *w))
+}
+
+/// A function's whole signature, however rustfmt wrapped it, from its first line on.
+fn signature<'a>(first: &str, lines: &mut impl Iterator<Item = &'a str>) -> String {
+    let mut signature = first.trim().to_string();
+    while !signature.ends_with('{') && !signature.ends_with(';') {
+        let Some(next) = lines.next() else { break };
+        signature.push(' ');
+        signature.push_str(next.trim());
+    }
+    signature.replace("( ", "(").replace(", )", ")").replace(",)", ")")
+}
+
+/// **Everything a caller outside the crate could reach of the watched types and of `Session`'s ways to them,** from the crate's own files in every
+/// folder, inline modules included and test modules left out, sorted so moving a method doesn't change it: each type's public methods (with `const`,
+/// `pub(super)` and the rest said), public fields, derived (`cfg_attr` too) and implemented traits, the files its `impl` blocks are in; every `Session`
+/// method whose return names a watched type, `Confinement` or a `&mut`, or which hands a closure `&mut` anything; and every free public function that
+/// returns one of those.
+fn listing() -> Vec<String> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    source_files(&src, &mut files);
+    let mut out = Vec::new();
+    for path in files {
+        let file = path.strip_prefix(&src).unwrap().to_string_lossy().into_owned();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let mut derives: Vec<String> = Vec::new();
+        // The type whose block this is, whether it's an inherent `impl` (methods) or the struct (fields), and its indent.
+        let mut block: Option<(String, bool, usize)> = None;
+        // A test module being skipped, by its indent.
+        let mut skipping: Option<usize> = None;
+        let mut test_next = false;
+        let mut lines = source.lines();
+        while let Some(line) = lines.next() {
+            let code = line.trim_start();
+            let indent = line.len() - code.len();
+            if let Some(at) = skipping {
+                if indent == at && code.starts_with('}') {
+                    skipping = None;
+                }
+                continue;
+            }
+            if code.starts_with("#[cfg(test)]") {
+                test_next = true;
+                continue;
+            }
+            if std::mem::take(&mut test_next) && (code.starts_with("mod ") || code.starts_with("pub mod ")) {
+                skipping = (!code.ends_with(';')).then_some(indent);
+                continue;
+            }
+            if code.starts_with("#[derive(") || code.starts_with("#[cfg_attr(") {
+                derives.extend(derived(code));
+                continue;
+            }
+            if code.starts_with("impl") {
+                let (tr, ty) = impl_header(code);
+                let inherent = tr.is_none();
                 derives.clear();
                 match tr {
                     Some(tr) if watched(&ty) => out.push(format!("{ty}: impl {tr}")),
                     Some(_) => {}
-                    None => {
-                        if watched(&ty) {
-                            out.push(format!("{ty}: impl in {file}"));
-                        }
-                        block = Some((ty, true));
-                        continue;
-                    }
+                    None if watched(&ty) => out.push(format!("{ty}: impl in {file}")),
+                    None => {}
                 }
-                block = None;
+                block = code.ends_with('{').then_some((ty, inherent, indent));
                 continue;
             }
-            if let Some(rest) = line.strip_prefix("pub struct ").or_else(|| line.strip_prefix("struct ")) {
+            if let Some(rest) = code.strip_prefix("pub struct ").or_else(|| code.strip_prefix("struct ")) {
                 let ty = type_name(rest.split(['{', '(', ';']).next().unwrap_or(rest));
                 if watched(&ty) {
-                    for derive in derives.drain(..) {
-                        out.push(format!("{ty}: derive {derive}"));
-                    }
+                    out.extend(derives.drain(..).map(|derive| format!("{ty}: derive {derive}")));
                     if rest.contains("(pub ") || rest.contains("(pub(super)") {
                         out.push(format!("{ty}: pub field 0"));
                     }
                 }
                 derives.clear();
-                block = rest.trim_end().ends_with('{').then_some((ty, false));
+                block = rest.trim_end().ends_with('{').then_some((ty, false, indent));
                 continue;
             }
-            if !line.starts_with(' ') && !line.starts_with('#') && !line.starts_with("//") {
+            if !code.is_empty() && !code.starts_with('#') && !code.starts_with("//") {
                 derives.clear();
-                if line.starts_with('}') {
-                    block = None;
-                }
             }
-            let Some((ty, methods)) = &block else { continue };
-            if *methods {
-                if !line.starts_with("    ") || line.starts_with("     ") {
-                    continue;
-                }
-                let Some((vis, rest)) = outward(line) else { continue };
-                let name = rest.split(['(', '<']).next().unwrap_or(rest);
-                if watched(ty) {
-                    out.push(format!("{ty}: {vis} fn {name}"));
-                } else if ty == "Session" {
-                    // The whole signature, however it's wrapped, for its return type.
-                    let mut signature = line.to_string();
-                    while !signature.trim_end().ends_with('{') && !signature.trim_end().ends_with(';') {
-                        let Some(next) = lines.next() else { break };
-                        signature.push(' ');
-                        signature.push_str(next.trim());
+            match &block {
+                Some((_, _, at)) if indent == *at && code.starts_with('}') => block = None,
+                Some((ty, true, at)) if indent == at + 4 => {
+                    let Some((vis, rest)) = outward(code) else { continue };
+                    let name = rest.split(['(', '<']).next().unwrap_or(rest).to_string();
+                    let ty = ty.clone();
+                    let signature = signature(code, &mut lines);
+                    if watched(&ty) {
+                        out.push(format!("{ty}: {vis} fn {name}"));
+                    } else if ty == "Session" {
+                        let ret = signature.split_once(") -> ").map_or("", |(_, ret)| ret.trim_end_matches('{').trim());
+                        if reaches(ret) {
+                            out.push(format!("Session: {vis} fn {name} -> {ret}"));
+                        }
+                        out.extend(handed_mut(&signature).into_iter().map(|arg| format!("Session: {vis} fn {name} hands {arg}")));
                     }
+                }
+                Some((ty, false, at)) if indent == at + 4 && watched(ty) => {
+                    if let Some(field) = code.strip_prefix("pub ").or_else(|| code.strip_prefix("pub(super) ")) {
+                        out.push(format!("{ty}: pub field {}", field.split(':').next().unwrap_or(field)));
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    let Some((vis, rest)) = outward(code) else { continue };
+                    let name = rest.split(['(', '<']).next().unwrap_or(rest).to_string();
+                    let signature = signature(code, &mut lines);
                     let ret = signature.split_once(") -> ").map_or("", |(_, ret)| ret.trim_end_matches('{').trim());
-                    let reaches = ret.contains("&mut")
-                        || ret.contains("Confinement")
-                        || WATCHED
-                            .iter()
-                            .any(|w| ret.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == *w));
-                    if reaches {
-                        out.push(format!("Session: {vis} fn {name} -> {ret}"));
+                    if reaches(ret) {
+                        out.push(format!("{file}: {vis} fn {name} -> {ret}"));
                     }
                 }
-            } else if watched(ty)
-                && let Some(field) = line.strip_prefix("    pub ").or_else(|| line.strip_prefix("    pub(super) "))
-            {
-                out.push(format!("{ty}: pub field {}", field.split(':').next().unwrap_or(field)));
             }
         }
     }
@@ -202,6 +296,25 @@ const LISTED: &[&str] = &[
     "HeldGuard: impl Deref",
     "HeldGuard: impl DerefMut",
     "HeldGuard: impl Drop",
+    "Comparison: derive Clone",
+    "Comparison: derive Debug",
+    "Comparison: derive Eq",
+    "Comparison: derive PartialEq",
+    "Comparison: impl in compare.rs",
+    "Comparison: pub field sync_from",
+    "Comparison: pub field synced",
+    "Comparison: pub field tabs",
+    "Comparison: pub fn add",
+    "Comparison: pub fn check",
+    "Comparison: pub fn contains",
+    "Comparison: pub fn length_note",
+    "Comparison: pub fn new",
+    "Comparison: pub fn remove",
+    "Comparison: pub fn set_synced",
+    "Comparison: pub fn sync_targets",
+    "Session: pub fn comparison -> Option<&compare::Comparison>",
+    "Session: pub fn edit_pages hands &mut crate::parts::PartMut<'_, PageEdits>",
+    "Session: pub fn edit_pages_as hands &mut crate::parts::PartMut<'_, PageEdits>",
     "Generated: derive Debug",
     "Generated: impl in generated.rs",
     "Generated: pub fn making",
@@ -342,6 +455,30 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
     assert!(
         new.is_empty() && gone.is_empty(),
         "what a caller outside the crate can reach of the session's components changed.\nNew, not listed: {new:#?}\nListed, not there: {gone:#?}"
+    );
+}
+
+/// **Failure (R3.5b): a component added to `Session` isn't added to [`WATCHED`]**, so the listing above never sees what a caller outside the crate can
+/// do with it: a public `Default`, `Clone` or field on it, or a `_mut` accessor handing it out, would go by unread. Every field of `Session` but its
+/// loader is of a watched type (an `Option` of one counts as the one).
+#[test]
+fn every_component_of_the_session_is_watched() {
+    let lib = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")).unwrap();
+    let start = lib.find("\npub struct Session<").expect("Session is in lib.rs");
+    let body = &lib[start..lib[start..].find("\n}").map_or(lib.len(), |end| start + end)];
+    let unwatched: Vec<&str> = body
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with('#'))
+        .filter_map(|line| line.split_once(':').map(|(_, ty)| ty.trim().trim_end_matches(',')))
+        .map(|ty| ty.strip_prefix("Option<").and_then(|inner| inner.strip_suffix('>')).unwrap_or(ty))
+        .map(|ty| ty.rsplit("::").next().unwrap_or(ty))
+        .filter(|ty| *ty != "L" && !watched(ty))
+        .collect();
+    assert!(
+        unwatched.is_empty(),
+        "these components of Session aren't in WATCHED, so the listing doesn't see them: {unwatched:?}"
     );
 }
 
