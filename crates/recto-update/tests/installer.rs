@@ -118,6 +118,8 @@ impl Bed {
         Self { dir, files, app, plan }
     }
 
+    // A test of the way back has its new version fail by coming up having emptied the record (`misreads`, with tabs handed off), which the installer knows at once. One that ends (`exits`) is only taken for a failure after a fixed grace of seconds, so only the test of that case uses it.
+
     /// What's running: a process for the installer to wait on.
     fn old_process(&self) -> Child {
         Command::new("/bin/sleep").arg("30").spawn().unwrap()
@@ -406,7 +408,8 @@ fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
 /// Failure: an installer killed in the middle of putting the record back leaves it half one thing and half the other for good. Killed after each file, what's left still has the copy, and the way back finishes the job from it. The review pointed out nothing killed it inside these two.
 #[test]
 fn killed_while_putting_the_record_back_it_can_still_finish() {
-    let mut bed = Bed::new("kill-inside", "exits");
+    let mut bed = Bed::new("kill-inside", "misreads");
+    bed.plan.handed_off_tabs = Some(2);
     std::fs::write(bed.files.session().join("record.b.json"), "the other slot").unwrap();
     let ended = bed.run(Some("restoring_record"));
     assert!(!ended.success());
@@ -698,7 +701,8 @@ fn a_swap_macos_refuses_says_where_to_allow_it() {
 #[test]
 fn going_back_by_itself_takes_only_a_copy_it_may() {
     for (switch, back) in [(Some(false), false), (Some(true), true)] {
-        let mut bed = Bed::new(&format!("back-{switch:?}"), "exits");
+        let mut bed = Bed::new(&format!("back-{switch:?}"), "misreads");
+        bed.plan.handed_off_tabs = Some(2);
         // As a killed installer leaves it: the new one in place, the old one kept.
         assert!(!bed.run(Some("going_back")).success());
         assert_eq!(bed.installed(), "0.2.0");
@@ -818,7 +822,8 @@ fn a_swap_that_fails_says_so_and_stops() {
 /// Failure: with the old app's move to be kept having failed, going back says it went back and leaves the broken version in place, and the next launch deletes the only good copy. The review proved the first half. It's still in the other half of the swap, so that's where it comes back from.
 #[test]
 fn when_keeping_it_failed_it_comes_back_from_where_it_is() {
-    let mut bed = Bed::new("keep-failed", "exits");
+    let mut bed = Bed::new("keep-failed", "misreads");
+    bed.plan.handed_off_tabs = Some(2);
     let folder = bed.plan.beside.join("previous");
     std::fs::create_dir_all(&folder).unwrap();
     assert!(Command::new("/usr/bin/chflags").arg("uchg").arg(&folder).status().unwrap().success());
@@ -1018,7 +1023,8 @@ fn the_reader_can_be_asked_about_a_zip() {
 /// Failure: a new version that keeps failing with no installer around, after one was killed, has no way back. The guard at launch starts the installer to go back, with what's kept, and the record that was copied is put back.
 #[test]
 fn going_back_with_no_install_before_it_works() {
-    let mut bed = Bed::new("back-alone", "exits");
+    let mut bed = Bed::new("back-alone", "misreads");
+    bed.plan.handed_off_tabs = Some(2);
     // As a killed installer leaves it: the new one in place, the old one kept, the record copied.
     let ended = bed.run(Some("going_back"));
     assert!(!ended.success());
