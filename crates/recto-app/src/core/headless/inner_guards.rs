@@ -99,7 +99,6 @@ Inner::pub fn contents_note_for_person(self: &Arc<Self>, tab: TabId, action: Con
 Inner::pub fn contents_tapped(self: &Arc<Self>, tab: TabId, page: u32)
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
-Inner::pub fn edit_mode_for_person(self: &Arc<Self>, on: bool)
 Inner::pub fn find_choose_for_person(self: &Arc<Self>, row: u32)
 Inner::pub fn find_close_for_person(self: &Arc<Self>)
 Inner::pub fn find_open_for_person(self: &Arc<Self>)

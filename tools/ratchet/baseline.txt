@@ -104,7 +104,7 @@ struct crates/recto-session/src/edit.rs::PageEdits 17
 struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
-type crates/recto-app/src::Inner 113
+type crates/recto-app/src::Inner 112
 type crates/recto-ffi/src::AppCore 135
 type crates/recto-reader/src::Reader 82
 type crates/recto-render-service/src::DocRenderer 64
