@@ -24,7 +24,7 @@ fn failed(code: &'static str, message: impl Into<String>) -> AgentError {
 /// The app's executable: what was asked for, or beside this `recto` as in the bundle, or the one built in this checkout.
 fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
     if let Some(path) = given {
-        return Ok(path.to_path_buf());
+        return a_rectopdf_app(path);
     }
     let this = std::env::current_exe().map_err(|_| failed("app_missing", "This program can't tell where it is."))?;
     let here = this.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -39,6 +39,31 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
         }
     }
     Err(failed("app_missing", "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
+}
+
+/// **The app a QA command starts is RectoPDF's** (2026-11-13): the executable `RectoPDF` in a `.app` bundle's `Contents/MacOS`, where it really is,
+/// whose bundle says RectoPDF's identifier (or a test copy's, under it). Refused before anything is started otherwise.
+///
+/// What this is: it stops `recto` being a way to run any program already on the machine, with `--qa` and what follows it as its arguments. What it isn't:
+/// proof that the bundle is ours, since an identifier can be copied into any bundle; the app started is confined to the temp folders by its state folder,
+/// whatever it is, so that isn't what keeps the user's files safe.
+fn a_rectopdf_app(path: &Path) -> Result<PathBuf, AgentError> {
+    let not_ours = || {
+        AgentError::new("not_rectopdf", "That isn't RectoPDF's app, so it wasn't started.", exit::USAGE)
+            .then("`--app` takes the RectoPDF executable inside a RectoPDF bundle: `RectoPDF.app/Contents/MacOS/RectoPDF`.")
+    };
+    let real = path.canonicalize().map_err(|_| failed("app_missing", "The app named isn't there."))?;
+    let bundle = real
+        .parent()
+        .filter(|folder| folder.ends_with("Contents/MacOS"))
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .filter(|bundle| bundle.extension().is_some_and(|extension| extension == "app"));
+    let ours = real.file_name().is_some_and(|name| name == "RectoPDF")
+        && bundle
+            .and_then(recto_update::stage::bundle_id)
+            .is_some_and(|id| id == recto_update::BUNDLE_ID || id.strip_prefix(recto_update::BUNDLE_ID).is_some_and(|rest| rest.starts_with('.')));
+    if ours { Ok(real) } else { Err(not_ours()) }
 }
 
 /// A quiet run's state: a new folder in a temp folder, because the level there goes straight to Full ([`StatePaths::for_quiet_run`]).
@@ -172,9 +197,36 @@ fn owner(given: Option<u64>, from_env: Option<&str>) -> Result<Option<u32>, Agen
 
 /// Splits a line of a script as a shell would for the simple cases there are: spaces, double quotes, and `$NAME` from the environment
 /// ([`recto_agent::commands::qa::line_words`], the one splitter).
+///
+/// Only a variable set for QA ([`SCRIPT_VARIABLES`]) is read, so a script can't put any other of this process's environment into a command or an answer, and
+/// one that isn't set says so without its name, which is the script's text.
 fn script_words(line: &str) -> Result<Vec<String>, String> {
-    recto_agent::commands::qa::line_words(line, Some(&|name: &str| std::env::var(name).ok()))
+    script_words_in(line, &|name: &str| std::env::var(name).ok())
 }
+
+/// [`script_words`], with the environment given.
+fn script_words_in(line: &str, environment: &dyn Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
+    // The values of the line's `$NAME`s that are QA's, read first, so the splitter is given only those.
+    let mut known = std::collections::HashMap::new();
+    for (at, _) in line.match_indices('$') {
+        let name: String = line[at + 1..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if name.starts_with(SCRIPT_VARIABLES)
+            && let Some(value) = environment(&name)
+        {
+            known.insert(name, value);
+        }
+    }
+    recto_agent::commands::qa::line_words(line, Some(&move |name: &str| known.get(name).cloned())).map_err(|why| {
+        if why.starts_with('$') {
+            format!("A variable on it isn't set, or isn't a {SCRIPT_VARIABLES} one, the only ones a script may use.")
+        } else {
+            why
+        }
+    })
+}
+
+/// What a script's `$NAME` must start with: a variable set for QA, as `RECTO_QA_PDF` is.
+const SCRIPT_VARIABLES: &str = "RECTO_QA_";
 
 /// Follows `reader.tiles.attached` into an answer.
 fn at_path<'a>(value: &'a Value, path: &str) -> &'a Value {
@@ -198,9 +250,10 @@ fn check(last: &Value, words: &[String]) -> Option<String> {
         "expect-at-most" => number(found).zip(number(&wanted_value)).is_some_and(|(found, wanted)| found <= wanted),
         "expect-contains" => found.as_str().is_some_and(|text| text.contains(wanted.as_str())),
         "expect-lacks" => found.as_str().is_some_and(|text| !text.contains(wanted.as_str())),
-        other => return Some(format!("`{other}` isn't something a script can expect.")),
+        _ => return Some("That isn't something a script can expect.".to_string()),
     };
-    (!holds).then(|| format!("{path} is {found}, and {kind} said {wanted}."))
+    // What the app has there, and never the line's own words: a script's text doesn't come back in an answer (2026-11-13).
+    (!holds).then(|| format!("An expectation wasn't met: the app has {found} there."))
 }
 
 /// `recto qa run`: PASS or FAIL for the script, and a line for each thing that failed.
@@ -240,10 +293,12 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
             }
             continue;
         }
+        // A line that isn't a command says what kind of wrong it is, by its code, and never its words: `recto qa run` on a file that isn't a script
+        // mustn't hand that file's lines back (2026-11-13).
         let parsed = match parse_cli(&words) {
             Ok(parsed) => parsed,
             Err(error) => {
-                failures.push(json!({ "line": index + 1, "why": error.message }));
+                failures.push(json!({ "line": index + 1, "why": format!("It isn't a command recto takes ({}).", error.code) }));
                 continue;
             }
         };
@@ -252,9 +307,9 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
             Ok(value) if value["ok"] == true => last = value["data"].clone(),
             Ok(value) => {
                 last = value["error"].clone();
-                failures.push(json!({ "line": index + 1, "why": value["error"]["message"] }));
+                failures.push(json!({ "line": index + 1, "why": format!("The app refused it ({}).", value["error"]["code"].as_str().unwrap_or("unknown")) }));
             }
-            Err(error) => failures.push(json!({ "line": index + 1, "why": error.message })),
+            Err(error) => failures.push(json!({ "line": index + 1, "why": format!("The app didn't answer it ({}).", error.code) })),
         }
     }
     // A hang fails the run, wherever in it that happened.
@@ -892,5 +947,21 @@ mod tests {
         assert!(check(&answer, &line("expect-nothing note x")).is_some());
         assert!(check(&answer, &line("expect-lacks note lower-resolution")).is_some(), "it's there");
         assert!(check(&answer, &line("expect-lacks note elephant")).is_none());
+    }
+
+    /// Failure (2026-11-13): a script's `$NAME` reads any variable of this process's environment, so a value set for something else (a token, a key) goes
+    /// into a command the app answers with it; or a refused variable's name, which is the script's own text, comes back in the failure. Only `RECTO_QA_`
+    /// ones are read.
+    #[test]
+    fn a_script_reads_only_qas_own_variables() {
+        let environment = |name: &str| match name {
+            "RECTO_QA_PDF" => Some("/tmp/a.pdf".to_owned()),
+            "AWS_SECRET_ACCESS_KEY" => Some("hunter2-key".to_owned()),
+            _ => None,
+        };
+        assert_eq!(script_words_in("open $RECTO_QA_PDF", &environment).unwrap(), ["open", "/tmp/a.pdf"]);
+        let refused = script_words_in("find $AWS_SECRET_ACCESS_KEY", &environment).unwrap_err();
+        assert!(!refused.contains("hunter2") && !refused.contains("AWS_SECRET"), "{refused}");
+        assert!(script_words_in("find $RECTO_QA_UNSET", &environment).is_err());
     }
 }

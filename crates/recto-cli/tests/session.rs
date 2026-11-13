@@ -1557,3 +1557,67 @@ fn a_folder_a_killed_run_left_behind_doesnt_stop_a_test() {
     );
     std::fs::remove_dir(&left).unwrap();
 }
+
+/// Failure (2026-11-13): `recto qa run` on a file that isn't a script hands that file's lines back, in the failures' words, so any text file the caller
+/// names (credentials, keys) is read through a quiet run; or a script puts a variable of this process's environment that isn't QA's into a command or an
+/// answer. A script in the run's temp folder with a made-up secret on its lines, and another in a variable it names: neither is anywhere in the answer,
+/// stdout, stderr or the state folder's logs, and each failure still names its line.
+#[test]
+fn a_scripts_text_and_the_environment_never_come_back() {
+    let state = State::new();
+    let secret = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY";
+    let in_the_environment = "hunter2-not-for-any-answer";
+    let script = state.root.with_extension("secret.qa");
+    std::fs::write(
+        &script,
+        format!("AWS_SECRET_ACCESS_KEY={secret}\nopen {secret}\nexpect app.is_active {secret}\nexpect-sideways app.x {secret}\ntext --page $RECTO_SECRET_FOR_TEST\nqa \"{secret}\n"),
+    )
+    .unwrap();
+    let output = state
+        .command()
+        .args(["qa", "run", script.to_str().unwrap(), "--json"])
+        .env("RECTO_SECRET_FOR_TEST", in_the_environment)
+        .output()
+        .unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("line 1"), "each failure names its line: {stdout}");
+    for (what, text) in [("stdout", stdout.to_string()), ("stderr", stderr.to_string())] {
+        assert!(
+            !text.contains(secret) && !text.contains("wJalrXUtnFEMI"),
+            "the script's text came back on {what}: {text}"
+        );
+        assert!(!text.contains(in_the_environment), "a variable's value came back on {what}: {text}");
+    }
+    for entry in std::fs::read_dir(&state.root).into_iter().flatten().flatten() {
+        let logged = std::fs::read_to_string(entry.path()).unwrap_or_default();
+        assert!(
+            !logged.contains(secret) && !logged.contains(in_the_environment),
+            "{} holds it",
+            entry.path().display()
+        );
+    }
+}
+
+/// Failure (2026-11-13): `recto qa start --app` runs any program on the machine with `--qa` and what follows as its arguments, so `recto` is a way to
+/// run anything at all. A script that would leave a marker, by its own name and dressed as RectoPDF in a bundle with no RectoPDF identifier, is never
+/// started: refused before anything runs, and the marker never appears.
+#[test]
+fn qa_start_runs_only_rectopdf() {
+    let state = State::new();
+    let folder = state.root.with_extension("not-rectopdf");
+    let marker = folder.join("it-ran");
+    let fake = folder.join("Fake.app/Contents/MacOS");
+    std::fs::create_dir_all(&fake).unwrap();
+    for program in [folder.join("program.sh"), fake.join("RectoPDF")] {
+        std::fs::write(&program, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let (reply, code) = state.json(&["qa", "start", "--app", program.to_str().unwrap()]);
+        assert_eq!(
+            (code, reply["error"]["code"].as_str()),
+            (exit::USAGE, Some("not_rectopdf")),
+            "{}: {reply}",
+            program.display()
+        );
+        assert!(!marker.exists(), "{} was started", program.display());
+    }
+}
