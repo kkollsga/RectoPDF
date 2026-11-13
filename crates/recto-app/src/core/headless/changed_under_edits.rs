@@ -124,10 +124,11 @@ fn dropped_stamp() -> (HeadlessApp, PathBuf, Vec<u8>, String) {
     app.open(&app.disk().pdf("other.pdf", 2));
     let tab = tab_of(&app, "doc.pdf");
     let id = recto_session::TabId(tab[1..].parse().expect("a number"));
+    let before = app.core().host.session.with_session(|s| s.tabs().own_stamp(id));
     let theirs = pdf_bytes("Theirs", 5);
     replace(&file, &theirs);
     let now = recto_platform::file_stamp(&file).expect("its stamp");
-    app.send(CoreCall::WokenFileIsOther(id, recto_session::record::FileStatus::Changed(now)));
+    app.send(CoreCall::WokenFileIsOther(id, recto_session::record::FileStatus::Changed(now), before));
     app.settle();
     app.recto(Level::Control, &["page", "rotate", "9", "--by", "90", "--tab", &tab])
         .expect("an agent's turn on the tab behind");
@@ -322,4 +323,33 @@ fn a_half_written_file_under_edits_panics_nothing_and_keeps_them() {
     app.recto(Level::Full, &["tap", &format!("#{tab}")]).expect("back to it");
     app.settle();
     assert_eq!(app.session_json()["tabs"][0]["edits"], edits_before, "read again, still kept");
+}
+
+/// Failure (F8): a look's result was taken in without asking which stamp it was made against. A save landing between a look at the file (made against the stamp
+/// before it) and the look's result being taken in made the result "changed": the just-saved list's undo history was cleared as if another program had
+/// written the file, and the tab said its file changed on disk. A result made against a stamp the tab has moved on from says nothing.
+#[test]
+fn a_look_made_before_a_save_landed_changes_nothing() {
+    let (app, file, _original, _modified) = edited();
+    let id = recto_session::TabId(tab_of(&app, "doc.pdf")[1..].parse().expect("a number"));
+    let before = app.core().host.session.with_session(|s| s.tabs().own_stamp(id));
+    let status = || recto_session::record::look_at_file(&file, before);
+    app.recto(Level::Full, &["save"]).expect("saved");
+    app.settle();
+    assert!(
+        app.core().host.session.with_session(|s| s.lists().undo_and_redo(id).0),
+        "the save keeps its history"
+    );
+    let late = status();
+    assert!(
+        matches!(late, recto_session::record::FileStatus::Changed(_)),
+        "a look against the old stamp finds the save: {late:?}"
+    );
+    app.send(CoreCall::WokenFileIsOther(id, late, before));
+    app.settle();
+    assert!(
+        app.core().host.session.with_session(|s| s.lists().undo_and_redo(id).0),
+        "the history is still there"
+    );
+    assert_eq!(notice(&app), None, "and the tab says nothing changed");
 }

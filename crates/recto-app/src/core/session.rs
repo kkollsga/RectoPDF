@@ -162,7 +162,11 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
             let status = look_at_file(&path, stamp);
             let is_as_it_was = matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) || matches!(status, FileStatus::NotLooked);
             if !is_as_it_was {
-                changed |= inner.host.session.with_session(|session| session.apply_file_status(id, status));
+                // A save meanwhile moves the stamp, and a look against the old one is about nothing now.
+                changed |= inner
+                    .host
+                    .session
+                    .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status));
             }
         }
         if changed {
@@ -270,7 +274,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 inner.go_dormant(&tabs, why);
             }
             CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
-            CoreCall::WokenFileIsOther(id, status) => woken_file_is_other(inner, &mut reads, id, status),
+            CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
             CoreCall::LookAgain(id) => {
                 if let Some(inner) = inner.saver.inner() {
                     sleeper::check_woken_file(&inner, id);

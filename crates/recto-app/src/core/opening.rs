@@ -116,12 +116,15 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
 }
 
 /// `CoreCall::WokenFileIsOther`, on the session thread.
-pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, status: FileStatus) {
+pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, status: FileStatus, against: Option<recto_platform::FileStamp>) {
     let host = &inner.host;
     // `NotLooked` comes from a look before a show that's taken the news in already, and wants the read. Otherwise what's held is forgotten and read again only if
-    // the look found something new.
+    // the look found something new. A look made against a stamp the tab has moved on from (a save landed meanwhile) is about nothing now (F8).
     let again = matches!(status, FileStatus::NotLooked);
     let new = host.session.with_session(|session| {
+        if session.tabs().own_stamp(id) != against {
+            return false;
+        }
         let new = session.apply_file_status(id, status) || again;
         if new {
             session.forget_read(id);
