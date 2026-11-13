@@ -34,8 +34,8 @@ struct Leaving {
 /// What the writer does next.
 #[derive(Debug)]
 pub enum Next {
-    /// Writes this one, counted till [`LeavingQueue::done`].
-    Write(SleepFacts, SleepMaterial),
+    /// Writes this one, counted till [`LeavingQueue::done`]. Boxed, as it's most of the size and the others are a word.
+    Write(Box<(SleepFacts, SleepMaterial)>),
     /// Nothing's due yet: waits this many milliseconds of the clock, or till it's told something changed.
     Wait(u64),
     /// Nothing's queued: the writer ends.
@@ -149,7 +149,7 @@ impl LeavingQueue {
     /// The writer's next, oldest first, whatever's due. `None` is the writer's end. See [`Self::take_due`].
     pub fn take_next(&mut self) -> Option<(SleepFacts, SleepMaterial)> {
         match self.take_due(u64::MAX) {
-            Next::Write(facts, material) => Some((facts, material)),
+            Next::Write(leaving) => Some(*leaving),
             Next::Wait(_) | Next::End => None,
         }
     }
@@ -177,7 +177,7 @@ impl LeavingQueue {
             stale: false,
             retired: false,
         });
-        Next::Write(leaving.facts, leaving.material)
+        Next::Write(Box::new((leaving.facts, leaving.material)))
     }
 
     /// Everything queued is due now: a quit, a hand-off, the app going to the background, or memory pressure won't wait for the cool-down.
@@ -468,11 +468,11 @@ mod tests {
         assert!(matches!(queue.take_due(100 + wait - 1), Next::Wait(1)), "at the wait less one");
         let _ = queue.push_due(facts(2), material(10, 2), crate::sleeper::leaving_due(101, false, wait));
         assert!(
-            matches!(queue.take_due(101), Next::Write(facts, _) if facts.id == TabId(2)),
+            matches!(queue.take_due(101), Next::Write(leaving) if leaving.0.id == TabId(2)),
             "going dormant doesn't wait"
         );
         assert!(
-            matches!(queue.take_due(100 + wait), Next::Write(facts, _) if facts.id == TabId(1)),
+            matches!(queue.take_due(100 + wait), Next::Write(leaving) if leaving.0.id == TabId(1)),
             "at the wait"
         );
         let _ = queue.push_due(facts(3), material(10, 3), crate::sleeper::leaving_due(200, true, wait));
@@ -480,7 +480,7 @@ mod tests {
         let (back, material) = queue.take_back(TabId(3)).expect("handed back");
         assert_eq!((back.id, material.pictures[0].bgra[0]), (TabId(3), 3));
         queue.hurry();
-        assert!(matches!(queue.take_due(200), Next::Write(facts, _) if facts.id == TabId(4)), "hurried");
+        assert!(matches!(queue.take_due(200), Next::Write(leaving) if leaving.0.id == TabId(4)), "hurried");
         assert!(matches!(queue.take_due(200), Next::End));
         assert_eq!(queue.report()["handed_back"], 1);
     }

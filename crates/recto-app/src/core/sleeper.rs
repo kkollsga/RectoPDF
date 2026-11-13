@@ -446,7 +446,8 @@ impl Inner {
                     }
                 }
             };
-            let crate::sleep_queue::Next::Write(facts, material) = next else { return };
+            let crate::sleep_queue::Next::Write(leaving) = next else { return };
+            let (facts, material) = *leaving;
             self.sleeper.let_others_go_first();
             let one_at_a_time = lock(&self.sleeper.writing);
             if lock(queue).still_wanted() {
