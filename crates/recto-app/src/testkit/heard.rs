@@ -13,6 +13,9 @@ pub struct Overheard {
     pub sent: Option<Vec<recto_agent::Command>>,
 }
 
+/// The session thread held by [`HeadlessApp::hold_session_thread`]: dropped, it goes on.
+pub struct SessionThreadHeld<'a>(#[allow(dead_code)] std::sync::MutexGuard<'a, Overheard>);
+
 impl HeadlessApp {
     /// **Starts keeping the commands the window sends for the person** from now on: every one the one executor runs as theirs, as it's run.
     /// [`Self::sent`] takes them.
@@ -45,6 +48,22 @@ impl HeadlessApp {
         let mut events = Vec::new();
         let result = self.core().host.run(recto_agent::Actor::Agent(level), &command, &mut events);
         (result, events)
+    }
+
+    /// **The session thread held between two of its calls,** until what this returns is dropped: what's queued for it from here, as an effect a command
+    /// asked of the window, or the look at the session every command ends with, waits and is taken in order once it's let go. Meanwhile an agent's command
+    /// still runs, on the caller's thread, as one on the socket does while the session thread is busy. So a test can say "the agent's next command comes
+    /// before the window has done what its last one asked" and get it every time.
+    ///
+    /// It holds what every call on the session thread ends with a look at (what's overheard, [`super::heard::Overheard`]), and queues a call of its own
+    /// ahead of anything asked from here, so the thread stops at the end of that call or of one before it, whichever it's on, and takes nothing queued after.
+    /// Nothing that needs what's overheard ([`Self::heard_events`], [`Self::agent_heard`], [`Self::keep_sent`]) may be asked until it's let go.
+    #[must_use]
+    pub fn hold_session_thread(&self) -> SessionThreadHeld<'_> {
+        let overheard = crate::lock(&self.core().serving.heard);
+        // A flush ends as every call does, with a look at what's overheard: an idle thread takes it and stops there, a busy one stops sooner.
+        self.core().core.push(crate::queue::CoreCall::Flush(std::sync::Arc::default()));
+        SessionThreadHeld(overheard)
     }
 
     /// **Starts hearing what the session thread announces to watchers** from now on, as `recto watch` would on the app's socket, which a test's core has
