@@ -208,3 +208,33 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     let reopened = opening.open_with_facts(&dir.join("run/a.pdf"), facts, None, Some(taken)).unwrap();
     assert!(opening.page_edits(reopened).is_none(), "the history naming the outside file was taken up");
 }
+
+/// **Failure: a restore replaces the tabs' confinement cell, or makes one of its own** (R3.5a), so the session and its host's lock-free copy
+/// (`Confinement::shared`, taken when the host is made, before any restore) disagree: the host confines a session that then reads as free, or the
+/// restored tabs hand out paths without the rule. The copy taken before the restore confines the session after it, and a restored tab's path still meets
+/// the rule as its file resolves now.
+#[test]
+fn a_restore_keeps_the_confinement_cell_the_host_shares() {
+    let dir = recto_testpdf::TempDir::new("recto-confined-");
+    std::fs::create_dir(dir.join("run")).unwrap();
+    std::fs::create_dir(dir.join("outside")).unwrap();
+    std::fs::write(dir.join("run/a.pdf"), b"x").unwrap();
+    std::fs::write(dir.join("outside/a.pdf"), b"x").unwrap();
+    let mut free = session(3);
+    free.open(&dir.join("run/a.pdf")).unwrap();
+    let saved = free.to_record();
+
+    let mut back = session(3);
+    let host = back.confinement().shared();
+    back.restore(&saved, HashMap::new()).unwrap();
+    host.confine(RunFolders::of(&[&dir.join("run")]));
+    assert!(back.confinement().folders().is_some(), "the host's copy confined the session it was taken from");
+    back.restore(&saved, HashMap::new()).unwrap();
+    assert!(back.confinement().folders().is_some(), "a restore of a confined session leaves it confined");
+    let tab = back.tabs().for_path(&dir.join("run/a.pdf")).unwrap();
+    assert_eq!(back.tabs().path_of(tab), Some(dir.join("run/a.pdf")));
+    // The file swapped for a link out of the run after the restore: the rule, asked again, refuses it.
+    std::fs::remove_file(dir.join("run/a.pdf")).unwrap();
+    std::os::unix::fs::symlink(dir.join("outside/a.pdf"), dir.join("run/a.pdf")).unwrap();
+    assert_eq!(back.tabs().path_of(tab), None);
+}

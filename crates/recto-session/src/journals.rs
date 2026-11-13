@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 /// Each edited tab's journal, and where a PDF's history is read from. What's public here says whether edits go to journals and where history comes from,
 /// or reads a journal's name; naming, retiring and what goes out to them stay the crate's, as they go with the lists and the tabs.
-#[derive(Default)]
 pub struct Journals {
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
@@ -24,23 +23,25 @@ pub struct Journals {
 }
 
 impl Journals {
-    pub(crate) fn journaling(&self) -> bool {
-        self.journaling
+    /// No journals, and none kept till someone says. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            journaling: false,
+            journals: HashMap::new(),
+            fresh_journals: Vec::new(),
+            retired_journals: Vec::new(),
+            departing: Vec::new(),
+            history: None,
+        }
     }
 
-    /// Whether edits go to a journal from now on. For whoever keeps the state record.
-    pub fn set_journaling(&mut self, on: bool) {
-        self.journaling = on;
+    pub(crate) fn journaling(&self) -> bool {
+        self.journaling
     }
 
     /// Reads what's left of a PDF's history, for [`crate::Session::open_with_facts`], with the session free: hold this and call it outside. `None` if there's no such thing here.
     pub fn history(&self) -> Option<&Arc<dyn HistorySource>> {
         self.history.as_ref()
-    }
-
-    /// Where a PDF's history is read from, for one being opened on any route.
-    pub fn set_history(&mut self, source: Arc<dyn HistorySource>) {
-        self.history = Some(source);
     }
 
     /// Journals are kept as edits come, and there's somewhere to read them back from: a list can go to disk.
@@ -164,5 +165,19 @@ impl Journals {
                 self.retire_name(name.into());
             }
         }
+    }
+}
+
+/// What a caller outside the crate may change of the journals: whether edits go to them, and where a PDF's history is read from. Naming, retiring and
+/// what goes out to them stay the session's.
+impl crate::parts::PartMut<'_, Journals> {
+    /// Whether edits go to a journal from now on. For whoever keeps the state record.
+    pub fn set_journaling(&mut self, on: bool) {
+        self.0.journaling = on;
+    }
+
+    /// Where a PDF's history is read from, for one being opened on any route.
+    pub fn set_history(&mut self, source: Arc<dyn HistorySource>) {
+        self.0.history = Some(source);
     }
 }

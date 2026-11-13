@@ -134,12 +134,12 @@ pub fn migrate_older_settings(inner: &Inner) {
         return;
     }
     inner.host.session.with_session(|session| {
-        let viewing = session.viewing_mut();
-        viewing.set_view(ViewSettings {
-            paper: paper.or(viewing.view().paper),
+        let view = session.viewing().view();
+        session.viewing_mut().set_view(ViewSettings {
+            paper: paper.or(view.paper),
             agent_icon_hidden: hidden,
-            ..viewing.view()
-        })
+            ..view
+        });
     });
     inner.saver.write_soon();
     let _ = std::fs::remove_file(paths.root.join(PAPER_FILE));

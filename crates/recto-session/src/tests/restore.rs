@@ -61,7 +61,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     s.tabs_mut().set_view_rotation(a, 1);
     assert!(s.tabs_mut().set_spread(a, record::Spread::TwoUpCover));
     assert!(!s.tabs_mut().set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
-    s.tabs_mut().set_selection(
+    s.tabs.set_selection(
         a,
         Some(Selection {
             from_page: 1,

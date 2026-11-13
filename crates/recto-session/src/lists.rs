@@ -7,7 +7,6 @@ use std::collections::HashMap;
 
 /// Every tab's list of edits, in memory or gone to disk. What's public here reads a list, or says whether an agent's at Full; what puts a list in, takes one
 /// out, puts it to sleep or wakes it stays the crate's, as the journals, the saves and the tabs hold something of every list.
-#[derive(Default)]
 pub struct Lists {
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
@@ -20,6 +19,16 @@ pub struct Lists {
 }
 
 impl Lists {
+    /// No lists. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            edits: HashMap::new(),
+            wake_failed: Vec::new(),
+            asleep: HashMap::new(),
+            agent_at_full: false,
+        }
+    }
+
     /// A tab's list, if it's in memory.
     pub fn get(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
@@ -164,11 +173,6 @@ impl Lists {
         self.wake_failed.clear();
     }
 
-    /// An agent's next edits are at Full, where the owner's history can be pushed out, or not.
-    pub fn set_agent_at_full(&mut self, full: bool) {
-        self.agent_at_full = full;
-    }
-
     /// Whether an edit by this author may push the owner's steps out of the history: an agent's, at Full.
     pub(crate) fn may_push_owner(&self, by: Author) -> bool {
         by == Author::Agent && self.agent_at_full
@@ -197,5 +201,13 @@ impl Lists {
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
     pub fn edits_record(&self, id: TabId) -> Option<record::EditsRecord> {
         self.get(id).map(PageEdits::to_record)
+    }
+}
+
+/// What a caller outside the crate may change of the lists: only who the next edits are by. A list goes in, out, to sleep or wakes with the session.
+impl crate::parts::PartMut<'_, Lists> {
+    /// An agent's next edits are at Full, where the owner's history can be pushed out, or not.
+    pub fn set_agent_at_full(&mut self, full: bool) {
+        self.0.agent_at_full = full;
     }
 }

@@ -46,6 +46,7 @@ use edit::{EditError, PageEdits};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
 pub use pages::Pages;
 pub use paper::{Paper, WARM_PAPER, contrast_ratio};
+pub use parts::PartMut;
 use record::{
     EditsSummary, FileNotice, FileStatus, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord,
     TabEntry,

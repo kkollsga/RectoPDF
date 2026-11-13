@@ -28,8 +28,9 @@ pub struct Dormancy {
     left_warm: Vec<(TabId, Arc<Toc>)>,
 }
 
-impl Default for Dormancy {
-    fn default() -> Self {
+impl Dormancy {
+    /// The clock starting now, no holds, and no sleep files till someone says. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
         Self {
             started: std::time::Instant::now(),
             held: Vec::new(),
@@ -47,11 +48,6 @@ impl Dormancy {
         u32::try_from(self.started.elapsed().as_secs()).unwrap_or(u32::MAX)
     }
 
-    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Session::let_go`].
-    pub fn hold(&mut self, id: TabId) {
-        self.held.push(id);
-    }
-
     /// One hold of this tab's let go of.
     pub(crate) fn let_go(&mut self, id: TabId) {
         if let Some(at) = self.held.iter().position(|held| *held == id) {
@@ -65,11 +61,6 @@ impl Dormancy {
 
     pub(crate) fn sleep_files(&self) -> bool {
         self.sleep_files
-    }
-
-    /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`crate::Session::apply_file_status`] if it's not what it was, by [`crate::Session::take_woken_from_file`].
-    pub fn set_sleep_files(&mut self, on: bool) {
-        self.sleep_files = on;
     }
 
     /// A tab's gone cold from the warm ones: what its sleep file needs is kept long enough to write that, if there are sleep files here. **At the cap the oldest goes, and its sleep file isn't written this time:** the tab wakes from its PDF instead, a read made with the session free, and nothing of anyone's is lost.
@@ -95,16 +86,6 @@ impl Dormancy {
             self.woken_from_file.remove(0);
         }
         self.woken_from_file.push(id);
-    }
-
-    /// The tabs woken from sleep files, whose files nobody's looked at yet.
-    pub fn take_woken_from_file(&mut self) -> Vec<TabId> {
-        std::mem::take(&mut self.woken_from_file)
-    }
-
-    /// The sleep file a tab was just woken from, for its first frame.
-    pub fn take_sleep_read(&mut self, id: TabId) -> Option<SleepFile> {
-        self.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
     }
 
     /// A restore: what's here is about the tabs of the session it replaces. The clock and whether there are sleep files stay.
@@ -133,9 +114,34 @@ impl Dormancy {
     }
 }
 
+/// What a caller outside the crate may change of dormancy: a hold on a tab, whether there are sleep files, and taking what's waiting for whoever writes
+/// and checks them. Letting a hold go stays the session's, as it stamps the tab.
+impl crate::parts::PartMut<'_, Dormancy> {
+    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`crate::Session::let_go`].
+    pub fn hold(&mut self, id: TabId) {
+        self.0.held.push(id);
+    }
+
+    /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`crate::Session::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].
+    pub fn set_sleep_files(&mut self, on: bool) {
+        self.0.sleep_files = on;
+    }
+
+    /// The tabs woken from sleep files, whose files nobody's looked at yet.
+    pub fn take_woken_from_file(&mut self) -> Vec<TabId> {
+        std::mem::take(&mut self.0.woken_from_file)
+    }
+
+    /// The sleep file a tab was just woken from, for its first frame.
+    pub fn take_sleep_read(&mut self, id: TabId) -> Option<SleepFile> {
+        self.0.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parts::PartMut;
     use recto_platform::FileStamp;
 
     fn sleep_file() -> SleepFile {
@@ -161,8 +167,8 @@ mod tests {
     /// Failure: with the sleeper stopped, tabs going cold pile up here past the cap, each holding its document's contents; or one tab going cold twice is held twice.
     #[test]
     fn tabs_gone_cold_wait_for_their_sleep_files_within_the_cap() {
-        let mut dormancy = Dormancy::default();
-        dormancy.set_sleep_files(true);
+        let mut dormancy = Dormancy::new();
+        PartMut(&mut dormancy).set_sleep_files(true);
         for n in 0..=MAX_LEFT_WARM as u32 {
             dormancy.note_left((TabId(n), Arc::new(Toc::default())));
         }
@@ -177,18 +183,18 @@ mod tests {
     /// Failure: with the sleeper stopped, tabs woken from sleep files pile up past the cap; or one woken twice is looked at twice.
     #[test]
     fn tabs_woken_from_sleep_files_wait_for_a_look_within_the_cap() {
-        let mut dormancy = Dormancy::default();
+        let mut dormancy = Dormancy::new();
         for n in 0..=MAX_WOKEN_FROM_FILE as u32 {
             dormancy.woke_from_file(TabId(n), sleep_file());
         }
         dormancy.woke_from_file(TabId(9), sleep_file());
-        let woken = dormancy.take_woken_from_file();
+        let woken = PartMut(&mut dormancy).take_woken_from_file();
         assert_eq!(woken.len(), MAX_WOKEN_FROM_FILE);
         assert!(!woken.contains(&TabId(0)), "the oldest went");
         assert_eq!(woken.last(), Some(&TabId(9)));
         assert_eq!(woken.iter().filter(|id| **id == TabId(9)).count(), 1);
         assert!(
-            dormancy.take_sleep_read(TabId(9)).is_some(),
+            PartMut(&mut dormancy).take_sleep_read(TabId(9)).is_some(),
             "the latest one's sleep file is kept for its first frame"
         );
     }

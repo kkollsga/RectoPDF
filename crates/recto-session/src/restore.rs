@@ -102,12 +102,12 @@ impl<L: DocLoader> Session<L> {
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
         self.tabs.restored(record.next_id, record.tabs.len());
-        self.warm = warm::Warm::default();
+        self.warm = warm::Warm::new();
         self.lists.restored();
-        self.mail = mail::PageViewMail::default();
+        self.mail = mail::PageViewMail::new();
         self.journals.restored();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
-        self.generated = generated::Generated::default();
+        self.generated = generated::Generated::new();
         self.saves.restored();
         self.dormancy.restored();
         self.comparison = None;

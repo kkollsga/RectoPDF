@@ -296,12 +296,12 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     const AFTER: u32 = 300;
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.tabs_mut().touch_at(a, 100);
+    s.tabs.touch_at(a, 100);
     assert_eq!(s.dormant().next_at(AFTER), Some(400));
     assert!(s.dormant().due(399, AFTER).is_empty());
     assert_eq!(s.dormant().due(400, AFTER), [a]);
     assert!(!s.dormant().due(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
-    s.tabs_mut().touch_at(a, 200);
+    s.tabs.touch_at(a, 200);
     assert_eq!(s.dormant().next_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
     s.dormancy_mut().hold(a);
@@ -428,19 +428,19 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
 /// long enough, oldest touched first.
 #[test]
 fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
-    let mut tabs = registry::Tabs::default();
+    let mut tabs = registry::Tabs::new();
     for (id, touched) in [(1, 0), (2, 50), (3, 10), (4, 0)] {
         tabs.push(bare_tab(id, 5));
         tabs.tab_mut(TabId(id)).unwrap().touched = touched;
     }
     tabs.set_active(Some(TabId(1)));
-    let mut warm = warm::Warm::default();
+    let mut warm = warm::Warm::new();
     for id in [1, 2, 3] {
         warm.push(TabId(id), Arc::new(Toc::default()), |_| {});
     }
-    let lists = lists::Lists::default();
-    let mut dormancy = dormancy::Dormancy::default();
-    dormancy.hold(TabId(3));
+    let lists = lists::Lists::new();
+    let mut dormancy = dormancy::Dormancy::new();
+    crate::PartMut(&mut dormancy).hold(TabId(3));
     let look = Dormant {
         tabs: &tabs,
         warm: &warm,

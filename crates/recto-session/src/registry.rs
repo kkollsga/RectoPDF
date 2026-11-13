@@ -25,8 +25,10 @@ pub struct Tabs {
     confinement: Confinement,
 }
 
-impl Default for Tabs {
-    fn default() -> Self {
+impl Tabs {
+    /// No tabs, and a confinement cell of its own, not yet set. The crate's: a `Tabs` made outside could take a session's place, and its cell with it
+    /// (see [`crate::parts::PartMut`]).
+    pub(crate) fn new() -> Self {
         Self {
             tabs: Vec::new(),
             active: None,
@@ -199,24 +201,6 @@ impl Tabs {
         tab.reading.place.filter(|place| place.page == tab.page)
     }
 
-    /// Turns the view of a tab, by quarter turns.
-    pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
-        if let Some(tab) = self.tab_mut(id) {
-            tab.view_rotation = quarter_turns % 4;
-        }
-    }
-
-    /// Lays a tab's pages out another way. Says whether that changed anything.
-    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
-        match self.tab_mut(id) {
-            Some(tab) if tab.spread != spread => {
-                tab.spread = spread;
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
@@ -225,7 +209,7 @@ impl Tabs {
     }
 
     /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
-    pub fn note_password_used(&mut self, id: TabId) {
+    pub(crate) fn note_password_used(&mut self, id: TabId) {
         if let Some(tab) = self.tab_mut(id) {
             tab.file.password = true;
         }
@@ -252,5 +236,32 @@ impl Tabs {
     #[cfg(test)]
     pub(crate) fn holding(&self, id: TabId) -> [(&'static str, bool); 2] {
         [("tabs", self.tab(id).is_some()), ("active", self.active == Some(id))]
+    }
+}
+
+/// What a caller outside the crate may change of the tabs: a tab's layout, its view's turn, and that its file was opened with a password. Adding,
+/// removing or reordering tabs stays the session's, as every other component holds something of each tab.
+impl crate::parts::PartMut<'_, Tabs> {
+    /// Turns the view of a tab, by quarter turns.
+    pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
+        if let Some(tab) = self.0.tab_mut(id) {
+            tab.view_rotation = quarter_turns % 4;
+        }
+    }
+
+    /// Lays a tab's pages out another way. Says whether that changed anything.
+    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
+        match self.0.tab_mut(id) {
+            Some(tab) if tab.spread != spread => {
+                tab.spread = spread;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Tabs::note_password_used`], which the session's own unlocking calls too.
+    pub fn note_password_used(&mut self, id: TabId) {
+        self.0.note_password_used(id);
     }
 }

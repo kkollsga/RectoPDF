@@ -1,9 +1,18 @@
 //! **The session's components, as callers reach them.** A caller that needs one concern takes that component, not the whole session. What's `pub` on a
 //! component can't leave it out of step with another one: what has to change two together stays `pub(crate)`, called only by the session's own
-//! operations. So a `&mut` here goes out only for a component a caller outside the crate changes today.
+//! operations. A component itself never goes out to be changed: what a caller outside the crate may change of one goes through a [`PartMut`], which
+//! carries only those setters.
 
 use super::*;
 use crate::record::FindRecord;
+
+/// **What a caller outside the crate may change of one of the session's components, and nothing more** (R3.5a): the setters are on this handle, in the
+/// component's own file (`impl PartMut<'_, Tabs>` in `registry.rs`), so a component's own type has only reads in public. There's no way from it to the
+/// component: no `Deref` or `DerefMut`, no `Clone`, and its field is the crate's, so nothing outside can build one or take the `&mut` out. Without it a
+/// caller holding `&mut Tabs` could replace the whole component, with `std::mem::swap` between two sessions or anything else that writes a whole
+/// value, which would move or drop the confinement cell a quiet run's file wall rests on, and with `&mut Lists` the owner's unsaved edits past the close
+/// and discard rules.
+pub struct PartMut<'a, T>(pub(crate) &'a mut T);
 
 impl<L: DocLoader> Session<L> {
     /// Which tabs may go dormant, and when: a look over the tabs, the warm ones, the lists, the holds and the comparison.
@@ -31,8 +40,9 @@ impl<L: DocLoader> Session<L> {
         &self.recent
     }
 
-    pub fn recent_mut(&mut self) -> &mut recent::Recent {
-        &mut self.recent
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn recent_mut(&mut self) -> PartMut<'_, recent::Recent> {
+        PartMut(&mut self.recent)
     }
 
     /// Generated contents the sidebar knows of, for tabs someone asked about.
@@ -40,8 +50,9 @@ impl<L: DocLoader> Session<L> {
         &self.generated
     }
 
-    pub fn generated_mut(&mut self) -> &mut generated::Generated {
-        &mut self.generated
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn generated_mut(&mut self) -> PartMut<'_, generated::Generated> {
+        PartMut(&mut self.generated)
     }
 
     /// The tabs that keep their contents, most recent first, and the reads of cold tabs' files made ahead of waking them.
@@ -54,8 +65,9 @@ impl<L: DocLoader> Session<L> {
         &self.dormancy
     }
 
-    pub fn dormancy_mut(&mut self) -> &mut dormancy::Dormancy {
-        &mut self.dormancy
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn dormancy_mut(&mut self) -> PartMut<'_, dormancy::Dormancy> {
+        PartMut(&mut self.dormancy)
     }
 
     /// Tabs being saved, and what saves lately moved their tabs on from.
@@ -68,8 +80,9 @@ impl<L: DocLoader> Session<L> {
         &self.journals
     }
 
-    pub fn journals_mut(&mut self) -> &mut journals::Journals {
-        &mut self.journals
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn journals_mut(&mut self) -> PartMut<'_, journals::Journals> {
+        PartMut(&mut self.journals)
     }
 
     /// What passes between the session and the page view: the pages lately drawn, the jumps it hasn't taken, and a place lost to an edit.
@@ -77,8 +90,9 @@ impl<L: DocLoader> Session<L> {
         &self.mail
     }
 
-    pub fn mail_mut(&mut self) -> &mut mail::PageViewMail {
-        &mut self.mail
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn mail_mut(&mut self) -> PartMut<'_, mail::PageViewMail> {
+        PartMut(&mut self.mail)
     }
 
     /// Every tab's list of edits, in memory or gone to disk, and whether an agent's at Full.
@@ -86,8 +100,9 @@ impl<L: DocLoader> Session<L> {
         &self.lists
     }
 
-    pub fn lists_mut(&mut self) -> &mut lists::Lists {
-        &mut self.lists
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn lists_mut(&mut self) -> PartMut<'_, lists::Lists> {
+        PartMut(&mut self.lists)
     }
 
     /// Every open tab in the sidebar's order, which one's active, and their folders.
@@ -95,8 +110,9 @@ impl<L: DocLoader> Session<L> {
         &self.tabs
     }
 
-    pub fn tabs_mut(&mut self) -> &mut registry::Tabs {
-        &mut self.tabs
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn tabs_mut(&mut self) -> PartMut<'_, registry::Tabs> {
+        PartMut(&mut self.tabs)
     }
 
     /// The view's settings, Find and edit mode.
@@ -104,8 +120,9 @@ impl<L: DocLoader> Session<L> {
         &self.viewing
     }
 
-    pub fn viewing_mut(&mut self) -> &mut viewing::Viewing {
-        &mut self.viewing
+    /// What a caller outside the crate may change of it: see [`PartMut`].
+    pub fn viewing_mut(&mut self) -> PartMut<'_, viewing::Viewing> {
+        PartMut(&mut self.viewing)
     }
 }
 
@@ -128,7 +145,7 @@ impl<L: DocLoader> Session<L> {
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `tabs_mut().set_view_rotation`.
     pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
-        self.tabs.set_view_rotation(id, quarter_turns);
+        self.tabs_mut().set_view_rotation(id, quarter_turns);
     }
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `tabs().own_stamp`.
@@ -148,7 +165,7 @@ impl<L: DocLoader> Session<L> {
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `viewing_mut().set_find`.
     pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
-        self.viewing.set_find(open, query, draft);
+        self.viewing_mut().set_find(open, query, draft);
     }
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().is_edited`.
@@ -178,12 +195,12 @@ impl<L: DocLoader> Session<L> {
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `journals_mut().set_journaling`.
     pub fn set_journaling(&mut self, on: bool) {
-        self.journals.set_journaling(on);
+        self.journals_mut().set_journaling(on);
     }
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `dormancy_mut().hold`.
     pub fn hold(&mut self, id: TabId) {
-        self.dormancy.hold(id);
+        self.dormancy_mut().hold(id);
     }
 
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `pages().count`.
