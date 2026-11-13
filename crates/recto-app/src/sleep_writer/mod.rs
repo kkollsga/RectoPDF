@@ -16,9 +16,26 @@
 use crate::pressure::{self, Heard, Source};
 use crate::sleeper::{self as rules, BudgetLook, DORMANT_AFTER_SECONDS, Hour, LIVE_BUDGET_BYTES, SLEEP_WRITE_EVERY_SECONDS, Why, Written};
 use recto_session::TabId;
+use recto_session::sleep::SleepFile;
 
 #[cfg(test)]
 mod tests;
+
+/// **What a sleep file keeps of its older pictures when the new material has none** (found 2026-11-13: a wake from a file whose two pictures were of a place the tab had left a visit before, so its first frame was bare, and the bytes were written and read for nothing). The older file's pictures stand only if it is of the same list and version, and then only if they are of the place the new file records: every page that needs a picture there (`in_view`) has one, and those are what's kept. If any lacks one, or the place has no pages, none is kept and the file is its facts only. Pictures that can't be shown are bytes on the disk, and in memory on a wake, for nothing.
+pub fn with_older_pictures(mut sleep: SleepFile, there: Option<SleepFile>, in_view: &[u32]) -> SleepFile {
+    if !sleep.pictures.is_empty() {
+        return sleep;
+    }
+    let Some(there) =
+        there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
+    else {
+        return sleep;
+    };
+    if !in_view.is_empty() && in_view.iter().all(|page| there.pictures.iter().any(|picture| picture.page == *page)) {
+        sleep.pictures = there.pictures.into_iter().filter(|picture| in_view.contains(&picture.page)).collect();
+    }
+    sleep
+}
 
 /// How soon a look at dormancy that couldn't go ahead, as a file's being read or the app's frozen, comes again.
 pub const BUSY_RETRY_MS: u64 = 5_000;

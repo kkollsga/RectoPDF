@@ -36,6 +36,8 @@ pub struct SleepMaterial {
     pub usual: Option<PageBox>,
     pub sizes: Vec<(u32, PageBox)>,
     pub pictures: Vec<RawPicture>,
+    /// The pages at the place the tab is at that a picture is owed to: the part of each in view being at least [`MIN_SHARE_OF_VIEW`] of the view, at most [`MAX_SLEEP_SHOTS`]. What a sleep file already holds is of use to a wake only if it has a picture of each.
+    pub in_view: Vec<u32>,
 }
 
 /// A picture for a sleep file, in its own bytes. Rows are `width * 4` bytes.
@@ -324,8 +326,8 @@ impl Reader {
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
         let version = doc.map.files.first().and_then(|file| doc.drawing.versions.get(file)).copied();
-        let pages: Vec<u32> = if self.hot == Some(tab) {
-            self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect()
+        let (pages, from, height): (Vec<u32>, f64, f64) = if self.hot == Some(tab) {
+            (self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect(), self.viewport.y, self.viewport.height)
         } else {
             let y = doc
                 .place
@@ -334,13 +336,23 @@ impl Reader {
             // Its own view: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't.
             let window_height = self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE);
             let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
-            if doc.layout.count() == 0 {
+            let pages = if doc.layout.count() == 0 {
                 Vec::new()
             } else {
                 // Only as many as a sleep file takes: a hostile file's slivers can put thousands in view.
                 doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).take(MAX_SLEEP_SHOTS).collect()
-            }
+            };
+            (pages, y.max(0.0), height)
         };
+        let in_view: Vec<u32> = pages
+            .iter()
+            .copied()
+            .filter(|page| {
+                let rect = doc.layout.rect(*page);
+                let showing = rect.y.max(from)..(rect.y + rect.height).min(from + height);
+                showing.end - showing.start >= height * MIN_SHARE_OF_VIEW
+            })
+            .collect();
         // What it was left with first, page by page: what's here now may have been taken by the system since.
         let mut left = doc.drawing.left_pictures.clone().unwrap_or_default();
         let mut pictures = Vec::new();
@@ -359,6 +371,7 @@ impl Reader {
             usual,
             sizes,
             pictures,
+            in_view,
         })
     }
 

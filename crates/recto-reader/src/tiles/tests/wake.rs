@@ -423,3 +423,40 @@ fn a_picture_that_is_here_and_not_on_a_layer_is_counted_apart() {
 fn a_wake_report_stays_small() {
     assert_eq!(std::mem::size_of::<WakeReport>(), 48);
 }
+
+/// Failure (2026-11-13, a sleep file with pictures of pages 12 and 13 for a tab at page 19): a tab left right after it moved to a place not drawn yet has no picture of that place, and the material said nothing about which pages the place owes, so the writer couldn't tell older pictures of another place from older pictures of this one. The material names the pages at its place that need a picture (those with a real share of the view), whatever pictures there are.
+#[test]
+fn a_tab_left_at_a_place_not_drawn_names_the_pages_that_owe_a_picture() {
+    let mut reader = reader_on(40);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    reader.set_viewport(view(0.0));
+    settle(&mut reader);
+    let here = reader.sleep_material(1, None).unwrap();
+    assert!(
+        !here.pictures.is_empty() && here.in_view == vec![0],
+        "page 0 is drawn and owed: {:?}",
+        here.in_view
+    );
+    // Moved far down, and the next tab asked for before anything's drawn there.
+    reader.set_viewport(view(20_000.0));
+    reader.activate(
+        2,
+        10,
+        0,
+        PageMap {
+            files: vec![PathBuf::from("/d/b.pdf")],
+            ..map()
+        },
+        &[1],
+        None,
+        Spread::Single,
+    );
+    let left = reader.sleep_material(1, None).unwrap();
+    let owed = &left.in_view;
+    assert!(!owed.is_empty() && !owed.contains(&0), "the pages at the new place: {owed:?}");
+    assert!(
+        left.pictures.iter().all(|picture| !owed.contains(&picture.page)),
+        "nothing drawn at the new place: {:?}",
+        left.pictures.iter().map(|p| p.page).collect::<Vec<_>>()
+    );
+}
