@@ -228,21 +228,74 @@ fn every_edit_survives_printing_and_exporting() {
     untouched(&docs, &extra);
 }
 
-/// Waits until every tab's edits are in its journal, as a crash needs them to be: the journals' quiet time is over by the clock, and they're written.
+/// Waits until every tab's edits are in its journal, as a crash needs them to be: the journals' quiet time is over by the clock, and each tab's journal is on
+/// disk with nothing of its list still waiting to go there. A failed write fails this at once, with what the store said and what's missing: the app tries
+/// again at its next due time, by a clock this test doesn't move again, so a wait would only wait (2026-11-13: "waited 20s for every tab's edits in its
+/// journal; under way: []", a journal write refused a folder another thread was still making private).
 fn journaled(app: &HeadlessApp) {
-    let journals = app.core().saver.store.main_folder().join("journals");
-    let written = || {
-        std::fs::read_dir(&journals).is_ok_and(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with("journal-"))
-                .filter(|entry| entry.metadata().is_ok_and(|meta| meta.len() > 0))
-                .count()
-                >= KINDS.len()
-        })
-    };
     app.advance(6_000);
-    app.wait_until("every tab's edits in its journal", written);
+    app.wait_for("every tab's edits in its journal", || {
+        let missing = not_journaled(app);
+        if let Some(error) = app.core().saver.last_error() {
+            panic!("a journal write failed: {error:?}; missing: {}", missing.join("; "));
+        }
+        if missing.is_empty() { Ok(()) } else { Err(missing.join("; ")) }
+    });
+}
+
+/// Each tab whose edits aren't all in its journal on disk, in words: its file, its journal and that file's size, and the operations still waiting to go there.
+fn not_journaled(app: &HeadlessApp) -> Vec<String> {
+    let folder = app.core().saver.store.main_folder().join("journals");
+    let tabs = app.core().host.session.with_session(|session| {
+        let ids: Vec<TabId> = session.tabs().iter().map(|tab| tab.id).collect();
+        ids.into_iter()
+            .map(|id| {
+                let waiting = session.page_edits(id).and_then(|edits| edits.journal_waiting()).map_or(0, |(_, ops)| ops.len());
+                (session.path_of(id), session.journal_of(id).map(str::to_owned), waiting)
+            })
+            .collect::<Vec<_>>()
+    });
+    tabs.into_iter()
+        .filter_map(|(path, journal, waiting)| {
+            let file = path
+                .as_deref()
+                .and_then(|path| path.file_name())
+                .map_or_else(|| "?".into(), |name| name.to_string_lossy().into_owned());
+            let bytes = journal
+                .as_ref()
+                .and_then(|name| std::fs::metadata(folder.join(name)).ok())
+                .map_or(0, |meta| meta.len());
+            (waiting > 0 || bytes == 0).then(|| format!("{file}: journal {journal:?} at {bytes} bytes, {waiting} operation(s) waiting"))
+        })
+        .collect()
+}
+
+/// Failure: a journal write that fails leaves the kill test waiting out its limit with nothing to say but "under way: []", as it did on 2026-11-13. The
+/// journals' folder made reachable by others before the write, which the store refuses, as a trap may be there, with the sleep files' writes held so none
+/// makes it private again first: the wait fails at once, with the store's word and each tab whose journal isn't there.
+#[test]
+fn a_journal_write_that_fails_says_so_at_once() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let app = Disk::new().builder().hold(&[recto_platform::slow::Seam::SleepWrite]).start();
+    let _ = one_of_each(&app);
+    let journals = app.core().saver.store.main_folder().join("journals");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&journals)
+        .expect("the state's folders");
+    std::fs::set_permissions(&journals, std::fs::Permissions::from_mode(0o755)).expect("the journals' folder opened up");
+    let began = std::time::Instant::now();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| journaled(&app))).expect_err("the wait fails");
+    let said = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(began.elapsed() < crate::testkit::headless::WAIT_LIMIT / 2, "at once, not at the limit: {said}");
+    assert!(
+        said.contains("a journal write failed") && said.contains("write_failed"),
+        "the store's word: {said}"
+    );
+    for kind in KINDS {
+        assert!(said.contains(&format!("{kind}.pdf: journal")), "{kind}'s tab named: {said}");
+    }
 }
 
 /// The tab in front's edits, as `edits` says them.

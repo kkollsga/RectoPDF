@@ -1,5 +1,5 @@
 use super::*;
-use crate::tiles::wake::{MAX_LEFT_PICTURE_BYTES, MAX_SLEEP_SHOTS, shrink_into};
+use crate::tiles::wake::{MAX_LEFT_PICTURE_BYTES, MAX_SLEEP_SHOTS, WakeStock, shrink_into};
 
 /// Failure (decision 25): a tab woken from its sleep file comes up with bare pages until they're drawn, or a picture's used for the wrong page or paper, or lands on the wrong tab. It's on the layers in the first turn with nothing drawn, and it's kept as a preview, so sharp tiles replace it as usual.
 #[test]
@@ -327,4 +327,136 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     reader.host.unapplied = false;
     assert!(reader.is_showable());
     assert!(!reader.is_on_place(), "and that's sooner than sharp");
+}
+
+/// A tab woken with the window up, from a sleep file with a picture for each of `pages` (none if empty), up to the host's first apply of what it was sent. The reader and its report.
+fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
+    let mut reader = Reader::new();
+    reader.window_up();
+    reader.set_viewport(view(0.0));
+    reader.note_wake(1, Instant::now());
+    let saved = SavedPlace {
+        page: 0,
+        anchor: (0, 0.0),
+        x: 0.0,
+        y: 0.0,
+        document_height: 0.0,
+        magnification: 1.0,
+        page_size: Some(letter()),
+    };
+    if !pages.is_empty() {
+        reader.give_sleep(
+            1,
+            SleepView {
+                version: None,
+                usual: Some(letter()),
+                sizes: Vec::new(),
+                pictures: pages
+                    .iter()
+                    .map(|page| SleepShot {
+                        page: *page,
+                        scale: 0.25,
+                        paper: PaperKind::White,
+                        surface: PixelSurface::create(153, 198).unwrap(),
+                    })
+                    .collect(),
+            },
+        );
+    }
+    reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
+    reader.host.take_ops();
+    let scrolled = reader.place.jump.unwrap_or(0);
+    reader.set_viewport(Viewport {
+        scrolled_to: scrolled,
+        ..view(0.0)
+    });
+    reader.host.take_ops();
+    if unattached {
+        // As if the picture were here and hadn't gone out with the first batch.
+        reader.cache.attached.clear();
+    }
+    reader.host.unapplied = true;
+    reader.applied();
+    let wake = reader.last_wake().unwrap();
+    (reader, wake)
+}
+
+/// Failure (2026-11-13, a long session under load counted bare frames and nothing said whether a picture had been owed): with nothing to show, the wake says so, and the bare frame it counts has no picture behind it.
+#[test]
+fn a_wake_with_nothing_to_show_says_so_and_a_bare_frame_has_no_picture() {
+    let (_, wake) = woken_with(&[], false);
+    assert_eq!(wake.had, WakeStock::Nothing, "{wake:?}");
+    assert_eq!((wake.sleep_pictures, wake.sleep_in_view), (0, 0));
+    assert_eq!(wake.blank_frames, 1, "bare until the renderer answers: {wake:?}");
+    assert_eq!(wake.bare_with_picture, 0, "no picture was there to be late: {wake:?}");
+}
+
+/// Failure: a wake that began with a picture of its whole view, and still counts a bare frame, is a bug whatever the machine's load; the report must tell it from a wake that had nothing.
+#[test]
+fn a_wake_with_a_picture_of_the_view_is_covered_with_no_bare_frame() {
+    let (_, wake) = woken_with(&[0], false);
+    assert_eq!(wake.had, WakeStock::SleepFile, "{wake:?}");
+    assert_eq!((wake.sleep_pictures, wake.sleep_in_view), (1, 1));
+    assert!(wake.first_frame_us.is_some(), "{wake:?}");
+    assert_eq!((wake.blank_frames, wake.bare_with_picture), (0, 0));
+}
+
+/// Failure: a sleep file whose pictures are of pages other than the ones at the place the tab was left at, was counted as something to show. It gave a picture, none in view, and the wake had nothing.
+#[test]
+fn a_sleep_file_whose_pictures_are_not_at_the_place_is_nothing_to_show() {
+    let (_, wake) = woken_with(&[3], false);
+    assert_eq!(wake.had, WakeStock::Nothing, "{wake:?}");
+    assert_eq!((wake.sleep_pictures, wake.sleep_in_view), (1, 0));
+    assert_eq!((wake.blank_frames, wake.bare_with_picture), (1, 0));
+}
+
+/// Failure: a picture that covers the view, here and not on a layer when the host applies a batch, is the bug the report exists to name, and was counted like any bare frame, with nothing to tell it from a wake that had nothing.
+#[test]
+fn a_picture_that_is_here_and_not_on_a_layer_is_counted_apart() {
+    let (_, wake) = woken_with(&[0], true);
+    assert_eq!(wake.had, WakeStock::SleepFile, "{wake:?}");
+    assert_eq!((wake.blank_frames, wake.bare_with_picture), (1, 1), "{wake:?}");
+}
+
+/// Failure: the report grew past what's held for it, one for each page view.
+#[test]
+fn a_wake_report_stays_small() {
+    assert_eq!(std::mem::size_of::<WakeReport>(), 48);
+}
+
+/// Failure (2026-11-13, a sleep file with pictures of pages 12 and 13 for a tab at page 19): a tab left right after it moved to a place not drawn yet has no picture of that place, and the material said nothing about which pages the place owes, so the writer couldn't tell older pictures of another place from older pictures of this one. The material names the pages at its place that need a picture (those with a real share of the view), whatever pictures there are.
+#[test]
+fn a_tab_left_at_a_place_not_drawn_names_the_pages_that_owe_a_picture() {
+    let mut reader = reader_on(40);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    reader.set_viewport(view(0.0));
+    settle(&mut reader);
+    let here = reader.sleep_material(1, None).unwrap();
+    assert!(
+        !here.pictures.is_empty() && here.in_view == vec![0],
+        "page 0 is drawn and owed: {:?}",
+        here.in_view
+    );
+    // Moved far down, and the next tab asked for before anything's drawn there.
+    reader.set_viewport(view(20_000.0));
+    reader.activate(
+        2,
+        10,
+        0,
+        PageMap {
+            files: vec![PathBuf::from("/d/b.pdf")],
+            ..map()
+        },
+        &[1],
+        None,
+        Spread::Single,
+    );
+    let left = reader.sleep_material(1, None).unwrap();
+    let owed = &left.in_view;
+    assert!(!owed.is_empty() && !owed.contains(&0), "the pages at the new place: {owed:?}");
+    assert!(
+        left.pictures.iter().all(|picture| !owed.contains(&picture.page)),
+        "nothing drawn at the new place: {:?}",
+        left.pictures.iter().map(|p| p.page).collect::<Vec<_>>()
+    );
 }
