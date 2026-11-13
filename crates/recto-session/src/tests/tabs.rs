@@ -38,11 +38,11 @@ fn tab_record_stays_small() {
     assert!(std::mem::size_of::<TabRecord>() <= 224, "{} bytes", std::mem::size_of::<TabRecord>());
 }
 
-/// Failure: moving `Session`'s methods into its components (R3.5) brings state along with them, a cache or a copy kept beside a component, and the session grows. Held at its size today, 1,128 bytes with no tab.
+/// Failure: moving `Session`'s methods into its components (R3.5) brings state along with them, a cache or a copy kept beside a component, and the session grows. Held at its size today, 1,136 bytes with no tab: R3.5's 1,128 and the 8 of a quiet run's confinement, the session-wide cell its tabs keep (one a session, none a tab).
 #[test]
 fn the_session_stays_its_size() {
     let size = std::mem::size_of::<Session<DiskLoader>>();
-    assert!(size <= 1128, "{size} bytes");
+    assert!(size <= 1136, "{size} bytes");
 }
 
 /// Failure: tapping the active PDF switches tabs or does nothing, instead of folding its contents.

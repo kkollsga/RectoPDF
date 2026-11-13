@@ -42,13 +42,13 @@ impl<L: DocLoader> Session<L> {
             FileStatus::Moved(path, now) => {
                 // Another tab having it means this one isn't a move of that file so much as a second look at it. And a quiet run's tab doesn't
                 // follow its file out of the run's folders: see [`confined`].
-                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.confinement.admits(&path) {
+                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.tabs.confinement().admits(&path) {
                     if let Some(tab) = self.tab_mut(id) {
                         tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }
                     return;
                 }
-                let from = self.tabs.path_of(id).map(|from| PathField::from_path(&from));
+                let from = self.tabs.named_path(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
                 if let Some(tab) = self.tab_mut(id) {
                     tab.file.stamp = Some(now);
@@ -82,7 +82,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.tabs.path_of(tab.id)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.named_path(tab.id)?, tab.file.stamp)))
             .collect()
     }
 }

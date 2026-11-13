@@ -98,8 +98,8 @@ fn a_confinement_is_for_good_and_a_free_session_is_free() {
 
 /// Failure (review of the branch, F3): a confined tab's folder is swapped for a link out of the run's folders after the tab was opened, and everything
 /// that reads or writes the tab's file later (a cold tab waking, a page's source for Find and exports, a save in place) goes where the link leads, as
-/// the rule was asked only at the open. Asked again where the session hands the path out: none of them gets a path, a save is refused, and a look at
-/// the file says it's missing. Put back, all is as it was.
+/// the rule was asked only at the open. Asked again where the session hands the path out, by itself or by its tabs (round 2: R3.5 moved callers onto
+/// `tabs().path_of`, which didn't ask): none of them gets a path, a save is refused, and a look at the file says it's missing. Put back, all is as it was.
 #[cfg(unix)]
 #[test]
 fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
@@ -111,6 +111,11 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     std::fs::rename(dir.join("run/docs"), dir.join("run/docs-real")).unwrap();
     std::os::unix::fs::symlink(dir.join("outside"), dir.join("run/docs")).unwrap();
     assert_eq!(s.path_of(tab), None, "the tab's file is handed out through the link");
+    assert_eq!(
+        s.tabs().path_of(tab),
+        None,
+        "the tab's file is handed out through the link by the tabs' own path"
+    );
     assert!(s.page_source(tab, 0).is_none(), "a page's source is read through the link");
     assert!(s.wake_for_tap(tab).is_none(), "a wake reads through the link");
     assert_eq!(

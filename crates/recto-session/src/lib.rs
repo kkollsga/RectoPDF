@@ -495,8 +495,6 @@ pub struct Session<L = DiskLoader> {
     generated: generated::Generated,
     /// Files opened lately, for File > Open Recent and ⌘K.
     recent: recent::Recent,
-    /// The only folders this session's files may be in, if it's on a test state folder: see [`confined`].
-    confinement: confined::Confinement,
 }
 
 /// A file opened lately, for File > Open Recent and ⌘K.
