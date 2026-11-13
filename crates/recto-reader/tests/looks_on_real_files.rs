@@ -226,7 +226,7 @@ fn look_of(doc: &mut DocRenderer, page: u32, edge: f32, whole: bool) -> (bool, V
     (look.dim, look.keep, look.whiten.iter().map(|image| image.sides).collect())
 }
 
-/// Failure: the real USGS sheet, whose map sits on white among its legends and tables, is judged whole where its images are known, and so dimmed to light grey where the sharp page turned over; or judged by its images, it's dimmed. Decided in process from one picture of it at the look picture's size: with its images it turns over and keeps its map; judged whole, as a page is only when its images can't be had (a page that fails at every zoom, or a walk that was stopped), it's dimmed, as its map can't be told from its paper. The real scan turns over either way.
+/// Failure: the real USGS sheet, whose map sits on white among its legends and tables, is judged whole where its images are known, and so dimmed to light grey where the sharp page turned over; or judged by its images, it's dimmed. Decided in process from one picture of it at the look picture's size: with its images it turns over and keeps its map; judged whole, as a page is only when its images can't be had (a page whose drawing failed for time or a crash, a walk that was stopped, or one with too many pictures apart), it's dimmed, as its map can't be told from its paper. The real scan turns over either way.
 #[test]
 fn the_real_sheet_judged_by_its_images_turns_over_and_judged_whole_is_dimmed() {
     let (Some(scan), Some(map)) = (file("gov_nasa_ntrs20150023275.pdf"), file("gov_usgs_usgs70277338.pdf")) else {

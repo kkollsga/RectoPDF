@@ -16,7 +16,7 @@ impl DocRenderer {
         if self.control.is_stale(generation) {
             return Ok(None);
         }
-        // Only a page that fails at every zoom goes unasked. Asking walks its objects and decodes nothing, so one needing the larger limit, or drawn lower, or failed at a high zoom, is asked as any page, and its look doesn't hang on which draw went first.
+        // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
         let state = self.page_draw_state(page);
         let unaskable = matches!(self.page_draw_state_at(page, 0.0), PageDrawState::Failed(_));
         let boxes = if unaskable || self.stopped() || self.left_out.walk >= MAX_ASKING_KILLS {
