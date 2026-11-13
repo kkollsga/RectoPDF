@@ -5,6 +5,7 @@
 use crate::{AgentError, ConditionState, SessionAccess, exit};
 use recto_index::corpus::{Cleared, CorpusKey};
 use recto_index::generated::{self, Generated};
+use recto_session::GeneratedView;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -142,6 +143,42 @@ pub(crate) fn not_ready(generating: &dyn Generating, keyed: &Keyed, pages: u32, 
     })
 }
 
+/// **What the sidebar's note shows for a file's generated contents now,** and asked for if `ask`, or `None` if it's still what it was: made (or made with no
+/// headings to list), on their way, refused or failed, or not kept. It looks at the file, for its key, and at the folder they're kept in, so it's called with
+/// the session free, and never on the window's session thread or the UI's: a file on a dead volume can hold a look as long as it likes.
+pub fn where_they_stand(generating: &dyn Generating, path: &Path, pages: u32, ask: bool) -> Option<GeneratedView> {
+    let Ok(key) = CorpusKey::of_file(path) else {
+        return Some(GeneratedView::Failed("The file can't be looked at just now."));
+    };
+    if let Some(made) = find(generating, path, key) {
+        // A scan with no text layer, or a document set all in one size, has nothing to list: said, rather than shown as an empty list.
+        if made.entries.is_empty() {
+            return Some(GeneratedView::NoneFound);
+        }
+        return Some(GeneratedView::Ready(Arc::new(made.toc())));
+    }
+    if ask {
+        generating.want(path, key, pages);
+    }
+    match generating.state(key) {
+        GenState::Queued | GenState::Running => ask.then_some(GeneratedView::Making),
+        GenState::Refused(code) | GenState::Failed(code) => Some(GeneratedView::Failed(failure_words(&code))),
+        GenState::Idle => Some(if ask { GeneratedView::Making } else { GeneratedView::NotKept }),
+    }
+}
+
+/// Why, for the pointer resting on the note. Rust's words.
+pub fn failure_words(code: &str) -> &'static str {
+    match code {
+        "needs_password" => "This file needs a password, and nothing of a protected file is read for this.",
+        "couldnt_read" | "no_pages" => "distillPDF couldn't read this file.",
+        "over_memory" => "Finding the headings took more memory than it's allowed.",
+        "out_of_time" => "Finding the headings took longer than it's allowed.",
+        "helper_missing" => "The helper that finds headings isn't installed.",
+        _ => "Something went wrong finding the headings. Click to try again.",
+    }
+}
+
 /// `recto wait contents-generated`: asking counts as wanting them, or a wait could run out its time on something nobody started.
 pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
     let Some(generating) = access.generating() else {
@@ -160,5 +197,28 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
         },
         Some(Err(error)) => ConditionState::Failed(error),
         Some(Ok(_)) => ConditionState::Waiting,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_words;
+
+    /// Failure: a refusal or failure the helper names says the same as one it doesn't, so the pointer on the note can't say a protected file is never read, or that the helper's missing; or an unknown code says nothing.
+    #[test]
+    fn each_known_failure_has_its_own_words() {
+        let fallback = failure_words("something new");
+        assert!(!fallback.is_empty());
+        let known = ["needs_password", "couldnt_read", "over_memory", "out_of_time", "helper_missing"];
+        for code in known {
+            assert_ne!(failure_words(code), fallback, "{code}");
+        }
+        let distinct: std::collections::HashSet<_> = known.iter().map(|code| failure_words(code)).collect();
+        assert_eq!(distinct.len(), known.len(), "each says its own");
+        assert_eq!(
+            failure_words("no_pages"),
+            failure_words("couldnt_read"),
+            "a file with no pages is one distillPDF couldn't read"
+        );
     }
 }

@@ -210,7 +210,8 @@ fn listing(
                     None => Some(entry.page),
                 })
                 .flatten();
-            let mut item = json!({ "depth": entry.depth, "page": page.map(|page| page + 1), "untrusted": { "title": toc.title(entry) } });
+            // Its number, which `contents fold` names it by.
+            let mut item = json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "untrusted": { "title": toc.title(entry) } });
             if let Some(place) = places.and_then(|places| places.get(*index)) {
                 item["place"] = json!(place);
             }

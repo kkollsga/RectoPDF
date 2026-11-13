@@ -31,11 +31,20 @@ impl Twins {
 
     /// Both apps, with these files (name, bytes) open, settled, and hearing what's announced from here on.
     pub fn with(files: &[(&str, Vec<u8>)]) -> Self {
+        Self::started(files, Disk::start)
+    }
+
+    /// [`Self::with`], each app as the app is with its state folder, with indexing and generated contents, as `start` makes it.
+    pub fn with_generating(files: &[(&str, Vec<u8>)]) -> Self {
+        Self::started(files, |disk| disk.builder().indexing(true).start())
+    }
+
+    fn started(files: &[(&str, Vec<u8>)], begin: fn(Disk) -> HeadlessApp) -> Self {
         let start = || {
             let disk = Disk::new();
             let files: Vec<_> = files.iter().map(|(name, bytes)| disk.file(name, bytes)).collect();
             let root = disk.files().display().to_string();
-            let app = disk.start();
+            let app = begin(disk);
             for file in &files {
                 app.open(file);
             }

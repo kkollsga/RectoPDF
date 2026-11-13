@@ -30,13 +30,20 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
 
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
-    let inner = Arc::clone(inner);
-    let _ = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
+    let running = &inner.life.persons_running;
+    running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let inner_for_thread = Arc::clone(inner);
+    let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
+        let inner = inner_for_thread;
         let mut events = Vec::new();
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
+        inner.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     });
+    if spawned.is_err() {
+        running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// A person's command, as it ran: what it was, where it came from, and what it came to.

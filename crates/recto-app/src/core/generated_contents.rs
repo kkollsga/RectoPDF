@@ -3,17 +3,12 @@
 
 use super::{CoreCall, Inner};
 use crate::generated_contents as app;
-use recto_session::{ContentsAction, TabId};
 use std::sync::Arc;
 
 /// The queue, as the one way an answer gets back. Made per call, an `Arc` clone: a look's thread takes its own.
 fn push(inner: &Inner) -> impl app::Push {
     let core = Arc::clone(&inner.core);
     move |id, view, version| core.push(CoreCall::GeneratedView(id, view, version))
-}
-
-pub fn act(inner: &Inner, id: TabId, action: ContentsAction) {
-    app::act(&inner.host.session, &push(inner), id, action);
 }
 
 pub fn look_again(inner: &Inner) {

@@ -1838,6 +1838,12 @@ mod tests {
             Command::from(crate::commands::editing::Discard { tab: tab() }),
             Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
             Command::from(crate::commands::edit_mode::EditMode { set: "on".into() }),
+            Command::from(crate::commands::contents::ContentsFold { entry: 0, tab: tab() }),
+            Command::from(crate::commands::contents::ContentsShow {
+                which: "generated".into(),
+                tab: tab(),
+            }),
+            Command::from(crate::commands::contents::ContentsStop { tab: tab() }),
             Command::from(crate::commands::record::SessionSleep { tab: tab() }),
             Command::from(crate::commands::saving::Save {
                 tab: tab(),

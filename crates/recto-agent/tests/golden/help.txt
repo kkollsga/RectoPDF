@@ -41,6 +41,9 @@ Open and move around:
   close                Closes a tab.
   tap                  Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.
   compare              Tabs side by side, as ⌘-clicking them in the sidebar does: each its own document in its own place, zoom always the same.
+  contents fold        Folds a section of the contents the sidebar shows, or opens it if it's folded, as the chevron beside it does.
+  contents show        Which contents the sidebar shows for a tab, as the note over them does: the file's own, or generated ones, made from the headings on its pages if they aren't yet.
+  contents stop        Stops generated contents being made for a tab and shows the file's own, as the note's Stop does.
   view                 How the app shows pages: the paper, the sidebar, the agent icon, the tab showing's layout and the zoom.
   palette              ⌘K's command palette in the app: what a few letters find among its commands and open tabs, best first, worded and ranked as the palette shows them.
   find                 The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does.

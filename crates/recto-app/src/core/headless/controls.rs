@@ -61,6 +61,23 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         .collect();
     actions.extend([
         UiAction::Row { row: contents, adding: false },
+        // The note over the contents is `contents show` or `contents stop`, and the first on a thread of its own (C5f).
+        UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Note,
+                action: Some(recto_session::ContentsAction::Generate.id().into()),
+                ..row.clone()
+            },
+            adding: false,
+        },
+        UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Note,
+                action: Some(recto_session::ContentsAction::Stop.id().into()),
+                ..row.clone()
+            },
+            adding: false,
+        },
         UiAction::Row {
             row: rows[1].clone(),
             adding: true,

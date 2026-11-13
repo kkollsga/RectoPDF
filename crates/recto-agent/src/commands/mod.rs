@@ -6,6 +6,7 @@
 
 pub mod access;
 pub mod compare;
+pub mod contents;
 pub mod edit_mode;
 pub mod editing;
 pub mod export;
@@ -249,6 +250,9 @@ family! {
         Close(tabs::Close),
         Tap(tabs::Tap),
         Compare(compare::Compare),
+        ContentsFold(contents::ContentsFold),
+        ContentsShow(contents::ContentsShow),
+        ContentsStop(contents::ContentsStop),
         View(view::View),
         Palette(view::Palette),
         Find(finding::Find),

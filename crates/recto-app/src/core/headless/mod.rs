@@ -3,6 +3,7 @@
 
 mod closing;
 mod compare;
+mod contents;
 mod controls;
 mod editing;
 mod exits;

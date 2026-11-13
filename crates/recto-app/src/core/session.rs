@@ -272,10 +272,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
-            CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
-            CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);

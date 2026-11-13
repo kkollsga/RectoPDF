@@ -157,6 +157,15 @@ contents level=read_only tab=Some("active") draws=false reads_pages=false route=
 contents level=read_only tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
 contents level=read_only tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
 contents level=read_only tab=Some("#2") draws=false reads_pages=false route=session log={"generated":true,"tab":"#2"}
+contents_fold level=control tab=Some("active") draws=false reads_pages=false route=session log={"entry":0,"tab":"active"}
+contents_fold level=control tab=Some("#2") draws=false reads_pages=false route=session log={"entry":0,"tab":"#2"}
+contents_fold level=control tab=Some("#2") draws=false reads_pages=false route=session log={"entry":0,"tab":"#2"}
+contents_show level=control tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active","which":"own"}
+contents_show level=control tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2","which":"generated"}
+contents_show level=control tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2","which":"generated"}
+contents_stop level=control tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
+contents_stop level=control tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
+contents_stop level=control tab=Some("#2") draws=false reads_pages=false route=session log={"tab":"#2"}
 search level=read_only tab=Some("active") draws=true reads_pages=true route=session log={"tab":"active"}
 search level=read_only tab=Some("#2") draws=true reads_pages=true route=session log={"tab":"#2"}
 search level=read_only tab=Some("active") draws=true reads_pages=true route=session log={"tab":"active"}

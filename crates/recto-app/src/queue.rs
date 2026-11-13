@@ -49,14 +49,10 @@ pub enum CoreCall {
     RestorePatienceOver,
     /// What a save off this thread did, for watchers.
     Events(Vec<Event>),
-    /// The reader tapped the note over a tab's contents.
-    ContentsAction(TabId, recto_session::ContentsAction),
     /// Generated contents were made, or failed: tabs waiting for them look.
     GeneratedFinished,
     /// What a look off this thread found of a tab's generated contents, for the version of the file it looked at.
     GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
-    /// A contents section's chevron: fold it or open it.
-    ToggleSection(TabId, u32),
     /// The Find field, its list, and ⌘G.
     Find(crate::find::FindCall),
     /// **A command for the person** (step R2.3): the one an agent would send, run by the one executor on this thread, as theirs.
@@ -117,8 +113,6 @@ impl CoreCall {
     #[must_use]
     pub fn is_user_action(&self) -> bool {
         match self {
-            // The note over the contents, and a section's chevron: both kept in the record.
-            Self::ContentsAction(..) | Self::ToggleSection(..) => true,
             Self::Find(call) => call.is_user_action(),
             Self::Run(run) => run.origin == Origin::Input,
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
@@ -425,10 +419,8 @@ mod tests {
             CoreCall::Restored(Box::new(Loaded::Nothing)),
             CoreCall::RestorePatienceOver,
             CoreCall::Events(Vec::new()),
-            CoreCall::ContentsAction(tab, recto_session::ContentsAction::Generate),
             CoreCall::GeneratedFinished,
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
-            CoreCall::ToggleSection(tab, 0),
             CoreCall::Find(crate::find::FindCall::Typed("a".into())),
             CoreCall::Find(crate::find::FindCall::Open),
             CoreCall::Find(crate::find::FindCall::Close),
@@ -461,25 +453,23 @@ mod tests {
             CoreCall::Restored(_) => 11,
             CoreCall::RestorePatienceOver => 12,
             CoreCall::Events(_) => 13,
-            CoreCall::ContentsAction(..) => 14,
-            CoreCall::GeneratedFinished => 15,
-            CoreCall::GeneratedView(..) => 16,
-            CoreCall::ToggleSection(..) => 17,
+            CoreCall::GeneratedFinished => 14,
+            CoreCall::GeneratedView(..) => 15,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 18,
-                crate::find::FindCall::Open => 19,
-                crate::find::FindCall::Close => 20,
-                crate::find::FindCall::Step(..) => 21,
-                crate::find::FindCall::Choose(_) => 22,
-                crate::find::FindCall::News => 23,
-                crate::find::FindCall::Reveal(..) => 24,
+                crate::find::FindCall::Typed(_) => 16,
+                crate::find::FindCall::Open => 17,
+                crate::find::FindCall::Close => 18,
+                crate::find::FindCall::Step(..) => 19,
+                crate::find::FindCall::Choose(_) => 20,
+                crate::find::FindCall::News => 21,
+                crate::find::FindCall::Reveal(..) => 22,
             },
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 25,
-                Origin::Finishing => 26,
+                Origin::Input => 23,
+                Origin::Finishing => 24,
             },
         };
-        (place, 27)
+        (place, 25)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -497,16 +487,14 @@ mod tests {
             matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
                 || matches!(
                     call,
-                    CoreCall::ContentsAction(..)
-                        | CoreCall::ToggleSection(..)
-                        | CoreCall::Find(
-                            crate::find::FindCall::Typed(_)
-                                | crate::find::FindCall::Open
-                                | crate::find::FindCall::Close
-                                | crate::find::FindCall::Step(..)
-                                | crate::find::FindCall::Choose(_)
-                                | crate::find::FindCall::Reveal(..)
-                        )
+                    CoreCall::Find(
+                        crate::find::FindCall::Typed(_)
+                            | crate::find::FindCall::Open
+                            | crate::find::FindCall::Close
+                            | crate::find::FindCall::Step(..)
+                            | crate::find::FindCall::Choose(_)
+                            | crate::find::FindCall::Reveal(..)
+                    )
                 )
         };
         for call in calls {
