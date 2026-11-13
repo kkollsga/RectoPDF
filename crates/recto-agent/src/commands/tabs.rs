@@ -206,19 +206,21 @@ impl Cmd for Close {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, level, events) = (cx.access, cx.actor, cx.level, &mut *cx.events);
+        // The close rule, said once: what a close would lose, and what this actor does about it.
+        let refused = |s: &Session<A::Loader>, id| crate::close_rule::WouldLose::of(s, id).refusal(actor).map_or(Ok(()), Err);
         {
             // What would refuse it comes first: no reading a file for a close that won't happen.
             let id = access.with(|s| {
                 let id = select(s, tab)?;
-                refuse_close_that_loses_something(s, id, level)?;
+                refused(s, id)?;
                 Ok::<_, AgentError>(id)
             })?;
             read_soon(access, |s| s.wake_for_close(id));
             access.with(|s| {
                 let id = select(s, tab)?;
-                refuse_close_that_loses_something(s, id, level)?;
-                // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
+                refused(s, id)?;
+                // At Full, what's lost is the holder's call, and the close rule has let it through. The session itself won't lose the owner's undone steps unasked.
                 if level >= Level::Full && s.has_undone_owner_steps(id) {
                     s.discard_edits(id);
                 }

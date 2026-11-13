@@ -47,11 +47,13 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
                 return Some(Row::Nothing);
             }
             let tab = TabId(reader.shown_tab);
+            // The close rule, said once in recto-agent, asked of what the session thread published: the UI thread doesn't take the session's lock.
+            let would_lose = recto_agent::close_rule::WouldLose::as_published(reader.edited, undone_owner_steps);
             Some(Row::own_way(
                 close(tab),
                 "a person is asked first when closing would lose unsaved edits or their own undone steps, as any Mac app asks",
                 move || {
-                    if reader.edited || undone_owner_steps {
+                    if would_lose.asks_the_person() {
                         return HostAction::ConfirmClose;
                     }
                     person::submit(inner, close(tab));
