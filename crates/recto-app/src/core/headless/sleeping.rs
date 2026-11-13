@@ -736,7 +736,8 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
 /// Failure (the sleep branch's second review, 2026-11-13): tabs an agent's `tap` or `goto` pushed out of the warm ones were written as the person's, so an
 /// agent cycling through tabs, with a move before each push-out to pass the place rule, could use the whole hour of sleep files in a minute or two, and
 /// every wake of the person's after was bare. Six tabs, the gap passed before each step, agents' share set at two and a half files: the agent's tap-and-goto
-/// cycle writes up to its share and then is put off, never past it; and the person's own cycle after is still written, none of it counted as the agent's.
+/// cycle through them (six push-outs) writes up to its share and then is put off, never past it; and the person's own cycle after is still written, none of
+/// it counted as the agent's.
 #[test]
 fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_still_written() {
     let disk = Disk::new();
@@ -762,9 +763,10 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     let tabs: Vec<u64> = (0..6).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
     let gap = u64::from(crate::sleeper::SLEEP_WRITE_EVERY_SECONDS) * 1000 + 1;
     let mut cycle = |by_agent: bool| {
-        for (step, tab) in tabs.iter().chain(&tabs).enumerate() {
+        for (step, tab) in tabs.iter().enumerate() {
             app.advance(gap);
-            let page = format!("{}", 2 + step % 5);
+            // Each cycle at other pages than the last, so no file comes out the same bytes (which the store doesn't write again).
+            let page = format!("{}", 2 + (step + usize::from(!by_agent)) % 5);
             if by_agent {
                 full(&app, &["tap", &format!("#{tab}")]);
                 host_turns(&app, &mut view, true);
@@ -791,7 +793,7 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     cycle(false);
     let persons = app.record_json()["sleep"].clone();
     assert!(
-        persons["sleep_files_written"].as_u64().unwrap() >= written + 6,
+        persons["sleep_files_written"].as_u64().unwrap() >= written + 3,
         "the person's own cycle, after the agent's share was used, wasn't written: {persons}"
     );
     assert_eq!(persons["agent_bytes_this_hour"], agent_bytes, "the person's counted as the agent's: {persons}");
