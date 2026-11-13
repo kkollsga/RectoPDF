@@ -836,15 +836,16 @@ fn the_launch_guard_goes_back_by_itself() {
     run.quit();
 }
 
-/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run; or (owner, 2026-11-13: it tries again quietly for about ten seconds) one let go after the launch's wait keeps the record late but stays a second copy to the updater, so an install it arrived by would be sent back (review, 2026-11-13). Held by someone else for 300 ms, inside the wait, and then for 1.5 s, past it: each time it keeps the record, isn't a second copy, has its timer, and says nothing.
+/// Failure: an app quit and opened again at once finds the old one still letting go of the record's lock, decides it's a second copy, and does no updates for that whole run; or (owner, 2026-11-13: it tries again quietly for about ten seconds) one let go after the launch's wait keeps the record late but stays a second copy to the updater, so an install it arrived by would be sent back (review, 2026-11-13). Held by someone else for 300 ms, inside the wait, and then until the app answers, past it: each time it keeps the record, isn't a second copy, has its timer, and says nothing.
 #[test]
 fn a_quick_reopen_isnt_a_second_copy() {
-    for held_ms in [300, 1_500] {
-        a_quick_reopen_held_for(held_ms);
-    }
+    a_quick_reopen_let_go(false);
+    a_quick_reopen_let_go(true);
 }
 
-fn a_quick_reopen_held_for(held_ms: u64) {
+/// The record's lock held by someone else at the launch, and let go of: after 300 ms, inside the launch's wait; or (`after_its_wait`) once the app answers,
+/// which it does only once it has read the state without the lock, so it's trying again by then, whatever the machine's speed.
+fn a_quick_reopen_let_go(after_its_wait: bool) {
     let Some(bed) = Bed::new() else { return };
     bed.state.paths.prepare().unwrap();
     let lock = std::fs::OpenOptions::new()
@@ -854,19 +855,27 @@ fn a_quick_reopen_held_for(held_ms: u64) {
         .open(bed.state.root.join("run/session.lock"))
         .unwrap();
     lock.try_lock().unwrap();
-    let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(held_ms));
+    let run = if after_its_wait {
+        let run = bed.start();
+        assert_eq!(bed.status(&run)["second_copy"], false, "not told it's a second copy while it tries");
         drop(lock);
-    });
-    let run = bed.start();
-    releaser.join().unwrap();
+        run
+    } else {
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(lock);
+        });
+        let run = bed.start();
+        releaser.join().unwrap();
+        run
+    };
     let status = bed.wait_status_where(&run, "the record kept and the updater told", |status| {
         status["second_copy"] == false && status["next_wake_in_ms"].is_u64()
     });
-    assert_eq!(status["second_copy"], false, "held {held_ms} ms: {status}");
+    assert_eq!(status["second_copy"], false, "let go after its wait {after_its_wait}: {status}");
     assert!(
         run.report()["session"]["app"]["notice"].is_null(),
-        "held {held_ms} ms: nothing said: {}",
+        "let go after its wait {after_its_wait}: nothing said: {}",
         run.report()["session"]["app"]
     );
     run.quit();
