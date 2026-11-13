@@ -130,14 +130,23 @@ impl<L: DocLoader> Session<L> {
         };
         // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp and its
         // read, an edit landed between a change being noticed and the read, or a journal says what isn't so. **The edits and their journal stay**, as a file changing never
-        // takes a person's edits. The stamp goes, so nothing takes this file as the one they were made on and saves them onto it, and the tab says its file changed.
+        // takes a person's edits, and the tab says its file changed. Replaced mid-read, the stamp is still the version the edits were made on, and stays theirs, so putting
+        // that version back makes them fit again: a stat, in this one rare case, says which. Otherwise the stamp is the file's as it is, which the edits aren't about, and
+        // it goes, so nothing takes this file as theirs and saves them onto it.
         if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
             && self.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
             && list.file_pages() != facts.page_count
-            && let Some(tab) = self.tab_mut(id)
         {
-            tab.file.stamp = None;
-            tab.file.notice = Some(Box::new(FileNotice::Changed));
+            let replaced_mid_read = self
+                .path_of(id)
+                .and_then(|path| file_stamp(&path).ok())
+                .is_some_and(|now| !now.same_contents(known));
+            if let Some(tab) = self.tab_mut(id) {
+                if !replaced_mid_read {
+                    tab.file.stamp = None;
+                }
+                tab.file.notice = Some(Box::new(FileNotice::Changed));
+            }
         }
         // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
         if let (Some(now), Some(list)) = (stamp, self.lists.get(id))

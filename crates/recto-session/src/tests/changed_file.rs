@@ -143,10 +143,13 @@ fn a_file_replaced_mid_read_doesnt_take_the_edits_with_it() {
     assert!(bed.replace_with.borrow().is_none(), "the file was replaced mid-read");
     assert_ne!(bed.stamp_now(), made_on);
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
-    // From here the session can't tell which version the read was of, so the edits name none, and a look at the file doesn't make them its own.
-    assert_eq!(bed.s.own_stamp(a), None);
+    assert_eq!(bed.s.own_stamp(a), Some(made_on), "the edits still name the version they were made on");
     bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a)));
-    assert_eq!(bed.s.tab_notice(a).map(FileNotice::code), Some("file_changed"), "it goes on saying so");
+    assert_eq!(
+        bed.s.tab_notice(a).map(FileNotice::code),
+        Some("file_changed"),
+        "a look says what the notice says"
+    );
     bed.assert_save_cant_take_the_new_file(a);
 }
 
