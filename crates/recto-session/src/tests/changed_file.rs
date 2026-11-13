@@ -401,6 +401,46 @@ fn assert_only_history_gone(bed: &Bed, a: TabId, said: &str) {
     assert_eq!(bed.s.pages().count(a), 5, "the tab is the file it read");
 }
 
+/// Failure (C): edits that don't fit their file, undone back to nothing unsaved (or discarded), left the tab stuck: `fit` said Fit, but the history about the
+/// other version stayed for redo to bring back, the tab went on saying "Your unsaved edits are kept" with none, and it kept the edits' stamp (or none), so the
+/// file was neither read for an agent nor taken by Save As, and with no stamp every look was ignored until a discard. What's left of the list goes, and the
+/// tab is the file it read, said once: with the stamp kept and with it gone, by undo and by discard.
+#[test]
+fn edits_that_dont_fit_undone_to_nothing_leave_the_tab_the_file_as_it_is() {
+    let kept = || {
+        let (mut bed, a, b) = Bed::new(10);
+        bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+        replace_file(&bed.path(), b"v2, five pages, saved by another app");
+        bed.pages.set(5);
+        assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+        bed.s.forget_read(a);
+        bed.make_cold(a, b);
+        bed.s.tap(a).unwrap();
+        (bed, a, b)
+    };
+    type Way = fn(&mut Session<Shifting>, TabId);
+    let undo: Way = |s, a| assert!(s.undo_edit(a));
+    let discard: Way = |s, a| s.discard_edits(a);
+    for (way, back_to_none) in [("undo", undo), ("discard", discard)] {
+        for (what, (mut bed, a, _b)) in [("kept stamp", kept()), ("no stamp", dropped_stamp())] {
+            assert!(!bed.s.notices().fit(a).fits(), "{what}");
+            back_to_none(&mut bed.s, a);
+            assert_only_history_gone(&bed, a, "file_changed");
+            assert_eq!(
+                bed.s.tabs().own_stamp(a),
+                Some(bed.stamp_now()),
+                "{way}, {what}: the tab is the version it read"
+            );
+            assert!(bed.s.page_source(a, 2).unwrap().is_current(), "{way}, {what}: its pages are read from it");
+            let whole = bed.s.begin_save(a, true).unwrap().unwrap();
+            assert_eq!(whole.stamp, Some(bed.stamp_now()), "{way}, {what}: Save As takes it as it is");
+            bed.s.end_save(a);
+            let look = record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a));
+            assert!(!bed.s.apply_file_status(a, look), "{way}, {what}: a look then finds nothing new");
+        }
+    }
+}
+
 /// Failure (review round 1): what's allowed on a tab whose edits don't fit its file was decided by its notice, which every other notice overwrites, so a file
 /// gone and back, history rolling off or a password asked for again let its pages be read as this file's, a sleep file be made of it, or a save be tried onto it.
 /// Whatever the notice says over it, nothing that reads the fact changes: what Find, `search` and the agent's save read too, through the same `fit`.

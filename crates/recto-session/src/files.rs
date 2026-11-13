@@ -54,7 +54,11 @@ impl<L: DocLoader> Session<L> {
                     if other_version_unnamed {
                         // What's read next is this version, and it's what a look will find again; the edits stay about none.
                         let file_changed = fit != EditsFit::NotThisFile;
-                        tab.file.set_elsewhere(Some(fit::Elsewhere { seen: Some(now), file_changed }));
+                        tab.file.set_elsewhere(Some(fit::Elsewhere {
+                            seen: Some(now),
+                            seen_pages: None,
+                            file_changed,
+                        }));
                     }
                     if stamp.is_some() || !has_edits {
                         // The version the edits were made on, or the file as it is for a tab with none: so it fits.
@@ -97,6 +101,7 @@ impl<L: DocLoader> Session<L> {
                         // The stamp stays the version the edits were made on, and they don't fit what's there now.
                         tab.file.set_elsewhere(Some(fit::Elsewhere {
                             seen: Some(now),
+                            seen_pages: None,
                             file_changed: true,
                         }));
                     } else {

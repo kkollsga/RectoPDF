@@ -65,12 +65,50 @@ impl<L: DocLoader> Session<L> {
                 .map(|stop| (stop.page, source_of(stop.page)))
                 .collect()
         });
-        Before { place, stops }
+        Before {
+            place,
+            stops,
+            fit: self.notices().fit(id),
+        }
     }
 
     /// Everything a change to the page order means: a drawn page's number no longer names that page, and the reader stays on what they were reading.
     pub(crate) fn after_change(&mut self, id: TabId, before: Before) {
-        let Before { place, stops } = before;
+        let Before { place, stops, fit } = before;
+        // Edits that didn't fit their file, undone or discarded back to nothing unsaved: what's left is history about another version, which redo mustn't bring
+        // back, so it goes, and the tab is the file as last read, said once, as only history is when its file's found changed (`compare_read_with_edits`).
+        // Not for a tab whose file had no stamp when it was opened, and nothing since: its history is about the file it read, whichever version that was.
+        let elsewhere = self.tabs.tab(id).and_then(|tab| tab.file.elsewhere());
+        if !fit.fits() && (elsewhere.is_some() || fit != EditsFit::NotThisFile) && !self.lists.is_edited(id) {
+            self.let_go_of_list(id);
+            let own = self.tabs.tab(id).and_then(|tab| tab.file.stamp);
+            let now = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());
+            let replaced = fit != EditsFit::NotThisFile || own.zip(now).is_some_and(|(own, now)| !own.same_contents(now));
+            let seen = elsewhere.and_then(|elsewhere| elsewhere.seen).or(now);
+            if replaced && seen != own {
+                self.retire_sleep_file(id);
+            }
+            match elsewhere.and_then(|elsewhere| elsewhere.seen_pages) {
+                Some(pages) => {
+                    if let Some(tab) = self.tabs.tab_mut(id) {
+                        tab.page_count = pages;
+                    }
+                }
+                // Looked at and not read yet: what's held isn't of it, and it's read when it's next shown.
+                None => self.forget_read(id),
+            }
+            if let Some(tab) = self.tabs.tab_mut(id) {
+                tab.file.take_version(seen);
+                // A file gone, a password asked for or another tab's edits kept elsewhere is still so, and said over this.
+                if !matches!(
+                    tab.file.notice(),
+                    Some(FileNotice::Missing | FileNotice::NeedsPassword | FileNotice::EditsNotMerged)
+                ) {
+                    tab.file
+                        .set_notice(Some(if replaced { FileNotice::Changed } else { FileNotice::HistoryRolledOff }));
+                }
+            }
+        }
         // The trail's stops go where their pages went, and a stop whose page went with the edit goes too.
         if let Some(stops) = stops {
             let pages = self.pages().count(id);

@@ -58,6 +58,8 @@ pub(crate) struct Elsewhere {
     /// The version of the file last taken in: what's held of it (its contents, labels, the contents' verdict) is of this one, so a look that finds it again is
     /// nothing new, and one that finds another is. `None` until one's been looked at.
     pub(crate) seen: Option<FileStamp>,
+    /// How long `seen` is, where it's been read and not only looked at: what the tab's length is once the edits are let go of.
+    pub(crate) seen_pages: Option<u32>,
     /// The file's known to have changed on disk. Without, only that the edits don't fit it.
     pub(crate) file_changed: bool,
 }
