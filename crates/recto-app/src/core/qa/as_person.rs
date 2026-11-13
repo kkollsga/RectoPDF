@@ -70,11 +70,11 @@ fn named_files(command: &Command) -> Vec<PathBuf> {
 }
 
 /// Whether a file a command names is a test's: one that's there is, by where it really is; one to be made is, by the folder it goes in.
-fn is_a_tests_path(path: &Path, state: Option<&Path>) -> bool {
+fn is_a_tests_path(path: &Path) -> bool {
     if std::fs::symlink_metadata(path).is_ok() {
-        return is_a_tests_file(path, state);
+        return is_a_tests_file(path);
     }
-    path.parent().is_some_and(|folder| is_a_tests_file(folder, state))
+    path.parent().is_some_and(is_a_tests_file)
 }
 
 /// **The QA verbs' file wall, stated once:** what acts as the person (`qa as-person`, its `owner-edit` alias, `qa save-as`, `qa password`) does so only
@@ -85,7 +85,6 @@ fn is_a_tests_path(path: &Path, state: Option<&Path>) -> bool {
 ///
 /// `usage`, saying so, when one isn't.
 pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), AgentError> {
-    let state = inner.serving.paths.as_ref().map(|paths| paths.root.clone());
     let open: Vec<PathBuf> = inner
         .host
         .session
@@ -94,7 +93,7 @@ pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), Ag
         .iter()
         .map(PathBuf::as_path)
         .chain(named.iter().copied())
-        .any(|path| !is_a_tests_path(path, state.as_deref()))
+        .any(|path| !is_a_tests_path(path))
     {
         return Err(bad(
             "This QA verb acts as the person only on a test's own file, in the quiet run's state folder or a temp folder, and one open or named isn't.",

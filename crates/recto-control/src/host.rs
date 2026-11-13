@@ -164,8 +164,7 @@ impl SessionHost<DrawableLoader> {
     /// **`recto serve`'s host:** confined if its state folder is a test one, indexing, generating, keeping its own record and backups, all under it.
     #[must_use]
     pub fn serving(paths: &StatePaths) -> Self {
-        Self::default()
-            .confined_by(paths)
+        Self::on_state(paths, DrawableLoader)
             .with_indexing(paths)
             .with_generating(paths)
             .with_own_record(paths)
@@ -190,11 +189,13 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         }
     }
 
-    /// **Confined to its own folders if it's on a test state folder** ([`crate::quiet`]): every host made from a state folder says this.
+    /// **A host on a state folder, confined to its own folders if the folder is a test one** ([`crate::quiet`]): the one way shipping code makes a host
+    /// from a state folder, so there's no host to forget to confine (review of the branch, F7). A guard test fails any other.
     #[must_use]
-    pub fn confined_by(mut self, paths: &StatePaths) -> Self {
-        crate::quiet::confine(self.session.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner), paths);
-        self
+    pub fn on_state(paths: &StatePaths, loader: L) -> Self {
+        let mut host = Self::new(loader);
+        crate::quiet::confine(host.session.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner), paths);
+        host
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.

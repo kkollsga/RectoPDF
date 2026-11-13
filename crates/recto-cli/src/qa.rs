@@ -264,8 +264,10 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
         .get("time_limit_ms")
         .and_then(Value::as_u64)
         .map_or(DEFAULT_SCRIPT_LIMIT, Duration::from_millis);
-    let text = std::fs::read_to_string(&script).map_err(|_| failed("not_found", format!("The script {} couldn't be read.", script.display())))?;
+    // The run's folders first, and the script held to them before a byte of it is read, so a file outside them, there or not, gets the one refusal.
     let paths = quiet_paths()?;
+    recto_agent::quiet_files::check_paths(&recto_platform::run_folders::RunFolders::quiet_run(), std::slice::from_ref(&script))?;
+    let text = std::fs::read_to_string(&script).map_err(|_| failed("not_found", format!("The script {} couldn't be read.", script.display())))?;
     let started = Instant::now();
     let mut failures = Vec::new();
     let mut steps = 0;
@@ -574,16 +576,8 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
 /// `recto qa compare-budget`: a comparison of `panes` of these files against the budgets, on its own quiet runs. With one pane it opens them all and shows one, which is the same files before comparison view, and works on a build without it. Memory, idle, a sweep in the first pane (which leads the others with `--sync on`), and starts from the record with the comparison in it.
 pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
-    let files: Vec<PathBuf> = invocation
-        .fields
-        .get("files")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|file| !file.is_empty())
-        .map(PathBuf::from)
-        .collect();
+    // Split as the quiet run's check split it, so what was checked is what's opened.
+    let files = recto_control::quiet::split_files(invocation.fields.get("files").and_then(Value::as_str).unwrap_or_default());
     if files.is_empty() || files.iter().any(|file| !file.is_absolute()) {
         return Err(failed("usage", "`--files` takes whole paths, with commas between."));
     }

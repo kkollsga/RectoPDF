@@ -531,7 +531,7 @@ pub fn plan_refusal(plan: &Plan, own_bundle: Option<&Path>, release_build: bool,
     }
     // A plan on a test state folder is a quiet run's, which replaces only an app in its own folders: a development build at Full in a quiet run
     // started from the installed copy would otherwise put any build over the user's app (2026-11-13).
-    if !on_the_users_state && !recto_platform::run_folders::RunFolders::for_state(&plan.root).admits(&plan.app) {
+    if !on_the_users_state && !recto_platform::run_folders::RunFolders::quiet_run().admits(&plan.app) {
         return Some("outside_quiet_run");
     }
     None

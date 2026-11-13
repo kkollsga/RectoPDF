@@ -1621,3 +1621,96 @@ fn qa_start_runs_only_rectopdf() {
         assert!(!marker.exists(), "{} was started", program.display());
     }
 }
+
+/// A folder outside every temp folder (in `/var/tmp`, which no quiet run counts as one), with a file in it, and the name of one that isn't there.
+fn outside_folder(file: &str) -> (recto_platform::fresh::FreshDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = recto_platform::fresh::FreshDir::new_in(Path::new("/private/var/tmp"), "recto-cli-outside-", "").unwrap();
+    let there = dir.path().join(file);
+    std::fs::write(&there, pages(&[Page::new(text_lines(&["the user's own"]))])).unwrap();
+    let missing = dir.path().join(format!("missing-{file}"));
+    (dir, there, missing)
+}
+
+/// `recto` with `FILE` in `args` as this file: its refusal as it can be compared, its code, words and exit code, with the path asked about taken out.
+fn refusal_of(state: &State, args: &[&str], file: &Path, env: &[(&str, &std::ffi::OsStr)]) -> (Value, i32) {
+    let mut command = state.command();
+    let named = file.to_str().unwrap();
+    command
+        .args(args.iter().map(|arg| if *arg == "FILE" { named } else { arg }))
+        .arg("--json")
+        .stderr(std::process::Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).replace(file.to_str().unwrap(), "FILE");
+    let name = file.file_name().unwrap().to_str().unwrap();
+    let value: Value = serde_json::from_str(text.replace(name, "FILE").trim()).unwrap_or_else(|_| panic!("not JSON from {args:?}: {text}"));
+    (value["error"].clone(), output.status.code().unwrap())
+}
+
+/// Failure (review of the branch, F2): `recto`'s own commands in its process skip the quiet run's check when the state folder can't be worked out, and
+/// `qa run` reads its script before it knows its run's folders, so with no state folder or a refused one the answers say whether a file outside exists
+/// and can be read. With a state folder that's refused (the real home), with a test one, and with none, a file outside that's there and one that isn't
+/// get the same refusal, and nothing is run.
+#[test]
+fn a_file_outside_gets_one_answer_whether_its_there_or_not() {
+    let state = State::new();
+    let (_dir, there, missing) = outside_folder("script.qa");
+    let home = recto_platform::local::real_home().unwrap();
+    for (what, env) in [
+        ("a refused state folder", vec![(recto_control::state::STATE_ENV, home.as_os_str())]),
+        ("a test state folder", vec![]),
+    ] {
+        for args in [&["qa", "run", "FILE"][..], &["local", "FILE", "text"][..]] {
+            let (said_there, code_there) = refusal_of(&state, args, &there, &env);
+            let (said_missing, code_missing) = refusal_of(&state, args, &missing, &env);
+            assert!(said_there.is_object(), "{what}, {args:?}: refused");
+            assert_eq!(
+                (said_there, code_there),
+                (said_missing, code_missing),
+                "{what}, {args:?}: the answer says whether it's there"
+            );
+        }
+    }
+    // With no state folder named, `qa run` still starts a quiet run of its own, so its script is held to that run's folders.
+    let mut plain = std::process::Command::new(common::bin());
+    plain.env_remove(recto_control::state::STATE_ENV).stdin(std::process::Stdio::null());
+    for script in [&there, &missing] {
+        let output = plain.args(["qa", "run"]).arg(script).arg("--json").output().unwrap();
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["error"]["code"], "outside_quiet_run", "{reply}");
+        plain = std::process::Command::new(common::bin());
+        plain.env_remove(recto_control::state::STATE_ENV).stdin(std::process::Stdio::null());
+    }
+}
+
+/// Failure (review of the branch, F6): `skill install --target claude-code` on a test state folder writes wherever `HOME` points, unless that's the real
+/// home, so a quiet run's caller has it write a skill into any folder of the user's. Refused by the run's own rule, with nothing written; a `HOME` in a
+/// temp folder still takes it.
+#[test]
+fn skill_install_on_a_test_state_writes_only_in_the_run() {
+    let state = State::new();
+    let (dir, _, _) = outside_folder("x.pdf");
+    let output = state
+        .command()
+        .args(["skill", "install", "--target", "claude-code", "--json"])
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["error"]["code"], "outside_quiet_run", "{reply}");
+    assert!(!dir.path().join(".claude").exists(), "a skill was written outside the run");
+    let home = state.root.with_extension("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let output = state
+        .command()
+        .args(["skill", "install", "--target", "claude-code", "--json"])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Past the run's rule, to what any install needs: the user at a real terminal.
+    assert_eq!(reply["error"]["code"], "needs_terminal", "{reply}");
+    std::fs::remove_dir_all(&home).unwrap();
+}

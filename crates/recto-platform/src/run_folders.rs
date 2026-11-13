@@ -7,8 +7,17 @@
 //! Only the mechanism is here, so the session, the executor and the installer can all ask it. Which sessions are confined, and the refusal's words, are
 //! `recto-control`'s `quiet` and `recto-agent`'s `quiet_files`.
 //!
-//! **What this can't see:** a folder swapped for a link between the check and the use. Only a process that can make links can do that, and such a process
-//! can read the file itself; nothing a session does makes a link.
+//! **What this can't see,** said in SPEC.md too:
+//! - **A folder swapped for a link between the check and the use.** A session asks the rule again wherever it hands a tab's path out for a read or a
+//!   write, and an open's first read goes by the path the rule found ([`RunFolders::inside`]), so what's left is the instant between a check and the
+//!   read or write it allows.
+//! - **A hard link.** A hard link in a temp folder to a file elsewhere is that file under a temp folder's name, and no rule by path can tell it from a
+//!   file of the run's.
+//! - **What's in the temp folders already.** They're shared: a quiet run at Full can read and overwrite anything in `/tmp` and in this user's own temp
+//!   folder, another app's files there included.
+//!
+//! Only a process that can make links in those folders can do the first two, and such a process runs as the user and can read the file itself; nothing a
+//! session does makes a link.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -19,11 +28,11 @@ pub struct RunFolders {
 }
 
 impl RunFolders {
-    /// A quiet run's: the [`temp_folders`], and its state folder only where that is inside them already. A state folder elsewhere admits nothing of its
-    /// own: `RECTO_STATE_DIR=~/Documents` names a private folder, which would otherwise admit everything in it (coordinator, 2026-11-13). The app's own
-    /// files under a state folder are named by the app, never by a command, so they don't need it.
+    /// A quiet run's, whatever its state folder: the [`temp_folders`], so its state folder is in them only where it is inside them already. A state
+    /// folder elsewhere admits nothing of its own: `RECTO_STATE_DIR=~/Documents` names a private folder, which would otherwise admit everything in it
+    /// (coordinator, 2026-11-13). The app's own files under a state folder are named by the app, never by a command, so they don't need it.
     #[must_use]
-    pub fn for_state(_state: &Path) -> Self {
+    pub fn quiet_run() -> Self {
         Self { roots: temp_folders() }
     }
 
@@ -39,7 +48,13 @@ impl RunFolders {
     /// process's own folder, as a file call would take it.
     #[must_use]
     pub fn admits(&self, path: &Path) -> bool {
-        resolved(path).is_some_and(|real| self.roots.iter().any(|root| real.starts_with(root)))
+        self.inside(path).is_some()
+    }
+
+    /// Where this path really leads, if that's in one of the folders: the path a read should go by, so it goes where the rule looked.
+    #[must_use]
+    pub fn inside(&self, path: &Path) -> Option<PathBuf> {
+        resolved(path).filter(|real| self.roots.iter().any(|root| real.starts_with(root)))
     }
 
     /// The folders, resolved.
@@ -156,7 +171,7 @@ mod tests {
         assert!(folders.contains(&PathBuf::from("/private/tmp")), "{folders:?}");
         // Whatever this process's environment says, the list is the same.
         assert_eq!(folders.len(), 2);
-        let run = RunFolders::for_state(Path::new("/private/tmp/recto-no-such-state"));
+        let run = RunFolders::quiet_run();
         assert!(run.admits(&system.join("x.pdf")));
         assert!(!run.admits(Path::new("/Users/Shared/x.pdf")));
         assert!(!run.admits(Path::new("/Applications/RectoPDF.app")));
@@ -170,7 +185,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let outside = crate::fresh::FreshDir::new_in(&target, "recto-state-outside-", "").unwrap();
         std::fs::write(outside.path().join("report.pdf"), b"x").unwrap();
-        let folders = RunFolders::for_state(outside.path());
+        let folders = RunFolders::quiet_run();
         assert!(
             !folders.roots().iter().any(|root| outside.path().canonicalize().unwrap().starts_with(root)),
             "the checkout's target is outside temp"
@@ -178,6 +193,6 @@ mod tests {
         assert!(!folders.admits(&outside.path().join("report.pdf")));
         assert!(!folders.admits(&outside.path().join("new.png")));
         let dir = temp();
-        assert!(RunFolders::for_state(&dir.join("state")).admits(&dir.join("state/out.pdf")));
+        assert!(RunFolders::quiet_run().admits(&dir.join("state/out.pdf")));
     }
 }

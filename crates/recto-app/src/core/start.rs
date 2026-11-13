@@ -83,12 +83,9 @@ impl Inner {
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core), Arc::clone(&clock)));
         let session = if indexing {
-            SessionHost::new(DrawableLoader)
-                .confined_by(&paths)
-                .with_indexing(&paths)
-                .with_generating(&paths)
+            SessionHost::on_state(&paths, DrawableLoader).with_indexing(&paths).with_generating(&paths)
         } else {
-            SessionHost::new(DrawableLoader).confined_by(&paths)
+            SessionHost::on_state(&paths, DrawableLoader)
         };
         let host = Arc::new(AppHost {
             engine: engine.clone(),

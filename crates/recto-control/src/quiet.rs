@@ -19,24 +19,34 @@ pub fn temp_folders() -> Vec<PathBuf> {
     run_folders::temp_folders()
 }
 
-/// Whether a file is a quiet run's on this state folder: in the [`temp_folders`], wherever its links really lead. The state folder adds nothing of its own unless it is in them too, so naming a private folder of the user's as one gives a run none of its files.
+/// Whether a file is a quiet run's: in the [`temp_folders`], wherever its links really lead. A state folder adds nothing of its own unless it is in them
+/// too, so naming a private folder of the user's as one gives a run none of its files.
 #[must_use]
-pub fn is_a_quiet_runs_file(path: &Path, state: &Path) -> bool {
-    RunFolders::for_state(state).admits(path)
+pub fn is_a_quiet_runs_file(path: &Path) -> bool {
+    RunFolders::quiet_run().admits(path)
 }
 
 /// **The folders a session on these paths is confined to,** or `None` for the user's own state folder, whose sessions aren't.
 #[must_use]
 pub fn folders_for(paths: &StatePaths) -> Option<RunFolders> {
-    paths.overridden.then(|| RunFolders::for_state(&paths.root))
+    paths.overridden.then(RunFolders::quiet_run)
 }
 
-/// **Confines a session made on these paths,** if they're a test state folder's. What makes a session from a state folder calls this, or
-/// [`crate::host::SessionHost::confined_by`]; a guard test holds every production constructor to it.
+/// **Confines a session made on these paths,** if they're a test state folder's: [`session_on`] and [`crate::host::SessionHost::on_state`], and
+/// `local::run_here` for a session it's handed.
 pub fn confine<L: DocLoader>(session: &mut Session<L>, paths: &StatePaths) {
     if let Some(folders) = folders_for(paths) {
         session.confinement().confine(folders);
     }
+}
+
+/// **A session on a state folder, confined if the folder is a test one:** the one way shipping code makes a [`Session`] from a state folder, so there's no
+/// session to forget to confine (review of the branch, F7). A guard test fails any other.
+#[must_use]
+pub fn session_on<L: DocLoader>(paths: &StatePaths, loader: L) -> Session<L> {
+    let mut session = Session::new(loader);
+    confine(&mut session, paths);
+    session
 }
 
 /// The one file argument of `recto`'s own commands that isn't a document or an output: the app a QA command starts, an executable, held instead to being a
@@ -46,18 +56,20 @@ pub const THE_APP_TO_START: &str = "app";
 /// Arguments that hold several files in one value, with commas between: each is held to the rule.
 pub const FILES_WITH_COMMAS: &[(&str, &str)] = &[("qa_compare_budget", "files")];
 
-/// **`recto`'s own commands, run in its process** (`local`, `budget`, `skill install`, and QA's `run`, `budget`, `compare-budget` and `select-budget`):
-/// every file one names, by the table, in the folders, if the state folder is a test one. The same rule and refusal as a session's. A QA script is held
-/// too: it's read here, and a file that isn't the run's own is nobody's script.
-///
-/// # Errors
-///
-/// [`recto_agent::quiet_files::outside_the_run`] for the first file outside.
-pub fn check_here(paths: &StatePaths, invocation: &Invocation) -> Result<(), AgentError> {
+/// **A list of files with commas between**, split the one way: what's checked is what's opened (`qa compare-budget`'s list).
+#[must_use]
+pub fn split_files(list: &str) -> Vec<PathBuf> {
+    list.split(',').map(str::trim).filter(|file| !file.is_empty()).map(PathBuf::from).collect()
+}
+
+/// **`recto`'s own commands that start a quiet run of their own** (`StatePaths::for_quiet_run`, whatever state folder this process was given): what they
+/// name is a quiet run's, so it's held to a quiet run's folders always, the script `qa run` reads in this process included.
+pub const STARTS_A_QUIET_RUN: &[&str] = &["qa_run", "qa_budget", "qa_compare_budget", "qa_select_budget"];
+
+/// Every file one of `recto`'s own commands names: its row's files ([`quiet_files::files_in`]), and each in a list with commas, but not the app to start.
+#[must_use]
+pub fn named_here(invocation: &Invocation) -> Vec<PathBuf> {
     let tag = invocation.spec.tag;
-    let Some(folders) = folders_for(paths) else {
-        return Ok(());
-    };
     let mut fields = invocation.fields.clone();
     fields.remove(THE_APP_TO_START);
     let mut named = quiet_files::files_in(tag, &fields);
@@ -65,10 +77,34 @@ pub fn check_here(paths: &StatePaths, invocation: &Invocation) -> Result<(), Age
         if *with_commas == tag
             && let Some(list) = fields.get(*key).and_then(serde_json::Value::as_str)
         {
-            named.extend(list.split(',').map(str::trim).filter(|file| !file.is_empty()).map(PathBuf::from));
+            named.extend(split_files(list));
         }
     }
-    quiet_files::check_paths(&folders, &named)
+    named
+}
+
+/// **`recto`'s own commands, run in its process** (`local`, `budget`, `skill install`, and QA's `run`, `budget`, `compare-budget` and `select-budget`):
+/// every file one names, by the table, in the folders, if the state folder is a test one, or always for what starts a quiet run of its own. The same rule
+/// and refusal as a session's. Asked before anything is read, and when the state folder can't be worked out a command that names a file is refused with
+/// why, so neither route says whether a file outside is there (review of the branch, F2).
+///
+/// # Errors
+///
+/// [`recto_agent::quiet_files::outside_the_run`] for the first file outside, or the state folder's own refusal.
+pub fn check_here(paths: Result<StatePaths, AgentError>, invocation: &Invocation) -> Result<(), AgentError> {
+    let named = named_here(invocation);
+    if named.is_empty() {
+        return Ok(());
+    }
+    let folders = if STARTS_A_QUIET_RUN.contains(&invocation.spec.tag) {
+        Some(RunFolders::quiet_run())
+    } else {
+        folders_for(&paths?)
+    };
+    match folders {
+        Some(folders) => quiet_files::check_paths(&folders, &named),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -86,8 +122,8 @@ mod tests {
         assert!(folders.admits(&dir.join("state/out.pdf")));
         assert!(folders.admits(&dir.join("beside.pdf")), "the temp folder it's in");
         assert!(!folders.admits(Path::new("/Users/Shared/report.pdf")));
-        assert!(is_a_quiet_runs_file(&dir.join("x.pdf"), &paths.root));
-        assert!(!is_a_quiet_runs_file(Path::new("/Applications/RectoPDF.app/Contents/Info.plist"), &paths.root));
+        assert!(is_a_quiet_runs_file(&dir.join("x.pdf")));
+        assert!(!is_a_quiet_runs_file(Path::new("/Applications/RectoPDF.app/Contents/Info.plist")));
         assert_eq!(temp_folders(), run_folders::temp_folders());
     }
 
@@ -178,14 +214,14 @@ mod tests {
                 help: false,
                 rest: Vec::new(),
             };
-            let refused = check_here(&paths, &outside_line).expect_err(spec.tag);
+            let refused = check_here(Ok(paths.clone()), &outside_line).expect_err(spec.tag);
             assert_eq!(refused.code, "outside_quiet_run", "{}", spec.tag);
             for value in fields.values_mut() {
                 *value = serde_json::json!(dir.join("mine.pdf"));
             }
             assert!(
                 check_here(
-                    &paths,
+                    Ok(paths.clone()),
                     &Invocation {
                         spec,
                         fields,
@@ -224,7 +260,7 @@ mod tests {
         fields.insert("file".into(), serde_json::json!(secret));
         assert!(
             check_here(
-                &real,
+                Ok(real),
                 &Invocation {
                     spec,
                     fields,
@@ -237,51 +273,49 @@ mod tests {
         );
     }
 
-    /// Failure: a place in the shipping code that makes a session or a host from a state folder doesn't confine it, so a host added later on a test state
-    /// folder reaches the user's files at the Full a quiet run leaves. Every `Session::new` and `SessionHost::new`/`default` outside tests in the crates
-    /// that make them from a state folder is followed, within a few lines, by what confines it.
+    /// Failure: a place in the shipping code makes a session or a host itself instead of through [`session_on`] or `SessionHost::on_state`, which confine
+    /// one on a test state folder by construction, so a host added later on such a folder reaches the user's files at the Full a quiet run leaves. In the
+    /// crates that make them, no shipping line outside those two makes one at all (review of the branch, F7: the guard before this one went by what came
+    /// within four lines after, and skipped folders). Test code, after its `#[cfg(test)]` or in a test file, makes its own.
     #[test]
-    fn every_session_made_from_a_state_folder_is_confined() {
+    fn no_shipping_code_makes_a_session_but_the_confining_constructors() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let mut found = 0;
         let mut files: Vec<PathBuf> = ["recto-cli/src", "recto-app/src", "recto-ffi/src", "recto-control/src"]
             .iter()
             .map(|dir| root.join(dir))
             .collect();
+        let mut makers = Vec::new();
+        let mut scanned = 0;
         while let Some(path) = files.pop() {
             if path.is_dir() {
-                // The kit's own fakes, and test files, make sessions of their own.
-                if !path.ends_with("testkit") && !path.ends_with("tests") {
-                    files.extend(std::fs::read_dir(&path).unwrap().filter_map(Result::ok).map(|entry| entry.path()));
-                }
+                files.extend(std::fs::read_dir(&path).unwrap().filter_map(Result::ok).map(|entry| entry.path()));
                 continue;
             }
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "tests.rs" {
+            let test_file = name.ends_with("_tests.rs")
+                || name == "tests.rs"
+                || path.components().any(|part| matches!(part.as_os_str().to_str(), Some("tests" | "testkit")));
+            if !name.ends_with(".rs") || test_file {
                 continue;
             }
+            scanned += 1;
             let text = std::fs::read_to_string(&path).unwrap();
             let shipping = text.split("#[cfg(test)]").next().unwrap_or_default();
-            let lines: Vec<&str> = shipping.lines().collect();
-            for (at, line) in lines.iter().enumerate() {
-                let makes = ["Session::new(", "SessionHost::new(", "SessionHost::default()"]
+            for (at, line) in shipping.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if ["Session::new(", "SessionHost::new(", "SessionHost::default()"]
                     .iter()
-                    .any(|made| line.contains(made));
-                // The host's own constructors, which the rest go through.
-                let own = path.ends_with("recto-control/src/host.rs");
-                if !makes || own || line.trim_start().starts_with("//") {
-                    continue;
+                    .any(|made| code.contains(made))
+                {
+                    makers.push(format!("{}:{}", path.strip_prefix(&root).unwrap().display(), at + 1));
                 }
-                found += 1;
-                let next = lines[at..lines.len().min(at + 4)].join("\n");
-                assert!(
-                    ["confined_by(", "quiet::confine(", "run_here("].iter().any(|confines| next.contains(confines)),
-                    "{}:{} makes a session that isn't confined: {line}",
-                    path.display(),
-                    at + 1
-                );
             }
         }
-        assert!(found >= 7, "the scan found the shipping constructors: {found}");
+        assert!(scanned > 50, "the scan found the shipping files: {scanned}");
+        // The constructors themselves: `SessionHost::new`, `on_state` calling it, `Default` for the host, and `session_on`.
+        let own = |place: &String| place.starts_with("recto-control/src/host.rs:") || place.starts_with("recto-control/src/quiet.rs:");
+        let others: Vec<&String> = makers.iter().filter(|place| !own(place)).collect();
+        assert!(others.is_empty(), "shipping code that makes a session or host itself: {others:?}");
+        assert!(makers.iter().any(own), "the scan found the constructors: {makers:?}");
     }
 }

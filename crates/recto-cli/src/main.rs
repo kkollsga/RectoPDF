@@ -159,7 +159,7 @@ fn through_session(invocation: &Invocation) -> i32 {
             }
             (Command::Edit(Edit::Save(_)) | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 // These always refuse. Saying why is more use than saying nothing's running.
-                let mut session = Session::new(DrawableLoader);
+                let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
                 local::run_here(&mut session, &paths, &mut ActivityLog::new(&paths), &command).map(Answer::Here)
             }
             (_, Err(error)) => Err(error),
@@ -226,10 +226,9 @@ fn stream(mut client: Client, line: &str, wait: Duration, json_wanted: bool) -> 
 fn here(invocation: &Invocation) -> i32 {
     let tag = invocation.spec.tag;
     let json_wanted = invocation.json;
-    // On a test state folder, what this process opens or writes is in the run's own folders, as a session's is.
-    if let Ok(paths) = paths()
-        && let Err(error) = recto_control::quiet::check_here(&paths, invocation)
-    {
+    // On a test state folder, what this process opens or writes is in the run's own folders, as a session's is; and with a state folder that can't be
+    // worked out, a command naming a file goes no further, so nothing is read before it's known whose run this is.
+    if let Err(error) = recto_control::quiet::check_here(paths(), invocation) {
         return finish(tag, json_wanted, &Err(error));
     }
     let result = match tag {
@@ -313,14 +312,9 @@ fn skill_install(invocation: &Invocation) -> Result<Value, AgentError> {
             );
         }
     };
-    // A QA run writes nothing of the user's own, however it's been pointed.
-    if paths()?.overridden && recto_control::state::is_in_real_home(&folder) {
-        return Err(AgentError::new(
-            "state_refused",
-            "This run uses a test state folder, so it won't write into the real home.",
-            exit::PERMISSION,
-        )
-        .then("Use `--path` with a temp folder, or set `HOME` to one."));
+    // A run on a test state folder writes only in its own folders, by the same rule as its sessions, wherever `HOME` points (review of the branch, F6).
+    if let Some(folders) = recto_control::quiet::folders_for(&paths()?) {
+        recto_agent::quiet_files::check_paths(&folders, std::slice::from_ref(&folder))?;
     }
     let flag = |key: &str| invocation.fields.get(key).and_then(Value::as_bool).unwrap_or(false);
     terminal::confirm_skill_install(&folder, flag("replace"))?;
@@ -450,7 +444,7 @@ fn run_local(invocation: &Invocation) -> i32 {
         let paths = paths()?;
         let mut log = ActivityLog::new(&paths);
         let command = inner.command()?;
-        let mut session = Session::new(DrawableLoader);
+        let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
         local::run_here(
             &mut session,
             &paths,
@@ -469,8 +463,7 @@ fn session() -> i32 {
         Err(error) => return finish("session", true, &Err(error)),
     };
     let mut log = ActivityLog::new(&paths);
-    let mut session = Session::new(DrawableLoader);
-    recto_control::quiet::confine(&mut session, &paths);
+    let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -554,8 +547,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
             return Err(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED));
         }
         let corpus = recto_agent::index::ReadOnlyCorpus(root.clone());
-        let mut session = Session::new(DrawableLoader);
-        recto_control::quiet::confine(&mut session, &paths);
+        let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
         recto_agent::run(
             &mut session,
             Level::Full,
@@ -619,8 +611,7 @@ fn make_link(file: &Path, dir: &Path, index: u64) -> Result<PathBuf, AgentError>
 }
 
 fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -> Result<Value, AgentError> {
-    let mut session = Session::new(DrawableLoader);
-    recto_control::quiet::confine(&mut session, paths);
+    let mut session = recto_control::quiet::session_on(paths, DrawableLoader);
     let mut log = ActivityLog::new(paths);
     let start_footprint = recto_platform::footprint_bytes();
     let start_handles = recto_platform::open_handle_count();
