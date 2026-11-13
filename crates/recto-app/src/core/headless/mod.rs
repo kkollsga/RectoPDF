@@ -16,3 +16,4 @@ mod recent;
 mod selection;
 mod sidebar;
 mod update;
+mod view;

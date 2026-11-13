@@ -141,6 +141,8 @@ impl Inner {
                 waiting_server: Mutex::new(server),
                 stopper: Mutex::new(stopper),
                 announcer: Mutex::new(announcer),
+                #[cfg(any(test, feature = "testkit"))]
+                heard: Mutex::new(None),
             },
             window: WindowParts::new(watchdog),
             tools: Tools::new(&save_step),

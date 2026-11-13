@@ -2,15 +2,18 @@
 
 use super::*;
 
-/// A change to how pages are shown, as `recto view` makes it.
+/// A change to how pages are shown, as `recto view` makes it: announced only if something changed (R2.3, accident A2), as `view`'s is.
 pub fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut ViewSettings)) {
-    let view = inner.host.session.with_session(|session| {
-        let mut view = session.view();
+    let (was, view) = inner.host.session.with_session(|session| {
+        let was = session.view();
+        let mut view = was;
         change(&mut view);
         session.set_view(view);
-        view
+        (was, view)
     });
-    events.push(recto_agent::view_changed(view));
+    if view != was {
+        events.push(recto_agent::view_changed(view));
+    }
 }
 
 /// What a ⌘-click on a tab does, once whatever it needs from disk is here. Too many panes is said by the page, and goes by itself.

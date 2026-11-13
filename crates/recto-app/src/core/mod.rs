@@ -219,6 +219,10 @@ pub struct Serving {
     pub paths: Option<StatePaths>,
     /// Whether the socket is served at all. The app's always is; a test's core has none unless it asks, so nothing binds it later either.
     pub(crate) socket: bool,
+    /// What the session thread announced, for a test that's asked to hear it ([`crate::testkit::headless::HeadlessApp::hear_events`]): a test's core has no
+    /// socket, and its watchers are who hear a person's events. Nothing's kept until a test asks.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) heard: Mutex<Option<Vec<Event>>>,
 }
 
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the

@@ -326,6 +326,10 @@ pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads
             marker.finished();
         }
     }
+    #[cfg(any(test, feature = "testkit"))]
+    if let Some(heard) = lock(&inner.serving.heard).as_mut() {
+        heard.extend(events.iter().cloned());
+    }
     if !events.is_empty()
         && let Some(announcer) = lock(&inner.serving.announcer).as_ref()
     {
