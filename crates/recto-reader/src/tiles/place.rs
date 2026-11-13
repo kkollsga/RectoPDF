@@ -53,7 +53,7 @@ impl Place {
         let page = match self.last_view_page {
             Some(was) if doc.layout.same_row(was, page) => was,
             // The host arrived where a change of layout sent it, back to the place: the page the place was kept on, if it's in the row. A round trip through a view too small to reach the place, where the last page was taken for the reader's, otherwise lands on the row's left page (side-by-side review, finding 4).
-            _ if self.arrived && doc.layout.same_row(doc.anchor.0, page) => doc.anchor.0,
+            _ if self.arrived && doc.layout.same_row(doc.place.anchor.0, page) => doc.place.anchor.0,
             _ => page,
         };
         if let Some(jump) = self.jump {
@@ -69,15 +69,15 @@ impl Place {
             return;
         }
         // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
-        let moved = !self.arrived && doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
+        let moved = !self.arrived && doc.place.exact_y.is_none_or(|(y, _)| y != viewport.y);
         if moved {
             // The host puts the view on its own pixels, so a view this near where the place is is on it, said the host's way. Taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them.
-            if (doc.layout.anchor_y(doc.anchor) - viewport.y).abs() >= HOST_ROUNDING {
-                doc.anchor = doc.layout.anchor_for(viewport.y, page);
+            if (doc.layout.anchor_y(doc.place.anchor) - viewport.y).abs() >= HOST_ROUNDING {
+                doc.place.anchor = doc.layout.anchor_for(viewport.y, page);
             }
-            doc.exact_y = None;
+            doc.place.exact_y = None;
         }
-        doc.scroll_x = viewport.x;
+        doc.place.scroll_x = viewport.x;
         if self.last_view_page != Some(page) {
             self.last_view_page = Some(page);
             self.moved_page = Some(page);
@@ -121,7 +121,7 @@ impl Reader {
             return;
         };
         if doc.layout.set_margins(left, right) {
-            doc.exact_y = None;
+            doc.place.exact_y = None;
             self.lay_out();
             self.refresh(MAX_ATTACH_PER_TURN);
         }
@@ -129,7 +129,7 @@ impl Reader {
 
     /// Where the reader is in the tab showing: a page and how far down it, as a change of layout keeps it.
     pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        self.doc().map(|doc| doc.anchor)
+        self.doc().map(|doc| doc.place.anchor)
     }
 
     /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
@@ -138,9 +138,9 @@ impl Reader {
         let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
         let page = page.min(doc.layout.count().saturating_sub(1));
         let within = if within.is_finite() { within.clamp(0.0, 1.0) } else { 0.0 };
-        doc.anchor = (page, within);
+        doc.place.anchor = (page, within);
         let y = doc.layout.anchor_y((page, within));
-        doc.exact_y = Some((y, doc.layout.document_height()));
+        doc.place.exact_y = Some((y, doc.layout.document_height()));
         let seq = self.place.next_seq;
         self.place.next_seq += 1;
         self.place.jump = Some(seq);
@@ -163,7 +163,10 @@ impl Reader {
                     let page = self.place.last_view_page?;
                     // Not yet arrived where it's been sent: what the view says is about somewhere else.
                     let (x, y) = if self.place.jump.is_some() {
-                        (doc.scroll_x, doc.exact_y.map_or_else(|| doc.layout.anchor_y(doc.anchor), |(y, _)| y))
+                        (
+                            doc.place.scroll_x,
+                            doc.place.exact_y.map_or_else(|| doc.layout.anchor_y(doc.place.anchor), |(y, _)| y),
+                        )
                     } else {
                         (self.viewport.x, self.viewport.y)
                     };
@@ -171,26 +174,26 @@ impl Reader {
                         doc.tab,
                         SavedPlace {
                             page,
-                            anchor: doc.anchor,
+                            anchor: doc.place.anchor,
                             x,
                             y,
                             document_height: doc.layout.document_height(),
-                            magnification: doc.magnification,
+                            magnification: doc.place.magnification,
                             page_size,
                         },
                     ))
                 } else {
-                    let (page, anchor) = doc.left_at?;
-                    let y = doc.exact_y.map_or_else(|| doc.layout.anchor_y(anchor), |(y, _)| y);
+                    let (page, anchor) = doc.place.left_at?;
+                    let y = doc.place.exact_y.map_or_else(|| doc.layout.anchor_y(anchor), |(y, _)| y);
                     Some((
                         doc.tab,
                         SavedPlace {
                             page,
                             anchor,
-                            x: doc.scroll_x,
+                            x: doc.place.scroll_x,
                             y,
                             document_height: doc.layout.document_height(),
-                            magnification: doc.magnification,
+                            magnification: doc.place.magnification,
                             page_size,
                         },
                     ))
@@ -213,7 +216,7 @@ impl Reader {
             return;
         }
         // The height the view was at is about the old layout. Where it is in its page is what holds.
-        doc.exact_y = None;
+        doc.place.exact_y = None;
         self.lay_out();
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -231,10 +234,10 @@ impl Reader {
             return;
         };
         let page = page.min(doc.layout.count().saturating_sub(1));
-        doc.anchor = (page, 0.0);
+        doc.place.anchor = (page, 0.0);
         let y = doc.layout.jump_y(page);
         // To the pixel while the layout holds: the first page's jump goes above it, to the margin, which its anchor can't say.
-        doc.exact_y = Some((y, doc.layout.document_height()));
+        doc.place.exact_y = Some((y, doc.layout.document_height()));
         let seq = self.place.next_seq;
         self.place.next_seq += 1;
         self.place.jump = Some(seq);
@@ -244,9 +247,9 @@ impl Reader {
 
     /// How far down the tab's place is: to the pixel if the layout's what it was, and otherwise as far down its page.
     pub(super) fn place_y(doc: &DocView) -> f64 {
-        match doc.exact_y {
+        match doc.place.exact_y {
             Some((y, height)) if height == doc.layout.document_height() => y,
-            _ => doc.layout.anchor_y(doc.anchor),
+            _ => doc.layout.anchor_y(doc.place.anchor),
         }
     }
 
@@ -270,9 +273,9 @@ impl Reader {
         doc.layout.set_frame(self.viewport.frame_width);
         let (top_room, bottom_room) = doc.layout.end_room();
         let y = Self::place_y(doc);
-        doc.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
+        doc.place.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
         self.host.ops.push_back(Op::Document {
-            width: doc.width_shown,
+            width: doc.place.width_shown,
             height: doc.layout.document_height(),
             top_room,
             bottom_room,
@@ -292,10 +295,10 @@ impl Reader {
             return;
         };
         let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);
-        if (width - doc.width_shown).abs() < 0.5 {
+        if (width - doc.place.width_shown).abs() < 0.5 {
             return;
         }
-        doc.width_shown = width;
+        doc.place.width_shown = width;
         let (top_room, bottom_room) = doc.layout.end_room();
         self.host.ops.push_back(Op::Document {
             width,

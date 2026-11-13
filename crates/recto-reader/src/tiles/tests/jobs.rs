@@ -151,7 +151,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
     let position = traits.position;
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
     reader.finish(traits, Outcome::Heavy(true));
-    assert!(!reader.doc().unwrap().heavy.contains_key(&position), "that was the old page's");
+    assert!(!reader.doc().unwrap().drawing.heavy.contains_key(&position), "that was the old page's");
 
     let mut reader = reader_on(3);
     let draw = loop {

@@ -72,7 +72,14 @@ pub(super) struct TileCache {
     pub(super) from_sleep: HashSet<u64>,
     /// How many page views share the caps on what's kept: one, or each pane of a comparison, so several panes keep no more between them than one view does.
     pub(super) share: usize,
+    /// Lists of a page's tiles on its layer, emptied when the page went off the view and kept for the next page that comes on, so scrolling a page in or out makes no list. At most [`SPARE_LISTS`], each of at most [`SPARE_LIST_ROOM`].
+    pub(super) spare: Vec<Vec<u64>>,
 }
+
+/// Emptied lists of a page's tiles kept for pages to come: about as many pages as come and go in a scroll step, side by side and zoomed out.
+pub(super) const SPARE_LISTS: usize = 8;
+/// The most tiles' room a kept list may have; a larger one goes.
+pub(super) const SPARE_LIST_ROOM: usize = 64;
 
 impl TileCache {
     pub(super) fn new() -> Self {
@@ -84,7 +91,28 @@ impl TileCache {
             clock: 0,
             from_sleep: HashSet::new(),
             share: 1,
+            spare: Vec::new(),
         }
+    }
+
+    /// The list of a page's tiles on its layer, a kept one if it had none.
+    pub(super) fn attached_list(&mut self, page: u32) -> &mut Vec<u64> {
+        let spare = &mut self.spare;
+        self.attached.entry(page).or_insert_with(|| spare.pop().unwrap_or_default())
+    }
+
+    /// A page's list, off its layer, kept for the next page if there's room for it.
+    pub(super) fn give_back_list(&mut self, mut list: Vec<u64>) {
+        if self.spare.len() < SPARE_LISTS && list.capacity() > 0 && list.capacity() <= SPARE_LIST_ROOM {
+            list.clear();
+            self.spare.push(list);
+        }
+    }
+
+    /// The bytes the kept lists hold.
+    #[cfg(test)]
+    pub(super) fn spare_bytes(&self) -> usize {
+        self.spare.capacity() * size_of::<Vec<u64>>() + self.spare.iter().map(|list| list.capacity() * size_of::<u64>()).sum::<usize>()
     }
 
     /// The tiles on a page's layer.
@@ -202,7 +230,7 @@ impl Reader {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
         if critical {
             for doc in self.docs.values_mut() {
-                doc.left_pictures = None;
+                doc.drawing.left_pictures = None;
             }
         }
         let ids: Vec<u64> = self
@@ -272,7 +300,7 @@ impl Reader {
         entry.last_used = clock;
         let (page, rect, scale, crop, rgb) = (entry.page, entry.rect, f64::from(entry.scale), entry.crop, entry.rgb);
         let surface = entry.surface.as_ref().map_or(0, PixelSurface::retained_for_host);
-        self.cache.attached.entry(page).or_default().push(id);
+        self.cache.attached_list(page).push(id);
         // A tile the colour of the paper needs nothing drawn at all.
         if surface == 0 && rgb.is_none_or(|rgb| rgb == self.paper.rgb()) {
             return true;
@@ -296,8 +324,10 @@ impl Reader {
     pub(super) fn detach(&mut self, id: u64, page: u32) {
         if let Some(ids) = self.cache.attached.get_mut(&page) {
             ids.retain(|other| *other != id);
-            if ids.is_empty() {
-                self.cache.attached.remove(&page);
+            if ids.is_empty()
+                && let Some(list) = self.cache.attached.remove(&page)
+            {
+                self.cache.give_back_list(list);
             }
         }
         if let Some(entry) = self.cache.entries.get_mut(&id) {
@@ -368,7 +398,7 @@ impl Reader {
         }
         self.cache.entries.insert(id, entry);
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.note_seen(page);
+            doc.drawing.note_seen(page);
         }
         id
     }
