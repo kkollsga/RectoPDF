@@ -3,14 +3,9 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// The tab's notice, if there is one.
-    pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
-        self.tab(id)?.file.notice.as_deref()
-    }
-
     /// Words for what's wrong with a tab's file, if anything is.
     pub fn tab_notice_message(&self, id: TabId) -> Option<&'static str> {
-        tab_notice_words(self.tab(id)?, self.lists.has_list(id))
+        tab_notice_words(self.tabs.tab(id)?, self.lists.has_list(id))
     }
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.

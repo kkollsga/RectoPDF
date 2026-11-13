@@ -78,7 +78,7 @@ fn a_confined_tab_doesnt_follow_its_file_out() {
     };
     s.apply_file_status(tab, FileStatus::Moved(dir.join("outside/a.pdf"), now));
     assert_eq!(s.path_of(tab), Some(dir.join("run/a.pdf")));
-    assert_eq!(s.tab_notice(tab).map(FileNotice::code), Some("file_missing"));
+    assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // Inside, it follows as ever.
     s.apply_file_status(tab, FileStatus::Moved(dir.join("run/moved.pdf"), now));
     assert_eq!(s.path_of(tab), Some(dir.join("run/moved.pdf")));
@@ -125,7 +125,7 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
         inode: 1,
     };
     s.apply_file_status(tab, FileStatus::Same(now));
-    assert_eq!(s.tab_notice(tab).map(FileNotice::code), Some("file_missing"));
+    assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // The tab is still the tab it was, by its name.
     assert!(s.tab_for_path(&dir.join("run/docs/a.pdf")).is_some());
     std::fs::remove_file(dir.join("run/docs")).unwrap();
@@ -189,7 +189,7 @@ fn a_replayed_history_brings_no_pages_from_outside() {
     back.confinement().confine(RunFolders::of(&[&dir.join("run")]));
     back.restore(&free.to_record(), back_from(&files)).unwrap();
     assert!(back.page_edits(tab).is_none(), "the list naming the outside file came back");
-    assert_eq!(back.tab_notice(tab).map(FileNotice::code), Some("edits_unreadable"));
+    assert_eq!(back.tabs().tab_notice(tab).map(FileNotice::code), Some("edits_unreadable"));
     assert!(
         (0..back.pages_in(tab)).all(|page| back.page_source(tab, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
         "a page comes from outside"

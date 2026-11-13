@@ -205,8 +205,8 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         let there = recto_platform::file_stamp(out).ok();
         let (own, elsewhere) = access.with(|s| {
             let id = select(s, tab)?;
-            let own = s
-                .own_stamp(id)
+            let mine = s.tabs().own_stamp(id);
+            let own = mine
                 .zip(there)
                 .is_some_and(|(mine, theirs)| mine.inode == theirs.inode && mine.device == theirs.device);
             let elsewhere = there.is_some() && s.tab_for_file(out, there).is_some_and(|other| other != id);
@@ -227,7 +227,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     }
     let to = &to;
     // The agreement gate (SPEC section 3), before the tab's held, as a look can take seconds (review round 1); asked again below, from what this kept.
-    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.is_edited(id)))?;
+    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.lists().is_edited(id)))?;
     if something && let Some(refusal) = crate::agreement::refusal_for(access, tab)? {
         return Err(refusal);
     }
@@ -287,7 +287,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let backups = support.and_then(SaveSupport::backups);
     // A Save As leaves the old file where it is, so the history needs no copy of its pages.
     let needed = if snapshot.needs_own_pages && matches!(to, SaveTo::Same) {
-        access.with(|s| s.own_pages_needed(id))
+        access.with(|s| s.lists().own_pages_needed(id))
     } else {
         Vec::new()
     };
@@ -410,7 +410,7 @@ fn answer<L: recto_session::DocLoader>(
     level: Level,
 ) -> Value {
     let mut data = crate::edit_state_json(s, id);
-    let name = s.path_of(id).map(|path| file_label(&path)).unwrap_or_default();
+    let name = s.tabs().path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
         Writer::Append => "The changes were added to the end of the file, so everything that was in it is still there.",
         Writer::Rewrite => "The file was written anew, so what was removed is gone from it.",
@@ -527,6 +527,6 @@ mod ending_tests {
         });
         session.with(|s| s.begin_save(id, true)).expect("the second save").expect("something to save");
         drop(ending);
-        assert!(session.with(|s| s.is_saving(id)), "the second save is still under way");
+        assert!(session.with(|s| s.saves().is_saving(id)), "the second save is still under way");
     }
 }

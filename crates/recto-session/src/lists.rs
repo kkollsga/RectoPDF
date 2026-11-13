@@ -2,12 +2,13 @@
 
 use crate::TabId;
 use crate::edit::{Author, PageEdits};
-use crate::record::EditsSummary;
+use crate::record::{self, EditsSummary};
 use std::collections::HashMap;
 
-/// Every tab's list of edits, wherever it is.
+/// Every tab's list of edits, in memory or gone to disk. What's public here reads a list, or says whether an agent's at Full; what puts a list in, takes one
+/// out, puts it to sleep or wakes it stays the crate's, as the journals, the saves and the tabs hold something of every list.
 #[derive(Default)]
-pub(crate) struct Lists {
+pub struct Lists {
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
     /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
@@ -20,7 +21,7 @@ pub(crate) struct Lists {
 
 impl Lists {
     /// A tab's list, if it's in memory.
-    pub(crate) fn get(&self, id: TabId) -> Option<&PageEdits> {
+    pub fn get(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
     }
 
@@ -68,12 +69,12 @@ impl Lists {
     }
 
     /// Whether a tab has unsaved changes.
-    pub(crate) fn is_edited(&self, id: TabId) -> bool {
+    pub fn is_edited(&self, id: TabId) -> bool {
         self.edits.get(&id).is_some_and(PageEdits::is_edited) || self.asleep.get(&id).is_some_and(|summary| summary.edited)
     }
 
     /// Whether saving this tab's edits writes the file anew.
-    pub(crate) fn needs_rewrite(&self, id: TabId) -> bool {
+    pub fn needs_rewrite(&self, id: TabId) -> bool {
         match self.edits.get(&id) {
             Some(list) => list.rewrites(),
             None => self.asleep.get(&id).is_some_and(|summary| summary.edited && summary.rewrites),
@@ -81,12 +82,12 @@ impl Lists {
     }
 
     /// Whether the owner's edits on this tab have been undone and can still be redone.
-    pub(crate) fn has_undone_owner_steps(&self, id: TabId) -> bool {
+    pub fn has_undone_owner_steps(&self, id: TabId) -> bool {
         self.edits.get(&id).is_some_and(PageEdits::owner_steps_undone) || self.asleep.get(&id).is_some_and(|summary| summary.owner_steps_undone)
     }
 
     /// Whether there's a step to undo and one to redo, wherever its list is.
-    pub(crate) fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
+    pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
         self.edits
             .get(&id)
             .map(|list| (list.can_undo(), list.can_redo()))
@@ -95,7 +96,7 @@ impl Lists {
     }
 
     /// Whether any list holds the owner's unsaved edits or their history.
-    pub(crate) fn holds_owner_edits(&self) -> bool {
+    pub fn holds_owner_edits(&self) -> bool {
         self.edits.values().any(PageEdits::holds_owner_edits) || self.asleep.values().any(|summary| summary.holds_owner_edits)
     }
 
@@ -108,12 +109,12 @@ impl Lists {
     }
 
     /// What's kept of a tab's list for a look without opening it, wherever it is.
-    pub(crate) fn summary(&self, id: TabId) -> Option<EditsSummary> {
+    pub fn summary(&self, id: TabId) -> Option<EditsSummary> {
         self.edits.get(&id).map(PageEdits::summary).or_else(|| self.asleep.get(&id).copied())
     }
 
     /// Whether a tab's list is on disk now.
-    pub(crate) fn is_asleep(&self, id: TabId) -> bool {
+    pub fn is_asleep(&self, id: TabId) -> bool {
         self.asleep.contains_key(&id)
     }
 
@@ -163,7 +164,8 @@ impl Lists {
         self.wake_failed.clear();
     }
 
-    pub(crate) fn set_agent_at_full(&mut self, full: bool) {
+    /// An agent's next edits are at Full, where the owner's history can be pushed out, or not.
+    pub fn set_agent_at_full(&mut self, full: bool) {
         self.agent_at_full = full;
     }
 
@@ -180,5 +182,20 @@ impl Lists {
             ("asleep", self.asleep.contains_key(&id)),
             ("wake_failed", self.wake_failed.contains(&id)),
         ]
+    }
+
+    /// The file's pages this tab's history can put back, ascending: what a save keeps a copy of. Nothing for a tab without a history.
+    pub fn own_pages_needed(&self, id: TabId) -> Vec<u32> {
+        self.get(id).map(PageEdits::own_pages_needed).unwrap_or_default()
+    }
+
+    /// What a tab's pictures are about, as the session has it, for telling if a sleep file's are.
+    pub fn list_mark(&self, id: TabId) -> u64 {
+        self.get(id).map_or(0, PageEdits::order_mark)
+    }
+
+    /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
+    pub fn edits_record(&self, id: TabId) -> Option<record::EditsRecord> {
+        self.get(id).map(PageEdits::to_record)
     }
 }

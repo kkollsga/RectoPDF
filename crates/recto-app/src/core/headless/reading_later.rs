@@ -19,7 +19,7 @@ fn the_session_thread_answers_while_a_persons_command_waits_for_its_read() {
     }
     app.settle();
     // Without sleep files, a cold tab's waking reads its PDF.
-    app.core().host.session.with_session(|session| session.set_sleep_files(false));
+    app.core().host.session.with_session(|session| session.dormancy_mut().set_sleep_files(false));
     let new = app.disk().pdf("new.pdf", 3);
     let inner = app.core();
     let open = format!(r#"{{"cmd":"open","path":{:?}}}"#, new.display().to_string());

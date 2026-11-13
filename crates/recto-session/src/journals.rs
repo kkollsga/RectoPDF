@@ -1,12 +1,14 @@
 //! Journals: each edited tab's journal by name, those that have to start again from a whole list, those to remove, those of tabs that have closed, and where a PDF's history is read from.
 
-use crate::{HistorySource, JournalAppend, TabId};
+use crate::{HistorySource, JournalAppend, TabId, record};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
-/// What's kept of the journals, and what's waiting to go out to them.
+/// Each edited tab's journal, and where a PDF's history is read from. What's public here says whether edits go to journals and where history comes from,
+/// or reads a journal's name; naming, retiring and what goes out to them stay the crate's, as they go with the lists and the tabs.
 #[derive(Default)]
-pub(crate) struct Journals {
+pub struct Journals {
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.
@@ -26,15 +28,18 @@ impl Journals {
         self.journaling
     }
 
-    pub(crate) fn set_journaling(&mut self, on: bool) {
+    /// Whether edits go to a journal from now on. For whoever keeps the state record.
+    pub fn set_journaling(&mut self, on: bool) {
         self.journaling = on;
     }
 
-    pub(crate) fn history(&self) -> Option<&Arc<dyn HistorySource>> {
+    /// Reads what's left of a PDF's history, for [`crate::Session::open_with_facts`], with the session free: hold this and call it outside. `None` if there's no such thing here.
+    pub fn history(&self) -> Option<&Arc<dyn HistorySource>> {
         self.history.as_ref()
     }
 
-    pub(crate) fn set_history(&mut self, source: Arc<dyn HistorySource>) {
+    /// Where a PDF's history is read from, for one being opened on any route.
+    pub fn set_history(&mut self, source: Arc<dyn HistorySource>) {
         self.history = Some(source);
     }
 
@@ -44,7 +49,7 @@ impl Journals {
     }
 
     /// A tab's journal's name, if it has one.
-    pub(crate) fn name_of(&self, id: TabId) -> Option<&str> {
+    pub fn name_of(&self, id: TabId) -> Option<&str> {
         self.journals.get(&id).map(|name| &**name)
     }
 
@@ -133,7 +138,7 @@ impl Journals {
     }
 
     /// Whether a journal's to be removed, a closed tab's to be written, or one's to start again, which wants writing at once.
-    pub(crate) fn has_pending(&self) -> bool {
+    pub fn has_pending(&self) -> bool {
         !self.retired_journals.is_empty() || !self.departing.is_empty() || !self.fresh_journals.is_empty()
     }
 
@@ -151,5 +156,13 @@ impl Journals {
             ("fresh_journals", self.is_fresh(id)),
             ("departing", self.departing.iter().any(|append| append.tab == id)),
         ]
+    }
+
+    pub(crate) fn retire_kept(&mut self, kept: Vec<Box<Path>>) {
+        for path in kept {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()).filter(|name| record::is_kept_name(name)) {
+                self.retire_name(name.into());
+            }
+        }
     }
 }

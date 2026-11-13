@@ -165,7 +165,7 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
         let loaded = store.load();
         let _ = notice_for(&loaded);
         let mut session = Session::new(NamedLoader);
-        session.set_journaling(true);
+        session.journals_mut().set_journaling(true);
         if let Loaded::Restored(restored) = loaded {
             assert!(
                 session.restore(&restored.record, restored.journals).is_ok(),

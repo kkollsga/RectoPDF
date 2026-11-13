@@ -56,9 +56,9 @@ pub struct Basis {
 pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
     Basis {
         tab: id.0,
-        pages: session.pages_in(id),
-        stamp: session.own_stamp(id),
-        changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes),
+        pages: session.pages().count(id),
+        stamp: session.tabs().own_stamp(id),
+        changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
     }
 }
 
@@ -542,11 +542,11 @@ pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Optio
         }
     })?;
     let plan = access.with(|s| {
-        let id = s.active().ok_or_else(|| {
+        let id = s.tabs().active().ok_or_else(|| {
             AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first.")
         })?;
         let plan = plan(s, id)?;
-        s.set_find(true, query, query);
+        s.viewing_mut().set_find(true, query, query);
         Ok::<_, AgentError>(match keys {
             Some(keys) => plan.with_keys(keys),
             None => plan,
@@ -560,7 +560,7 @@ pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Optio
 
 /// What's in the Find field that its hits aren't of, as after a restart or a move to another document, if anything: a query to find again before a step.
 pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -> Option<String> {
-    let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| basis(s, id))));
+    let wanted = access.with(|s| (s.viewing().find().query.clone(), s.tabs().active().map(|id| basis(s, id))));
     let mut have = (String::new(), None);
     finding.with_results(&mut |results| have = (results.query.clone(), results.basis));
     (!wanted.0.is_empty() && have != wanted).then_some(wanted.0)
@@ -576,7 +576,7 @@ pub enum Going {
 
 /// Goes to the next hit or the one before, from the current one or from where the reader is, and notes it in the state record. The tab's page goes there too; the app also selects the hit. `None` if there's nothing to go to.
 pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool, going: Going) -> Option<(u32, Hit)> {
-    let place = access.with(|s| s.active().and_then(|id| s.tab(id)).map_or((0, 0), |tab| (tab.page, 0)));
+    let place = access.with(|s| s.tabs().active().and_then(|id| s.tabs().tab(id)).map_or((0, 0), |tab| (tab.page, 0)));
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.step(forward, place).cloned().zip(results.tab));
     let (hit, tab) = hit?;
@@ -618,8 +618,8 @@ pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index:
 
 fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Going) {
     access.with(|s| {
-        s.set_find_current(Some((hit.page, hit.start)), Some(tab));
-        if s.active().map(|id| id.0) == Some(tab) {
+        s.viewing_mut().set_find_current(Some((hit.page, hit.start)), Some(tab));
+        if s.tabs().active().map(|id| id.0) == Some(tab) {
             let id = TabId(tab);
             match going {
                 Going::Step => {
@@ -628,7 +628,7 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                 // Marked for Back, and the page view's told nothing more: the app brings the hit itself into view, a third down, which landing at the page's top would undo.
                 Going::Jump(by) => {
                     if s.jump_as(id, hit.page, 0.0, by).is_ok() {
-                        let _ = s.take_jump(id);
+                        let _ = s.mail_mut().take_jump(id);
                     }
                 }
             }
@@ -642,7 +642,7 @@ pub fn heard_going_to<L: DocLoader>(session: &Session<L>, tab: u32, hit: &Hit, e
     let id = TabId(tab);
     events.push(crate::page_changed(session, id, hit.page + 1));
     events.push(crate::Event::FindOpened {
-        page: (!session.withheld_from_agents(id)).then_some(hit.page + 1),
+        page: (!session.tabs().withheld_from_agents(id)).then_some(hit.page + 1),
     });
 }
 
@@ -652,9 +652,9 @@ pub fn close<A: crate::SessionAccess>(access: &A) {
         finding.clear();
     }
     access.with(|s| {
-        let draft = s.find().draft.clone();
-        s.set_find(false, "", &draft);
-        s.set_find_current(None, None);
+        let draft = s.viewing().find().draft.clone();
+        s.viewing_mut().set_find(false, "", &draft);
+        s.viewing_mut().set_find_current(None, None);
     });
 }
 

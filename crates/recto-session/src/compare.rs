@@ -186,12 +186,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab is on screen: active, or a pane of a comparison. Such a tab doesn't go dormant, whatever's asking.
     pub fn on_screen(&self, id: TabId) -> bool {
-        self.tabs.active() == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
+        dormant::on_screen(&self.tabs, self.comparison.as_ref(), id)
     }
 
     /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.
     pub fn compare(&mut self, tabs: &[TabId], reading: Option<TabId>) -> Result<bool, compare::CompareError> {
-        if tabs.iter().any(|id| self.tab(*id).is_none()) {
+        if tabs.iter().any(|id| self.tabs.tab(*id).is_none()) {
             return Err(compare::CompareError::NoSuchTab);
         }
         let comparison = compare::Comparison::new(tabs.to_vec())?;
@@ -247,7 +247,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **⌘-click and ⌃-click on a tab** (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A tab not in it joins at the right and is the one read; one in it leaves; down to one, that one's alone. On the only tab showing, nothing.
     pub fn toggle_compare(&mut self, id: TabId) -> Result<compare::CompareChange, compare::CompareError> {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return Err(compare::CompareError::NoSuchTab);
         }
         let Some(mut comparison) = self.comparison.clone() else {
@@ -276,7 +276,7 @@ impl<L: DocLoader> Session<L> {
             }
             return Ok(compare::CompareChange::Removed);
         }
-        let page = self.tab(id).map_or(0, |tab| tab.page);
+        let page = self.tabs.tab(id).map_or(0, |tab| tab.page);
         comparison.add(id, page)?;
         self.wake_list(id);
         self.comparison = Some(comparison);
@@ -312,13 +312,13 @@ impl<L: DocLoader> Session<L> {
     pub fn sync_targets(&self, leader: TabId, page: u32) -> Vec<(TabId, u32)> {
         self.comparison
             .as_ref()
-            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id)))
+            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages().count(id)))
             .unwrap_or_default()
     }
 
     /// What's said about the panes' lengths, if anything.
     pub fn compare_note(&self) -> Option<String> {
-        self.comparison.as_ref()?.length_note(|id| self.pages_in(id))
+        self.comparison.as_ref()?.length_note(|id| self.pages().count(id))
     }
 }
 

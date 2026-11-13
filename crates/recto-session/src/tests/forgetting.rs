@@ -55,14 +55,14 @@ fn busy(s: &mut Session<FakeLoader>) -> (TabId, TabId) {
         s.saved(a, stamp(version), 10, None, None);
         s.end_save(a);
     }
-    s.note_drawn(DrawNote {
+    s.mail_mut().note_drawn(DrawNote {
         tab: a,
         page: 0,
         failure: None,
     });
     s.jump(a, 3, 0.0).unwrap();
     s.jump(a, 2, 0.5).unwrap();
-    s.jump_sent(a, trail::Stop::new(2, 0.5), 2);
+    s.mail_mut().jump_sent(a, trail::Stop::new(2, 0.5), 2);
     s.jump(a, 3, 0.0).unwrap();
     s.compare(&[a, b], Some(a)).unwrap();
     // After the comparison, which shows each tab in turn: only the tab on screen keeps a generated list.
@@ -102,14 +102,14 @@ fn a_tab_gone_dormant_holds_no_more_than_a_cold_one() {
     let mut s = session(10);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
-    s.note_drawn(DrawNote {
+    s.mail_mut().note_drawn(DrawNote {
         tab: a,
         page: 0,
         failure: None,
     });
     s.set_generated_view(a, ready());
     assert!(s.view_told_of(a, place_on(0, 0.5), 1));
-    assert_eq!(s.active(), Some(b));
+    assert_eq!(s.tabs().active(), Some(b));
     assert!(holding(&s, a).contains(&"warm"));
     assert!(holding(&s, a).contains(&"view_word"));
     assert!(s.go_dormant(a));
@@ -143,7 +143,7 @@ fn a_jump_sent_goes_with_an_edit_a_save_and_dormancy() {
         s.go_to(a, 4).unwrap();
         assert!(s.view_told_of(a, place_on(4, 0.6), 5), "{route}: made before the send");
         s.jump(a, 4, 0.8).unwrap();
-        s.jump_sent(a, trail::Stop::new(4, 0.8), 10);
+        s.mail_mut().jump_sent(a, trail::Stop::new(4, 0.8), 10);
         assert_eq!(s.here(a), Some(trail::Stop::new(4, 0.8)), "{route}: the jump sent");
         match route {
             "edit" => s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap(),
@@ -169,7 +169,7 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
     s.set_generated_view(a, ready());
     s.forget_read(a);
     assert_eq!(holding(&s, a), ["active", "tabs"]);
-    assert!(s.tab(a).unwrap().from_sleep.is_none());
+    assert!(s.tabs().tab(a).unwrap().from_sleep.is_none());
 }
 
 /// Failure: a restore keeps something of the tabs of the session it replaces, so a restored tab with the same number, another file, takes it as its own.
@@ -177,7 +177,7 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
 fn a_restore_keeps_nothing_of_the_tabs_it_replaces() {
     let mut s = journaled(10);
     let (a, b) = busy(&mut s);
-    s.hold(a);
+    s.dormancy_mut().hold(a);
     let empty = session(10).to_record();
     s.restore(&empty, HashMap::new()).unwrap();
     for id in [a, b] {
@@ -198,8 +198,8 @@ fn reads_ahead_are_held_to_their_cap_and_the_oldest_goes() {
         s.give_woken(*id, Err(OpenError::NotFound), None);
     }
     assert_eq!(s.warm.reads_held(), MAX_READ_AHEAD);
-    assert!(!s.holds_read_of(cold[0]), "the oldest read went");
-    assert!(cold[1..].iter().all(|id| s.holds_read_of(*id)), "the newest are kept");
+    assert!(!s.warm().holds_read_of(cold[0]), "the oldest read went");
+    assert!(cold[1..].iter().all(|id| s.warm().holds_read_of(*id)), "the newest are kept");
 }
 
 /// Failure: tabs open past [`MAX_TABS`], the cap on everything grown from outside, as an agent opening file after file could make them.

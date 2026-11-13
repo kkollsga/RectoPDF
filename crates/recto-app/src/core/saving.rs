@@ -36,7 +36,7 @@ impl SaveSupport for AppSaving {
     fn note_on_disk(&self, tab: TabId, target: FileStamp) -> Result<(), String> {
         let inner = self.saver.inner().ok_or("the app is going away")?;
         self.saver.write_journals_now(&inner);
-        let name = inner.host.session.with_session(|session| session.journal_of(tab).map(String::from));
+        let name = inner.host.session.with_session(|session| session.journals().name_of(tab).map(String::from));
         match name {
             // A session that keeps no journal has no crash to carry a save across.
             None => Ok(()),

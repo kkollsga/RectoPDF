@@ -2,15 +2,17 @@
 
 use crate::{GeneratedView, MAX_GENERATED_VIEWS, TabId};
 
-/// Where tabs' generated contents stand, for tabs someone asked about.
+/// Generated contents the sidebar knows of. What's public here reads where a tab's stand, or forgets them; noting them goes by the tab on screen and its
+/// file's version, so it stays with the session.
 #[derive(Debug, Default)]
-pub(crate) struct Generated {
+pub struct Generated {
     /// At most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
     generated: Vec<(TabId, GeneratedView)>,
 }
 
 impl Generated {
-    pub(crate) fn view(&self, id: TabId) -> Option<&GeneratedView> {
+    /// Where this tab's generated contents stand, if anyone's asked.
+    pub fn view(&self, id: TabId) -> Option<&GeneratedView> {
         self.generated.iter().find(|(tab, _)| *tab == id).map(|(_, view)| view)
     }
 
@@ -27,7 +29,7 @@ impl Generated {
     }
 
     /// Forgets where a tab's stand.
-    pub(crate) fn forget(&mut self, id: TabId) {
+    pub fn forget(&mut self, id: TabId) {
         self.generated.retain(|(tab, _)| *tab != id);
     }
 
@@ -37,7 +39,7 @@ impl Generated {
     }
 
     /// Tabs whose generated contents are being made.
-    pub(crate) fn making(&self) -> Vec<TabId> {
+    pub fn making(&self) -> Vec<TabId> {
         self.generated
             .iter()
             .filter(|(_, view)| *view == GeneratedView::Making)

@@ -303,7 +303,7 @@ fn no_qa_value_reaches_a_file_outside_the_run() {
         .collect();
     assert_eq!(walked, every, "the walk didn't try every verb");
     assert!(
-        app.core().host.session.with_session(|session| session.tab_for_path(&file).is_none()),
+        app.core().host.session.with_session(|session| session.tabs().for_path(&file).is_none()),
         "the outside file became a tab"
     );
     // `qa compare-budget` is `recto`'s own, run in its process: its list is held by `check_here`.

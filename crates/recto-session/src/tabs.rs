@@ -31,26 +31,6 @@ impl<L: DocLoader> Session<L> {
         &self.confinement
     }
 
-    pub fn tabs(&self) -> &[TabRecord] {
-        self.tabs.all()
-    }
-
-    pub fn active(&self) -> Option<TabId> {
-        self.tabs.active()
-    }
-
-    pub fn tab(&self, id: TabId) -> Option<&TabRecord> {
-        self.tabs.get(id)
-    }
-
-    /// **The tab's full path, for whatever reads or writes its file,** rebuilt from its interned folder and name. In a confined session it's put to the
-    /// rule again, as it resolves now, so a folder swapped for a link after the open leads nowhere: `None`, as for no tab, and
-    /// [`Self::apply_file_status`] says its file is missing (2026-11-13). What only names the tab (its record, journal and sleep file) goes by the
-    /// registry's path. A free session asks nothing of the disk.
-    pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
-        self.tabs.path_of(id).filter(|path| self.confinement.admits(path))
-    }
-
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
         // What's read is where the rule looked: see [`confined::Confinement::to_read`].
@@ -58,7 +38,7 @@ impl<L: DocLoader> Session<L> {
         // The tab already showing this file, if there is one.
         if let Some(id) = self.tab_for_path(path) {
             self.activate(id);
-            self.note_recent(path);
+            self.recent.note(path);
             return Ok(id);
         }
         // Looked at first, so a change during the read shows as a change.
@@ -83,7 +63,7 @@ impl<L: DocLoader> Session<L> {
     ///
     /// **A number is only the same file if the rest says so.** A move and a rewrite in place keep one, and another volume can have the same number under the same device. So its contents have to be what the tab knows, or the tab's own path has to lead to that number now, as it does for a file changed in place. Otherwise it's another PDF, and a tab's edits don't follow it. That stat is only for a tab with this very number, of which there's next to none. A link also leads where it leads: a tab whose file has been replaced under it, with a new number, is still what its own path is.
     pub fn tab_for_file(&self, path: &Path, stamp: Option<FileStamp>) -> Option<TabId> {
-        self.tab_for_path(path).or_else(|| {
+        self.tabs.for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
             let same_number = self.tabs.all().iter().find(|tab| {
                 tab.file.stamp.is_some_and(|known| {
@@ -91,7 +71,7 @@ impl<L: DocLoader> Session<L> {
                         && known.device == stamp.device
                         && (known.same_contents(stamp)
                             || self
-                                .tabs
+                                .tabs()
                                 .path_of(tab.id)
                                 .and_then(|own| file_stamp(&own).ok())
                                 .is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device))
@@ -99,7 +79,7 @@ impl<L: DocLoader> Session<L> {
             });
             same_number
                 .map(|tab| tab.id)
-                .or_else(|| path.canonicalize().ok().and_then(|real| self.tab_for_path(&real)))
+                .or_else(|| path.canonicalize().ok().and_then(|real| self.tabs.for_path(&real)))
         })
     }
 
@@ -111,13 +91,8 @@ impl<L: DocLoader> Session<L> {
         }
         self.activate(id);
         if let Some(own) = self.tabs.path_of(id) {
-            self.note_recent(&own);
+            self.recent.note(&own);
         }
-    }
-
-    /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
-    pub fn note_recent(&mut self, path: &Path) {
-        self.recent.note(path);
     }
 
     /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
@@ -127,24 +102,9 @@ impl<L: DocLoader> Session<L> {
             .map(|path| RecentFile {
                 path: path.clone(),
                 name: tab_name(path),
-                open: self.tab_for_path(path),
+                open: self.tabs.for_path(path),
             })
             .collect()
-    }
-
-    /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
-    pub fn recent_version(&self) -> u64 {
-        self.recent.version()
-    }
-
-    /// File > Open Recent > Clear Menu.
-    pub fn clear_recent(&mut self) -> bool {
-        self.recent.clear()
-    }
-
-    /// The tab already showing this file, if there is one.
-    pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
-        self.tabs.for_path(path)
     }
 
     /// The second half of [`Self::open`]: makes the tab from facts already read, and what's left of the PDF's history, if a [`HistorySource`] found any. It's the one way a tab comes to exist, so every route has to say. Someone may have opened the same file meanwhile, and then that's the tab, and the history stays where it is.
@@ -202,19 +162,19 @@ impl<L: DocLoader> Session<L> {
                 trail: None,
             },
         });
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.file.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.tabs.set_active(Some(id));
-        self.note_recent(path);
+        self.recent.note(path);
         self.generated.keep_ready_only_for(id);
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
-            if rolled_off && let Some(tab) = self.tab_mut(id) {
+            if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
             }
         }
@@ -223,10 +183,10 @@ impl<L: DocLoader> Session<L> {
 
     /// **A protected tab, opened with the password the person typed:** its facts, read with that password off this lock, take the place of the problem it had, as a wake does. The password itself never comes here.
     pub fn unlock(&mut self, id: TabId, facts: DocFacts, stamp: Option<FileStamp>) {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return;
         }
-        self.note_password_used(id);
+        self.tabs.note_password_used(id);
         self.give_woken(id, Ok(facts), stamp);
         if self.tabs.active() == Some(id) {
             self.activate(id);
@@ -236,50 +196,31 @@ impl<L: DocLoader> Session<L> {
     /// **A file opened with the password the person typed,** as [`Self::open_with_facts`] opens one: the tab is marked, so nothing read from it goes to an agent.
     pub fn open_unlocked(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>) -> Result<TabId, SessionError> {
         let id = self.open_with_facts(path, facts, stamp, None)?;
-        self.note_password_used(id);
+        self.tabs.note_password_used(id);
         Ok(id)
-    }
-
-    /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
-    pub fn note_password_used(&mut self, id: TabId) {
-        if let Some(tab) = self.tab_mut(id) {
-            tab.file.password = true;
-        }
     }
 
     /// **A tab's password went missing:** the renderer couldn't open its file with any password it has, as when the file moved to another volume or was replaced while it was open. What's held of it is let go, and the tab says it needs its password, so the app asks for it again with the sheet rather than showing pages it can't draw.
     pub fn needs_password_again(&mut self, id: TabId) {
-        if self.tab(id).is_none() || self.needs_password(id) {
+        if self.tabs.tab(id).is_none() || self.tabs.needs_password(id) {
             return;
         }
         self.forget_read(id);
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tabs.tab_mut(id) {
             tab.problem = Some(OpenError::PasswordNeeded);
         }
     }
 
-    /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
-    pub fn needs_password(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| tab.problem == Some(OpenError::PasswordNeeded))
-    }
-
-    /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
-    pub fn withheld_from_agents(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
-        })
-    }
-
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
     pub fn tap(&mut self, id: TabId) -> Result<Option<TabId>, SessionError> {
-        if self.tab(id).is_none() {
+        if self.tabs.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
         }
         let before = self.tabs.active();
         // A plain click on a tab during a comparison returns to one, that one (owner, 2026-11-08: comparison is by ⌘-click).
         let comparing = self.comparison.take().is_some();
         if self.tabs.active() == Some(id) && !comparing {
-            if let Some(tab) = self.tab_mut(id) {
+            if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.toc_open = !tab.toc_open;
             }
         } else {
@@ -290,13 +231,13 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
         // With no tab, or no file to move to, there'd be nothing in a new folder to let it go.
-        if self.tab(id).is_none() || path.file_name().is_none() || !self.confinement.admits(path) {
+        if self.tabs.tab(id).is_none() || path.file_name().is_none() || !self.confinement.admits(path) {
             return;
         }
         let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
         let mut left = None;
-        if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
+        if let (Some(tab), Some(file_name)) = (self.tabs.tab_mut(id), path.file_name()) {
             left = Some(tab.file.dir).filter(|was| *was != dir);
             tab.file.dir = dir;
             tab.file.file_name = file_name.into();
@@ -311,10 +252,10 @@ impl<L: DocLoader> Session<L> {
     /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<Closed, SessionError> {
         let before = self.tabs.active();
-        if self.is_saving(id) {
+        if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
-        if self.is_edited(id) || self.has_undone_owner_steps(id) {
+        if self.lists.is_edited(id) || self.lists.has_undone_owner_steps(id) {
             return Err(SessionError::UnsavedChanges);
         }
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
@@ -365,9 +306,5 @@ impl<L: DocLoader> Session<L> {
             }
         }
         Ok(Closed::after(id, before, self.tabs.active()))
-    }
-
-    pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
-        self.tabs.get_mut(id)
     }
 }

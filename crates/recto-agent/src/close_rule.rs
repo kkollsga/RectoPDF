@@ -34,14 +34,14 @@ impl WouldLose {
     /// What closing `id` would lose now, wherever its list is, from its summary. Every command about a tab reads its list back first, so one still asleep
     /// here is one whose journal couldn't be read: [`Self::unreadable`].
     pub fn of<L: DocLoader>(session: &Session<L>, id: TabId) -> Self {
-        let summary = session.edits_summary(id).unwrap_or_default();
+        let summary = session.lists().summary(id).unwrap_or_default();
         Self {
             unsaved: summary.edited,
             undone: summary.redo > 0,
             owners_undone: summary.owner_steps_undone,
             owners_anywhere: summary.holds_owner_edits,
-            history_dropped: session.page_edits(id).is_some_and(PageEdits::history_dropped),
-            unreadable: session.list_is_asleep(id),
+            history_dropped: session.lists().get(id).is_some_and(PageEdits::history_dropped),
+            unreadable: session.lists().is_asleep(id),
         }
     }
 

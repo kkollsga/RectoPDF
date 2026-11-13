@@ -5,32 +5,9 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// A tab's sleep file goes, as what's in it is done with: its tab's closed, or the file's been changed, and a redaction's what it would otherwise keep.
     pub(crate) fn retire_sleep_file(&mut self, id: TabId) {
-        if let (Some(stamp), Some(path)) = (self.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id)) {
+        if let (Some(stamp), Some(path)) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id)) {
             self.journals.retire_name(record::sleep_file_name(stamp, &path).into());
         }
-    }
-
-    pub(crate) fn retire_kept(&mut self, kept: Vec<Box<Path>>) {
-        for path in kept {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()).filter(|name| record::is_kept_name(name)) {
-                self.journals.retire_name(name.into());
-            }
-        }
-    }
-
-    /// What's in a tab's journal is done with, by a discard or a save, so its file goes: what's been removed mustn't stay recoverable.
-    pub(crate) fn retire_journal(&mut self, id: TabId) {
-        self.journals.retire(id);
-    }
-
-    /// Whether edits go to a journal from now on. For whoever keeps the state record.
-    pub fn set_journaling(&mut self, on: bool) {
-        self.journals.set_journaling(on);
-    }
-
-    /// An agent's next edits are at Full, where the owner's history can be pushed out, or not.
-    pub fn set_agent_at_full(&mut self, full: bool) {
-        self.lists.set_agent_at_full(full);
     }
 
     /// What's waiting to go in journals: which to remove, and what to append to which. Copied, not taken: operations stay until [`Self::journal_outcome`] says they're in the file, so nothing's lost if the disk refuses, and nothing goes twice if one journal fails and another doesn't. A list's first time here gets its journal's name.
@@ -55,7 +32,7 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn append_for(&mut self, id: TabId) -> Option<JournalAppend> {
         let name = self.journal_name_for(id);
-        let (tab, path, edits) = (self.tab(id)?, self.tabs.path_of(id)?, self.lists.get(id)?);
+        let (tab, path, edits) = (self.tabs.tab(id)?, self.tabs.path_of(id)?, self.lists.get(id)?);
         let (through, ops) = edits.journal_waiting()?;
         let mut header = JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0);
         header.saving = edits.saving().map(Into::into);
@@ -106,7 +83,7 @@ impl<L: DocLoader> Session<L> {
         if !waiting.is_empty() || self.journals.is_fresh(id) {
             return None;
         }
-        let tab = self.tab(id)?;
+        let tab = self.tabs.tab(id)?;
         let mut header = JournalHeader::new(id.0, &self.tabs.path_of(id)?, tab.file.stamp, tab.page_count, seq);
         // A save may be about to land, and a checkpoint mustn't lose that it said so.
         header.saving = edits.saving().map(Into::into);
@@ -120,7 +97,7 @@ impl<L: DocLoader> Session<L> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let name = self.journal_name_for(id);
-            let (Some(tab), Some(path), Some(list)) = (self.tab(id), self.tabs.path_of(id), self.edits_record(id)) else {
+            let (Some(tab), Some(path), Some(list)) = (self.tabs.tab(id), self.tabs.path_of(id), self.lists.edits_record(id)) else {
                 continue;
             };
             out.push((name, JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0), list));
@@ -145,42 +122,20 @@ impl<L: DocLoader> Session<L> {
                 .any(|(_, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
     }
 
-    /// Whether a journal has been retired, or a tab with one has closed, which wants writing at once.
-    pub fn has_retired_journals(&self) -> bool {
-        self.journals.has_pending()
-    }
-
-    /// Those operations are in the file.
-    pub fn journal_written(&mut self, id: TabId, through: u64) {
-        if let Some(edits) = self.lists.get_mut(id) {
-            edits.journal_written(through);
-        }
-    }
-
     /// A journal's name for this tab, from its PDF's identity.
     pub(crate) fn journal_name_for(&mut self, id: TabId) -> String {
         if let Some(name) = self.journals.name_of(id) {
             return name.to_string();
         }
-        let (stamp, path) = (self.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id).unwrap_or_default());
+        let (stamp, path) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id).unwrap_or_default());
         let name = record::journal_file_name(stamp, &path, None);
         self.journals.set_name(id, &name);
         name
     }
 
-    /// Where a PDF's history is read from, for one being opened on any route.
-    pub fn set_history_source(&mut self, source: Arc<dyn HistorySource>) {
-        self.journals.set_history(source);
-    }
-
-    /// Reads what's left of a PDF's history, for [`Self::open_with_facts`], with the session free: hold this and call it outside. `None` if there's no such thing here.
-    pub fn history_source(&self) -> Option<Arc<dyn HistorySource>> {
-        self.journals.history().cloned()
-    }
-
     /// A PDF opened again picks up the history it was left with. A tab with a list of its own keeps that, and a journal has one owner.
     pub fn take_up_history(&mut self, id: TabId, name: &str, mut edits: PageEdits, seq: u64) {
-        if self.lists.contains(id) || self.tab(id).is_none() || self.journals.is_taken(name) {
+        if self.lists.contains(id) || self.tabs.tab(id).is_none() || self.journals.is_taken(name) {
             return;
         }
         if self.journals.journaling() {
@@ -190,10 +145,5 @@ impl<L: DocLoader> Session<L> {
         }
         self.lists.insert(id, edits);
         self.journals.set_name(id, name);
-    }
-
-    /// The name of this tab's journal, if it has one, for checking what's reached the disk.
-    pub fn journal_of(&self, id: TabId) -> Option<&str> {
-        self.journals.name_of(id)
     }
 }
