@@ -82,7 +82,8 @@ impl Cmd for Tap {
             let id = select(s, &self.tab)?;
             let switched = s.tap(id)?;
             event::switched(s, switched, events);
-            Ok(sidebar_json(s))
+            // The sidebar's every row, which the window's own tap would build for nobody: SessionAccess::answer_read.
+            Ok(if access.answer_read() { sidebar_json(s) } else { Value::Null })
         })
     }
     fn human(data: &Value) -> String {
