@@ -9,7 +9,8 @@
 //! **What it doesn't see,** being a scan of lines and not the compiler: an `impl` inside a function body or a `const _: () = { … }` block (indented, so
 //! read as neither an item nor a method), anything a macro generates, the fields of a struct whose `where` clause stands at column 0 before its brace
 //! (the `where` line ends the item), the fields of a tuple struct written over several lines (only a one-line tuple struct's are read), and a `cfg` other
-//! than `test` (an item under `#[cfg(feature = "qa")]` is listed as though it were always there).
+//! than `test` and the `qa` feature: an item under `#[cfg(feature = "qa")]` (or `any(test, feature = "qa")`) is listed marked `[qa feature only]`, and
+//! any other `cfg` as though it were always there.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -131,6 +132,8 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
     let mut within: Option<String> = None;
     let mut fields_of: Option<String> = None;
     let mut test_item = false;
+    // The next item is built only with the `qa` feature, and the `impl` being read is.
+    let (mut qa_item, mut within_qa) = (false, false);
     // What a `#[derive(..)]` just above the next item gives it: `Default` or `Clone` on a part is a way to build or replace one.
     let mut derives: Vec<String> = Vec::new();
     while at < lines.len() {
@@ -138,6 +141,11 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
         let trimmed = line.trim();
         if trimmed.starts_with("#[cfg(test)]") {
             test_item = true;
+            at += 1;
+            continue;
+        }
+        if trimmed.starts_with("#[cfg(") && trimmed.contains("feature = \"qa\"") && !trimmed.contains("not(") {
+            qa_item = true;
             at += 1;
             continue;
         }
@@ -160,7 +168,9 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
         if !line.starts_with(' ') && !line.starts_with('}') {
             let skip = std::mem::take(&mut test_item);
             let derived = std::mem::take(&mut derives);
+            let qa = if std::mem::take(&mut qa_item) { QA_ONLY } else { "" };
             within = None;
+            within_qa = false;
             fields_of = None;
             if skip {
                 // The item and everything in it, to its closing brace at column 0, or to its `;`.
@@ -204,9 +214,10 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
                 let named = of.split(':').next().unwrap_or("");
                 if only.is_none_or(|types| types.contains(named)) {
                     if of.contains(": ") {
-                        into.insert(format!("{of} (trait impl)"));
+                        into.insert(format!("{of} (trait impl){qa}"));
                     }
                     within = Some(of);
+                    within_qa = !qa.is_empty();
                 }
             } else if only.is_some() {
                 // Outside the page view's own files only an `impl` of its types is listed.
@@ -223,7 +234,7 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
                 } else {
                     format!(", derives {}", derived.join(", "))
                 };
-                into.insert(format!("{name} ({shown} {kind}{derived})"));
+                into.insert(format!("{name} ({shown} {kind}{derived}){qa}"));
             } else if let Some(shown) = visibility(trimmed)
                 && trimmed.contains(" fn ")
             {
@@ -233,7 +244,7 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
                     signature.push(' ');
                     signature.push_str(lines[at].trim());
                 }
-                into.insert(format!("fn ({shown}) {}", one_line(&signature)));
+                into.insert(format!("fn ({shown}) {}{qa}", one_line(&signature)));
             }
             at += 1;
             continue;
@@ -244,6 +255,7 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
             && !line.starts_with("     ")
         {
             let skip = std::mem::take(&mut test_item);
+            let qa = if std::mem::take(&mut qa_item) || within_qa { QA_ONLY } else { "" };
             let shown = visibility(trimmed);
             if trimmed.contains("fn ") && (shown.is_some() || of.contains(": ")) && !skip {
                 let mut signature = String::from(trimmed);
@@ -252,7 +264,7 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
                     signature.push(' ');
                     signature.push_str(lines[at].trim());
                 }
-                into.insert(format!("{of}::{}", one_line(&signature)));
+                into.insert(format!("{of}::{}{qa}", one_line(&signature)));
             }
             at += 1;
             continue;
@@ -267,9 +279,13 @@ fn listing_in(text: &str, into: &mut BTreeSet<String>, only: Option<&BTreeSet<St
             into.insert(format!("{of}.{}", trimmed.trim_end_matches(',')));
         }
         test_item = false;
+        qa_item = false;
         at += 1;
     }
 }
+
+/// What a line of the listing ends with when only the `qa` feature (or a test build) has the item: a release app doesn't.
+const QA_ONLY: &str = " [qa feature only]";
 
 /// A struct or an enum, of any visibility: how visible, which, and the rest of its line.
 fn type_item(line: &str) -> Option<(&str, &'static str, &str)> {
@@ -410,6 +426,29 @@ fn the_listing_sees_a_part_widened_in_every_place_it_can_be() {
     assert_eq!(got, ["Reader::pub(crate) fn sneak(&mut self)"]);
 }
 
+/// Failure it catches (review round 2 of the page view follow-ups): an item only the `qa` feature builds (`Engine::qa` and the seams it hands out) listed
+/// as though a release app had it, so its losing the `cfg`, which puts the seams in the shipping app, changed nothing in the listing. Marked, on a type,
+/// a free function, a method, and every method of an `impl` under the `cfg`; an item only a build without the feature has isn't marked as the feature's.
+#[test]
+fn the_listing_marks_what_only_the_qa_feature_builds() {
+    let mut lines = BTreeSet::new();
+    listing_of(
+        "#[cfg(any(test, feature = \"qa\"))]\n#[derive(Clone, Copy)]\npub struct Seams;\n\n#[cfg(feature = \"qa\")]\nimpl Seams {\n    pub fn hold(&self) {}\n}\n\nimpl Engine {\n    #[cfg(any(test, feature = \"qa\"))]\n    #[inline]\n    pub fn qa(&self) -> Seams {\n        todo!()\n    }\n\n    pub fn shipped(&self) {}\n}\n\n#[cfg(not(feature = \"qa\"))]\npub fn without() {}\n",
+        &mut lines,
+    );
+    let got: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert_eq!(
+        got,
+        [
+            "Engine::pub fn qa(&self) -> Seams [qa feature only]",
+            "Engine::pub fn shipped(&self)",
+            "Seams (pub struct, derives Clone, Copy) [qa feature only]",
+            "Seams::pub fn hold(&self) [qa feature only]",
+            "fn (pub) pub fn without()",
+        ]
+    );
+}
+
 /// Failure it catches (review round 1 of the page view follow-ups): a file of the page view in a folder under `tiles/` or `engine/` going unread (only their
 /// own files were), and a file passed over as built only for tests because a comment of it mentions `#![cfg(test)]`.
 #[test]
@@ -433,24 +472,50 @@ fn the_listing_reads_every_file_it_should() {
     assert_eq!(found, want, "a file in a folder under tiles/ is read, and a tests folder isn't");
 }
 
-/// The lines of `text` that build a `Reader` (`Reader::new()`) or put another part in one of its fields: assigned (`reader.docs = …`), or swapped,
-/// replaced or taken through `std::mem` (`mem::swap(&mut a.docs, …)`). `parts` are the names of `Reader`'s visible fields.
+/// The lines of `text` that build a `Reader` or put another part in one of its fields: `Reader::new()`, or `Self::new()` inside an `impl` of `Reader` (a
+/// `Default` written for it, say); a part assigned (`reader.docs = …`); or swapped, replaced or taken through `std::mem`, as `mem::swap(&mut a.docs, …)`
+/// or, in a file that has a `use std::mem::…`, as a bare `swap(`, `replace(` or `take(`. `parts` are the names of `Reader`'s visible fields.
 fn builds_or_replaces_a_part<'a>(text: &'a str, parts: &[&str]) -> Vec<&'a str> {
-    text.lines()
-        .filter(|line| {
-            let code = line.split("//").next().unwrap_or("");
-            code.contains("Reader::new()")
-                || parts.iter().any(|part| {
-                    let field = format!(".{part}");
-                    code.match_indices(&field).any(|(at, _)| {
-                        let after = code[at + field.len()..].trim_start();
-                        let assigned = after.starts_with('=') && !after.starts_with("==");
-                        let through_mem = code.contains("mem::") && code[..at].contains("&mut") && !after.starts_with('.') && !after.starts_with('(');
-                        assigned || through_mem
-                    })
-                })
+    let mem_by_name = text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("use std::mem::") || line.starts_with("use core::mem::")
+    });
+    // Whether the item being read, from its column-0 line, is an `impl` of `Reader`.
+    let mut in_reader = false;
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let trimmed = code.trim();
+        if !line.starts_with([' ', '\t', '}', '#']) && !trimmed.is_empty() {
+            let header = trimmed.split(" where ").next().unwrap_or("");
+            in_reader = (header.starts_with("impl") || header.starts_with("unsafe impl")) && impl_of(header).split(':').next() == Some("Reader");
+        }
+        let through_mem = code.contains("mem::") || (mem_by_name && calls_by_name(code, &["swap(", "replace(", "take("]));
+        let replaces = parts.iter().any(|part| {
+            let field = format!(".{part}");
+            code.match_indices(&field).any(|(at, _)| {
+                let after = code[at + field.len()..].trim_start();
+                let assigned = after.starts_with('=') && !after.starts_with("==");
+                assigned || (through_mem && code[..at].contains("&mut") && !after.starts_with('.') && !after.starts_with('('))
+            })
+        });
+        if code.contains("Reader::new()") || (in_reader && code.contains("Self::new()")) || replaces {
+            found.push(line);
+        }
+    }
+    found
+}
+
+/// Whether `code` calls one of `names` as a bare function: not a method (`.take(`) and not through a path (`mem::take(`, which is seen as that).
+fn calls_by_name(code: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        code.match_indices(name).any(|(at, _)| {
+            code[..at]
+                .chars()
+                .last()
+                .is_none_or(|before| !(before.is_alphanumeric() || matches!(before, '_' | '.' | ':')))
         })
-        .collect()
+    })
 }
 
 /// Failure it catches: code outside `tiles` builds a `Reader` of its own and takes a part from it (`reader.docs = Reader::new().docs`), or swaps or replaces
@@ -472,6 +537,18 @@ fn nothing_outside_tiles_builds_a_reader_or_replaces_a_part() {
             "    std::mem::swap(&mut reader.work, &mut spare.work);"
         ],
         "the scan sees a part replaced and nothing else"
+    );
+    // (Review round 2.) A `Reader` built as `Self::new()` inside an `impl` of it, as a `Default` written for it would, and a part swapped or replaced by
+    // `std::mem`'s functions brought in by name.
+    let seeded = "use std::mem::{replace, swap};\n\nimpl Default for Reader {\n    fn default() -> Self {\n        Self::new()\n    }\n}\n\nimpl Other {\n    fn fresh() -> Self {\n        Self::new()\n    }\n}\n\nfn trade(reader: &mut Reader, spare: &mut Reader) {\n    swap(&mut reader.docs, &mut spare.docs);\n    let _ = replace(&mut reader.work, Work::new());\n    let _ = reader.place.take_moved_page();\n    let _ = pages.iter().take(3);\n}\n";
+    assert_eq!(
+        builds_or_replaces_a_part(seeded, &parts),
+        [
+            "        Self::new()",
+            "    swap(&mut reader.docs, &mut spare.docs);",
+            "    let _ = replace(&mut reader.work, Work::new());"
+        ],
+        "the scan sees a Reader built in its own impl and a part swapped by name, and nothing else"
     );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = Vec::new();
@@ -547,7 +624,7 @@ Engine::pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self
 Engine::pub fn note(&self) -> Option<String>
 Engine::pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>)
 Engine::pub fn points(&self) -> Points<'_>
-Engine::pub fn qa(&self) -> Qa<'_>
+Engine::pub fn qa(&self) -> Qa<'_> [qa feature only]
 Engine::pub fn reading_anchor(&self) -> Option<(u32, f64)>
 Engine::pub fn report(&self) -> ReaderReport
 Engine::pub fn same_as(&self, other: &Self) -> bool
@@ -650,12 +727,12 @@ Points::pub fn on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::Pa
 Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
-Qa (pub struct, derives Clone, Copy)
-Qa::pub fn follow_is_pending(&self) -> bool
-Qa::pub fn hold_asks(&self, ask: Ask, on: bool)
-Qa::pub fn hold_busy(&self, on: bool)
-Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool
-QaHolds (pub(super) struct, derives Default)
+Qa (pub struct, derives Clone, Copy) [qa feature only]
+Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
+Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
+Qa::pub fn hold_busy(&self, on: bool) [qa feature only]
+Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
+QaHolds (pub(super) struct, derives Default) [qa feature only]
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>
 RawPicture.pub height: u32
