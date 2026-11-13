@@ -87,7 +87,10 @@ fn a_long_status_wraps_and_takes_its_lines_from_the_list() {
     assert_eq!(one.status, STATUS_HEIGHT);
     let three = heights(800.0, true, 2000, 3);
     assert_eq!(three.status, STATUS_HEIGHT + 2.0 * STATUS_LINE);
-    assert!(three.list + 2.0 * STATUS_LINE <= 800.0 * MOST_OF_ROOM, "the extra lines inside the list's share: {three:?}");
+    assert!(
+        three.list + 2.0 * STATUS_LINE <= 800.0 * MOST_OF_ROOM,
+        "the extra lines inside the list's share: {three:?}"
+    );
     assert!(three.list < one.list && three.list % ROW_HEIGHT == 0.0, "{three:?}");
     let few = heights(800.0, true, 2, 3);
     assert_eq!(
