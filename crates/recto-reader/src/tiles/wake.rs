@@ -225,7 +225,7 @@ impl Reader {
         let sizes = doc.layout.other_sizes();
         let version = doc.map.files.first().and_then(|file| doc.versions.get(file)).copied();
         let pages: Vec<u32> = if self.hot == Some(tab) {
-            self.visible_pages(doc).collect()
+            self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect()
         } else {
             let y = doc
                 .exact_y
@@ -236,7 +236,8 @@ impl Reader {
             if doc.layout.count() == 0 {
                 Vec::new()
             } else {
-                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect()
+                // Only as many as a sleep file takes: a hostile file's slivers can put thousands in view.
+                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).take(MAX_SLEEP_SHOTS).collect()
             }
         };
         // What it was left with first, page by page: what's here now may have been taken by the system since.

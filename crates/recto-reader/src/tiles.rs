@@ -61,6 +61,12 @@ const MAX_SEEN_REMEMBERED: usize = crate::layout::MAX_OVERRIDES;
 const MAX_ISSUES_REMEMBERED: usize = 4096;
 /// Pages either side of what's visible whose sizes are asked for, so layout near the reader settles early.
 const SIZES_AROUND: u32 = 2;
+/// The most pages counted as in view, from the top of the view. A row is at least the gap between rows tall, 10 points, so the tallest Mac display's window, 3,384 points, at the least zoom shows at most about 2,700 pages side by side, however small a hostile file makes them; past this only a window taller than any display could. Everything sized by the pages in view is held by it: the layers placed, the tiles on them, a step's ops, and the problems of pages near the view, which [`MAX_ISSUES_REMEMBERED`] keeps past its cap.
+const MAX_PAGES_IN_VIEW: usize = 4_000;
+const _: () = assert!(
+    MAX_PAGES_IN_VIEW + 2 * SIZES_AROUND as usize <= MAX_ISSUES_REMEMBERED,
+    "the problems of the pages near the view would pass their cap"
+);
 
 /// The host's scrolled view, in document points, on each scroll or resize. The whole of it crosses in one call.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -704,8 +710,12 @@ impl Reader {
             #[allow(clippy::reversed_empty_ranges)]
             return 1..=0;
         }
-        doc.layout
-            .pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height)
+        let pages = doc
+            .layout
+            .pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height);
+        // Held to the most a real display's view has: a hostile file's slivers past it aren't in view.
+        let (first, last) = (*pages.start(), *pages.end());
+        first..=last.min(first.saturating_add(MAX_PAGES_IN_VIEW as u32 - 1))
     }
 
     /// Whether a device rectangle of a page at a scale shows in the viewport, however the page is turned.

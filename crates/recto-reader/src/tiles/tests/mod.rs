@@ -803,6 +803,50 @@ fn the_pages_remembered_as_failing_stay_bounded() {
     assert!(issues.contains_key(&(1_000 + cap)), "the last failure is remembered");
 }
 
+/// The view of a window `points` tall at the least zoom, in document points.
+fn least_zoom_view(points: f64) -> Viewport {
+    Viewport {
+        height: points / MIN_ZOOM,
+        width: 1168.0 / MIN_ZOOM,
+        magnification: MIN_ZOOM,
+        ..view(0.0)
+    }
+}
+
+/// Failure: a hostile file's pages are so small that more of them are in view at once than the page view caps what it remembers by, so the problems of pages near the view, which the cap keeps, pass it (rules 1 and 6), and with them everything sized by the pages in view (layers placed, tiles on them, a step's ops). Pages of a hundredth of a point side by side are 10 points a row, the gap between rows; a window of AppKit's largest, 10,000 points tall, at the least zoom shows 40,000 points of them. And the cap that holds this cuts nothing from the view of the tallest Mac display, 3,384 points (a 6K display turned on its side, at its most space), at the least zoom.
+#[test]
+fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
+    let mut reader = reader_on(8_000_000);
+    reader.activate(1, 8_000_000, 0, map(), &[], None, Spread::TwoUp);
+    let tiny = PageBox { width: 0.01, height: 0.01 };
+    reader.docs.get_mut(&1).unwrap().layout.set_page_size(0, tiny);
+    reader.set_viewport(least_zoom_view(3_384.0));
+    let tallest_display = reader.visible_pages(reader.doc().unwrap()).count();
+    assert!(
+        tallest_display < MAX_PAGES_IN_VIEW,
+        "{tallest_display} pages in view of the tallest display are cut"
+    );
+    assert!(
+        tallest_display > 2_000,
+        "{tallest_display} pages in view: the pages aren't as small as this test needs"
+    );
+    reader.set_viewport(least_zoom_view(10_000.0));
+    let in_view = reader.visible_pages(reader.doc().unwrap());
+    assert!(in_view.clone().count() <= MAX_PAGES_IN_VIEW, "{} pages in view", in_view.clone().count());
+    for page in in_view.clone() {
+        reader.note_issue(1, page, "It failed.".to_string(), false);
+    }
+    for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
+        reader.note_issue(1, in_view.end() + 100 + page, "It failed.".to_string(), false);
+    }
+    let issues = &reader.docs[&1].issues;
+    assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} problems remembered", issues.len());
+    assert!(
+        in_view.clone().all(|page| issues.contains_key(&page)),
+        "a page in view lost its problem, so it's asked for at once"
+    );
+}
+
 /// Failure: a failed page whose problem was let go at the cap is asked for again on every look once it's back in view, so the engine never rests; or a page in view loses its problem at the cap and is asked for at once.
 #[test]
 fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
