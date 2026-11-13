@@ -41,7 +41,7 @@ fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
 /// **What a person's command that didn't go is said to them as,** in their own words, from the feature it's about: each feature's words, one line each. A
 /// failure no feature has words for is said nothing of, as the window's own calls said nothing (an Undo with nothing to undo); an agent's words, which name
 /// `recto` commands and levels, are never shown to a person.
-const WORDS: &[fn(&AgentError, &Command) -> Option<String>] = &[];
+const WORDS: &[fn(&AgentError, &Command) -> Option<String>] = &[super::navigation::words];
 
 fn tell(inner: &Inner, error: &AgentError, command: &Command) {
     if let Some(words) = WORDS.iter().find_map(|words| words(error, command)) {

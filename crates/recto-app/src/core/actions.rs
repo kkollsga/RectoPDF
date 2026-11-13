@@ -69,7 +69,7 @@ impl Inner {
             }
             menus::Action::FindStep(forward) => self.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
             menus::Action::LeaveEditMode => self.core.push(CoreCall::SetEditMode(false)),
-            menus::Action::Step(back) => self.core.push(CoreCall::Step(back)),
+            menus::Action::Step(back) => self.step_for_person(back),
             menus::Action::ClearEditHistory => self.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
                 self.zoom_for_person(zoom);

@@ -258,9 +258,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
             CoreCall::Tap(id) => tap(inner, &mut reads, id, &mut events),
-            CoreCall::Jump(id, page, within) => jump(inner, id, page, within, &mut events),
-            CoreCall::JumpTyped(id, typed) => jump_typed(inner, id, typed, &mut events),
-            CoreCall::Step(back) => step(inner, back, &mut events),
             CoreCall::Open(path) => open(inner, &mut reads, path),
             CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
             CoreCall::SleepTabs(tabs, why) => {

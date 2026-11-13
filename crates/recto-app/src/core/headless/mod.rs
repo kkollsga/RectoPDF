@@ -8,6 +8,7 @@ mod find;
 mod input_to_frame;
 mod launch;
 mod levels;
+mod navigation;
 mod palette;
 mod passwords;
 mod protected_save;

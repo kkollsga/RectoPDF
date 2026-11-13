@@ -17,9 +17,23 @@ pub struct Twins {
 impl Twins {
     /// Both apps, with these PDFs (name, pages) open, settled, and hearing what's announced from here on.
     pub fn on(pdfs: &[(&str, usize)]) -> Self {
+        let files: Vec<(&str, Vec<u8>)> = pdfs
+            .iter()
+            .map(|(name, pages)| {
+                let pages: Vec<recto_testpdf::Page> = (1..=*pages)
+                    .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{name} page {page}")])))
+                    .collect();
+                (*name, recto_testpdf::pages(&pages))
+            })
+            .collect();
+        Self::with(&files)
+    }
+
+    /// Both apps, with these files (name, bytes) open, settled, and hearing what's announced from here on.
+    pub fn with(files: &[(&str, Vec<u8>)]) -> Self {
         let start = || {
             let disk = Disk::new();
-            let files: Vec<_> = pdfs.iter().map(|(name, pages)| disk.pdf(name, *pages)).collect();
+            let files: Vec<_> = files.iter().map(|(name, bytes)| disk.file(name, bytes)).collect();
             let root = disk.files().display().to_string();
             let app = disk.start();
             for file in &files {
@@ -35,7 +49,17 @@ impl Twins {
     /// The person does `action` at the window, and an agent at Full sends `line`; both settle. What each announced: the agent's what its command made, which
     /// the socket's server announces, and what the session thread did after.
     pub fn both(&self, action: UiAction, line: &str) -> (Vec<Event>, Vec<Event>) {
-        self.person.act(action);
+        self.both_with(
+            |app| {
+                app.act(action);
+            },
+            line,
+        )
+    }
+
+    /// [`Self::both`], with what the person does said as a call on their app: a click on a link, which the page view reports and isn't a [`UiAction`].
+    pub fn both_with(&self, person: impl FnOnce(&HeadlessApp), line: &str) -> (Vec<Event>, Vec<Event>) {
+        person(&self.person);
         self.person.settle();
         let (result, mut said) = self.agent.agent_heard(Level::Full, line);
         if let Err(error) = result {

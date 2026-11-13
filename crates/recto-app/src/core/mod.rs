@@ -35,7 +35,6 @@ pub mod zoom;
 use comparison::*;
 use editing::*;
 pub use host::*;
-use navigation::*;
 use opening::*;
 pub use reconcile::*;
 pub use session::*;

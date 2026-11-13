@@ -259,7 +259,7 @@ fn a_cancelled_hand_off_doesnt_leave_the_app_frozen() {
         .as_u64()
         .and_then(|id| u32::try_from(id).ok())
         .expect("the tab's id");
-    app.send(crate::queue::CoreCall::Jump(recto_session::TabId(tab), 0, 0.0));
+    app.person(&format!(r##"{{"cmd":"goto","tab":"#{tab}","page":1}}"##));
     app.settle();
     assert_eq!(page(&app), 0, "a person's action goes too");
     assert_eq!(app.disk().app_version().as_deref(), Some(OLD));

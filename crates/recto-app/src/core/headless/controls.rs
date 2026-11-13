@@ -35,7 +35,7 @@ fn place(action: &UiAction) -> (usize, usize) {
 
 /// Failure (rule 3): a control the window has waits for the session's lock on the UI thread, so a command holding it (a save, a long read) freezes the window
 /// for as long: the zoom, now `view --zoom` run on the calling thread, would if it ran the session's part of `view`. Every kind of control, and every menu
-/// item, called while another thread holds the session, each returns.
+/// item, and a click on a link, called while another thread holds the session, each returns.
 #[test]
 fn every_control_returns_while_the_session_is_held() {
     let disk = Disk::new();
@@ -122,6 +122,27 @@ fn every_control_returns_while_the_session_is_held() {
                 for action in actions {
                     let what = format!("{action:?}");
                     core.act(action);
+                    if returned_tx.send(what).is_err() {
+                        return;
+                    }
+                }
+                // A click on a link, which the page view reports: to a page, and Back.
+                for target in [
+                    recto_core::nav::LinkTarget::Page { page: 2, within: Some(0.5) },
+                    recto_core::nav::LinkTarget::History { back: true },
+                ] {
+                    let what = format!("a link click, {target:?}");
+                    let engine = core.panes.reading_engine(&core.engine);
+                    crate::core::follow_link(
+                        &core,
+                        0,
+                        &engine,
+                        recto_reader::links::LinkHit {
+                            page: 0,
+                            rect: [0.0; 4],
+                            target,
+                        },
+                    );
                     if returned_tx.send(what).is_err() {
                         return;
                     }
