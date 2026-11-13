@@ -173,8 +173,8 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
             low_res: None,
         },
     );
-    assert!(reader.entries.is_empty(), "the old page's picture stays out");
-    assert!(reader.cover.is_empty());
+    assert!(reader.cache.entries.is_empty(), "the old page's picture stays out");
+    assert!(reader.cache.cover.is_empty());
 }
 
 /// Failure: a surface that held one file's page is handed to another file's worker, so a hostile file reads a page of the one before it. Both ways round: the next file's worker gets surfaces a cold tab's tiles had, and a hostile file that kept a reference, answered "blank" and got its surface taken back then sees the next file's pixels and can repaint them. No surface may ever serve two files. Each is held here, as a hostile worker holds it, so its name can't be given to a new one by chance.

@@ -12,13 +12,14 @@ use recto_index::select::PagePoint;
 use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
-use recto_render_service::{LowResWhy, TileKind};
+use recto_render_service::TileKind;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod cache;
 mod host;
 mod jobs;
 mod place;
@@ -26,6 +27,7 @@ mod plan;
 mod pointer;
 mod zoom;
 
+use cache::{Entry, TileCache, TileKey};
 use host::{HostQueue, Placement};
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind, Work};
@@ -38,13 +40,6 @@ pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scrol
 pub const MAX_ATTACH_PER_TURN: usize = 8;
 /// How far from where it was sent the host can put the view, on its own pixels: half a point at 2x, a point at 1x. Within it, the view is still on the place.
 const HOST_ROUNDING: f64 = 1.0;
-/// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
-const MAX_KEPT_BYTES: usize = 256 * 1024 * 1024;
-const MAX_KEPT_SURFACES: usize = 1024;
-/// Previews kept off screen, about 0.75 MiB each and discardable. Platform report §2.6 said 16. More costs nothing while the Mac has memory, and each one is a page that doesn't come back blank.
-const MAX_KEPT_PREVIEWS: usize = 128;
-/// Entries of any kind, since a blank tile has no surface but is still remembered.
-const MAX_ENTRIES: usize = 4096;
 /// A preview is at most this: past it a page is too large for a preview to be cheap.
 const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 /// How much smaller a preview is than the fitted page. Platform report §2.5.
@@ -171,46 +166,6 @@ impl PageMap {
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TileKey {
-    tab: u32,
-    page: u32,
-    scale_bits: u32,
-    column: u16,
-    row: u16,
-    paper: PaperKind,
-    preview: bool,
-}
-
-#[derive(Debug)]
-struct LowResNote {
-    message: &'static str,
-    may_clear: bool,
-    at: Instant,
-}
-
-/// One drawn thing: a tile, a region of several, or a page's preview.
-#[derive(Debug)]
-struct Entry {
-    id: u64,
-    tab: u32,
-    page: u32,
-    scale: f32,
-    paper: PaperKind,
-    preview: bool,
-    rect: TileRect,
-    surface: Option<PixelSurface>,
-    /// A tile of one colour, that needs no surface.
-    rgb: Option<u32>,
-    crop: (f64, f64),
-    low_res: Option<LowResNote>,
-    /// Which version of its file it was drawn from, as the worker said: see [`DocView::versions`]. `None` when nothing's said, as a picture from a sleep file written before this was known.
-    version: Option<u64>,
-    attached: bool,
-    discardable: bool,
-    last_used: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -385,13 +340,8 @@ pub struct Reader {
     viewport: Viewport,
     paper: PaperKind,
     window_open: bool,
-    entries: HashMap<u64, Entry>,
-    cover: HashMap<TileKey, u64>,
-    next_id: u64,
-    /// Attached entries by page, on the hot tab only.
-    attached: HashMap<u32, Vec<u64>>,
+    cache: TileCache,
     host: HostQueue,
-    clock: u64,
     work: Work,
     place: Place,
     counts: ReaderCounts,
@@ -399,15 +349,11 @@ pub struct Reader {
     pointer: Pointer,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     sleep_view: Option<(u32, SleepView)>,
-    /// Pictures that came from sleep files, which a worker's word on the version goes over.
-    from_sleep: HashSet<u64>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
     window_up: bool,
     /// When the wake under way was asked for, and how it's gone.
     waking: Option<(Instant, WakeReport)>,
     last_wake: Option<WakeReport>,
-    /// How many page views share the caps on what's kept: one, or each pane of a comparison, so several panes keep no more between them than one view does.
-    share: usize,
     /// The least room either side of the pages: a comparison's pane has less than a window.
     margins: (f64, f64),
 }
@@ -433,33 +379,18 @@ impl Reader {
             },
             paper: PaperKind::White,
             window_open: true,
-            entries: HashMap::new(),
-            cover: HashMap::new(),
-            next_id: 1,
-            attached: HashMap::new(),
+            cache: TileCache::new(),
             host: HostQueue::default(),
-            clock: 0,
             work: Work::new(),
             place: Place::new(),
             counts: ReaderCounts::default(),
             note: None,
             pointer: Pointer::default(),
             sleep_view: None,
-            from_sleep: HashSet::new(),
             window_up: false,
             waking: None,
             last_wake: None,
-            share: 1,
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
-        }
-    }
-
-    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now.
-    pub fn set_share(&mut self, views: usize) {
-        let views = views.clamp(1, 8);
-        if views != self.share {
-            self.share = views;
-            self.evict();
         }
     }
 
@@ -531,13 +462,14 @@ impl Reader {
             // Of the version it was left with.
             doc.left_pictures = None;
             let stale: Vec<u64> = self
+                .cache
                 .entries
                 .values()
                 .filter(|entry| entry.tab == tab && !matches!((entry.version, was), (Some(drawn), _) if drawn == version))
                 .filter(|entry| {
                     was.is_some()
                         || entry.version.is_some_and(|drawn| drawn != version)
-                        || entry.version.is_none() && entry.preview && self.from_sleep.contains(&entry.id)
+                        || entry.version.is_none() && entry.preview && self.cache.from_sleep.contains(&entry.id)
                 })
                 .map(|entry| entry.id)
                 .collect();
@@ -545,7 +477,7 @@ impl Reader {
                 continue;
             }
             for id in stale {
-                if let Some(entry) = self.entries.get(&id)
+                if let Some(entry) = self.cache.entries.get(&id)
                     && entry.attached
                 {
                     let page = entry.page;
@@ -553,7 +485,7 @@ impl Reader {
                         self.detach(id, page);
                     }
                 }
-                self.forget_entry(id);
+                self.cache.forget(id, &mut self.host);
             }
             if self.hot == Some(tab) {
                 self.refresh(MAX_ATTACH_PER_TURN);
@@ -615,7 +547,7 @@ impl Reader {
         self.visible_pages(doc).all(|page| {
             let rect = doc.layout.rect(page);
             let showing = rect.y.max(top)..(rect.y + rect.height).min(bottom);
-            showing.end - showing.start < self.viewport.height * MIN_SHARE_OF_VIEW || self.attached.get(&page).is_some_and(|ids| !ids.is_empty())
+            showing.end - showing.start < self.viewport.height * MIN_SHARE_OF_VIEW || self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty())
         })
     }
 
@@ -729,11 +661,12 @@ impl Reader {
         let size = doc.layout.raw_size(page);
         let paper_rgb = paper.rgb();
         // A preview as it is, if there's one.
-        let preview = self
-            .cover
-            .get(&self.preview_key(doc, page))
-            .copied()
-            .filter(|id| self.entries.get(id).is_some_and(|entry| entry.version.is_some() && self.is_current(entry)));
+        let preview = self.cache.cover.get(&self.preview_key(doc, page)).copied().filter(|id| {
+            self.cache
+                .entries
+                .get(id)
+                .is_some_and(|entry| entry.version.is_some() && self.is_current(entry))
+        });
         if let Some(id) = preview
             && let Some(picture) = self.copy_preview(id)
         {
@@ -741,6 +674,7 @@ impl Reader {
         }
         // Otherwise the sharpest tiles there are of this page, at whole steps down.
         let ids: Vec<u64> = self
+            .cache
             .entries
             .values()
             .filter(|entry| {
@@ -755,7 +689,11 @@ impl Reader {
             })
             .map(|entry| entry.id)
             .collect();
-        let finest = ids.iter().filter_map(|id| self.entries.get(id)).map(|entry| entry.scale).fold(0.0f32, f32::max);
+        let finest = ids
+            .iter()
+            .filter_map(|id| self.cache.entries.get(id))
+            .map(|entry| entry.scale)
+            .fold(0.0f32, f32::max);
         if finest <= 0.0 {
             return None;
         }
@@ -777,17 +715,17 @@ impl Reader {
         }
         let mut any = false;
         for id in ids {
-            let Some(entry) = self.entries.get(&id) else { continue };
+            let Some(entry) = self.cache.entries.get(&id) else { continue };
             if entry.scale != finest {
                 continue;
             }
             let was_discardable = entry.discardable;
             if was_discardable && entry.surface.as_ref().is_none_or(|surface| surface.reclaim() != Purge::Kept) {
                 self.counts.discards_lost += 1;
-                self.forget_entry(id);
+                self.cache.forget(id, &mut self.host);
                 continue;
             }
-            let Some(entry) = self.entries.get_mut(&id) else { continue };
+            let Some(entry) = self.cache.entries.get_mut(&id) else { continue };
             entry.discardable = false;
             let rect = entry.rect;
             let (crop_width, crop_height) = entry.crop;
@@ -827,14 +765,14 @@ impl Reader {
     }
 
     fn copy_preview(&mut self, id: u64) -> Option<RawPicture> {
-        let entry = self.entries.get(&id)?;
+        let entry = self.cache.entries.get(&id)?;
         let was_discardable = entry.discardable;
         if was_discardable && entry.surface.as_ref().is_none_or(|surface| surface.reclaim() != Purge::Kept) {
             self.counts.discards_lost += 1;
-            self.forget_entry(id);
+            self.cache.forget(id, &mut self.host);
             return None;
         }
-        let entry = self.entries.get_mut(&id)?;
+        let entry = self.cache.entries.get_mut(&id)?;
         entry.discardable = false;
         // A preview that's only what could be drawn then, or of one colour with no surface, isn't what's wanted.
         let (rect, page, scale, paper) = (entry.rect, entry.page, entry.scale, entry.paper);
@@ -868,42 +806,6 @@ impl Reader {
             paper,
             bgra: copied?,
         })
-    }
-
-    /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
-    pub fn memory_pressure(&mut self, critical: bool) {
-        // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
-        if critical {
-            for doc in self.docs.values_mut() {
-                doc.left_pictures = None;
-            }
-        }
-        let ids: Vec<u64> = self
-            .entries
-            .values()
-            .filter(|entry| !entry.attached && (critical || !entry.preview))
-            .map(|entry| entry.id)
-            .collect();
-        for id in ids {
-            self.forget_entry(id);
-        }
-    }
-
-    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
-    pub fn empty_discardable(&mut self) -> usize {
-        let mut emptied = 0;
-        for entry in self.entries.values().filter(|entry| entry.discardable) {
-            if let Some(surface) = &entry.surface {
-                surface.empty_now();
-                emptied += 1;
-            }
-        }
-        emptied
-    }
-
-    /// How many surfaces are held, for QA.
-    pub fn entry_count(&self) -> usize {
-        self.entries.len()
     }
 
     pub fn hot_tab(&self) -> Option<u32> {
@@ -1119,10 +1021,10 @@ impl Reader {
                 None,
             );
             // Of the version its sleep file says, if it says. Either way, a worker's word goes over it.
-            if let Some(entry) = self.entries.get_mut(&id) {
+            if let Some(entry) = self.cache.entries.get_mut(&id) {
                 entry.version = view.version;
             }
-            self.from_sleep.insert(id);
+            self.cache.from_sleep.insert(id);
             any = true;
         }
         if let Some((_, report)) = &mut self.waking
@@ -1163,19 +1065,12 @@ impl Reader {
         self.pointer.selecting.reset();
     }
 
-    fn drop_tab_entries(&mut self, tab: u32) {
-        let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
-        for id in ids {
-            self.forget_entry(id);
-        }
-    }
-
     /// Takes everything off the screen, in one op.
     fn clear_screen(&mut self) {
         self.host.ops.push_back(Op::Clear);
-        for ids in std::mem::take(&mut self.attached).into_values() {
+        for ids in std::mem::take(&mut self.cache.attached).into_values() {
             for id in ids {
-                if let Some(entry) = self.entries.get_mut(&id) {
+                if let Some(entry) = self.cache.entries.get_mut(&id) {
                     entry.attached = false;
                     self.host.to_discard.push(id);
                 }
@@ -1299,30 +1194,6 @@ impl Reader {
         Ok(cells)
     }
 
-    fn key(&self, doc: &DocView, page: u32, scale: f32, (column, row): (u16, u16)) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: scale.to_bits(),
-            column,
-            row,
-            paper: self.paper,
-            preview: false,
-        }
-    }
-
-    fn preview_key(&self, doc: &DocView, page: u32) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: 0,
-            column: 0,
-            row: 0,
-            paper: self.paper,
-            preview: true,
-        }
-    }
-
     /// Brings the screen into line with what's wanted, attaching at most `budget` tiles. The rest wait for the next turn.
     fn refresh(&mut self, mut budget: usize) {
         self.host.more_to_attach = false;
@@ -1394,9 +1265,9 @@ impl Reader {
         for &page in &visible {
             let Some(doc) = self.docs.get(&tab) else { return };
             let preview = self.preview_key(doc, page);
-            let bare = !self.attached.get(&page).is_some_and(|ids| !ids.is_empty());
+            let bare = !self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
             if bare
-                && let Some(&id) = self.cover.get(&preview)
+                && let Some(&id) = self.cache.cover.get(&preview)
                 && self.attach(id, true)
             {
                 budget = budget.saturating_sub(1);
@@ -1414,12 +1285,12 @@ impl Reader {
             let mut missing = false;
             let mut wanted = Vec::with_capacity(keys.len());
             for key in keys {
-                let Some(&id) = self.cover.get(&key) else {
+                let Some(&id) = self.cache.cover.get(&key) else {
                     missing = true;
                     continue;
                 };
                 wanted.push(id);
-                let attached = self.entries.get(&id).is_some_and(|entry| entry.attached);
+                let attached = self.cache.entries.get(&id).is_some_and(|entry| entry.attached);
                 if !attached {
                     if budget == 0 {
                         self.host.more_to_attach = true;
@@ -1432,23 +1303,16 @@ impl Reader {
                     }
                 }
             }
-            let preview_id = self.cover.get(&preview).copied();
+            let preview_id = self.cache.cover.get(&preview).copied();
             if missing {
                 if let Some(id) = preview_id {
-                    let attached = self.entries.get(&id).is_some_and(|entry| entry.attached);
+                    let attached = self.cache.entries.get(&id).is_some_and(|entry| entry.attached);
                     if !attached && budget > 0 && self.attach(id, true) {
                         budget -= 1;
                     }
                 }
             } else {
-                let done: Vec<u64> = self
-                    .attached
-                    .get(&page)
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|id| !wanted.contains(id))
-                    .collect();
+                let done: Vec<u64> = self.cache.attached_on(page).filter(|id| !wanted.contains(id)).collect();
                 for id in done {
                     self.detach(id, page);
                 }
@@ -1459,13 +1323,10 @@ impl Reader {
             }
             let Some(doc) = self.docs.get(&tab) else { return };
             let out: Vec<u64> = self
-                .attached
-                .get(&page)
-                .into_iter()
-                .flatten()
-                .copied()
+                .cache
+                .attached_on(page)
                 .filter(|id| {
-                    self.entries.get(id).is_some_and(|entry| {
+                    self.cache.entries.get(id).is_some_and(|entry| {
                         !entry.preview && entry.scale == scale && entry.paper == self.paper && !self.touches_view(doc, page, entry.rect, scale)
                     })
                 })
@@ -1487,11 +1348,12 @@ impl Reader {
                     return Some(issue.message.clone());
                 }
                 let low = self
+                    .cache
                     .attached
                     .get(&page)
                     .into_iter()
                     .flatten()
-                    .filter_map(|id| self.entries.get(id))
+                    .filter_map(|id| self.cache.entries.get(id))
                     .find_map(|entry| entry.low_res.as_ref());
                 if let Some(low) = low {
                     return Some(low.message.to_string());
@@ -1506,123 +1368,16 @@ impl Reader {
         self.note = note;
     }
 
-    fn attach(&mut self, id: u64, below: bool) -> bool {
-        self.clock += 1;
-        let clock = self.clock;
-        // Of another version of its file than the one there is now: it goes, and its page is drawn again.
-        if let Some(entry) = self.entries.get(&id)
-            && !self.is_current(entry)
-        {
-            self.forget_entry(id);
-            return false;
-        }
-        let Some(entry) = self.entries.get_mut(&id) else { return false };
-        if entry.discardable {
-            let kept = entry.surface.as_ref().is_none_or(|surface| surface.reclaim() == Purge::Kept);
-            entry.discardable = false;
-            if !kept {
-                self.counts.discards_lost += 1;
-                self.forget_entry(id);
-                return false;
-            }
-        }
-        entry.attached = true;
-        entry.last_used = clock;
-        let (page, rect, scale, crop, rgb) = (entry.page, entry.rect, f64::from(entry.scale), entry.crop, entry.rgb);
-        let surface = entry.surface.as_ref().map_or(0, PixelSurface::retained_for_host);
-        self.attached.entry(page).or_default().push(id);
-        // A tile the colour of the paper needs nothing drawn at all.
-        if surface == 0 && rgb.is_none_or(|rgb| rgb == self.paper.rgb()) {
-            return true;
-        }
-        self.host.ops.push_back(Op::Attach {
-            id,
-            page,
-            x: f64::from(rect.x) / scale,
-            y: f64::from(rect.y) / scale,
-            width: f64::from(rect.width) / scale,
-            height: f64::from(rect.height) / scale,
-            surface,
-            rgb,
-            crop_width: crop.0,
-            crop_height: crop.1,
-            below,
-        });
-        true
-    }
-
-    fn detach(&mut self, id: u64, page: u32) {
-        if let Some(ids) = self.attached.get_mut(&page) {
-            ids.retain(|other| *other != id);
-            if ids.is_empty() {
-                self.attached.remove(&page);
-            }
-        }
-        if let Some(entry) = self.entries.get_mut(&id) {
-            entry.attached = false;
-            if entry.surface.is_some() || entry.rgb.is_some_and(|rgb| rgb != self.paper.rgb()) {
-                self.host.ops.push_back(Op::Detach { id });
-            }
-            self.host.to_discard.push(id);
-        }
-    }
-
     fn hide_page(&mut self, page: u32) {
         self.host.ops.push_back(Op::HidePage { page });
         self.host.shown.remove(&page);
         self.pointer.selecting.page_hidden(page);
-        for id in self.attached.remove(&page).unwrap_or_default() {
-            if let Some(entry) = self.entries.get_mut(&id) {
+        for id in self.cache.attached.remove(&page).unwrap_or_default() {
+            if let Some(entry) = self.cache.entries.get_mut(&id) {
                 entry.attached = false;
                 self.host.to_discard.push(id);
             }
         }
-    }
-
-    /// Forgets an entry, and its surface with it.
-    fn forget_entry(&mut self, id: u64) {
-        self.from_sleep.remove(&id);
-        let Some(entry) = self.entries.remove(&id) else { return };
-        for key in Self::keys_of(&entry) {
-            if self.cover.get(&key) == Some(&id) {
-                self.cover.remove(&key);
-            }
-        }
-        if entry.attached
-            && let Some(ids) = self.attached.get_mut(&entry.page)
-        {
-            ids.retain(|other| *other != id);
-            if entry.surface.is_some() {
-                self.host.ops.push_back(Op::Detach { id });
-            }
-        }
-    }
-
-    fn keys_of(entry: &Entry) -> Vec<TileKey> {
-        if entry.preview {
-            return vec![TileKey {
-                tab: entry.tab,
-                page: entry.page,
-                scale_bits: 0,
-                column: 0,
-                row: 0,
-                paper: entry.paper,
-                preview: true,
-            }];
-        }
-        let mut keys = Vec::new();
-        for place in recto_proto::region_tiles(entry.rect, TILE_EDGE) {
-            keys.push(TileKey {
-                tab: entry.tab,
-                page: entry.page,
-                scale_bits: entry.scale.to_bits(),
-                column: (place.x / TILE_EDGE) as u16,
-                row: (place.y / TILE_EDGE) as u16,
-                paper: entry.paper,
-                preview: false,
-            });
-        }
-        keys
     }
 
     /// Whether any pixel of a page is in view at the tiles' scale. The view can reach into a page by less than the part of a pixel its tiles leave off at its foot or its right edge, as
@@ -1641,7 +1396,7 @@ impl Reader {
         let Some(doc) = self.doc() else { return };
         let (mut blank, mut blank_seen) = (false, false);
         for page in self.visible_pages(doc) {
-            let has_something = self.attached.get(&page).is_some_and(|ids| !ids.is_empty());
+            let has_something = self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
             if !has_something && !doc.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
                 blank = true;
                 blank_seen |= doc.seen.contains(&page);
@@ -1667,7 +1422,7 @@ impl Reader {
         self.host.unapplied = false;
         self.track_wake();
         for id in std::mem::take(&mut self.host.handed_to_host) {
-            if let Some(entry) = self.entries.get_mut(&id)
+            if let Some(entry) = self.cache.entries.get_mut(&id)
                 && !entry.attached
                 && !entry.discardable
             {
@@ -1677,38 +1432,7 @@ impl Reader {
                 entry.discardable = true;
             }
         }
-        self.evict();
-    }
-
-    /// Least recently used first, with a page's preview outliving its tiles: it's a fraction of their size, and it's what keeps a page seen a while ago from coming back blank. Bounded, as the entries are, and a look along them only when something has just gone off a layer.
-    fn evict(&mut self) {
-        loop {
-            let (mut tile_bytes, mut tile_surfaces, mut previews) = (0usize, 0usize, 0usize);
-            let mut oldest_tile: Option<(u64, u64)> = None;
-            let mut oldest_preview: Option<(u64, u64)> = None;
-            for entry in self.entries.values().filter(|entry| !entry.attached) {
-                let age = (entry.last_used, entry.id);
-                if entry.preview {
-                    previews += 1;
-                    oldest_preview = Some(oldest_preview.map_or(age, |known| known.min(age)));
-                } else {
-                    tile_bytes += entry.surface.as_ref().map_or(0, PixelSurface::len);
-                    tile_surfaces += usize::from(entry.surface.is_some());
-                    oldest_tile = Some(oldest_tile.map_or(age, |known| known.min(age)));
-                }
-            }
-            let share = self.share.max(1);
-            let too_many_tiles = tile_bytes > MAX_KEPT_BYTES / share || tile_surfaces > MAX_KEPT_SURFACES / share || self.entries.len() > MAX_ENTRIES / share;
-            let victim = if previews > MAX_KEPT_PREVIEWS / share {
-                oldest_preview
-            } else if too_many_tiles {
-                oldest_tile.or(oldest_preview)
-            } else {
-                None
-            };
-            let Some((_, id)) = victim else { return };
-            self.forget_entry(id);
-        }
+        self.cache.evict(&mut self.host);
     }
 
     /// Sets the paper. Tiles for the other paper stay in memory as discardable, so going back is quick.
@@ -1727,9 +1451,9 @@ impl Reader {
         for doc in self.docs.values_mut() {
             doc.left_pictures = None;
         }
-        let ids: Vec<u64> = self.entries.keys().copied().collect();
+        let ids: Vec<u64> = self.cache.entries.keys().copied().collect();
         for id in ids {
-            self.forget_entry(id);
+            self.cache.forget(id, &mut self.host);
         }
         self.host.close();
         if let Some(running) = &self.work.running
@@ -1956,7 +1680,7 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
         // It came too late for the view, or for another zoom, paper or a warm tab. Nothing's showing it, so it counts for nothing: drawn is no reason to hold memory.
         if let Some(id) = kept
-            && let Some(entry) = self.entries.get_mut(&id)
+            && let Some(entry) = self.cache.entries.get_mut(&id)
             && !entry.attached
             && !entry.discardable
         {
@@ -1964,88 +1688,7 @@ impl Reader {
                 surface.set_discardable();
             }
             entry.discardable = true;
-            self.evict();
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn keep_drawn(
-        &mut self,
-        tab: u32,
-        page: u32,
-        scale: f32,
-        rect: TileRect,
-        surface: PixelSurface,
-        what: DrawKind,
-        paper: PaperKind,
-        kind: TileKind,
-        low_res: Option<(TileRect, LowResWhy)>,
-    ) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let preview = what == DrawKind::Preview;
-        let drawn_rect = low_res.map_or(rect, |(drawn, _)| drawn);
-        let crop = (
-            f64::from(drawn_rect.width) / f64::from(surface.width().max(1)),
-            f64::from(drawn_rect.height) / f64::from(surface.height().max(1)),
-        );
-        // A tile of one colour needs no surface, unless it's a whole region's or the only sign of a page.
-        let (rgb, surface) = match (kind, what) {
-            (TileKind::Blank { rgb }, DrawKind::Tile) if low_res.is_none() => (Some(rgb), None),
-            _ => (None, Some(surface)),
-        };
-        let note = low_res.map(|(_, why)| LowResNote {
-            message: why.message(),
-            may_clear: why.may_clear(),
-            at: Instant::now(),
-        });
-        self.clock += 1;
-        let version = self.version_of_page(tab, page);
-        let entry = Entry {
-            id,
-            tab,
-            page,
-            scale,
-            paper,
-            preview,
-            rect,
-            surface,
-            rgb,
-            crop,
-            low_res: note,
-            version,
-            attached: false,
-            discardable: false,
-            last_used: self.clock,
-        };
-        for key in Self::keys_of(&entry) {
-            if let Some(old) = self.cover.insert(key, id)
-                && old != id
-            {
-                self.retire_replaced(old, tab);
-            }
-        }
-        self.entries.insert(id, entry);
-        if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.seen.insert(page);
-        }
-        id
-    }
-
-    /// Something drawn over an older copy of the same place. The older one comes off when no key points at it.
-    fn retire_replaced(&mut self, old: u64, tab: u32) {
-        let Some(entry) = self.entries.get(&old) else { return };
-        let page = entry.page;
-        let still_used = Self::keys_of(entry).iter().any(|key| self.cover.get(key) == Some(&old));
-        if !still_used {
-            if entry.attached && self.hot == Some(tab) {
-                self.detach(old, page);
-            }
-            if let Some(entry) = self.entries.get(&old)
-                && !entry.attached
-            {
-                self.forget_entry(old);
-            }
+            self.cache.evict(&mut self.host);
         }
     }
 
@@ -2089,7 +1732,13 @@ impl Reader {
             let Ok(cells) = self.visible_cells(doc, page, scale) else { continue };
             for cell in cells {
                 let key = self.key(doc, page, scale, cell);
-                if !self.cover.get(&key).and_then(|id| self.entries.get(id)).is_some_and(|entry| entry.attached) {
+                if !self
+                    .cache
+                    .cover
+                    .get(&key)
+                    .and_then(|id| self.cache.entries.get(id))
+                    .is_some_and(|entry| entry.attached)
+                {
                     return false;
                 }
             }
@@ -2100,26 +1749,29 @@ impl Reader {
     /// What QA reads, and the budgets. Numbers and states: no text from a document.
     pub fn report(&self) -> ReaderReport {
         let doc = self.doc();
-        let attached = self.attached.values().map(Vec::len).sum::<usize>();
+        let attached = self.cache.attached.values().map(Vec::len).sum::<usize>();
         let attached_bytes: usize = self
+            .cache
             .attached
             .values()
             .flatten()
-            .filter_map(|id| self.entries.get(id))
+            .filter_map(|id| self.cache.entries.get(id))
             .filter_map(|entry| entry.surface.as_ref())
             .map(PixelSurface::len)
             .sum();
         let previews_attached = self
+            .cache
             .attached
             .values()
             .flatten()
-            .filter_map(|id| self.entries.get(id))
+            .filter_map(|id| self.cache.entries.get(id))
             .filter(|entry| entry.preview)
             .count();
         let low_res_pages: HashSet<u32> = self
+            .cache
             .attached
             .iter()
-            .filter(|(_, ids)| ids.iter().filter_map(|id| self.entries.get(id)).any(|entry| entry.low_res.is_some()))
+            .filter(|(_, ids)| ids.iter().filter_map(|id| self.cache.entries.get(id)).any(|entry| entry.low_res.is_some()))
             .map(|(page, _)| *page)
             .collect();
         let mut low_res_pages: Vec<u32> = low_res_pages.into_iter().map(|page| page + 1).collect();
@@ -2145,8 +1797,8 @@ impl Reader {
                 "attached": attached,
                 "attached_bytes": attached_bytes,
                 "previews_attached": previews_attached,
-                "kept": self.entries.len() - attached.min(self.entries.len()),
-                "kept_bytes": self.entries.values().filter(|entry| !entry.attached).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum::<usize>(),
+                "kept": self.cache.entries.len() - attached.min(self.cache.entries.len()),
+                "kept_bytes": self.cache.entries.values().filter(|entry| !entry.attached).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum::<usize>(),
                 "page_layers": self.host.shown.len(),
             },
             "counts": {

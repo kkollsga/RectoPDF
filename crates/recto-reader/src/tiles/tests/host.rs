@@ -150,16 +150,16 @@ fn a_closed_window_keeps_no_ops_or_surfaces_for_them() {
 fn a_surface_goes_discardable_only_after_the_host_was_told() {
     let mut reader = reader_on(3);
     settle(&mut reader);
-    let (&page, ids) = reader.attached.iter().next().unwrap();
+    let (&page, ids) = reader.cache.attached.iter().next().unwrap();
     let id = ids[0];
     reader.host.take_ops();
     // The engine's thread, between the host's taking its ops and saying it has applied them.
     reader.detach(id, page);
     reader.applied();
-    assert!(!reader.entries[&id].discardable, "the layer still has it");
+    assert!(!reader.cache.entries[&id].discardable, "the layer still has it");
     reader.host.take_ops();
     reader.applied();
-    assert!(reader.entries[&id].discardable, "now the host has been told");
+    assert!(reader.cache.entries[&id].discardable, "now the host has been told");
 }
 
 /// Failure: a burst of attachments stalls the UI thread, or the leftovers are forgotten and part of a page stays blank until something else happens.

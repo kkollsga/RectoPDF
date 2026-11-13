@@ -51,7 +51,7 @@ impl Reader {
                 return true;
             }
             let Ok(cells) = self.visible_cells(doc, page, scale) else { return false };
-            cells.into_iter().any(|cell| !self.cover.contains_key(&self.key(doc, page, scale, cell)))
+            cells.into_iter().any(|cell| !self.cache.cover.contains_key(&self.key(doc, page, scale, cell)))
         })
     }
 
@@ -162,7 +162,7 @@ impl Reader {
                 .copied()
                 .filter(|cell| {
                     let key = self.key(doc, page, scale, *cell);
-                    match self.cover.get(&key).and_then(|id| self.entries.get(id)) {
+                    match self.cache.cover.get(&key).and_then(|id| self.cache.entries.get(id)) {
                         None => true,
                         Some(entry) => entry
                             .low_res
@@ -189,7 +189,7 @@ impl Reader {
             }
             let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
             // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
-            let preview_wanted = !heavy && !self.cover.contains_key(&self.preview_key(doc, page));
+            let preview_wanted = !heavy && !self.cache.cover.contains_key(&self.preview_key(doc, page));
             if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
                 let paper = self.paper;
                 let generation = self.work.fresh_generation();

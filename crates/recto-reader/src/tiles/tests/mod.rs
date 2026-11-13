@@ -1,8 +1,11 @@
+use super::cache::{MAX_KEPT_BYTES, MAX_KEPT_PREVIEWS};
 use super::*;
 use crate::layout::PageBox;
 use recto_index::select::Range;
+use recto_render_service::LowResWhy;
 use std::path::Path;
 
+mod cache;
 mod host;
 mod jobs;
 mod place;
@@ -143,37 +146,6 @@ fn it_settles_with_what_is_visible_on_layers() {
     assert_eq!(report["visible_pages"][0], 1);
 }
 
-/// Failure: scrolling through a long document keeps every tile on a layer, so memory grows with what's been read. Off-screen tiles must leave the layers and go discardable. Measured in surfaces, by the count on layers.
-#[test]
-fn scrolling_keeps_only_whats_visible_on_layers() {
-    let mut reader = reader_on(400);
-    settle(&mut reader);
-    let first = reader.report().0["tiles"]["attached"].as_u64().unwrap();
-    for step in 1..60 {
-        reader.set_viewport(view(f64::from(step) * 900.0));
-        settle(&mut reader);
-    }
-    let later = reader.report().0;
-    assert!(later["tiles"]["attached"].as_u64().unwrap() <= first * 2, "{later}");
-    assert!(later["tiles"]["kept_bytes"].as_u64().unwrap() > 0, "off-screen tiles stay cached");
-    assert!(later["tiles"]["page_layers"].as_u64().unwrap() <= 3, "{later}");
-}
-
-/// Failure: coming back to a page drawn a moment ago shows nothing and draws it again, so a seen page goes blank. Holds the budget's "0 blank frames on seen pages", and proves the cache is really used.
-#[test]
-fn a_page_seen_before_comes_back_without_being_drawn() {
-    let mut reader = reader_on(100);
-    settle(&mut reader);
-    reader.set_viewport(view(5000.0));
-    settle(&mut reader);
-    let before = reader.counts().drawn;
-    let ops = reader.set_viewport(view(0.0));
-    assert!(ops.iter().any(|op| matches!(op, Op::Attach { .. })), "something shows at once");
-    assert_eq!(reader.counts().blank_seen_steps, 0);
-    settle(&mut reader);
-    assert_eq!(reader.counts().drawn, before, "nothing needed drawing again");
-}
-
 /// Failure: a sweep over pages already drawn has a step with a page in view and nothing on it. Measured by `qa sweep 6` on `rfc9110` from page 64: 1 blank step on a seen page in 2 of 6 sweeps (2026-11-08), then in 2 of 21 here, each time a page whose foot was in view by 0.004 points, inside the last part of a pixel that a page's tiles leave off (`device_size` rounds a page's edge to whole pixels). No tile reaches there, so refreshing took everything off the page, and the count called it bare though nothing of it could be seen. Pages are sized so their foot is such a part of a pixel, the view lands there on each page, and it sweeps at 6 pages a second over the seen pages, three times.
 #[test]
 fn a_sweep_over_seen_pages_has_no_blank_step() {
@@ -232,7 +204,7 @@ fn a_sweep_over_seen_pages_has_no_blank_step() {
             for page in reader.visible_pages(doc) {
                 let shows = !matches!(reader.visible_cells(doc, page, doc.tile_scale), Ok(cells) if cells.is_empty());
                 assert!(
-                    !shows || reader.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
+                    !shows || reader.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
                     "page {page} is bare, {into} points in view"
                 );
             }
@@ -260,60 +232,6 @@ fn every_visible_page_shows_something_in_the_first_turn() {
     assert_eq!(reader.counts().blank_seen_steps, 0);
 }
 
-/// Failure: reading on through a long document pushes out what it just read, and a page's preview goes with its tiles, so coming back to it shows nothing at all. Measured at 40 pages a second on `rfc9110`: 84 blank steps on seen pages, all from this. Past the tile cap, tiles go and previews stay.
-#[test]
-fn previews_outlive_their_tiles() {
-    let mut reader = reader_on(600);
-    let step = reader.doc().map(|doc| doc.layout.top(1)).unwrap();
-    settle(&mut reader);
-    // Enough pages at 12 tiles each to pass the tile cap by a long way, and few enough to stay under the preview cap.
-    for page in 1..60 {
-        reader.set_viewport(view(f64::from(page) * step));
-        settle(&mut reader);
-    }
-    let report = reader.report().0;
-    assert!(
-        report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64,
-        "{report}"
-    );
-    let doc = reader.doc().unwrap();
-    let key = reader.preview_key(doc, 0);
-    assert!(reader.cover.contains_key(&key), "the first page's preview is still here");
-    let ops = reader.set_viewport(view(0.0));
-    assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })), "and shows at once: {ops:?}");
-    assert_eq!(reader.counts().blank_seen_steps, 0);
-}
-
-/// Failure: a tile from before a zoom stays on screen once its replacements are all there, or the old tiles go before the new ones arrive, leaving a blank.
-#[test]
-fn a_zoom_keeps_the_old_tiles_until_the_new_ones_cover_them() {
-    let mut reader = reader_on(10);
-    settle(&mut reader);
-    let before = reader.report().0["tile_scale"].as_f64().unwrap();
-    let ops = reader.set_viewport(Viewport {
-        magnification: 1.5,
-        ..view(0.0)
-    });
-    assert!(
-        !ops.iter().any(|op| matches!(op, Op::Detach { .. } | Op::HidePage { .. })),
-        "nothing comes off yet: {ops:?}"
-    );
-    settle(&mut reader);
-    let after = reader.report().0;
-    assert!(after["tile_scale"].as_f64().unwrap() > before);
-    assert!(reader.is_settled());
-    let attached = after["tiles"]["attached"].as_u64().unwrap();
-    let scale = after["tile_scale"].as_f64().unwrap() as f32;
-    let exact = reader
-        .attached
-        .values()
-        .flatten()
-        .filter_map(|id| reader.entries.get(id))
-        .filter(|entry| entry.scale == scale)
-        .count() as u64;
-    assert_eq!(attached, exact, "only exact tiles left");
-}
-
 fn a_draw_job(reader: &mut Reader, what: DrawKind) -> Job {
     loop {
         let job = reader.next_job().expect("a job");
@@ -332,99 +250,6 @@ fn a_draw_job(reader: &mut Reader, what: DrawKind) -> Job {
             ),
         }
     }
-}
-
-/// Failure: a cold tab keeps its tiles, layout or renderer's file. Budget: 0 tiles and 0 handles for a cold tab.
-#[test]
-fn a_tab_gone_cold_holds_nothing() {
-    let mut reader = reader_on(10);
-    settle(&mut reader);
-    assert!(!reader.entries.is_empty());
-    reader.activate(
-        2,
-        10,
-        0,
-        PageMap {
-            files: vec![PathBuf::from("/d/b.pdf")],
-            slots: None,
-            own: None,
-            turns: None,
-            expected: Vec::new(),
-            follows: None,
-        },
-        &[],
-        None,
-        Spread::Single,
-    );
-    assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
-    assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-    reader.activate(
-        3,
-        10,
-        0,
-        PageMap {
-            files: vec![PathBuf::from("/d/c.pdf")],
-            slots: None,
-            own: None,
-            turns: None,
-            expected: Vec::new(),
-            follows: None,
-        },
-        &[2],
-        None,
-        Spread::Single,
-    );
-    assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
-}
-
-/// Failure: the window closed still holds tiles, so a closed window stays over budget.
-#[test]
-fn a_closed_window_holds_no_tiles_and_comes_back() {
-    let mut reader = reader_on(10);
-    settle(&mut reader);
-    reader.window_closed();
-    assert!(reader.entries.is_empty());
-    assert!(reader.next_job().is_none(), "nothing draws for a closed window");
-    assert!(reader.wanted_files().is_empty(), "the renderer goes too");
-    reader.window_opened();
-    reader.set_viewport(view(0.0));
-    settle(&mut reader);
-    assert!(reader.is_settled());
-    assert!(!reader.entries.is_empty());
-}
-
-/// Failure: dark paper shows white tiles, or the paper's tiles are thrown away on a change so going back draws everything again.
-#[test]
-fn a_change_of_paper_draws_for_that_paper_and_keeps_the_other() {
-    let mut reader = reader_on(10);
-    settle(&mut reader);
-    let before = reader.counts().drawn;
-    reader.set_paper(PaperKind::Dark);
-    let drawn = settle(&mut reader);
-    assert!(drawn.iter().any(|job| matches!(job.kind, JobKind::Draw { paper: PaperKind::Dark, .. })));
-    assert!(reader.counts().drawn > before);
-    let dark = reader.counts().drawn;
-    reader.set_paper(PaperKind::White);
-    settle(&mut reader);
-    assert_eq!(reader.counts().drawn, dark, "back again with nothing to draw");
-}
-
-/// Failure: three panes of a comparison keep three times what one view keeps off screen. Shared, each keeps its share, and what's over goes at once.
-#[test]
-fn panes_share_the_caps_on_what_is_kept() {
-    let mut reader = reader_on(400);
-    settle(&mut reader);
-    for step in 0..60 {
-        reader.set_viewport(view(f64::from(step) * 4000.0));
-        settle(&mut reader);
-    }
-    let previews = |reader: &Reader| reader.entries.values().filter(|entry| entry.preview && !entry.attached).count();
-    assert!(previews(&reader) > MAX_KEPT_PREVIEWS / 3, "enough kept to see the share: {}", previews(&reader));
-    reader.set_share(3);
-    assert!(previews(&reader) <= MAX_KEPT_PREVIEWS / 3, "{}", previews(&reader));
-    reader.set_share(0);
-    assert_eq!(reader.share, 1, "never none");
 }
 
 /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.
@@ -509,6 +334,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     settle(&mut reader);
     assert!(
         reader
+            .cache
             .entries
             .values()
             .any(|entry| entry.tab == 1 && entry.discardable && entry.surface.is_some()),
@@ -518,6 +344,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
     assert!(reader.empty_discardable() > 0);
     assert!(
         reader
+            .cache
             .entries
             .values()
             .filter(|entry| entry.tab == 1 && entry.discardable)
@@ -785,7 +612,7 @@ fn a_change_to_the_page_order_clears_what_was_drawn() {
         follows: None,
     };
     reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
-    assert!(reader.entries.is_empty());
+    assert!(reader.cache.entries.is_empty());
     assert_eq!(reader.doc().unwrap().layout.count(), 2);
     assert_eq!(edited.source(0), Some((PathBuf::from("/d/a.pdf"), 1)));
     assert_eq!(edited.source(9), None);
@@ -811,61 +638,6 @@ fn settle_to_text(reader: &mut Reader) -> Option<Job> {
             ),
         }
     }
-}
-
-/// Failure: a tile finishes after the reader has left it, or for an old zoom or paper or a warm tab, and it's held in the footprint with nothing showing it. Only what's on a layer may count, or memory has no bound the budgets can rely on.
-#[test]
-fn a_tile_nothing_is_showing_when_it_arrives_is_discardable() {
-    let mut reader = reader_on(100);
-    let draw = loop {
-        let job = reader.next_job().expect("a job");
-        match job.kind {
-            JobKind::Size => reader.finish(job, Outcome::Size(letter())),
-            JobKind::Text { .. } => panic!("no text was asked for"),
-            JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
-            JobKind::Draw { .. } => break job,
-        }
-    };
-    reader.set_viewport(view(40_000.0));
-    reader.finish(
-        draw,
-        Outcome::Drawn {
-            kind: TileKind::Colour,
-            low_res: None,
-        },
-    );
-    let entry = reader.entries.values().next().expect("kept");
-    assert!(!entry.attached && entry.discardable, "{entry:?}");
-}
-
-/// Failure: closing a warm tab leaves its layout, tiles, worker and open file until the next switch of tab, which may never come.
-#[test]
-fn a_warm_tab_that_goes_holds_nothing_at_once() {
-    let mut reader = reader_on(10);
-    settle(&mut reader);
-    reader.activate(
-        2,
-        10,
-        0,
-        PageMap {
-            files: vec![PathBuf::from("/d/b.pdf")],
-            slots: None,
-            own: None,
-            turns: None,
-            expected: Vec::new(),
-            follows: None,
-        },
-        &[1],
-        None,
-        Spread::Single,
-    );
-    assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
-    assert_eq!(reader.wanted_files().len(), 2);
-    reader.set_warm(&[]);
-    assert!(reader.entries.values().all(|entry| entry.tab != 1), "closed");
-    assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
 }
 
 /// Failure (decision 25): a tab woken from its sleep file comes up with bare pages until they're drawn, or a picture's used for the wrong page or paper, or lands on the wrong tab. It's on the layers in the first turn with nothing drawn, and it's kept as a preview, so sharp tiles replace it as usual.
@@ -914,13 +686,13 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     assert!(doc.layout.is_known(0));
     assert!(doc.layout.is_known(3), "the page table's taken up");
     assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
-    assert_eq!(reader.entries.len(), 1, "the one for a page that's there");
+    assert_eq!(reader.cache.entries.len(), 1, "the one for a page that's there");
     let scrolled = reader.place.jump.unwrap_or(0);
     let ops = reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
     });
-    let attached = reader.attached.get(&0).is_some_and(|ids| !ids.is_empty());
+    let attached = reader.cache.attached.get(&0).is_some_and(|ids| !ids.is_empty());
     assert!(attached, "it's up with nothing drawn: {ops:?}");
     assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })));
     reader.host.take_ops();
@@ -1022,13 +794,13 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     reader.activate(1, 5, 0, on(version(1)), &[], None, Spread::Single);
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    assert!(reader.entries.values().any(|entry| entry.preview), "there's a preview");
+    assert!(reader.cache.entries.values().any(|entry| entry.preview), "there's a preview");
     let material = reader.sleep_material(1, version(1)).unwrap();
     assert!(!material.pictures.is_empty());
     // Told it's another file: nothing of the old one's left, and the old one's not offered to the sleep file under the new name.
     assert!(reader.sleep_material(1, version(2)).is_none());
     reader.activate(1, 5, 0, on(version(2)), &[], None, Spread::Single);
-    assert!(reader.entries.is_empty(), "every picture and tile of it goes");
+    assert!(reader.cache.entries.is_empty(), "every picture and tile of it goes");
     assert!(reader.sleep_material(1, version(2)).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert_eq!(
@@ -1045,13 +817,13 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
     let mut reader = reader_on(5);
     reader.note_version(file, 1);
     settle(&mut reader);
-    let drawn: Vec<u64> = reader.entries.keys().copied().collect();
-    assert!(!drawn.is_empty() && reader.entries.values().all(|entry| entry.version == Some(1)));
+    let drawn: Vec<u64> = reader.cache.entries.keys().copied().collect();
+    assert!(!drawn.is_empty() && reader.cache.entries.values().all(|entry| entry.version == Some(1)));
     // Off screen and back: it would come straight back from what's kept.
     reader.set_viewport(view(20_000.0));
     settle(&mut reader);
     reader.note_version(file, 2);
-    assert!(drawn.iter().all(|id| !reader.entries.contains_key(id)), "everything of version 1 is gone");
+    assert!(drawn.iter().all(|id| !reader.cache.entries.contains_key(id)), "everything of version 1 is gone");
     reader.set_viewport(view(0.0));
     let ops = reader.host.take_ops();
     assert!(
@@ -1063,16 +835,16 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         "and nothing's offered for a sleep file till it's drawn again"
     );
     settle(&mut reader);
-    assert!(reader.entries.values().all(|entry| entry.version == Some(2)));
+    assert!(reader.cache.entries.values().all(|entry| entry.version == Some(2)));
     assert!(!reader.sleep_material(1, None).unwrap().pictures.is_empty());
     // Something kept whose version is stale is refused at the moment it would go on a layer, however it got there.
-    let stale = *reader.entries.keys().next().unwrap();
-    if let Some(entry) = reader.entries.get_mut(&stale) {
+    let stale = *reader.cache.entries.keys().next().unwrap();
+    if let Some(entry) = reader.cache.entries.get_mut(&stale) {
         entry.version = Some(1);
         entry.attached = false;
     }
     assert!(!reader.attach(stale, false));
-    assert!(!reader.entries.contains_key(&stale));
+    assert!(!reader.cache.entries.contains_key(&stale));
     // A picture from a sleep file, of a version a worker then says isn't this one, goes too.
     let mut woken = Reader::new();
     woken.set_viewport(view(0.0));
@@ -1092,30 +864,9 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         },
     );
     woken.activate(1, 5, 0, map(), &[], None, Spread::Single);
-    assert_eq!(woken.entries.len(), 1);
+    assert_eq!(woken.cache.entries.len(), 1);
     woken.note_version(file, 8);
-    assert!(woken.entries.is_empty());
-}
-
-/// Failure: memory pressure takes what's on screen, leaving a blank page, or leaves what could go. And at its worst, the previews go too.
-#[test]
-fn memory_pressure_leaves_only_whats_showing() {
-    let mut reader = reader_on(30);
-    settle(&mut reader);
-    reader.set_viewport(view(5000.0));
-    settle(&mut reader);
-    let attached = reader.attached.values().map(Vec::len).sum::<usize>();
-    assert!(reader.entries.len() > attached, "there's something off screen to go");
-    reader.memory_pressure(false);
-    let previews = reader.entries.values().filter(|entry| !entry.attached && entry.preview).count();
-    assert!(
-        reader.entries.values().all(|entry| entry.attached || entry.preview),
-        "only what's showing, and previews"
-    );
-    assert!(previews > 0);
-    reader.memory_pressure(true);
-    assert_eq!(reader.entries.len(), attached);
-    assert_eq!(reader.attached.values().map(Vec::len).sum::<usize>(), attached, "nothing's come off the screen");
+    assert!(woken.cache.entries.is_empty());
 }
 
 /// Failure: a window can't go up until every tile's drawn, which on a heavy page is most of a second, or it goes up over a bare page.
