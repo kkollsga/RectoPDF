@@ -1090,29 +1090,17 @@ impl AppCore {
 
     /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
     pub fn window_minimised_changed(&self, minimised: bool) {
-        if let Some(window) = lock(&self.inner.window.app).window.as_mut() {
-            window.minimised = minimised;
-        }
-        self.inner.saver.view_changed();
+        self.inner.window.minimised_changed(minimised, &self.inner.saver);
     }
 
     /// The app was hidden or shown again, by the system's notices, or QA. Going out of sight writes what's changed, as going to the background does.
     pub fn app_hidden_changed(&self, hidden: bool) {
-        lock(&self.inner.window.app).app_hidden = hidden;
-        if hidden {
-            self.inner.saver.write_soon();
-        } else {
-            self.inner.saver.view_changed();
-        }
+        self.inner.window.hidden_changed(hidden, &self.inner.saver);
     }
 
     /// Whether this launch hides the app as soon as it's up: an update arriving to an app that was hidden. Any other launch shows it, and the record's told so.
     pub fn app_comes_back_hidden(&self) -> bool {
-        let mut app = lock(&self.inner.window.app);
-        let hidden = updates::stays_out_of_sight(app.app_hidden, self.inner.updates.reopened_by_update());
-        app.app_hidden = hidden;
-        app.hidden_decided = true;
-        hidden
+        self.inner.window.comes_back_hidden(self.inner.updates.reopened_by_update())
     }
 
     pub fn window_opened(&self) {
@@ -1463,7 +1451,7 @@ impl AppCore {
 
     /// Whether this launch comes up behind what the user's doing: see [`WindowPlacement::in_background`].
     pub fn opens_in_background(&self) -> bool {
-        updates::opens_in_background(self.inner.updates.reopened_by_update(), lock(&self.inner.window.app).focus.app_frontmost)
+        self.inner.window.opens_in_background(self.inner.updates.reopened_by_update())
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.

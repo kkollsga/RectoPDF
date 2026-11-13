@@ -19,30 +19,6 @@ mod bridge {
     use crate::records::ScreenInfo;
     use recto_session::record::{self, Appearance, FocusView, Rect, ScreenRecord, WindowRecord};
 
-    pub fn window_minimised_changed(inner: &Inner, minimised: bool) {
-        if let Some(window) = lock(&inner.window.app).window.as_mut() {
-            window.minimised = minimised;
-        }
-        inner.saver.view_changed();
-    }
-
-    pub fn app_hidden_changed(inner: &Inner, hidden: bool) {
-        lock(&inner.window.app).app_hidden = hidden;
-        if hidden {
-            inner.saver.write_soon();
-        } else {
-            inner.saver.view_changed();
-        }
-    }
-
-    pub fn app_comes_back_hidden(inner: &Inner) -> bool {
-        let mut app = lock(&inner.window.app);
-        let hidden = updates::stays_out_of_sight(app.app_hidden, inner.updates.reopened_by_update());
-        app.app_hidden = hidden;
-        app.hidden_decided = true;
-        hidden
-    }
-
     /// The part of `window_placement` that decides what's kept: whether the window comes back in the Dock, and that it's been decided.
     pub fn window_placement_decides(inner: &Inner) -> bool {
         let app = {
@@ -144,10 +120,6 @@ mod bridge {
     pub fn contents_is_following(inner: &Inner) -> bool {
         lock(&inner.window.contents_follow).is_following()
     }
-
-    pub fn opens_in_background(inner: &Inner) -> bool {
-        updates::opens_in_background(inner.updates.reopened_by_update(), lock(&inner.window.app).focus.app_frontmost)
-    }
 }
 
 /// A screen the window is on, with a name that needs cleaning.
@@ -191,16 +163,20 @@ const STEPS: &[(&str, Step)] = &[
     ("a frame of three numbers", |inner| {
         done(bridge::window_changed(inner, Some(vec![1.0, 2.0, 3.0]), Some(screen()), false))
     }),
-    ("into the Dock", |inner| done(bridge::window_minimised_changed(inner, true))),
+    ("into the Dock", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
     ("placed at a launch", |inner| said(bridge::window_placement_decides(inner))),
-    ("into the Dock again", |inner| done(bridge::window_minimised_changed(inner, true))),
+    ("into the Dock again", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
     ("closed", |inner| done(inner.window_closed())),
     ("should open", |inner| said(inner.window.should_open(inner.updates.reopened_by_update()))),
     ("opened", |inner| done(inner.window_opened())),
-    ("out of the Dock with no window", |inner| done(bridge::window_minimised_changed(inner, false))),
-    ("hidden", |inner| done(bridge::app_hidden_changed(inner, true))),
-    ("comes back hidden", |inner| said(bridge::app_comes_back_hidden(inner))),
-    ("shown", |inner| done(bridge::app_hidden_changed(inner, false))),
+    ("out of the Dock with no window", |inner| {
+        done(inner.window.minimised_changed(false, &inner.saver))
+    }),
+    ("hidden", |inner| done(inner.window.hidden_changed(true, &inner.saver))),
+    ("comes back hidden", |inner| {
+        said(inner.window.comes_back_hidden(inner.updates.reopened_by_update()))
+    }),
+    ("shown", |inner| done(inner.window.hidden_changed(false, &inner.saver))),
     ("sidebar too narrow", |inner| done(bridge::set_sidebar_width(inner, 10.0))),
     ("sidebar wide", |inner| done(bridge::set_sidebar_width(inner, 300.4))),
     ("contents nowhere", |inner| done(bridge::contents_position(inner, f64::NAN))),
@@ -228,11 +204,11 @@ const STEPS: &[(&str, Step)] = &[
     ("the system went dark", |inner| done(bridge::set_dark_appearance(inner, true))),
     ("to the background", |inner| {
         inner.window.frontmost_changed(false, false, &inner.saver, &inner.core);
-        said(bridge::opens_in_background(inner))
+        said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
     }),
     ("to the front", |inner| {
         inner.window.frontmost_changed(true, true, &inner.saver, &inner.core);
-        said(bridge::opens_in_background(inner))
+        said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
     }),
     ("contents scrolled by the person", |inner| {
         bridge::contents_user_scrolled(inner);

@@ -3,6 +3,7 @@
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
 use super::saver::Saver;
+use super::updates;
 use crate::lock;
 use crate::queue::{CoreCall, CoreQueue};
 use crate::watchdog::Watchdog;
@@ -111,6 +112,39 @@ impl Window {
         }
     }
 
+    /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
+    pub fn minimised_changed(&self, minimised: bool, saver: &Saver) {
+        if let Some(window) = lock(&self.app).window.as_mut() {
+            window.minimised = minimised;
+        }
+        saver.view_changed();
+    }
+
+    /// The app was hidden or shown again, by the system's notices, or QA. Going out of sight writes what's changed, as going to the background does.
+    pub fn hidden_changed(&self, hidden: bool, saver: &Saver) {
+        lock(&self.app).app_hidden = hidden;
+        if hidden {
+            saver.write_soon();
+        } else {
+            saver.view_changed();
+        }
+    }
+
+    /// Whether this launch, `reopened` by an update or not, hides the app as soon as it's up: an update arriving to an app that was hidden. Any other launch
+    /// shows it, and the record's told so.
+    pub fn comes_back_hidden(&self, reopened: bool) -> bool {
+        let mut app = lock(&self.app);
+        let hidden = updates::stays_out_of_sight(app.app_hidden, reopened);
+        app.app_hidden = hidden;
+        app.hidden_decided = true;
+        hidden
+    }
+
+    /// Whether this launch, `reopened` by an update or not, comes up behind what the user's doing: an update arriving to an app that wasn't in front.
+    pub fn opens_in_background(&self, reopened: bool) -> bool {
+        updates::opens_in_background(reopened, lock(&self.app).focus.app_frontmost)
+    }
+
     /// Where the Settings window was, if it was open.
     pub fn settings_window(&self) -> Option<SettingsWindow> {
         lock(&self.app).settings_window
@@ -145,3 +179,6 @@ pub struct AppState {
     /// What each pane had selected as its window went for another made from the state, to be selected again on the new one.
     pub selections_held: Vec<(usize, recto_index::select::Range)>,
 }
+
+#[cfg(test)]
+mod tests;
