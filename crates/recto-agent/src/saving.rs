@@ -86,6 +86,12 @@ fn from_save(error: &SaveError) -> AgentError {
     let next = match error {
         SaveError::FileChanged => crate::unfit::CHANGED_UNDER_EDITS_NEXT,
         SaveError::ChangedSinceOpened => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
+        SaveError::ChangedWhileCopying => {
+            "Tell the user the file changed on disk while it was being copied. Nothing was written. Run the same `recto save-as` again to copy it as it is now."
+        }
+        SaveError::Unreadable => {
+            "Tell the user the file couldn't be read during the save. Nothing was written, and any unsaved edits are still here. Try again once the file can be read."
+        }
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
         SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
             "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."
@@ -209,7 +215,12 @@ fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveErro
             .iter()
             .zip(0..)
             .all(|(page, at)| page.source == 0 && page.page == at && page.quarter_turns == 0);
+    let copy = matches!(to, SaveTo::As { .. });
     match error {
+        // A copy of the document as it is, refused because its file changed as it was copied: Save As is what was just refused. (A changed target being
+        // replaced can't be told from that, and nor can a file whose version was never known, so those stay as they were.)
+        SaveError::FileChanged if whole_file && copy && request.stamp.is_some() => SaveError::ChangedWhileCopying,
+        SaveError::ChangedSinceOpened if whole_file && matches!(to, SaveTo::As { replace: false, .. }) => SaveError::ChangedWhileCopying,
         SaveError::FileChanged if whole_file => SaveError::ChangedSinceOpened,
         SaveError::ChangedSinceOpened if !whole_file && !matches!(to, SaveTo::As { replace: true, .. }) => SaveError::FileChanged,
         error => error,
@@ -582,13 +593,22 @@ mod tests {
         fn request(pages: &[PageRef]) -> SaveRequest<'_> {
             SaveRequest {
                 path: Path::new("/d/doc.pdf"),
-                stamp: None,
+                stamp: Some(recto_platform::FileStamp {
+                    size: 1,
+                    mtime_ns: 1,
+                    device: 1,
+                    inode: 1,
+                }),
                 file_pages: 2,
                 pages,
                 added: &[],
             }
         }
         let (whole, turned) = (&whole[..], &turned[..]);
+        let copy = SaveTo::As {
+            out: "/d/copy.pdf".into(),
+            replace: false,
+        };
         let replace = SaveTo::As {
             out: "/d/other.pdf".into(),
             replace: true,
@@ -599,10 +619,21 @@ mod tests {
             (SaveError::FileChanged, turned, &SaveTo::Same, "file_changed"),
             (SaveError::ChangedSinceOpened, turned, &SaveTo::Same, "file_changed"),
             (SaveError::ChangedSinceOpened, turned, &replace, "changed_since_opened"),
+            // A Save As of the document as it is, refused because its source changed: no "Save As keeps both" for the Save As that was just refused.
+            (SaveError::FileChanged, whole, &copy, "changed_while_copying"),
+            (SaveError::ChangedSinceOpened, whole, &copy, "changed_while_copying"),
+            (SaveError::ChangedSinceOpened, whole, &replace, "changed_since_opened"),
+            // A file that couldn't be read is never said to have changed under the edits.
+            (SaveError::Unreadable, turned, &SaveTo::Same, "file_unreadable"),
+            (SaveError::Unreadable, whole, &copy, "file_unreadable"),
         ];
         for (error, pages, to, said) in cases {
             assert_eq!(as_said(error.clone(), &request(pages), to).code(), said, "{error:?}, {pages:?}, {to:?}");
         }
         assert!(!SaveError::ChangedSinceOpened.message().contains("edits"));
+        assert!(
+            !SaveError::ChangedWhileCopying.message().contains("Save As"),
+            "the Save As refused isn't the way on"
+        );
     }
 }

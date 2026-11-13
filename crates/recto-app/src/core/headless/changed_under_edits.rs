@@ -356,3 +356,35 @@ fn a_look_made_before_a_save_landed_changes_nothing() {
     );
     assert_eq!(notice(&app), None, "and the tab says nothing changed");
 }
+
+/// Failure (F8, at its other two call sites): a look's result taken in without asking which stamp it was made against. A save landing between a look at a
+/// file (made against the stamp before it) and its result being taken in made the result "changed": the just-saved list's history was cleared as if another
+/// program had written the file, and the tab said its file changed on disk. The look before a tab is shown and the look at the tabs not showing each say
+/// nothing of a result made against a stamp the tab has moved on from.
+#[test]
+fn a_look_at_a_shown_or_other_tab_made_before_a_save_landed_changes_nothing() {
+    type Take = fn(&crate::core::Inner, recto_session::TabId, Option<recto_platform::FileStamp>, recto_session::record::FileStatus) -> bool;
+    let looks: [(&str, Take); 2] = [
+        ("before showing", crate::core::sleeper::take_shown_look),
+        ("at the others", crate::core::session::take_other_look),
+    ];
+    for (what, take) in looks {
+        let (app, file, _original, _modified) = edited();
+        let id = recto_session::TabId(tab_of(&app, "doc.pdf")[1..].parse().expect("a number"));
+        let before = app.core().host.session.with_session(|s| s.tabs().own_stamp(id));
+        app.recto(Level::Full, &["save"]).expect("saved");
+        app.settle();
+        let late = recto_session::record::look_at_file(&file, before);
+        assert!(
+            matches!(late, recto_session::record::FileStatus::Changed(_)),
+            "{what}: the look finds the save: {late:?}"
+        );
+        assert!(!take(app.core(), id, before, late), "{what}: about nothing now");
+        app.settle();
+        assert!(
+            app.core().host.session.with_session(|s| s.lists().undo_and_redo(id).0),
+            "{what}: the history is still there"
+        );
+        assert_eq!(notice(&app), None, "{what}: and the tab says nothing changed");
+    }
+}

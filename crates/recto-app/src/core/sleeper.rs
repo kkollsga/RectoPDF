@@ -562,17 +562,26 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
         return;
     }
     // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
-    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE)
-        && inner
-            .host
-            .session
-            .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
-    {
-        inner.host.session.with_session(|session| session.forget_read(id));
-        // The read, against the stamp as it is now that the news is in.
-        let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
-        inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
+    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
+        take_shown_look(inner, id, stamp, status);
     }
+}
+
+/// What a look at a tab being shown found, made against `stamp`, taken in in time for its frame: on news, what's held is forgotten and the file read again.
+/// A save meanwhile moves the stamp, and a look against the old one is about nothing now. Says whether it was news.
+pub(crate) fn take_shown_look(inner: &Inner, id: TabId, stamp: Option<recto_platform::FileStamp>, status: FileStatus) -> bool {
+    if !inner
+        .host
+        .session
+        .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
+    {
+        return false;
+    }
+    inner.host.session.with_session(|session| session.forget_read(id));
+    // The read, against the stamp as it is now that the news is in.
+    let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
+    inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
+    true
 }
 
 /// How long a tab being shown waits for a look at its file.

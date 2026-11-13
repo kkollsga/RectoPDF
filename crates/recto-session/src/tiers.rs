@@ -114,8 +114,9 @@ impl<L: DocLoader> Session<L> {
             }
         };
         self.compare_read_with_edits(id, loaded.as_ref().ok().map(|facts| facts.page_count), stamp);
-        // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
-        let pages_with_edits = self.lists.get(id).map(PageEdits::len);
+        // An edited tab's length is its edit list's, not the file's: added pages must stay reachable. A list still asleep, as one that couldn't be woken just
+        // now, is no less the tab's edits: "not in memory" is never "none".
+        let pages_with_edits = self.lists.pages(id);
         let mut replaced = None;
         let tab = self.tab_mut(id);
         match loaded {
@@ -160,17 +161,18 @@ impl<L: DocLoader> Session<L> {
     /// **What a wake read, against what the tab's list is about** (`pages` and `read` are the file's length and stamp as read). Only history, made on another
     /// version than what was read, doesn't apply to it and goes. Unsaved edits are never let go for it, as a file changing never takes a person's edits: the tab
     /// knows they don't fit ([`fit::Notices::fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
-    /// back makes them fit again; where it isn't, the stamp goes, so nothing takes this file as theirs.
+    /// back makes them fit again; where it isn't, the stamp goes, so nothing takes this file as theirs. A list still asleep (its journal couldn't be read just
+    /// now) is compared by what's kept of it: the length the file had isn't, so only another version is found, never another length.
     fn compare_read_with_edits(&mut self, id: TabId, pages: Option<u32>, read: Option<FileStamp>) {
-        let (Some(pages), Some(read), Some(list)) = (pages, read, self.lists.get(id)) else {
+        let (Some(pages), Some(read), Some(summary)) = (pages, read, self.lists.summary(id)) else {
             return;
         };
-        let (edited, list_pages) = (list.is_edited(), list.file_pages());
+        let (edited, list_pages) = (summary.edited, self.lists.get(id).map(PageEdits::file_pages));
         let Some(own) = self.tabs.tab(id).map(|tab| tab.file.stamp) else { return };
         let other_version = own.is_some_and(|own| !own.same_contents(read));
         // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp
         // and its read, an edit landed between a change being noticed and the read, or a journal says what isn't so.
-        let other_length = own == Some(read) && list_pages != pages;
+        let other_length = own == Some(read) && list_pages.is_some_and(|list_pages| list_pages != pages);
         if !edited {
             // Only history, about another version than what was read or another length: its steps don't apply to this, whichever way it's noticed, and it
             // goes. Nothing unsaved was there, so nothing says any was kept: the file changed, if a look says so, or else undo can't go back as far.
@@ -191,9 +193,10 @@ impl<L: DocLoader> Session<L> {
         }
         let Some(tab) = self.tabs.tab(id) else { return };
         let heard_changed = matches!(tab.file.notice(), Some(FileNotice::Changed)) || tab.file.elsewhere().is_some_and(|elsewhere| elsewhere.file_changed);
+        let length_differs = list_pages.is_some_and(|list_pages| list_pages != pages);
         let elsewhere = if other_version || own.is_none() {
             // Another version than the edits' own, or edits that name none: what's held is of this one.
-            Some((own, read, heard_changed || other_version))
+            Some((own, read, Some(pages), heard_changed || other_version, length_differs))
         } else if other_length {
             // Replaced mid-read, the stamp is still the version the edits were made on, and a stat, in this one rare case, says so. Otherwise the stamp is the
             // file's as it is, which the edits aren't about, and it goes. The file's said to have changed only where that's known.
@@ -203,19 +206,21 @@ impl<L: DocLoader> Session<L> {
                 .and_then(|path| file_stamp(&path).ok())
                 .filter(|now| !now.same_contents(read))
             {
-                Some(now) => Some((own, now, true)),
-                None => Some((None, read, heard_changed)),
+                Some(now) => Some((own, now, None, true, true)),
+                None => Some((None, read, Some(pages), heard_changed, true)),
             }
         } else {
             None
         };
         let Some(tab) = self.tab_mut(id) else { return };
         match elsewhere {
-            Some((stamp, seen, file_changed)) => {
+            Some((stamp, seen, seen_pages, file_changed, other_length)) => {
                 tab.file.stamp = stamp;
                 tab.file.set_elsewhere(Some(fit::Elsewhere {
                     seen: Some(seen),
+                    seen_pages,
                     file_changed,
+                    other_length,
                 }));
                 if file_changed {
                     tab.file.set_notice(Some(FileNotice::Changed));
