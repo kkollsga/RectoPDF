@@ -317,8 +317,21 @@ fn a_waiting_request_wakes_when_the_user_says_yes() {
     let _serving = state.serve();
     let mut raw = Raw::connect(&state);
     raw.send(&json!({ "cmd": "permission_request", "level": "control", "timeout_ms": 20_000 }).to_string());
-    // The welcome line is the answer here. Give it nothing yet, then raise as `permission set` would, with its message.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // The welcome line is the answer here. Once the session has it waiting, which it logs as asked, raise as `permission set` would, with its message.
+    // A raise that landed first would be answered as granted at once and wake nothing, and the test would pass whatever waking does.
+    let asked = std::time::Instant::now();
+    while !state
+        .log_text()
+        .lines()
+        .any(|line| line.contains("\"permission_request\"") && line.contains("\"asked\""))
+    {
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(10),
+            "the request was never logged as waiting: {}",
+            state.log_text()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5)); // ratchet: poll
+    }
     state.set_level(Level::Control);
     let mut poke = Raw::connect(&state);
     assert_eq!(poke.call(&json!({ "cmd": "level_changed" }))["data"]["level"], "control");

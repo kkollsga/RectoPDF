@@ -791,3 +791,6 @@ fn bad_rect() -> AgentError {
         exit::FAILED,
     )
 }
+
+#[cfg(test)]
+mod tests;

@@ -121,7 +121,7 @@ fn a_server_killed_mid_command_recovers_on_restart() {
         if out.exists() || started.elapsed() > Duration::from_secs(10) {
             panic!("the render wasn't seen drawing in {:?}, and it said {:?}", started.elapsed(), render.read());
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
     }
     serving.kill();
     assert!(waiting.read().is_none(), "a client on a dead session must see it end, not hang");
@@ -832,18 +832,23 @@ fn watch_stop_ends_every_watch_on_this_session() {
     let process = watch_process(&state, &["watch", "--timeout", "10m", "--json"]);
     // A real client's first line says it's listening, and it's what `stopped` has to count.
     let mut poke = Raw::connect(&state);
-    for _ in 0..2000 {
+    let started = Instant::now();
+    loop {
         assert_eq!(poke.call(&json!({ "cmd": "budget" }))["ok"], true);
-        if state
+        let watching = state
             .log_text()
             .lines()
             .filter(|line| line.contains("\"watch\"") && line.contains("started"))
-            .count()
-            >= 3
-        {
+            .count();
+        if watching >= 3 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{watching} of 3 watches started: {}",
+            state.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
     let (stopped, code) = state.json(&["watch", "stop"]);
     assert_eq!((code, &stopped["data"]["stopped"]), (0, &json!(3)), "{stopped}");

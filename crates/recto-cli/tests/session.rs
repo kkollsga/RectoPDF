@@ -235,6 +235,15 @@ fn a_file_that_changes_under_its_page_numbers_is_refused_and_named() {
     drop(extra);
 }
 
+/// Sets its flag when dropped, as a scope's body ends or unwinds.
+struct StopOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Failure: `search` keeps a worker alive per file until it ends, up to a thousand processes for one document with many added PDFs. One at a time: only one child ever exists.
 #[test]
 fn a_search_across_many_files_runs_one_worker_at_a_time() {
@@ -270,11 +279,13 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
             }
             most
         });
+        // Set as this ends however it ends, so a search that fails ends the watcher too and the failure is reported, not waited on forever.
+        let stop = StopOnDrop(&done);
         for _ in 0..5 {
             let (found, code) = state.json(&["search", "words"]);
             assert_eq!(code, 0, "{found}");
         }
-        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(stop);
         watcher.join().unwrap()
     });
     assert!(
