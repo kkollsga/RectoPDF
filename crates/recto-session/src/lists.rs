@@ -12,7 +12,7 @@ pub struct Lists {
     edits: HashMap<TabId, PageEdits>,
     /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
     wake_failed: Vec<TabId>,
-    /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`crate::Session::wake_list`] from their journal.
+    /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`crate::Sleeper::wake_list`] from their journal.
     asleep: HashMap<TabId, EditsSummary>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
@@ -32,7 +32,7 @@ impl Lists {
     /// **A tab's list, if it's in memory, which isn't the same as whether it has edits:** `None` for a tab with no list *and* for one whose list is
     /// asleep on disk ([`Self::is_asleep`]), edited or not. A caller asking whether there are edits, unsaved changes or the owner's steps asks
     /// [`Self::is_edited`], [`Self::summary`] or [`Self::holds_owner_edits`], which answer for a list wherever it is; one reading the pages wakes the list
-    /// first (`Session::wake_list`), as every agent command about a tab does.
+    /// first (`Sleeper::wake_list`), as every agent command about a tab does.
     pub fn get(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
     }

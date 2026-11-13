@@ -35,6 +35,7 @@ mod registry;
 mod restore;
 mod saves;
 mod saving;
+mod sleeper;
 mod tabs;
 mod tiers;
 mod view;
@@ -70,6 +71,7 @@ pub use registry::Tabs;
 #[cfg(debug_assertions)]
 pub use registry::searched;
 pub use saves::Saves;
+pub use sleeper::Sleeper;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

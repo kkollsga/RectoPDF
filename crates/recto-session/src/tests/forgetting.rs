@@ -112,7 +112,7 @@ fn a_tab_gone_dormant_holds_no_more_than_a_cold_one() {
     assert_eq!(s.tabs().active(), Some(b));
     assert!(holding(&s, a).contains(&"warm"));
     assert!(holding(&s, a).contains(&"view_word"));
-    assert!(s.go_dormant(a));
+    assert!(s.sleeper().go_dormant(a));
     assert_eq!(holding(&s, a), ["tabs"]);
 }
 
@@ -154,7 +154,7 @@ fn a_jump_sent_goes_with_an_edit_a_save_and_dormancy() {
             }
             _ => {
                 s.activate(b);
-                assert!(s.go_dormant(a), "{route}: it goes dormant");
+                assert!(s.sleeper().go_dormant(a), "{route}: it goes dormant");
             }
         }
         assert_eq!(s.here(a), Some(trail::Stop::new(4, 0.6)), "{route}: the jump's no longer where the reader is");
@@ -167,7 +167,7 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
     let mut s = session(10);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.set_generated_view(a, ready());
-    s.forget_read(a);
+    s.sleeper().forget_read(a);
     assert_eq!(holding(&s, a), ["active", "tabs"]);
     assert!(s.tabs().tab(a).unwrap().from_sleep.is_none());
 }
@@ -195,7 +195,7 @@ fn reads_ahead_are_held_to_their_cap_and_the_oldest_goes() {
     let cold = &ids[..=MAX_READ_AHEAD];
     assert!(cold.iter().all(|id| s.tier(*id) == Tier::Cold));
     for id in cold {
-        s.give_woken(*id, Err(OpenError::NotFound), None);
+        s.sleeper().give_woken(*id, Err(OpenError::NotFound), None);
     }
     assert_eq!(s.warm.reads_held(), MAX_READ_AHEAD);
     assert!(!s.warm().holds_read_of(cold[0]), "the oldest read went");

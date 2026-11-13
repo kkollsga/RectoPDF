@@ -188,9 +188,9 @@ fn scripted_run() -> String {
 
     // Sleep: a is shown, and b's list goes to disk, compacted and read back first.
     s.tap(a).unwrap();
-    let (name, header, base) = s.list_to_sleep(b).expect("b's list is all in its journal");
+    let (name, header, base) = s.dormant().list_to_sleep(b).expect("b's list is all in its journal");
     assert!(disk.settle(&name, &header, &base));
-    assert!(s.go_dormant(b));
+    assert!(s.sleeper().go_dormant(b));
     assert!(s.lists().is_asleep(b));
     write(&mut s, &mut disk);
     disk.take_step("b goes dormant", &mut out);
