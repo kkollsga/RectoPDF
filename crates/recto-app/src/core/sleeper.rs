@@ -178,6 +178,7 @@ impl Sleeper {
             "gone_dormant": { "left_alone": counts.left_alone, "budget": counts.budget, "pressure": counts.pressure, "asked": counts.asked },
             "sleep_files_written": counts.sleep_files,
             "writes_put_off": counts.writes_put_off,
+            "writes_for_paper": counts.writes_for_paper,
             "writes_skipped_busy": counts.writes_skipped_busy,
             "sleep_bytes_written": counts.sleep_bytes,
             "woken_from_file": counts.woken_from_file,
@@ -289,11 +290,13 @@ impl Inner {
             pictures_allowed,
         } = facts;
         let there = self.saver.store.read_sleep(sleep.file, &path);
+        let new_dark = material.pictures.first().map(|picture| picture.paper == PaperKind::Dark);
         let write = self.sleeper.step(Event::Write {
             id,
             by,
             there: there.is_some(),
             pictures_allowed,
+            there_for_other_paper: crate::sleep_writer::there_for_other_paper(there.as_ref(), new_dark),
         });
         let Some(Out::Write(write @ (Write::WithPictures | Write::FactsOnly))) = write else {
             return;
@@ -407,16 +410,18 @@ impl Inner {
         {
             return;
         }
-        let (pages, mark) = self
+        let (pages, mark, chosen) = self
             .host
             .session
-            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
+            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id), session.viewing().view().paper));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }
+        // Only those for the paper shown now: one for the other is never put on a page, so no surface is made for it, and the wake says it had none.
+        let dark = crate::paper_look(chosen, self.window.dark.load(std::sync::atomic::Ordering::SeqCst)).kind == PaperKind::Dark;
         let page_box = |(width, height): (f32, f32)| PageBox { width, height };
         let mut pictures = Vec::with_capacity(sleep.pictures.len());
-        for picture in &sleep.pictures {
+        for picture in sleep.pictures.iter().filter(|picture| picture.dark == dark) {
             if let Some(surface) = surface_of(picture) {
                 pictures.push(SleepShot {
                     page: picture.page,

@@ -279,3 +279,83 @@ fn a_tab_asleep_whose_pages_change_wakes_with_no_picture_from_before() {
     assert_eq!(woke["sleep_in_view"], 0, "a picture from before its pages changed: {woke}");
     drop(app.quit());
 }
+
+/// Shows `tab` from asleep with drawing held, as the first frame has it, and says how that wake went; then lets it draw and settle.
+fn woken_at_once(app: &crate::testkit::headless::HeadlessApp, tab: u64, view: &mut recto_reader::Viewport) -> serde_json::Value {
+    let engine = &app.core().engine;
+    engine.hold_drawing(true);
+    full(app, &["tap", &format!("#{tab}")]);
+    host_turns(app, view, false);
+    let wake = engine.report().0["last_wake"].clone();
+    engine.hold_drawing(false);
+    host_turns(app, view, true);
+    wake
+}
+
+/// Failure (the first worker's quiet run of 2026-11-13, `02-wake-at-once-dark.png`): a tab put to sleep and woken a second time in a run, with the look changed
+/// between, showed bare paper at once, while `last_wake` said it had pictures from its sleep file (`bare_with_picture=2`, `first_frame_us=null`). The second sleep
+/// came inside its sleep file's write gap, so the file wasn't written again and still held pictures for the other paper, which the page view keeps but never puts
+/// on a page of this paper. On the app's own core, the window up so a bare frame counts: three cycles of sleep and wake for one tab, white, white again, then
+/// dark paper, each wake's first frame (drawing held) covered from its sleep file, the dark one written once inside the gap for its paper; and then the look
+/// changed back while it's asleep, which no write can put right: it wakes with nothing from its file and says so, never that it had a picture it didn't show.
+#[test]
+fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    engine.window_up();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
+    let sleep = || app.record_json()["sleep"].clone();
+    let mut bytes_before_dark = 0;
+    for (cycle, paper) in ["white", "white", "dark"].into_iter().enumerate() {
+        full(&app, &["view", "--paper", paper]);
+        full(&app, &["tap", &format!("#{a}")]);
+        host_turns(&app, &mut view, true);
+        full(&app, &["tap", &format!("#{b}")]);
+        host_turns(&app, &mut view, true);
+        bytes_before_dark = sleep()["sleep_bytes_written"].as_u64().expect("bytes");
+        full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+        host_turns(&app, &mut view, true);
+        let wake = woken_at_once(&app, a, &mut view);
+        assert_eq!(wake["tab"], a, "cycle {cycle} ({paper}): {wake}");
+        assert_eq!(
+            wake["bare_with_picture"], 0,
+            "cycle {cycle} ({paper}): it had a picture and showed bare paper: {wake}"
+        );
+        assert_eq!(wake["had"], "sleep_file", "cycle {cycle} ({paper}): {wake}");
+        assert!(
+            wake["first_frame_us"].is_u64(),
+            "cycle {cycle} ({paper}): the first frame, drawing held, isn't covered: {wake}"
+        );
+    }
+    let written = sleep();
+    assert_eq!(written["writes_for_paper"], 1, "the change of look, once: {written}");
+    assert!(
+        written["writes_put_off"].as_u64().unwrap() >= 1,
+        "the second white sleep is put off as before: {written}"
+    );
+    println!(
+        "a sleep file written inside the gap for the change of look: {} bytes",
+        written["sleep_bytes_written"].as_u64().unwrap() - bytes_before_dark
+    );
+    // Asleep with dark pictures, the look goes back to white: woken, nothing from its file is shown or held, and it says so.
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["view", "--paper", "white"]);
+    host_turns(&app, &mut view, true);
+    let wake = woken_at_once(&app, a, &mut view);
+    assert_eq!(wake["tab"], a, "{wake}");
+    assert_eq!((wake["had"].as_str(), wake["sleep_pictures"].as_u64()), (Some("nothing"), Some(0)), "{wake}");
+    assert_eq!(wake["bare_with_picture"], 0, "{wake}");
+    drop(app.quit());
+}
