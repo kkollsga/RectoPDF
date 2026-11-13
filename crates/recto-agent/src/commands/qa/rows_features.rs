@@ -160,8 +160,8 @@ pub(crate) const ROWS: &[Spec] = &[
         name: "qa save-as",
         tag: "qa_drive",
         group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Answers Save As's sheet with a new file's path, by what the sheet's ending sends (the window's own Save As answer, which the system's sheet can't be typed into for): the window's save, off its thread, its notes said by the page, the tab going over to the new file.",
+        access: Access::At(Level::Full),
+        summary: "Answers Save As's sheet with a new file's path, by what the sheet's ending sends (the window's own Save As answer, which the system's sheet can't be typed into for): the window's save, off its thread, its notes said by the page, the tab going over to the new file. As the person, so only at Full, in a development build, and on a test's own files, as `qa as-person`.",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -197,7 +197,7 @@ pub(crate) const ROWS: &[Spec] = &[
         tag: "qa_drive",
         group: GROUP_QA,
         access: Access::At(Level::Full),
-        summary: "Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait. It exists so a test can do what a person does, in a quiet run on a test's own files, and nowhere else: only what a person's control sends, and only while every file open and every file named is in the run's state folder or a temp folder.",
+        summary: "Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait. It exists so a test can do what a person does, in a quiet run on a test's own files, and nowhere else: only what a person's control sends, only while every file open and every file named is in the run's state folder or a temp folder, and only in a development build.",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -560,7 +560,7 @@ pub(super) const VERBS: &[QaVerb] = &[
     verb("view_rotation", Condition, None),
     verb("sheet_answer", HostInput, Some(Dialogs)),
     // The system's Save As sheet answered: it can't be typed into.
-    verb("save_as", HostInput, None),
+    verb("save_as", Person, None),
     // A save with the writing done by the test.
     verb("save_from", Condition, None),
     verb("as_person", Person, None),

@@ -2874,7 +2874,7 @@ fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
         "every page drawn a quarter turn: {turns:?}"
     );
     assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
-    run.ok(&["edit", "mode", "on"]);
+    run.ok(&["qa", "as-person", "edit mode on"]);
     run.settled();
     let panel = run.report()["app"]["panel"].clone();
     assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");

@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
-use values::{bad, check_drive_value, cleaned, is_a_tests_file, parse_page_place, refuse_shot_path};
+use values::{bad, check_drive_value, cleaned, parse_page_place, refuse_shot_path};
 
 /// How long a quiet run lasts at most, if it isn't told.
 pub const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
@@ -393,6 +393,7 @@ impl QaBridge {
         if verbs::row_of(verb).is_none_or(|row| row.tag != QaDrive::TAG) {
             return Err(bad("That isn't a QA command."));
         }
+        refused_in_a_release(recto_platform::RELEASE_BUILD, verb)?;
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
             value
                 .parse::<f64>()
@@ -422,6 +423,7 @@ impl QaBridge {
                 if tab == 0 {
                     return Err(AgentError::new("no_active_tab", "No tab is open.", exit::NOT_FOUND));
                 }
+                as_person::check_tests_files(&inner, &[Path::new(value)])?;
                 inner.act(crate::core::controls::UiAction::SaveAs { tab, path: value.to_owned() });
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
@@ -720,9 +722,17 @@ pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError>
         .showing()
         .map(|ask| ask.path.clone())
         .ok_or_else(|| bad("No password sheet is open."))?;
-    if !is_a_tests_file(&path, inner.serving.paths.as_ref().map(|paths| paths.root.as_path())) {
-        return Err(bad(
-            "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
+    as_person::check_tests_files(inner, &[path.as_path()])
+}
+
+/// **What acts as the person is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its `owner-edit` alias and `qa
+/// save-as` are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
+fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
+    if release && matches!(verb, "as_person" | "owner_edit" | "save_as") {
+        return Err(AgentError::new(
+            "qa_refused",
+            "A release build doesn't act as the person for a test: this QA verb is only in a development build.",
+            exit::FAILED,
         ));
     }
     Ok(())
@@ -736,6 +746,81 @@ fn stuck() -> AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::headless::{HeadlessApp, outside_the_tests_folders};
+
+    /// A QA bridge on a headless app, for what's refused before the host is asked: no host answers it, so a verb that got as far as the host would wait
+    /// out [`UI_ANSWER_WAIT`] and fail as stuck.
+    fn bridge(app: &HeadlessApp) -> QaBridge {
+        let inner = app.core();
+        let bridge = QaBridge::new(
+            Arc::new(crate::testkit::FakeListener::default()),
+            inner.engine.clone(),
+            Watchdog::new(),
+            Arc::clone(&inner.core),
+        );
+        bridge.attach(Arc::downgrade(inner));
+        bridge
+    }
+
+    fn drive(bridge: &QaBridge, verb: &str, value: &str) -> Result<Value, AgentError> {
+        bridge.run(&Qa::QaDrive(QaDrive {
+            verb: verb.to_owned(),
+            value: value.to_owned(),
+            timeout_ms: None,
+        }))
+    }
+
+    /// Failure (review of R2.4, S2): `qa save-as` acts as the person, at Control and with no file wall, where the same through `qa as-person` needs Full
+    /// and the wall: a save to a path outside the test's folders, or with a file that isn't a test's open, goes through. Through the verb, as a client
+    /// sends it.
+    #[test]
+    fn save_as_is_at_full_behind_the_wall() {
+        let line = r#"{"cmd":"qa_drive","verb":"save_as","value":"/tmp/x.pdf"}"#;
+        assert_eq!(recto_agent::parse(line).unwrap().access(), recto_agent::Access::At(recto_agent::Level::Full));
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        let own = app.disk().pdf("own.pdf", 2);
+        app.open(&own);
+        let Some(outside) = outside_the_tests_folders("recto-save-as.pdf") else {
+            return;
+        };
+        let refused = drive(&qa, "save_as", &outside.to_string_lossy()).expect_err("a save to a path outside");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        std::fs::copy(&own, &outside).unwrap();
+        app.open(&outside);
+        let refused = drive(&qa, "save_as", &own.with_file_name("copy.pdf").to_string_lossy()).expect_err("with a file open that isn't a test's");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Failure (review of R2.4, item 7): `qa password`, sent as a client sends it, types into the sheet for a file that isn't a test's: the check is a
+    /// helper that the verb's own path doesn't call.
+    #[test]
+    fn qa_password_through_the_verb_types_only_into_a_tests_sheet() {
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        let Some(outside) = outside_the_tests_folders("recto-password.pdf") else {
+            return;
+        };
+        std::fs::write(&outside, crate::core::headless::files::locked_with("open sesame", 1)).unwrap();
+        app.open(&outside);
+        assert!(app.reader().password_prompt.is_some(), "the person's open asks");
+        let refused = drive(&qa, "password", "open sesame").expect_err("not a test's own file");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Failure (review of R2.4, D1): a release build acts as the person for whoever starts it with `--qa`. `as_person`, `owner_edit` and `save_as` are refused
+    /// there, and nothing else is.
+    #[test]
+    fn a_release_doesnt_act_as_the_person() {
+        for verb in ["as_person", "owner_edit", "save_as"] {
+            assert_eq!(refused_in_a_release(true, verb).unwrap_err().code, "qa_refused", "{verb}");
+            assert!(refused_in_a_release(false, verb).is_ok(), "{verb} in a development build");
+        }
+        assert!(refused_in_a_release(true, "state").is_ok());
+        assert!(refused_in_a_release(true, "zoom").is_ok());
+    }
 
     /// Failure: a release build takes a test's hook from its environment: `RECTO_QA_POLICY_NUDGE_MS` turned a release's quiet run `accessory` every
     /// few milliseconds, where the slow mode beside it is off in a release whatever the environment says. Not read at all there, and only in a quiet run.

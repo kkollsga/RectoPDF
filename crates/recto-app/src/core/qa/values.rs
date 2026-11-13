@@ -43,14 +43,14 @@ pub(super) fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
 }
 
 /// Whether a file is one a quiet run's test made: in its state folder, or one of the temp folders a quiet run may use
-/// ([`recto_control::state::quiet_run_temp_folders`], never what `$TMPDIR` says). Compared by the folders the paths really are, so a link out of one
+/// ([`recto_control::quiet::temp_folders`], never what `$TMPDIR` says). Compared by the folders the paths really are, so a link out of one
 /// doesn't count.
 pub(super) fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
     let Ok(file) = path.canonicalize() else { return false };
     state
         .and_then(|state| state.canonicalize().ok())
         .into_iter()
-        .chain(recto_control::state::quiet_run_temp_folders())
+        .chain(recto_control::quiet::temp_folders())
         .any(|root| file.starts_with(root))
 }
 
@@ -179,7 +179,7 @@ mod tests {
             .expect("the test binary again");
         let said = String::from_utf8_lossy(&child.stdout).into_owned() + &String::from_utf8_lossy(&child.stderr);
         assert!(child.status.success() && said.contains("1 passed"), "with TMPDIR at the home:\n{said}");
-        let temp = recto_control::state::quiet_run_temp_folders();
+        let temp = recto_control::quiet::temp_folders();
         assert!(!temp.is_empty(), "no temp folder");
         assert!(is_a_tests_file(&temp[0], None), "the system's temp folder is a test's");
     }

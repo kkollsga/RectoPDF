@@ -551,9 +551,7 @@ impl AppCore {
     pub fn start(args: Vec<String>, listener: Arc<dyn AppListener>) -> Result<Arc<Self>, StartError> {
         let refused = |message: String| StartError::Refused { message };
         let listener: Arc<dyn recto_app::Listener> = Arc::new(records::HostListener(listener));
-        let args = recto_app::launch::parse(&args).map_err(refused)?;
-        recto_platform::slow::arm(args.qa).map_err(refused)?;
-        let paths = recto_app::launch::state(&args).map_err(refused)?;
+        let (args, paths) = recto_app::launch::start(&args).map_err(refused)?;
         let (qa_mode, open) = (args.qa, args.open.clone());
         let inner = Inner::start(Start {
             listener,

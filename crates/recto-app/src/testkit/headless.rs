@@ -45,7 +45,7 @@ const LOOK_EVERY: Duration = Duration::from_millis(2);
 /// part rather than calling a test's own file someone else's.
 pub fn outside_the_tests_folders(name: &str) -> Option<PathBuf> {
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").canonicalize().ok()?;
-    if recto_control::state::quiet_run_temp_folders().iter().any(|temp| target.starts_with(temp)) {
+    if recto_control::quiet::temp_folders().iter().any(|temp| target.starts_with(temp)) {
         eprintln!("this checkout is in a temp folder: the part about a file outside the test's folders is skipped");
         return None;
     }

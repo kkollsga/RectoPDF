@@ -9,7 +9,7 @@ mod controls;
 mod coverage;
 mod editing;
 mod exits;
-mod files;
+pub(crate) mod files;
 mod find;
 mod finding;
 mod input_to_frame;
