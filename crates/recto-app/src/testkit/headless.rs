@@ -247,6 +247,12 @@ impl Builder {
         // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's own timer isn't armed: a test that wants the window up without the
         // state says so ([`Builder::state_late`]).
         app.core().begin_restore();
+        if self.held.contains(&Seam::Launch) {
+            // What this copy is, looked at before the state's read: held there, the state's read waits behind it.
+            app.wait_until("the launch's look to wait at its seam", || recto_platform::slow::gate::waiting(Seam::Launch) > 0);
+            app.settle();
+            return app;
+        }
         if state_held {
             app.wait_until("the state's read to wait at its seam", || recto_platform::slow::gate::waiting(Seam::State) > 0);
             app.settle();
@@ -289,8 +295,10 @@ impl HostPlay {
                 inner.ready(open);
             } else if inner.state_read() && !self.late_taken_in && !inner.window_interactive() {
                 self.late_taken_in = true;
-                // The window made again from the state: the old one goes without counting as the person closing it, and the new one opens.
+                // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
+                // new one opens.
                 if !crate::lock(&inner.window.app).window_closed {
+                    inner.window_replaced();
                     inner.window_opened();
                 }
                 inner.shown_with_state();
