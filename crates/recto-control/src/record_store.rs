@@ -52,12 +52,6 @@ const WENT_BACK: &str = "went-back";
 /// How long a launch waits for the lock, in case what holds it is the app it's taking over from, on its way out.
 const LOCK_PATIENCE: Duration = Duration::from_millis(600);
 
-fn take_lock(path: &Path) -> Option<File> {
-    let file = OpenOptions::new().create(true).truncate(false).write(true).open(path).ok()?;
-    file.try_lock().ok()?;
-    Some(file)
-}
-
 /// Why a record couldn't be written or confirmed. The updater won't go ahead on any of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreError {
@@ -151,6 +145,12 @@ pub struct RecordStore {
     /// Held for the process's life, however it ends. `None` if another has it.
     lock: Mutex<Option<File>>,
     lock_path: PathBuf,
+    /// This store's number in this process, written into the lock file with the process's when it takes it, so one that doesn't get it can say who has.
+    number: u64,
+    /// Why it isn't keeping the record, when it isn't.
+    refused: Mutex<Option<String>>,
+    /// It has let go, for good.
+    gone: std::sync::atomic::AtomicBool,
     progress: Mutex<Progress>,
     /// Which version this writes, which a test can make it pretend isn't this build's.
     version: u32,
@@ -306,15 +306,25 @@ impl RecordStore {
     pub fn open_as(paths: &StatePaths, flavor: Flavor, version: u32) -> Self {
         let dir = paths.root.join(fold_name(flavor));
         let lock_path = paths.root.join("run").join(format!("{}.lock", fold_name(flavor)));
-        let lock = paths.prepare().ok().and_then(|()| take_lock(&lock_path));
-        Self {
+        let prepared = paths.prepare();
+        let store = Self {
             root: paths.root.clone(),
             dir: Mutex::new(dir),
-            lock: Mutex::new(lock),
+            lock: Mutex::new(None),
             lock_path,
+            number: lock::next_store(),
+            refused: Mutex::new(None),
+            gone: std::sync::atomic::AtomicBool::new(false),
             progress: Mutex::new(Progress::default()),
             version,
+        };
+        match prepared {
+            Ok(()) => store.ask_for_lock(),
+            Err(error) => {
+                *store.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("the state folder was refused: {}", error.message))
+            }
         }
+        store
     }
 
     fn dir(&self) -> PathBuf {
@@ -1691,6 +1701,88 @@ mod tests {
         assert_eq!(loaded_record(&second).tabs.len(), 2);
         assert!(second.holds_the_record());
         going.join().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (2026-11-13, twice, from `exits::every_edit_survives_a_quit` and `..._sleep_and_a_kill_while_asleep` under load: "the headless app didn't get the
+    /// record's lock"): an ended app's lock stays held by a copy of its descriptor that outlives it, so the next app on the same record starts without it. A lock
+    /// on a file belongs to its open description, not to one descriptor, and a worker being started on another thread at that moment has a copy of every
+    /// descriptor until its exec closes them: a probe on this Mac, closing a locked descriptor while another thread spawned `/usr/bin/true` in a loop, found the
+    /// lock still held right after the close 136 times in 200,187 (load 4), and never with the lock let go of first. The copy here is that copy.
+    #[test]
+    fn letting_go_frees_the_record_whatever_copies_of_its_descriptor_live_on() {
+        let (root, paths) = state();
+        let first = RecordStore::open(&paths, Flavor::App);
+        let copy = first.lock.lock().unwrap().as_ref().expect("the first keeps the record").try_clone().unwrap();
+        first.let_go();
+        assert!(!first.holds_the_record());
+        let next = RecordStore::open(&paths, Flavor::App);
+        assert!(
+            next.holds_the_record(),
+            "the next app on this record gets it while a copy of the ended one's descriptor is open"
+        );
+        drop(copy);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: a thread of an ended app that's still going, asking for the record as a launch's read does, takes it back from the app that came after, which
+    /// then can't keep it, and writes into it.
+    #[test]
+    fn a_store_that_has_let_go_never_takes_the_record_back() {
+        let (root, paths) = state();
+        let first = RecordStore::open(&paths, Flavor::App);
+        first.let_go();
+        assert!(!first.wait_for_lock(), "the ended one asked again");
+        assert!(matches!(first.load(), Loaded::OtherInstance));
+        let next = RecordStore::open(&paths, Flavor::App);
+        assert!(next.holds_the_record(), "the next one: {:?}", next.why_not_keeping());
+        assert_eq!(
+            first.write_record(&sample(1), &PlaceDelta::default(), false).unwrap_err().code,
+            "other_instance"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (a test's start that "didn't get the record's lock" twice, with nothing to say why): a store that isn't keeping the record can't say who is, so the
+    /// failure can't be told from another app, a straggler of this one, a copy of a descriptor or a refused folder. Each, made.
+    #[test]
+    fn a_store_without_the_record_says_who_has_it() {
+        let (root, paths) = state();
+        let first = RecordStore::open(&paths, Flavor::App);
+        assert_eq!(first.why_not_keeping(), None);
+        let second = RecordStore::open(&paths, Flavor::App);
+        let why = second.why_not_keeping().expect("a reason");
+        assert!(
+            why.contains(&format!("record store #{} of this process, which still keeps it", first.number)),
+            "{why}"
+        );
+        // A copy of the descriptor kept past a close with no unlock: what letting go did before it unlocked.
+        let copy = first.lock.lock().unwrap().as_ref().unwrap().try_clone().unwrap();
+        let file = first.lock.lock().unwrap().take().unwrap();
+        lock::forget_keeping(&first.lock_path, first.number);
+        drop(file);
+        second.ask_for_lock();
+        let why = second.why_not_keeping().expect("a reason");
+        assert!(why.contains("has let go of it, and a copy of its descriptor still holds it"), "{why}");
+        drop(copy);
+        drop(first);
+        drop(second);
+        // Another process: what its taker wrote names it.
+        let held = File::options().write(true).open(paths.root.join("run").join("session.lock")).unwrap();
+        held.try_lock().unwrap();
+        (&held).write_all(b"1 7\n").unwrap();
+        let third = RecordStore::open(&paths, Flavor::App);
+        assert_eq!(third.why_not_keeping().as_deref(), Some("it's held by process 1, which is running"));
+        drop(held);
+        // A folder that isn't private.
+        std::fs::set_permissions(&paths.root, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let refused = RecordStore::open(&paths, Flavor::App);
+        assert!(
+            refused.why_not_keeping().is_some_and(|why| why.starts_with("the state folder was refused")),
+            "{:?}",
+            refused.why_not_keeping()
+        );
+        std::fs::set_permissions(&paths.root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
     }
 

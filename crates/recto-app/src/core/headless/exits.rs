@@ -390,3 +390,20 @@ fn closing_a_tab_asks_and_each_answer_does_what_it_says() {
     assert!(app.tabs().is_empty(), "nothing comes back as a tab: {}", app.session_json()["tabs"]);
     drop(app.quit());
 }
+
+/// Failure (2026-11-13: two restarts here "didn't get the record's lock" under load, with nothing to say why): a launch that can't keep the record fails without
+/// saying who has it, so its cause is a guess. Made here by a store of the test's keeping it: the failure names that store, in this process, still keeping it.
+#[test]
+fn a_launch_that_cant_keep_the_record_says_who_has_it() {
+    let disk = Disk::new();
+    let keeper = recto_control::record_store::RecordStore::open(disk.paths(), recto_control::record_store::Flavor::App);
+    assert!(keeper.holds_the_record());
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(disk.start()))).expect_err("a launch without the record");
+    let said = failed
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| failed.downcast_ref::<&str>().map(|said| (*said).to_owned()))
+        .unwrap_or_default();
+    assert!(said.contains("didn't get the record's lock"), "{said}");
+    assert!(said.contains("of this process, which still keeps it"), "{said}");
+}
