@@ -24,8 +24,10 @@ pub const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 pub const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A flush (a quit's, a hand-off's) doesn't wait; being asked does, as the queue's writer does. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of; unless no picture in it is of the place it's left at on its paper, when one write goes ahead within the hour's cap ([`crate::sleep_writer::there_for_other_place`]).
 pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
-/// What sleep files may come to in an hour, all told, for the same reason: this is about 8 MiB on a heavy day's eight hours, inside SPEC section 2's "About 10 MiB of state". A file that's text is about 8 KiB, and one of a photograph about 100.
-pub const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
+/// What sleep files may come to in an hour, all told, for the whole app, for the same reason. 4 MiB (owner, 2026-11-13, "I agree with your recommendation",
+/// over 1 and 2): a text page's file at a Retina window's fit is about 72 KB and a photograph page's about 100 KiB, so about 57 text files an hour for all tabs,
+/// and at worst about 32 MiB written in an eight-hour day. At 1 MiB ordinary switching used it in about 14 writes, and every wake after was bare for the hour.
+pub const SLEEP_BYTES_PER_HOUR: u64 = 4 * 1024 * 1024;
 /// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
 pub const BUDGET_LOOK_EVERY_MS: u64 = 1_000;
 /// The most the queue's writer holds back for a write someone's waiting on, each time.
