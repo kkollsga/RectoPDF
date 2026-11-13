@@ -17,7 +17,9 @@
 //! - **Several pictures** are one background between them: each is judged by itself, what they cover together is their share, and the background is what's outside the kept ones.
 //! - **A page with no picture kept** turns over as before, whatever its background: a page of text, a large drawing in vectors, which has no picture to keep, and a page of white-backed pictures.
 //!
-//! **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. That's unchanged: the page with a photo over 53% of it, judged whole, is dimmed, as its photo is too much colour for a page of white. A page is judged whole only when its images can't be had: a page that fails at every zoom, an asking that was stopped, or a page with more images than an answer holds, too many to tell apart; a page drawn at a lower resolution is asked as any page is (`recto-render-service`, `image_boxes`). A look refused a worker isn't decided at all, and so isn't remembered (`engine/run.rs`). There's one [`PageLook`] a page while its renderer lives, so its tiles, preview, lower-resolution version and the picture it sleeps as can't disagree. **Across a renderer dropped and made again, as a tab sleeps and wakes, the look is decided again,** from the preview if that's drawn first or the look picture otherwise, and what's decided can differ only in part: whether the page turns over or is dimmed doesn't hang on which picture it's decided from (0 of 1,291 pages differed between pictures 1,144, 512 and 128 pixels tall, `tests/look_survey.rs`, `sizes`), but whether one image on it turns over with the page or is kept can (7 of 292 pages with images between the look picture and the largest preview, 29 at a lower resolution's quarter), so such an image can change across a sleep and a wake. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
+//! **What the pictures cover is measured in two steps, each an approximation.** The worker gives each image's box, and on a page past 64 images gives images whose boxes overlap or share an edge as one picture, the box round them (`recto-render`'s `places.rs`), so a picture cut in strips, a map with insets laid over it, or a mosaic of photos edge to edge is one picture there, and its box can take in paper between its images: a step at 64. Here, each of those boxes is judged by itself, and the page's share of picture is what the kept ones cover together in the picture the look is decided from, an overlap counted once, the same measure the background is the rest of. So the worker's merging decides what a picture is, and the union decides how much of the page the pictures are.
+//!
+//! **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. That's unchanged: the page with a photo over 53% of it, judged whole, is dimmed, as its photo is too much colour for a page of white. A page is judged whole only when its images can't be had: a page that fails at every zoom, an asking that was stopped, or a page with more pictures apart than an answer holds, too many to tell apart; a page drawn at a lower resolution is asked as any page is (`recto-render-service`, `image_boxes`). A look refused a worker isn't decided at all, and so isn't remembered (`engine/run.rs`). There's one [`PageLook`] a page while its renderer lives, so its tiles, preview, lower-resolution version and the picture it sleeps as can't disagree. **Across a renderer dropped and made again, as a tab sleeps and wakes, the look is decided again,** from the preview if that's drawn first or the look picture otherwise, and what's decided can differ only in part: whether the page turns over or is dimmed doesn't hang on which picture it's decided from (0 of 1,291 pages differed between pictures 1,144, 512 and 128 pixels tall, `tests/look_survey.rs`, `sizes`), but whether one image on it turns over with the page or is kept can (7 of 292 pages with images between the look picture and the largest preview, 29 at a lower resolution's quarter), so such an image can change across a sleep and a wake. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
 
 /// Which paper a tile was drawn for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1298,6 +1300,28 @@ mod tests {
         let pixels = made_page(&photos, WHITE, INK);
         let look = PageLook::decide(None, &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
         assert!(look.dim, "{look:?}");
+    }
+
+    /// Failure: a mosaic of 72 photos laid edge to edge on a white page, which the worker, past 64 images, gives as one picture, the box round them, is dimmed whole or turned into a negative. It's one picture kept, with its photos' colours, on a page that turns over round it, which is right: its margins are white. Photos with gaps between them, which the worker doesn't merge, are judged one by one, or, past what an answer holds, the page is judged whole and dimmed (`a_page_of_too_many_photos_to_tell_apart_is_dimmed_whole`).
+    #[test]
+    fn a_mosaic_of_photos_edge_to_edge_is_one_picture_on_a_page_that_turns_over() {
+        let mosaic: Vec<([f64; 4], Part)> = (0..72)
+            .map(|at| {
+                let (column, row) = (f64::from(at % 8), f64::from(at / 8));
+                ([0.06 + column * 0.11, 0.05 + row * 0.1, 0.17 + column * 0.11, 0.15 + row * 0.1], Part::Photo)
+            })
+            .collect();
+        let pixels = made_page(&mosaic, WHITE, INK);
+        let whole = [sides([0.06, 0.05, 0.94, 0.95])];
+        let look = PageLook::decide(Some(&whole), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(!look.dim && look.keep == whole && look.whiten.is_empty(), "{look:?}");
+        let after = shown(&look, pixels.clone());
+        assert!(luma(pixel_at(&after, 2, 2)) < 60, "the margin goes dark: {:06x}", pixel_at(&after, 2, 2));
+        let (before, now) = (pixel_at(&pixels, 100, 130), pixel_at(&after, 100, 130));
+        assert!(
+            luma(now) <= luma(before) && luma(now) * 10 >= luma(before) * 7,
+            "a photo keeps its colours: {before:06x} to {now:06x}"
+        );
     }
 
     /// Failure: a picture page's colours change, or it's left as bright as it was, or black text on it goes unreadable. Each channel falls by the same share, and black stays black.
