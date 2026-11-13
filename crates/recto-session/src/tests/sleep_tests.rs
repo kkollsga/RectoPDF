@@ -1,7 +1,7 @@
 use super::*;
 
 /// What a state record's store does, in memory: journals by name, read back as a launch would.
-struct MemorySource(Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>);
+pub(super) struct MemorySource(pub(super) Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>);
 
 impl HistorySource for MemorySource {
     fn history_of(&self, _stamp: Option<FileStamp>, _path: &Path) -> Option<TakenHistory> {

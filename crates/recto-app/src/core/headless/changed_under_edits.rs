@@ -160,3 +160,72 @@ fn looking_again_at_an_edited_tab_whose_file_changed_changes_nothing() {
     }
     assert_eq!(app.session_json()["tabs"][0], folded, "nothing about the tab changed");
 }
+
+/// What every change under the edits must leave: the edits as they were, the tab saying its file changed, Save and Save As refused with nothing written, and
+/// the file as the other program left it.
+fn assert_kept_and_nothing_written(app: &HeadlessApp, file: &Path, theirs: &[u8], edits_before: &serde_json::Value, what: &str) {
+    assert_eq!(&app.session_json()["tabs"][0]["edits"], edits_before, "{what}: the edits as they were");
+    assert_eq!(app.session_json()["tabs"][0]["notice"], "changed", "{what}");
+    let copy = file.with_file_name("copy.pdf");
+    for words in [vec!["save"], vec!["save-as", "--out", copy.to_str().unwrap()]] {
+        let refused = app.recto(Level::Full, &words).expect_err("refused");
+        assert_eq!(refused.code, "file_changed", "{what}, {words:?}: {refused:?}");
+    }
+    assert!(!copy.exists(), "{what}");
+    assert_eq!(std::fs::read(file).expect("the file"), theirs, "{what}: nothing written");
+}
+
+/// Pinned for the page matcher (2026-11-13): page 9 of ten turned, and the file becomes five pages, then the same ten pages in another order, then fourteen.
+/// No panic anywhere, the edits are kept, nothing is written, and asking for a position past the new file's end fails in words rather than reading past it.
+/// (The edited document stays the edit list's ten positions whatever the file's length: the four pages appended aren't reachable until the matcher.)
+#[test]
+fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_written() {
+    let (app, file, _original, _modified) = edited();
+    let edits_before = app.session_json()["tabs"][0]["edits"].clone();
+    let five = pdf_bytes("Theirs", 5);
+    replace(&file, &five);
+    look(&app);
+    assert_kept_and_nothing_written(&app, &file, &five, &edits_before, "five pages");
+    for page in ["6", "9", "10"] {
+        match app.recto(Level::Full, &["text", "--page", page]) {
+            Ok(read) => assert!(read.to_string().len() < 64 * 1024, "page {page}: {read}"),
+            Err(refused) => assert!(!refused.message.is_empty(), "page {page}: {refused:?}"),
+        }
+    }
+    let reordered: Vec<recto_testpdf::Page> = (1..=10)
+        .rev()
+        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")])))
+        .collect();
+    let reordered = recto_testpdf::pages(&reordered);
+    replace(&file, &reordered);
+    look(&app);
+    assert_kept_and_nothing_written(&app, &file, &reordered, &edits_before, "the same pages reordered");
+    let fourteen = pdf_bytes("Mine", 14);
+    replace(&file, &fourteen);
+    look(&app);
+    assert_kept_and_nothing_written(&app, &file, &fourteen, &edits_before, "four pages appended");
+    assert_eq!(
+        app.session_json()["tabs"][0]["edits"]["pages"],
+        10,
+        "the appended pages aren't in the edited document"
+    );
+}
+
+/// Pinned for the page matcher: the file under an edited tab is caught half-written (cut off in the middle of an object), as a save in progress or a copy
+/// from a disk that went away leaves it. No panic in the loader or the session, the edits are kept, and nothing is written.
+#[test]
+fn a_half_written_file_under_edits_panics_nothing_and_keeps_them() {
+    let (app, file, _original, _modified) = edited();
+    let edits_before = app.session_json()["tabs"][0]["edits"].clone();
+    let whole = pdf_bytes("Theirs", 10);
+    let cut = whole[..whole.len() / 2].to_vec();
+    replace(&file, &cut);
+    look(&app);
+    assert_kept_and_nothing_written(&app, &file, &cut, &edits_before, "half-written");
+    let other = app.disk().pdf("other.pdf", 2);
+    app.open(&other);
+    let tab = app.session_json()["tabs"][0]["id"].as_u64().expect("a tab");
+    app.recto(Level::Full, &["tap", &format!("#{tab}")]).expect("back to it");
+    app.settle();
+    assert_eq!(app.session_json()["tabs"][0]["edits"], edits_before, "read again, still kept");
+}

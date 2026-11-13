@@ -205,3 +205,28 @@ fn a_look_that_finds_what_is_already_known_is_nothing_new() {
     assert!(bed.s.apply_file_status(a, FileStatus::Same(made_on)));
     assert_eq!(bed.s.tab_notice(a), None);
 }
+
+/// Pinned for the page matcher (2026-11-13): a tab's list has gone to disk with the tab dormant, the file changes while it sleeps, and the tab is looked at,
+/// woken and read again. The list comes back whole from its journal, the journal stays, and the tab says its file changed: a list asleep is no less kept.
+#[test]
+fn a_list_asleep_when_its_file_changes_wakes_whole() {
+    let (mut bed, a, b) = Bed::new(10);
+    let journals = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    bed.s.set_history_source(Arc::new(super::sleep_tests::MemorySource(Arc::clone(&journals))));
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    bed.s.tap(b).unwrap();
+    bed.write_journal();
+    journals.lock().unwrap().clone_from(&bed.files);
+    let journal = bed.files.keys().next().unwrap().clone();
+    let as_they_were = bed.s.edits_record(a).unwrap();
+    assert!(bed.s.go_dormant(a));
+    assert!(bed.s.list_is_asleep(a));
+    replace_file(&bed.path(), b"a shorter version, saved by another app");
+    bed.pages.set(5);
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a))));
+    bed.s.warm.clear_contents();
+    bed.s.tap(a).unwrap();
+    assert!(!bed.s.list_is_asleep(a));
+    bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
+    bed.assert_save_cant_take_the_new_file(a);
+}
