@@ -12,6 +12,7 @@ mod files;
 mod follow;
 mod forgetting;
 mod journal;
+mod journal_desk;
 mod pages;
 mod paper;
 mod parts;
