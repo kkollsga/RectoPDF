@@ -3,11 +3,6 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// The tabs that keep their contents: the active one and the most recent others, at most [`MAX_WARM`].
-    pub fn warm_tabs(&self) -> impl Iterator<Item = TabId> + '_ {
-        self.warm.ids()
-    }
-
     pub fn tier(&self, id: TabId) -> Tier {
         if self.tabs.active() == Some(id) {
             Tier::Hot
@@ -71,11 +66,6 @@ impl<L: DocLoader> Session<L> {
         self.tabs.path_of(id).map(|path| (id, path))
     }
 
-    /// Whether a read of this cold tab's file is held for its waking, so it needn't be read again.
-    pub fn holds_read_of(&self, id: TabId) -> bool {
-        self.warm.holds_read_of(id)
-    }
-
     /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`], kept for that tab's waking. A tab closed or already woken while it was being read has no use for it. Several can be read at once, so they don't take each other's place, and the oldest goes past the cap.
     pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
         self.warm.drop_read(id);
@@ -83,11 +73,6 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         self.warm.keep_read(id, loaded, stamp);
-    }
-
-    /// A warm tab's contents and labels, shared: what the host needs to say a page by its label without asking the session again.
-    pub fn warm_toc(&self, id: TabId) -> Option<Arc<Toc>> {
-        self.warm.toc(id).map(Arc::clone)
     }
 
     /// Makes a restored active tab what it says it is, once its file has been read. No tap, so its fold isn't touched.

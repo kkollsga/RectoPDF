@@ -45,19 +45,4 @@ impl<L: DocLoader> Session<L> {
             focus: None,
         }
     }
-
-    /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
-    pub fn take_place_lost(&mut self) -> bool {
-        self.mail.take_place_lost()
-    }
-
-    /// Notes that a page finished drawing, or couldn't be.
-    pub fn note_drawn(&mut self, note: DrawNote) {
-        self.mail.note_drawn(note);
-    }
-
-    /// What's known about a page's latest draw, if it's still remembered.
-    pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
-        self.mail.draw_note(tab, page)
-    }
 }

@@ -13,8 +13,8 @@ pub fn apply_restored(
 ) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
-        session.set_history_source(source);
-        session.set_sleep_files(true);
+        session.journals_mut().set_history(source);
+        session.dormancy_mut().set_sleep_files(true);
     });
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.panes.iter_mut().any(|pane| pane.tab.take().is_some()) {
@@ -32,7 +32,7 @@ pub fn apply_restored(
     let host = &inner.host;
     let mut holding = None;
     let holds_the_record = inner.saver.store.holds_the_record();
-    host.session.with_session(|session| session.set_journaling(holds_the_record));
+    host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
     match loaded {
         Loaded::Restored(restored) => {
@@ -288,7 +288,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
             CoreCall::Page(page, failure, tab) => {
-                host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
+                host.session
+                    .with_session(|session| session.mail_mut().note_drawn(DrawNote { tab, page, failure }));
                 events.push(match failure {
                     None => Event::PageDrawn { tab, page: page + 1 },
                     Some(code) => Event::PageFailed { tab, page: page + 1, code },

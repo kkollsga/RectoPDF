@@ -366,7 +366,7 @@ fn a_jump_for_a_tab_held_for_its_file_waits_for_the_next_look() {
     agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{}","page":5,"within":0.8}}"##, b_tab.0));
     agent(&app, &format!(r##"{{"cmd":"compare","toggle":"#{}"}}"##, b_tab.0));
     app.settle();
-    let (waiting, here) = inner.host.session.with_session(|s| (s.waiting_jump(b_tab), s.here(b_tab)));
+    let (waiting, here) = inner.host.session.with_session(|s| (s.mail().waiting_jump(b_tab), s.here(b_tab)));
     let stop = waiting.expect("the jump still waiting while the tab's held");
     assert_eq!((stop.page, here.map(|here| here.page)), (4, Some(4)), "on page 5");
     assert!((stop.within - 0.8).abs() < 0.01, "0.8 of the way down: {stop:?}");
@@ -383,7 +383,7 @@ fn a_jump_for_a_tab_held_for_its_file_waits_for_the_next_look() {
         .reading_anchor()
         .expect("a place");
     assert!(page == 4 && (within - 0.8).abs() < 0.01, "sent once the hold's over: {page} {within}");
-    assert_eq!(inner.host.session.with_session(|s| s.waiting_jump(b_tab)), None, "and no longer waiting");
+    assert_eq!(inner.host.session.with_session(|s| s.mail().waiting_jump(b_tab)), None, "and no longer waiting");
 }
 
 /// Failure (review F3): the seam that puts one look between a command's take-in and its step is set and never used, as when the command run next takes no

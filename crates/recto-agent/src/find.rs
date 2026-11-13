@@ -628,7 +628,7 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                 // Marked for Back, and the page view's told nothing more: the app brings the hit itself into view, a third down, which landing at the page's top would undo.
                 Going::Jump(by) => {
                     if s.jump_as(id, hit.page, 0.0, by).is_ok() {
-                        let _ = s.take_jump(id);
+                        let _ = s.mail_mut().take_jump(id);
                     }
                 }
             }

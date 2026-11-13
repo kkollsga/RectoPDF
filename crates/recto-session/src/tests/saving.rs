@@ -87,7 +87,7 @@ fn nothing_changes_a_tab_while_it_is_saved() {
     assert!(!s.clear_history(id, ClearReason::Discard), "a discard waits too");
     assert_eq!(s.close(id), Err(SessionError::Saving));
     assert_eq!(s.begin_save(id, true).err(), Some(SessionError::Saving), "one save at a time");
-    assert!(s.any_saving() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
+    assert!(s.saves().any() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
     s.save_prepared(
         id,
         FileStamp {
@@ -100,7 +100,7 @@ fn nothing_changes_a_tab_while_it_is_saved() {
     );
     assert!(s.lists().get(id).unwrap().saving().is_some());
     s.end_save(id);
-    assert!(!s.is_saving(id) && !s.any_saving());
+    assert!(!s.saves().is_saving(id) && !s.saves().any());
     assert!(s.lists().get(id).unwrap().saving().is_none(), "what a failed save noted goes");
     assert!(s.lists().is_edited(id), "and the edits stand");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
@@ -194,7 +194,7 @@ fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
     };
     s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)));
     assert!(
-        s.has_retired_journals(),
+        s.journals().has_pending(),
         "it wants writing at once, as a crash would otherwise find the old one"
     );
     // Not written yet: the old one's still the only one, and still there.
@@ -202,7 +202,7 @@ fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
     write_journal(&mut s, &mut files);
     assert!(!files.contains_key(&old), "it goes once the new one's there");
     assert_eq!(files.len(), 1);
-    assert!(!s.has_retired_journals());
+    assert!(!s.journals().has_pending());
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     write_journal(&mut s, &mut files);
     let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
@@ -376,7 +376,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         assert_eq!(files.len(), 1);
         assert!(s.clear_history(a, reason));
         assert!(s.lists().get(a).is_none(), "{reason:?}");
-        assert!(s.has_retired_journals());
+        assert!(s.journals().has_pending());
         let work = s.journal_work();
         assert_eq!(
             work.retired.iter().filter(|name| !record::is_sleep_name(name)).count(),
@@ -526,7 +526,7 @@ fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() 
     assert_eq!(s.lists().edits_record(restored), list, "and its list, with nothing noted of a save");
     assert!(s.lists().is_edited(restored), "and it's still unsaved");
     assert_eq!(s.saved_from(restored), None);
-    assert!(!s.any_saving() && !s.saves.abandoned_has(old), "nothing's left marked as saving");
+    assert!(!s.saves().any() && !s.saves.abandoned_has(old), "nothing's left marked as saving");
     assert!(
         s.begin_save(restored, false).unwrap().is_some(),
         "once the old save has ended, a new one begins"

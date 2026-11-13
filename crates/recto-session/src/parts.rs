@@ -6,6 +6,61 @@ use super::*;
 use crate::record::FindRecord;
 
 impl<L: DocLoader> Session<L> {
+    /// Files opened lately, for File > Open Recent and ⌘K.
+    pub fn recent(&self) -> &recent::Recent {
+        &self.recent
+    }
+
+    pub fn recent_mut(&mut self) -> &mut recent::Recent {
+        &mut self.recent
+    }
+
+    /// Generated contents the sidebar knows of, for tabs someone asked about.
+    pub fn generated(&self) -> &generated::Generated {
+        &self.generated
+    }
+
+    pub fn generated_mut(&mut self) -> &mut generated::Generated {
+        &mut self.generated
+    }
+
+    /// The tabs that keep their contents, most recent first, and the reads of cold tabs' files made ahead of waking them.
+    pub fn warm(&self) -> &warm::Warm {
+        &self.warm
+    }
+
+    /// The session's clock, the holds on tabs, and what's on its way to and from the sleep files.
+    pub fn dormancy(&self) -> &dormancy::Dormancy {
+        &self.dormancy
+    }
+
+    pub fn dormancy_mut(&mut self) -> &mut dormancy::Dormancy {
+        &mut self.dormancy
+    }
+
+    /// Tabs being saved, and what saves lately moved their tabs on from.
+    pub fn saves(&self) -> &saves::Saves {
+        &self.saves
+    }
+
+    /// Each edited tab's journal, what's waiting to go out to the journals, and where a PDF's history is read from.
+    pub fn journals(&self) -> &journals::Journals {
+        &self.journals
+    }
+
+    pub fn journals_mut(&mut self) -> &mut journals::Journals {
+        &mut self.journals
+    }
+
+    /// What passes between the session and the page view: the pages lately drawn, the jumps it hasn't taken, and a place lost to an edit.
+    pub fn mail(&self) -> &mail::PageViewMail {
+        &self.mail
+    }
+
+    pub fn mail_mut(&mut self) -> &mut mail::PageViewMail {
+        &mut self.mail
+    }
+
     /// Every tab's list of edits, in memory or gone to disk, and whether an agent's at Full.
     pub fn lists(&self) -> &lists::Lists {
         &self.lists
@@ -99,5 +154,20 @@ impl<L: DocLoader> Session<L> {
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().is_asleep`.
     pub fn list_is_asleep(&self, id: TabId) -> bool {
         self.lists.is_asleep(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `saves().is_saving`.
+    pub fn is_saving(&self, id: TabId) -> bool {
+        self.saves.is_saving(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `journals_mut().set_journaling`.
+    pub fn set_journaling(&mut self, on: bool) {
+        self.journals.set_journaling(on);
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `dormancy_mut().hold`.
+    pub fn hold(&mut self, id: TabId) {
+        self.dormancy.hold(id);
     }
 }

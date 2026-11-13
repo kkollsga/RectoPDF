@@ -23,8 +23,12 @@ fn back_and_forward_come_back_after_a_restart() {
     );
     s.jump(id, 9, 0.25).unwrap();
     assert_eq!(s.tabs().tab(id).unwrap().page, 9);
-    assert_eq!(s.take_jump(id), Some(trail::Stop::new(9, 0.25)), "the page view's told where to land");
-    assert_eq!(s.take_jump(id), None, "once");
+    assert_eq!(
+        s.mail_mut().take_jump(id),
+        Some(trail::Stop::new(9, 0.25)),
+        "the page view's told where to land"
+    );
+    assert_eq!(s.mail_mut().take_jump(id), None, "once");
     assert_eq!(s.tabs().can_go_back_and_forward(id), (true, false));
     let record = s.to_record();
     let mut again = Session::new(Labelled);
@@ -32,7 +36,7 @@ fn back_and_forward_come_back_after_a_restart() {
     assert_eq!(again.tabs().trail_of(id), s.tabs().trail_of(id), "the trail comes back as it was");
     assert!(again.step_as(id, true, Author::Owner).unwrap());
     assert_eq!(
-        again.take_jump(id),
+        again.mail_mut().take_jump(id),
         Some(trail::Stop::new(2, 0.4)),
         "back to the page and the depth it was left at"
     );
@@ -157,12 +161,12 @@ fn a_jump_not_yet_taken_is_where_the_reader_is() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.3).unwrap();
-    s.take_jump(id);
+    s.mail_mut().take_jump(id);
     s.jump(id, 4, 0.8).unwrap();
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.8)), "the jump waiting");
     assert!(s.step_as(id, true, Author::Owner).unwrap());
     assert!(s.step_as(id, false, Author::Owner).unwrap());
-    assert_eq!(s.take_jump(id), Some(trail::Stop::new(4, 0.8)), "Forward comes back to it");
+    assert_eq!(s.mail_mut().take_jump(id), Some(trail::Stop::new(4, 0.8)), "Forward comes back to it");
     s.jump(id, 6, 0.5).unwrap();
     s.go_to(id, 7).unwrap();
     assert_eq!(s.here(id), Some(trail::Stop::new(7, 0.0)), "a move since, with no jump of its own");
@@ -187,9 +191,9 @@ fn sent_on_page_5() -> (Session<Labelled>, TabId) {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let jump = s.waiting_jump(id).expect("a jump waiting");
-    s.jump_sent(id, jump, 10);
-    assert_eq!(s.waiting_jump(id), None, "sent, it no longer waits");
+    let jump = s.mail().waiting_jump(id).expect("a jump waiting");
+    s.mail_mut().jump_sent(id, jump, 10);
+    assert_eq!(s.mail().waiting_jump(id), None, "sent, it no longer waits");
     (s, id)
 }
 
@@ -220,9 +224,9 @@ fn a_read_after_the_send_taken_in_before_the_look_says_so_tells_of_it() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let jump = s.waiting_jump(id).unwrap();
+    let jump = s.mail().waiting_jump(id).unwrap();
     assert!(s.view_told_of(id, on_page_5(0.7), 20));
-    s.jump_sent(id, jump, 15);
+    s.mail_mut().jump_sent(id, jump, 15);
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.7)), "the read at 20 came after the send at 15");
 }
 
@@ -233,10 +237,14 @@ fn a_newer_jump_waiting_stays_waiting_when_the_look_says_it_sent_the_old_one() {
     let mut s = Session::new(Labelled);
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
-    let peeked = s.waiting_jump(id).unwrap();
+    let peeked = s.mail().waiting_jump(id).unwrap();
     s.jump(id, 4, 0.2).unwrap();
-    s.jump_sent(id, peeked, 10);
-    assert_eq!(s.waiting_jump(id), Some(trail::Stop::new(4, 0.2)), "the newer jump waits for the next look");
+    s.mail_mut().jump_sent(id, peeked, 10);
+    assert_eq!(
+        s.mail().waiting_jump(id),
+        Some(trail::Stop::new(4, 0.2)),
+        "the newer jump waits for the next look"
+    );
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.2)), "and comes first");
 }
 

@@ -163,7 +163,7 @@ impl Cmd for RecentClear {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let access = cx.access;
         access.with(|s| {
-            let cleared = s.clear_recent();
+            let cleared = s.recent_mut().clear();
             Ok(json!({ "cleared": cleared }))
         })
     }
@@ -333,7 +333,13 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
             let before = access.with(|s| s.tabs().len());
             // A closed PDF's history comes back on this route as on any, read with the session free too.
             let history = read_history.unwrap_or_else(|| {
-                let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
+                let source = access.with(|s| {
+                    if s.tab_for_file(path, stamp).is_some() {
+                        None
+                    } else {
+                        s.journals().history().cloned()
+                    }
+                });
                 source.and_then(|source| source.history_of(stamp, path))
             });
             let id = access.with(|s| {

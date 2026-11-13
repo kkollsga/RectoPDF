@@ -285,7 +285,7 @@ fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_go
     assert!(!s.tabs().needs_password(locked));
     s.needs_password_again(locked);
     assert!(s.tabs().needs_password(locked) && s.tabs().withheld_from_agents(locked));
-    assert!(!s.warm_tabs().any(|id| id == locked), "what was read with the password is let go");
+    assert!(!s.warm().ids().any(|id| id == locked), "what was read with the password is let go");
 }
 
 /// Failure: every folder a file was ever opened from stays in the session after its last tab has closed, so opening and closing files across many folders grows it for as long as it runs; or letting a folder go breaks the path of a tab still open in another.

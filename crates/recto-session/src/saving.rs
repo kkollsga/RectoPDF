@@ -34,16 +34,19 @@ impl<L: DocLoader> Session<L> {
         let mut rolled_off = 0;
         match rebased {
             // There's no list, so no history. A file kept for it isn't needed.
-            None => self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect()),
+            None => self
+                .journals
+                .retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect()),
             // Something else was written, so nothing in the history's about that file.
             Some(None) => {
                 rolled_off = self.lists.get(id).map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
-                self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect());
+                self.journals
+                    .retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect());
                 self.let_go_of_list(id);
             }
             Some(Some(rebased)) => {
                 rolled_off = rebased.rolled_off;
-                self.retire_kept(rebased.let_go);
+                self.journals.retire_kept(rebased.let_go);
             }
         }
         if let Some(path) = saved_as {
@@ -80,7 +83,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **Starts a save of this tab:** what's to be written, copied out, and the tab held so that nothing changes its edits until [`Self::end_save`]. `None` if there's nothing unsaved. Refused while another save of it runs, for a file only the renderer can read, and for edits that can't be read back.
     pub fn begin_save(&mut self, id: TabId, even_unedited: bool) -> Result<Option<SaveSnapshot>, SessionError> {
-        if self.is_saving(id) || self.saves.must_wait(id) {
+        if self.saves.is_saving(id) || self.saves.must_wait(id) {
             return Err(SessionError::Saving);
         }
         let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
@@ -124,7 +127,7 @@ impl<L: DocLoader> Session<L> {
             None => return Ok(None),
         };
         self.saves.begin(id);
-        self.hold(id);
+        self.dormancy.hold(id);
         Ok(Some(snapshot))
     }
 
@@ -139,7 +142,7 @@ impl<L: DocLoader> Session<L> {
                 && list.saving().is_some()
             {
                 let kept = list.save_abandoned();
-                self.retire_kept(kept.into_iter().collect());
+                self.journals.retire_kept(kept.into_iter().collect());
             }
         }
     }
@@ -153,16 +156,6 @@ impl<L: DocLoader> Session<L> {
             self.discard_edits(id);
         }
         self.close(id).map(Some)
-    }
-
-    /// Whether a save of this tab is under way.
-    pub fn is_saving(&self, id: TabId) -> bool {
-        self.saves.is_saving(id)
-    }
-
-    /// Whether any save is under way, which a hand-off waits for.
-    pub fn any_saving(&self) -> bool {
-        self.saves.any()
     }
 
     /// The first step of a save, before anything's put in place: notes what the file will be if it works, and what's been kept for undoing past it, so that a crash between that and [`Self::saved`] can tell. Goes in the journal. **A save that removes something for good, as a redaction does, keeps nothing:** a copy of the file would hold what it's removing.
@@ -179,7 +172,7 @@ impl<L: DocLoader> Session<L> {
     /// **Clears a tab's history, and removes its files rather than only forgetting them.** With unsaved edits, the page order stays, as only the way back goes, unless it's a discard, which is all of it. With none, there's nothing left to hold, so the list goes too. Says whether there was any.
     pub fn clear_history(&mut self, id: TabId, reason: ClearReason) -> bool {
         // Nothing's taken from under a save: what it writes is what it was given, and its `saved` rebases this list.
-        if self.is_saving(id) {
+        if self.saves.is_saving(id) {
             return false;
         }
         if !self.wake_list(id) {
@@ -199,7 +192,7 @@ impl<L: DocLoader> Session<L> {
             let let_go: Vec<Box<Path>> = list.drop_history().into_iter().chain(unconfirmed).collect();
             let seq = list.journal_seq();
             let journaled = self.journals.journaling();
-            self.retire_kept(let_go);
+            self.journals.retire_kept(let_go);
             if journaled {
                 // The same name as it has now, as the file's the same, replaced in one step.
                 self.journals.start_fresh(id, seq, None);

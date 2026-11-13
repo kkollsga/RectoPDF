@@ -18,7 +18,7 @@ impl<P: Fn(TabId, GeneratedView, Option<FileStamp>) + Clone + Send + 'static> Pu
 
 /// Generated contents were made somewhere, or failed: each tab waiting for some looks at where its own stand.
 pub fn look_again(session: &SessionHost<DrawableLoader>, push: &impl Push) {
-    let waiting = session.with_session(|session| session.generated_making());
+    let waiting = session.with_session(|session| session.generated().making());
     for id in waiting {
         look(session, push, id, false);
     }
@@ -28,7 +28,7 @@ pub fn look_again(session: &SessionHost<DrawableLoader>, push: &impl Push) {
 pub fn look_if_chosen(session: &SessionHost<DrawableLoader>, push: &impl Push) {
     let wanted = session.with_session(|session| {
         let id = session.tabs().active()?;
-        let chosen = session.tabs().tab(id)?.generated_contents && session.generated_view(id).is_none() && session.contents_verdict(id).is_some();
+        let chosen = session.tabs().tab(id)?.generated_contents && session.generated().view(id).is_none() && session.contents_verdict(id).is_some();
         if chosen {
             session.set_generated_view(id, GeneratedView::NotKept);
         }

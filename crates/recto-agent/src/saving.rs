@@ -527,6 +527,6 @@ mod ending_tests {
         });
         session.with(|s| s.begin_save(id, true)).expect("the second save").expect("something to save");
         drop(ending);
-        assert!(session.with(|s| s.is_saving(id)), "the second save is still under way");
+        assert!(session.with(|s| s.saves().is_saving(id)), "the second save is still under way");
     }
 }

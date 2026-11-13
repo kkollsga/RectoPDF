@@ -10,24 +10,6 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    pub(crate) fn retire_kept(&mut self, kept: Vec<Box<Path>>) {
-        for path in kept {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()).filter(|name| record::is_kept_name(name)) {
-                self.journals.retire_name(name.into());
-            }
-        }
-    }
-
-    /// What's in a tab's journal is done with, by a discard or a save, so its file goes: what's been removed mustn't stay recoverable.
-    pub(crate) fn retire_journal(&mut self, id: TabId) {
-        self.journals.retire(id);
-    }
-
-    /// Whether edits go to a journal from now on. For whoever keeps the state record.
-    pub fn set_journaling(&mut self, on: bool) {
-        self.journals.set_journaling(on);
-    }
-
     /// What's waiting to go in journals: which to remove, and what to append to which. Copied, not taken: operations stay until [`Self::journal_outcome`] says they're in the file, so nothing's lost if the disk refuses, and nothing goes twice if one journal fails and another doesn't. A list's first time here gets its journal's name.
     pub fn journal_work(&mut self) -> JournalWork {
         let ids: Vec<TabId> = self
@@ -140,11 +122,6 @@ impl<L: DocLoader> Session<L> {
                 .any(|(_, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
     }
 
-    /// Whether a journal has been retired, or a tab with one has closed, which wants writing at once.
-    pub fn has_retired_journals(&self) -> bool {
-        self.journals.has_pending()
-    }
-
     /// A journal's name for this tab, from its PDF's identity.
     pub(crate) fn journal_name_for(&mut self, id: TabId) -> String {
         if let Some(name) = self.journals.name_of(id) {
@@ -154,16 +131,6 @@ impl<L: DocLoader> Session<L> {
         let name = record::journal_file_name(stamp, &path, None);
         self.journals.set_name(id, &name);
         name
-    }
-
-    /// Where a PDF's history is read from, for one being opened on any route.
-    pub fn set_history_source(&mut self, source: Arc<dyn HistorySource>) {
-        self.journals.set_history(source);
-    }
-
-    /// Reads what's left of a PDF's history, for [`Self::open_with_facts`], with the session free: hold this and call it outside. `None` if there's no such thing here.
-    pub fn history_source(&self) -> Option<Arc<dyn HistorySource>> {
-        self.journals.history().cloned()
     }
 
     /// A PDF opened again picks up the history it was left with. A tab with a list of its own keeps that, and a journal has one owner.
@@ -178,10 +145,5 @@ impl<L: DocLoader> Session<L> {
         }
         self.lists.insert(id, edits);
         self.journals.set_name(id, name);
-    }
-
-    /// The name of this tab's journal, if it has one, for checking what's reached the disk.
-    pub fn journal_of(&self, id: TabId) -> Option<&str> {
-        self.journals.name_of(id)
     }
 }

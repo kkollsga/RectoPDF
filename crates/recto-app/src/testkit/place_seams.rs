@@ -201,7 +201,7 @@ impl HeadlessApp {
                 let jump = inner
                     .host
                     .session
-                    .with_session(|s| s.tabs().active().and_then(|id| s.waiting_jump(id)))
+                    .with_session(|s| s.tabs().active().and_then(|id| s.mail().waiting_jump(id)))
                     .expect("a jump waiting on the tab being read");
                 let engine = inner.panes.reading_engine(&inner.engine);
                 let done = inner.serving.place_seams.looks_done.load(Ordering::SeqCst);

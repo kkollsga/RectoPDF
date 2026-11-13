@@ -51,7 +51,7 @@ fn session(pages: u32) -> Session<FakeLoader> {
 
 fn journaled(pages: u32) -> Session<FakeLoader> {
     let mut s = session(pages);
-    s.set_journaling(true);
+    s.journals_mut().set_journaling(true);
     s
 }
 

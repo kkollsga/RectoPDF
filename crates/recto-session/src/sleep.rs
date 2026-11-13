@@ -340,14 +340,9 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// Seconds of this session so far.
-    pub fn seconds_now(&self) -> u32 {
-        self.dormancy.seconds_now()
-    }
-
     /// Somebody's using this tab, so it's not to go dormant for a while. Agents' commands say so too.
     pub fn touch(&mut self, id: TabId) {
-        let now = self.seconds_now();
+        let now = self.dormancy.seconds_now();
         self.tabs.touch_at(id, now);
     }
 
@@ -357,11 +352,6 @@ impl<L: DocLoader> Session<L> {
             .ids()
             .chain(self.lists.ids())
             .filter(move |id| !self.on_screen(*id) && !self.dormancy.is_held(*id) && self.lists.get(*id).is_none_or(|list| list.saving().is_none()))
-    }
-
-    /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`Self::let_go`].
-    pub fn hold(&mut self, id: TabId) {
-        self.dormancy.hold(id);
     }
 
     pub fn let_go(&mut self, id: TabId) {
@@ -467,7 +457,7 @@ impl<L: DocLoader> Session<L> {
     pub(crate) fn give_up_on_asleep(&mut self, id: TabId) {
         if self.lists.is_asleep(id) {
             self.lists.forget_asleep(id);
-            self.retire_journal(id);
+            self.journals.retire(id);
         }
     }
 
@@ -543,11 +533,6 @@ impl<L: DocLoader> Session<L> {
         Some((tab.file.stamp?, self.tabs.path_of(id)?))
     }
 
-    /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`Self::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].
-    pub fn set_sleep_files(&mut self, on: bool) {
-        self.dormancy.set_sleep_files(on);
-    }
-
     /// **Wakes a cold tab from its sleep file, if it has one about its file as last known.** Says whether it did. Every route to a cold tab's through here, or through a read of its PDF if not.
     pub fn wake_from_sleep_file(&mut self, id: TabId) -> bool {
         if !self.dormancy.sleep_files() {
@@ -560,16 +545,6 @@ impl<L: DocLoader> Session<L> {
         self.wake_from_sleep(id, &sleep);
         self.dormancy.woke_from_file(id, sleep);
         true
-    }
-
-    /// The tabs woken from sleep files, whose files nobody's looked at yet.
-    pub fn take_woken_from_file(&mut self) -> Vec<TabId> {
-        self.dormancy.take_woken_from_file()
-    }
-
-    /// The sleep file a tab was just woken from, for its first frame.
-    pub fn take_sleep_read(&mut self, id: TabId) -> Option<sleep::SleepFile> {
-        self.dormancy.take_sleep_read(id)
     }
 
     pub(crate) fn wake_from_sleep(&mut self, id: TabId, sleep: &sleep::SleepFile) {

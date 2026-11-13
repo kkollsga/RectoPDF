@@ -86,7 +86,7 @@ fn a_journal_goes_when_its_edits_do() {
     write_journal(&mut s, &mut files);
     assert_eq!(files.len(), 1);
     s.discard_edits(a);
-    assert!(s.has_retired_journals());
+    assert!(s.journals().has_pending());
     write_journal(&mut s, &mut files);
     assert!(files.is_empty(), "gone with the discard");
     // An agent's step, undone: closes with no prompt, and its way forward stays for next time.

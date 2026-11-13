@@ -78,24 +78,24 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
             inode: 2,
         }),
     );
-    assert!(s.generated_view(id).is_none(), "an old version's list stayed");
+    assert!(s.generated().view(id).is_none(), "an old version's list stayed");
     // A look that started before the change comes back after it: about the old version, so it's dropped.
     assert!(before.is_some() && s.tabs().own_stamp(id) != before);
     s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), before);
-    assert!(s.generated_view(id).is_none(), "a late answer about the old version was shown");
+    assert!(s.generated().view(id).is_none(), "a late answer about the old version was shown");
     s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), s.tabs().own_stamp(id));
-    assert!(s.generated_view(id).is_some(), "an answer about this version is shown");
+    assert!(s.generated().view(id).is_some(), "an answer about this version is shown");
 
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     s.go_dormant(id);
-    assert!(s.generated_view(id).is_none(), "a dormant tab held its list");
+    assert!(s.generated().view(id).is_none(), "a dormant tab held its list");
     // Another tab shown: this one's list leaves memory.
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     let other = s.open(Path::new("/d/b.pdf")).unwrap();
     s.tap(other).unwrap();
-    assert!(s.generated_view(id).is_none(), "a tab off screen held its list");
+    assert!(s.generated().view(id).is_none(), "a tab off screen held its list");
     s.close(id).unwrap();
-    assert!(s.generated_view(id).is_none());
+    assert!(s.generated().view(id).is_none());
 }
 
 /// Failure: a section's chevron doesn't fold it, or opens one following didn't, or the fold is lost across a restart, or a fold on a list survives switching to the other list, where its entry number means something else. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers".
@@ -202,7 +202,7 @@ fn generated_lists_held_are_capped() {
         s.set_generated_view(*id, GeneratedView::Making);
     }
     assert!(s.generated.len() <= MAX_GENERATED_VIEWS);
-    assert!(s.generated_view(*ids.last().unwrap()).is_some());
+    assert!(s.generated().view(*ids.last().unwrap()).is_some());
 }
 
 /// Failure: contents that are fine get an offer, so the sidebar nags about a good file.

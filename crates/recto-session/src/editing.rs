@@ -10,7 +10,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
     pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
-        if self.is_saving(id) {
+        if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
         if !self.wake_list(id) {
@@ -124,7 +124,7 @@ impl<L: DocLoader> Session<L> {
                 .map(|(_, added)| added.path.clone())
                 .chain(list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone()))
                 .collect();
-            self.retire_kept(kept);
+            self.journals.retire_kept(kept);
         }
         self.journals.let_go_of_fresh(id);
         self.journals.retire(id);
@@ -222,7 +222,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
-        if self.is_saving(id) || !self.wake_list(id) {
+        if self.saves.is_saving(id) || !self.wake_list(id) {
             return false;
         }
         self.touch(id);
@@ -265,7 +265,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn step_back_or_on(&mut self, id: TabId, by: Author, step: fn(&mut PageEdits) -> Result<bool, EditError>) -> Result<bool, SessionError> {
-        if self.is_saving(id) {
+        if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
         if !self.wake_list(id) {
@@ -289,7 +289,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
-        if self.is_saving(id) || !self.wake_list(id) {
+        if self.saves.is_saving(id) || !self.wake_list(id) {
             return false;
         }
         self.touch(id);

@@ -629,7 +629,7 @@ fn execute_held<A: SessionAccess>(access: &A, actor: Actor, command: &Command, e
 
 /// What a page's draw teaches the session and anyone waiting.
 fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: Option<&'static str>, events: &mut Vec<Event>) {
-    access.with(|s| s.note_drawn(DrawNote { tab, page: position, failure }));
+    access.with(|s| s.mail_mut().note_drawn(DrawNote { tab, page: position, failure }));
     let page = position + 1;
     events.push(match failure {
         None => Event::PageDrawn { tab, page },
@@ -729,7 +729,7 @@ pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
 fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) -> Result<(), AgentError> {
     // On a host that reads later, what's held already was read for this command, which is running again now it's in.
     let reads_later = access.reads_later().is_some();
-    let Some((id, path)) = access.with(|s| plan(s).filter(|(id, _)| !(reads_later && s.holds_read_of(*id)))) else {
+    let Some((id, path)) = access.with(|s| plan(s).filter(|(id, _)| !(reads_later && s.warm().holds_read_of(*id)))) else {
         return Ok(());
     };
     if let Some(reads) = access.reads_later() {
@@ -901,7 +901,7 @@ fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId,
 
 /// Says when the page being read went away, so the tab is on another one.
 fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: Value) -> Value {
-    if session.take_place_lost()
+    if session.mail_mut().take_place_lost()
         && let Some(tab) = session.tabs().tab(id)
     {
         data["page_was_removed"] = json!(true);
@@ -1097,7 +1097,7 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
             match select(s, tab) {
                 Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
                 Err(_) => ConditionState::Waiting,
-                Ok(id) => match s.draw_note(id, page - 1) {
+                Ok(id) => match s.mail().draw_note(id, page - 1) {
                     None => ConditionState::Waiting,
                     Some(DrawNote { failure: None, .. }) => ConditionState::Met(json!({ "tab": id.0, "page": page, "drawn": true })),
                     Some(DrawNote { failure: Some(code), .. }) => ConditionState::Failed(
@@ -2518,7 +2518,7 @@ mod tests {
             save.message
         );
         assert!(
-            s.lists().is_edited(TabId(1)) && !s.is_saving(TabId(1)),
+            s.lists().is_edited(TabId(1)) && !s.saves().is_saving(TabId(1)),
             "the edits stand, and the tab isn't held"
         );
         let replace = run(

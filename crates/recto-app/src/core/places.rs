@@ -130,7 +130,11 @@ impl Said {
     /// what the views said by [`is_views_own`], with the pages the readers moved to kept as what each pane's view now has. The jumps go back, for the look to
     /// send and then say sent ([`jumps_sent`]); one it doesn't send, as on a tab whose file is being looked at, waits for the next look.
     pub fn take_in_at_the_look(self, session: &mut recto_session::Session<DrawableLoader>, synced: &mut Synced, events: &mut Vec<Event>) -> Vec<(TabId, Stop)> {
-        let jumps: Vec<(TabId, Stop)> = session.panes().into_iter().filter_map(|id| Some((id, session.waiting_jump(id)?))).collect();
+        let jumps: Vec<(TabId, Stop)> = session
+            .panes()
+            .into_iter()
+            .filter_map(|id| Some((id, session.mail().waiting_jump(id)?)))
+            .collect();
         for (pane, page) in self.take_in(session, &given_to_views(synced), &jumps, events) {
             if let Some(pane) = synced.panes.get_mut(pane) {
                 pane.page = page;
@@ -148,7 +152,7 @@ pub fn jumps_sent(inner: &Inner, sent: &[(TabId, Stop, u64)]) {
     }
     inner.host.session.with_session(|session| {
         for (id, to, stamp) in sent {
-            session.jump_sent(*id, *to, *stamp);
+            session.mail_mut().jump_sent(*id, *to, *stamp);
         }
     });
 }

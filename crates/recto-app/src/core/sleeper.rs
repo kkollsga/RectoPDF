@@ -199,7 +199,7 @@ impl Inner {
         let in_seconds = self
             .host
             .session
-            .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
+            .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
         let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
@@ -209,7 +209,11 @@ impl Inner {
         let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
         self.sleeper.step(Event::DueNow { busy })?;
         let after = self.sleeper.after_seconds();
-        Some(self.host.session.with_session(|session| session.due_dormant(session.seconds_now(), after)))
+        Some(
+            self.host
+                .session
+                .with_session(|session| session.due_dormant(session.dormancy().seconds_now(), after)),
+        )
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
@@ -373,7 +377,7 @@ impl Inner {
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
     pub fn check_woken_files(&self) {
-        let woken = self.host.session.with_session(|session| session.take_woken_from_file());
+        let woken = self.host.session.with_session(|session| session.dormancy_mut().take_woken_from_file());
         if woken.is_empty() {
             return;
         }
@@ -387,7 +391,7 @@ impl Inner {
 
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
     pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
-        let read = self.host.session.with_session(|session| session.take_sleep_read(id));
+        let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
         let sleep = read.or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)

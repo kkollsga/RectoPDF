@@ -112,5 +112,5 @@ type crates/recto-reader/src::Reader 139
 type crates/recto-render-service/src::DocRenderer 64
 type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 69
-type crates/recto-session/src::Session 170
+type crates/recto-session/src::Session 156
 type crates/recto-update/src::Updater 74

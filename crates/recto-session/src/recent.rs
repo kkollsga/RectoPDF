@@ -5,9 +5,9 @@ use crate::record::PathField;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// Files opened lately.
+/// Files opened lately, for File > Open Recent and ⌘K. What's public here says when the list changed, or clears it; a file's noted on opening it.
 #[derive(Debug, Default)]
-pub(crate) struct Recent {
+pub struct Recent {
     /// Newest first, at most [`MAX_RECENT`]. In the state record.
     recent: VecDeque<PathBuf>,
     /// Moves whenever `recent` does, so the app rebuilds what it shows of it only then.
@@ -34,12 +34,13 @@ impl Recent {
         self.recent.iter()
     }
 
-    pub(crate) fn version(&self) -> u64 {
+    /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
+    pub fn version(&self) -> u64 {
         self.recent_version
     }
 
     /// File > Open Recent > Clear Menu. Says whether there were any.
-    pub(crate) fn clear(&mut self) -> bool {
+    pub fn clear(&mut self) -> bool {
         let had = !self.recent.is_empty();
         self.recent.clear();
         self.recent_version += 1;

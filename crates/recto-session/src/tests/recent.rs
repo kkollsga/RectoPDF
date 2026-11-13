@@ -40,6 +40,6 @@ fn recent_files_are_newest_first_capped_and_kept() {
     forged.recent = vec![PathField::Text("relative.pdf".into()), PathField::Text("/d/ok.pdf".into())];
     again.restore(&forged, HashMap::new()).unwrap();
     assert_eq!(again.recent_files().len(), 1, "only a whole path is kept from a record");
-    assert!(again.clear_recent());
+    assert!(again.recent_mut().clear());
     assert!(again.recent_files().is_empty() && again.to_record().recent.is_empty());
 }

@@ -80,13 +80,8 @@ impl<L: DocLoader> Session<L> {
         }
         self.activate(id);
         if let Some(own) = self.tabs.path_of(id) {
-            self.note_recent(&own);
+            self.recent.note(&own);
         }
-    }
-
-    /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
-    pub fn note_recent(&mut self, path: &Path) {
-        self.recent.note(path);
     }
 
     /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
@@ -101,21 +96,11 @@ impl<L: DocLoader> Session<L> {
             .collect()
     }
 
-    /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
-    pub fn recent_version(&self) -> u64 {
-        self.recent.version()
-    }
-
-    /// File > Open Recent > Clear Menu.
-    pub fn clear_recent(&mut self) -> bool {
-        self.recent.clear()
-    }
-
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
     pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
         let id = self.tabs.for_path(path)?;
         self.activate(id);
-        self.note_recent(path);
+        self.recent.note(path);
         Some(id)
     }
 
@@ -174,7 +159,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.tabs.set_active(Some(id));
-        self.note_recent(path);
+        self.recent.note(path);
         self.generated.keep_ready_only_for(id);
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
@@ -259,7 +244,7 @@ impl<L: DocLoader> Session<L> {
     /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<Closed, SessionError> {
         let before = self.tabs.active();
-        if self.is_saving(id) {
+        if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
         if self.lists.is_edited(id) || self.lists.has_undone_owner_steps(id) {

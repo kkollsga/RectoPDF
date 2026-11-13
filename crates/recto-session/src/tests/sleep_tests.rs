@@ -23,7 +23,7 @@ impl HistorySource for MemorySource {
 /// A session with a list on tab `a`, in its journal, and another tab showing.
 fn with_a_list(files: &Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>) -> (Session<FakeLoader>, TabId, TabId) {
     let mut s = journaled(5);
-    s.set_history_source(Arc::new(MemorySource(Arc::clone(files))));
+    s.journals_mut().set_history(Arc::new(MemorySource(Arc::clone(files))));
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
     s.edit_pages_as(a, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
@@ -197,7 +197,7 @@ fn a_list_is_known_by_whats_on_its_pages() {
 fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
-    s.hold(a);
+    s.dormancy_mut().hold(a);
     assert!(!s.can_go_dormant(a));
     assert!(!s.go_dormant(a));
     assert!(s.lists().get(a).is_some() && !s.lists().is_asleep(a));
@@ -304,7 +304,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     s.tabs_mut().touch_at(a, 200);
     assert_eq!(s.next_dormant_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
-    s.hold(a);
+    s.dormancy_mut().hold(a);
     assert!(s.due_dormant(10_000, AFTER).is_empty());
     assert!(s.dormant_oldest_first().is_empty(), "whatever's asking");
     s.let_go(a);
@@ -355,7 +355,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
         path
     };
     let mut s = Session::new(Protected);
-    s.set_sleep_files(true);
+    s.dormancy_mut().set_sleep_files(true);
     let open = s.open(&file("open.pdf")).unwrap();
     let locked = s.open(&file("locked.pdf")).unwrap();
     assert!(s.sleep_facts(open).is_some());

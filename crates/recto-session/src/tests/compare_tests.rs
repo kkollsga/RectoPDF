@@ -134,7 +134,7 @@ fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
     let loads = s.loader().loads.get();
     s.compare(&panes, None).unwrap();
     assert_eq!(s.loader().loads.get(), loads, "nothing read with the session held");
-    let mut warm: Vec<TabId> = s.warm_tabs().collect();
+    let mut warm: Vec<TabId> = s.warm().ids().collect();
     warm.sort();
     assert_eq!(warm, panes.to_vec(), "the panes are the live documents, and only they");
     assert!(warm.len() <= MAX_WARM);

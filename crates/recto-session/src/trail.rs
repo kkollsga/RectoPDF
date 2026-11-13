@@ -215,25 +215,6 @@ impl<L: DocLoader> Session<L> {
         self.mail.jump(id, to);
         Ok(())
     }
-
-    /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
-    pub fn take_jump(&mut self, id: TabId) -> Option<trail::Stop> {
-        self.mail.take_jump(id)
-    }
-
-    /// The last jump in a tab waiting for the page view, with how far down to land, left waiting: the session thread's look sends it and then says so with
-    /// [`Self::jump_sent`], and one it couldn't send waits for the next look.
-    pub fn waiting_jump(&self, id: TabId) -> Option<trail::Stop> {
-        self.mail.waiting_jump(id)
-    }
-
-    /// **A jump has gone to a tab's page view,** said by the session thread's look once it's sent it, the send having come to `stamp` on the place clock
-    /// (what the page view's jump returned). It's where the reader is ([`Self::here`]) until a read of the view at or past `stamp` is taken in
-    /// ([`Self::view_told_of`]), which may have happened between the send and this. It stops waiting, unless a newer jump has taken its place since, which
-    /// waits for the next look and comes first.
-    pub fn jump_sent(&mut self, id: TabId, to: trail::Stop, stamp: u64) {
-        self.mail.jump_sent(id, to, stamp);
-    }
 }
 
 #[cfg(test)]

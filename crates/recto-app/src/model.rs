@@ -518,7 +518,7 @@ fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot
         can_redo,
         edit_mode,
         can_rotate: session.can_edit_pages(shown.id),
-        saving: session.is_saving(shown.id),
+        saving: session.saves().is_saving(shown.id),
         file: session
             .tabs()
             .path_of(shown.id)
@@ -562,7 +562,7 @@ pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
     let model = session.sidebar();
     let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
     let sidebar = sidebar_parts(&model, compared, held);
-    let recent_key = (session.recent_version(), sidebar.view.tabs_version);
+    let recent_key = (session.recent().version(), sidebar.view.tabs_version);
     let recent = (held.recent_key != Some(recent_key)).then(|| recent_files(session));
     let view = session.viewing().view();
     let mut facts = Facts {
@@ -897,7 +897,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         map.turns = Some(turns);
     }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
-    let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
+    let warm: Vec<u32> = if first { warm_beside_panes(session.warm().ids(), panes) } else { Vec::new() };
     let problem = session
         .tab_notice_message(id)
         .map(str::to_string)
@@ -931,7 +931,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         spread: tab.spread,
         title: tab.name.to_string(),
         jump: None,
-        toc: session.warm_toc(id),
+        toc: session.warm().toc(id).cloned(),
     })
 }
 

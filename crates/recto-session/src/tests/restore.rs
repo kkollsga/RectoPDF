@@ -87,7 +87,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     assert_eq!(back.tabs().spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
     assert_eq!(back.tabs().active(), s.tabs().active());
     assert_eq!(back.tier(a), Tier::Hot, "it's the active one");
-    assert!(back.warm_tabs().next().is_none(), "and nothing's been opened");
+    assert!(back.warm().ids().next().is_none(), "and nothing's been opened");
     assert_eq!(back.lists().get(a).unwrap().slots(), s.lists().get(a).unwrap().slots());
     // Redo works, after a restart, and whose each step is holds for what's then allowed.
     assert!(back.lists().get(a).unwrap().can_redo());
@@ -120,7 +120,7 @@ fn restoring_opens_no_file() {
     assert_eq!(back.tabs().active(), Some(ids[500]));
     assert!(ids.iter().filter(|id| **id != ids[500]).all(|id| back.tier(*id) == Tier::Cold));
     assert_eq!(back.to_record(), record);
-    assert_eq!(back.warm_tabs().count(), 0);
+    assert_eq!(back.warm().ids().count(), 0);
 }
 
 /// Failure: a journal that can't be read costs the tab silently. The tab comes back and says so, with no edits it can't vouch for.
@@ -179,7 +179,7 @@ fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
     // As the agent's restore does next.
     s.wake_active();
     assert_eq!(s.tabs().tab(a).unwrap().name.as_ref(), "other");
-    assert_eq!(s.generated_view(a), None, "nothing's known of the restored file's generated contents");
+    assert_eq!(s.generated().view(a), None, "nothing's known of the restored file's generated contents");
     let shown: Vec<&str> = s
         .sidebar()
         .rows
@@ -224,7 +224,7 @@ fn a_restored_tab_isnt_being_saved_for_the_tab_it_replaced() {
     s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap();
     s.begin_save(a, false).unwrap();
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
-    assert!(!s.is_saving(a) && !s.any_saving());
+    assert!(!s.saves().is_saving(a) && !s.saves().any());
     assert_eq!(s.edit_pages(a, |edits| edits.rotate(0, 1, 1)), Ok(()));
     s.end_save(a);
     assert!(s.lists().is_edited(a), "the save that ends later takes nothing of the restored tab's");
@@ -236,7 +236,7 @@ fn a_restored_tab_isnt_held_for_the_tab_it_replaced() {
     let mut s = session(10);
     let a = s.open(Path::new("/d/old.pdf")).unwrap();
     s.open(Path::new("/d/old-2.pdf")).unwrap();
-    s.hold(a);
+    s.dormancy_mut().hold(a);
     let mut record = another_session_with(2);
     record.active = Some(record.tabs[1].id);
     s.restore(&record, HashMap::new()).unwrap();
@@ -285,7 +285,7 @@ fn a_restored_tab_takes_no_sleep_file_of_the_tab_it_replaced() {
     };
     s.dormancy.woke_from_file(a, sleep);
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
-    assert!(s.take_sleep_read(a).is_none());
+    assert!(s.dormancy_mut().take_sleep_read(a).is_none());
 }
 
 /// Failure: a tab a restore replaced, woken from its sleep file, is still on the list of files to look at, which is then about the restored tab with its number: a look at a file for a wake that never happened to it.
@@ -295,14 +295,14 @@ fn a_restored_tab_isnt_down_as_woken_from_a_sleep_file() {
     let a = s.open(Path::new("/d/old.pdf")).unwrap();
     s.dormancy.note_woken_from_file(a);
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
-    assert!(s.take_woken_from_file().is_empty());
+    assert!(s.dormancy_mut().take_woken_from_file().is_empty());
 }
 
 /// Failure: a tab a restore replaced, just gone cold, has its sleep file made as the restored tab with its number: the restored file's name and version with the replaced file's contents.
 #[test]
 fn a_restored_tab_gets_no_sleep_file_of_the_tab_it_replaced() {
     let mut s = session(10);
-    s.set_sleep_files(true);
+    s.dormancy_mut().set_sleep_files(true);
     let ids: Vec<TabId> = (0..=MAX_WARM).map(|n| s.open(Path::new(&format!("/d/old-{n}.pdf"))).unwrap()).collect();
     assert_eq!(s.tier(ids[0]), Tier::Cold);
     s.restore(&another_session_with(MAX_WARM + 1), HashMap::new()).unwrap();
@@ -317,5 +317,5 @@ fn a_restore_doesnt_say_a_place_was_lost_in_the_session_it_replaced() {
     s.go_to(a, 4).unwrap();
     s.edit_pages(a, |edits| edits.delete(4, 1)).unwrap();
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
-    assert!(!s.take_place_lost());
+    assert!(!s.mail_mut().take_place_lost());
 }
