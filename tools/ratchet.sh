@@ -6,6 +6,7 @@
 #
 #   tools/ratchet.sh                 check (what check.sh runs first)
 #   tools/ratchet.sh --update        rewrite the baseline downward after something shrank (refuses to raise any number)
+#   tools/ratchet.sh --resolve       during a merge with baseline.txt in conflict: write the merged file (lower number where both have a key, a key one side added kept, a key either side dropped gone), say each key the sides differed on; does not git add, run the check first
 #   tools/ratchet.sh --report <ref>  hub files this branch touched since <ref>, and lines added (report only)
 #   tools/ratchet.sh --moved <old> <new>  code moved unchanged: rename its baseline entries, a file's path (all under it) or one path::Item (a `type` entry is per crate, not per file, so a move leaves it; rename it by hand if the type or crate is renamed);
 #                                    refused if the old one still holds the offender (a copy) or a number at the new place is higher. Never raises one
