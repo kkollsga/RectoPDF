@@ -11,8 +11,8 @@ impl Reader {
     /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
     pub fn running_is_wanted(&self) -> bool {
         let Some(running) = &self.work.running else { return true };
-        // Drawn for a tab left at a place it has no picture of, as long as the view wants nothing.
-        if !running.text && SleepDraws::wants(self, running.tab, running.position) {
+        // Drawn for a tab left at a place it has no picture of, as long as the view wants nothing: a size, a weight or a preview, the only jobs asked for that. A tile or a region for the tab just left is the tab showing's no longer, and goes.
+        if !running.text && (running.preview || running.rect.is_none()) && SleepDraws::wants(self, running.tab, running.position) {
             return true;
         }
         if running.text {

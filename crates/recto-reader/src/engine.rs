@@ -9,7 +9,7 @@ use recto_index::select::PageText;
 use recto_platform::isolate;
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
-use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult, Workers};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -741,13 +741,12 @@ impl Engine {
         lock(&self.shared.reader).report()
     }
 
-    /// Blocks until everything visible is settled, or the time runs out. Never for the UI thread.
+    /// Blocks until everything visible is settled, or the time runs out. Never for the UI thread. Drawing for a tab off screen's place isn't waited for: it's nothing visible, and how long it takes is a file's to say. `qa state`'s `reader.sleep_draws.under_way` says whether it's going.
     pub fn wait_settled(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut reader = lock(&self.shared.reader);
         loop {
-            // A tab off screen being drawn for its place counts: what it's drawn for is what's looked at next.
-            if reader.is_settled() && !SleepDraws::under_way(&reader) {
+            if reader.is_settled() {
                 return true;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -923,7 +922,13 @@ fn run(shared: &Shared) {
             rest(shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
-        resting_since = None;
+        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest.
+        let workers = if SleepDraws::is_for(&lock(&shared.reader), job.tab) {
+            Workers::OnlyTheOneThere
+        } else {
+            resting_since = None;
+            Workers::MayStart
+        };
         lock(&shared.reader).note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
@@ -934,15 +939,7 @@ fn run(shared: &Shared) {
         let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
         let added_changed =
             expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
-        // **No worker is started for a tab off screen's place** ([`SleepDraws`]): it's drawn by the worker its file has, or not at all.
-        let for_sleep = SleepDraws::is_for(&lock(&shared.reader), job.tab);
-        let no_worker = for_sleep && !renderers.get_mut(&job.file).is_some_and(|open| open.doc.has_worker());
-        if no_worker {
-            SleepDraws::no_worker(&mut lock(&shared.reader));
-        }
-        let outcome = if no_worker {
-            Outcome::Cancelled
-        } else if added_changed {
+        let outcome = if added_changed {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
                 _ => Outcome::PageFailed {
@@ -954,7 +951,7 @@ fn run(shared: &Shared) {
             match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
                 Ok(open) => {
                     lock(&shared.reader).set_cancel(open.doc.cancel_handle());
-                    let outcome = do_job(open, &job);
+                    let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {
                         open.looks.clear();
@@ -1293,6 +1290,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
+            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(failure) => Outcome::PageFailed {
                 message: failure.message(),
@@ -1303,6 +1301,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
             Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
+            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
@@ -1354,6 +1353,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
+                Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
                 Err(failure) if whole_file(failure) => document_failed(failure),
                 Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
                     message: failure.message(),

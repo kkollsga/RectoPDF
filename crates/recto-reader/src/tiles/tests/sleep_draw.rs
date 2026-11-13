@@ -1,6 +1,8 @@
 use super::*;
-use crate::tiles::sleep_draw::{Ended, MAX_JOBS, Next, PageNow, SleepDraws, TabNow, next};
+use crate::tiles::sleep_draw::{ASKING_FOR, Ended, MAX_JOBS, Next, PageNow, SleepDraws, TabNow, next};
 use crate::tiles::wake::MAX_LEFT_PICTURE_BYTES;
+use crate::tiles::wake::{RawPicture, in_view_of};
+use std::time::{Duration, Instant};
 
 /// What a job was, for a test to look at after it's gone.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -146,9 +148,10 @@ fn coming_back_going_cold_or_no_worker_ends_it() {
     assert_eq!(draws(&reader)["ended"]["cold"], 1, "{}", draws(&reader));
 
     let mut reader = left_undrawn();
-    settle_tab(&mut reader, 2);
+    let job = settle_tab(&mut reader, 2).expect("a job for the tab left");
     assert!(SleepDraws::under_way(&reader));
-    SleepDraws::no_worker(&mut reader);
+    // What the engine says of a job its renderer wouldn't start a worker for.
+    reader.finish(job, Outcome::Unstarted { heavy: false });
     assert!(!SleepDraws::under_way(&reader));
     assert!(run_jobs(&mut reader, &[]).is_empty(), "nothing's asked once its worker's gone");
     assert_eq!(draws(&reader)["ended"]["no_worker"], 1);
@@ -287,4 +290,279 @@ fn the_step_asks_only_for_what_is_owed_and_within_its_bounds() {
     ] {
         assert_eq!(next(tab, &mut vec![5], 0, look), Next::End(why), "{tab:?}");
     }
+}
+
+/// The outcome a pretend renderer gives a job, every page the size `size_of` says.
+fn answer(job: &Job, size_of: impl Fn(u32) -> PageBox) -> Outcome {
+    match &job.kind {
+        JobKind::Size => Outcome::Size(size_of(job.position)),
+        JobKind::Traits => Outcome::Heavy(false),
+        JobKind::Text { .. } => Outcome::TextFailed,
+        JobKind::Links => Outcome::Links(None),
+        JobKind::Draw { .. } => Outcome::Drawn {
+            kind: TileKind::Colour,
+            low_res: None,
+        },
+    }
+}
+
+/// Failure: a tile or a region still being drawn for the tab just left (a heavy page's region can run seconds, in a worker of up to a gigabyte) went on to its deadline for nobody, kept as wanted because that tab was owed pictures. Only a size, a weight or a preview, what's asked for its place, is.
+#[test]
+fn a_tile_for_the_tab_just_left_is_cancelled_even_while_it_is_owed() {
+    // Tab 2 drawn, so coming back to it wants nothing.
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(2, 10, 0, other_tab(2), &[], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    settle(&mut reader);
+    reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    reader.set_viewport(view(20_000.0));
+    // Sizes there first, then, its pages there being heavy, a region of one, with no preview under it.
+    let region = loop {
+        reader.host.take_ops();
+        reader.applied();
+        let job = reader.next_job().expect("tab 1 wants its new place drawn");
+        reader.note_started(&job, None);
+        if matches!(
+            job.kind,
+            JobKind::Draw {
+                what: DrawKind::Tile | DrawKind::Region,
+                ..
+            }
+        ) {
+            break job;
+        }
+        let outcome = if matches!(job.kind, JobKind::Traits) {
+            Outcome::Heavy(true)
+        } else {
+            answer(&job, |_| letter())
+        };
+        reader.finish(job, outcome);
+    };
+    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    assert_eq!(draws(&reader)["owed_tab"], 1, "tab 1 is owed its place, page {} among it", region.position);
+    assert!(!reader.view_needs_something(), "tab 2's drawn: only being owed could keep it");
+    assert!(!reader.running_is_wanted(), "a region for a tab off screen is wanted by nobody");
+}
+
+/// Failure: a draw for a tab left started in the moment between a change of tab and the host's first word of the new one's view (no height yet, or its jump not arrived), when the tab showing had nothing it could ask for only because it didn't know where it was. A size can't be stopped once started, so the person's view waited on it.
+#[test]
+fn nothing_is_drawn_for_a_tab_left_before_the_tab_showing_is_placed() {
+    let mut reader = reader_on(40);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    reader.set_viewport(view(20_000.0));
+    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    assert_eq!(draws(&reader)["owed_tab"], 1);
+    let job = reader.next_job();
+    assert!(
+        job.as_ref().is_none_or(|job| job.tab == 2),
+        "the jump to tab 2's place hasn't arrived: {:?}",
+        job.map(|job| job.tab)
+    );
+    reader.set_viewport(Viewport { height: 0.0, ..view(0.0) });
+    let job = reader.next_job();
+    assert!(
+        job.as_ref().is_none_or(|job| job.tab == 2),
+        "a view with no height: {:?}",
+        job.map(|job| job.tab)
+    );
+    reader.set_viewport(view(0.0));
+    assert!(
+        run_jobs(&mut reader, &[]).iter().any(|job| job.tab == 1),
+        "and once it's placed, tab 1's is drawn"
+    );
+}
+
+/// Failure: the pages drawn for a tab left aren't the pages its wake shows. Its place was taken to the pixel in a layout that the sizes learned for it since have moved, so what was drawn was a stretch of the document it isn't at. With pages of two sizes, what's drawn is what a return to it shows.
+#[test]
+fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
+    let tall = PageBox { width: 612.0, height: 1584.0 };
+    let size_of = |page: u32| if page >= 6 && page % 2 == 0 { tall } else { letter() };
+    let mut reader = reader_on(40);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    reader.set_viewport(view(20_000.0));
+    let left_on = reader.place.last_view_page.expect("a page it's on");
+    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    let mut previews = Vec::new();
+    for _ in 0..10_000 {
+        reader.host.take_ops();
+        reader.applied();
+        let Some(job) = reader.next_job() else { break };
+        if job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) {
+            previews.push(job.position);
+        }
+        reader.note_started(&job, None);
+        let outcome = answer(&job, size_of);
+        reader.finish(job, outcome);
+    }
+    assert!(!previews.is_empty(), "{}", draws(&reader));
+    // Back to it, warm, where its wake sends it.
+    reader.activate(1, 40, left_on, map(), &[2], None, Spread::Single);
+    let y = reader
+        .host
+        .take_ops()
+        .into_iter()
+        .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+        .expect("sent to its place");
+    reader.set_viewport(view(y));
+    let doc = reader.docs.get(&1).unwrap();
+    let visible: Vec<u32> = reader.visible_pages(doc).collect();
+    let shown = in_view_of(doc, &visible, y, 900.0);
+    previews.sort_unstable();
+    assert_eq!(previews, shown, "drawn for its sleep, against what its wake shows");
+}
+
+/// A picture that holds `bytes`, of a page nobody's at.
+fn picture_of_bytes(bytes: usize) -> RawPicture {
+    RawPicture {
+        page: 999,
+        scale: 1.0,
+        width: 1,
+        height: 1,
+        paper: PaperKind::White,
+        bgra: vec![0; bytes],
+    }
+}
+
+/// Failure: a preview drawn for a tab left whose pictures can't take it, a worker's time and a surface for something thrown away as it lands. What wouldn't fit under the cap isn't asked for.
+#[test]
+fn a_preview_that_would_not_fit_under_the_cap_is_not_drawn() {
+    let mut reader = left_undrawn();
+    let doc = reader.docs.get_mut(&1).unwrap();
+    doc.drawing
+        .left_pictures
+        .get_or_insert_with(Vec::new)
+        .push(picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024));
+    let did = run_jobs(&mut reader, &[]);
+    assert!(!did.iter().any(|job| job.tab == 1 && job.kind == "preview"), "{did:?}");
+    assert_eq!(draws(&reader)["ended"]["full"], 1, "{}", draws(&reader));
+}
+
+/// Failure: the system asking for memory back ended the asking but let its job run on, a worker's memory held for a picture that would be let go.
+#[test]
+fn memory_pressure_stops_a_draw_for_a_tab_left_that_is_running() {
+    let mut reader = left_undrawn();
+    let job = settle_tab(&mut reader, 2).expect("a job for the tab left");
+    assert_eq!(job.tab, 1);
+    assert!(reader.running_is_wanted());
+    reader.memory_pressure(false);
+    assert!(reader.work.running.as_ref().is_some_and(|running| running.cancel_asked), "its cancel was asked");
+}
+
+/// Failure: a tab left whose pictures are at their cap, which can be drawn nothing more, took the place of another's asking that could still have been drawn.
+#[test]
+fn a_tab_left_with_no_room_for_a_picture_takes_no_other_tab_s_place() {
+    let mut reader = left_undrawn();
+    reader.note_version(Path::new("/d/2.pdf"), 1);
+    reader.docs.get_mut(&2).unwrap().drawing.left_pictures = Some(vec![picture_of_bytes(MAX_LEFT_PICTURE_BYTES - 1024)]);
+    SleepDraws::left(&mut reader, 2);
+    let report = draws(&reader);
+    assert_eq!(report["owed_tab"], 1, "{report}");
+    assert_eq!(report["ended"]["replaced"], 0, "{report}");
+    assert_eq!(report["ended"]["full"], 1, "{report}");
+}
+
+/// Failure: the previews drawn for a tab left push the tab showing's own previews out of the cache, so pages the person scrolls back to come back blank. They go first, the tab showing's stay.
+#[test]
+fn previews_drawn_for_a_tab_left_never_push_out_the_tab_showing_s() {
+    let mut reader = Reader::new();
+    reader.set_share(8);
+    let previews_of = |reader: &Reader, tab: u32| reader.cache.entries.values().filter(|entry| entry.tab == tab && entry.preview).count();
+    reader.set_viewport(view(0.0));
+    reader.activate(2, 40, 0, other_tab(2), &[], None, Spread::Single);
+    reader.note_version(Path::new("/d/2.pdf"), 1);
+    for step in 0..30 {
+        reader.set_viewport(view(f64::from(step) * 1_200.0));
+        settle(&mut reader);
+    }
+    assert!(
+        previews_of(&reader, 2) >= MAX_KEPT_PREVIEWS / 8,
+        "tab 2 has its fill: {}",
+        previews_of(&reader, 2)
+    );
+    reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    reader.set_viewport(view(20_000.0));
+    reader.activate(2, 40, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    let job = settle_tab(&mut reader, 2).expect("a job for the tab left");
+    let before = previews_of(&reader, 2);
+    let outcome = answer(&job, |_| letter());
+    reader.finish(job, outcome);
+    run_jobs(&mut reader, &[]);
+    assert!(draws(&reader)["pictures"].as_u64().unwrap() >= 1, "{}", draws(&reader));
+    assert_eq!(previews_of(&reader, 2), before, "tab 2's previews all kept");
+}
+
+/// Failure: a left tab's asking keeps its worker from its idle exit for as long as it goes on. It's held to [`ASKING_FOR`] from its first job: a job at the limit is asked, one past it isn't.
+#[test]
+fn a_tab_left_is_asked_for_no_longer_than_its_time() {
+    let mut reader = left_undrawn();
+    let job = settle_tab(&mut reader, 2).expect("a job for the tab left");
+    let outcome = answer(&job, |_| letter());
+    reader.finish(job, outcome);
+    let began = |reader: &mut Reader, ago: Duration| reader.wake.draws.owed.as_mut().unwrap().began = Some(Instant::now() - ago);
+    began(&mut reader, ASKING_FOR - Duration::from_secs(1));
+    let job = reader.next_job().expect("within its time");
+    assert_eq!(job.tab, 1);
+    reader.note_started(&job, None);
+    let outcome = answer(&job, |_| letter());
+    reader.finish(job, outcome);
+    began(&mut reader, ASKING_FOR + Duration::from_millis(1));
+    assert!(reader.next_job().is_none(), "past its time");
+    assert_eq!(draws(&reader)["ended"]["out_of_time"], 1, "{}", draws(&reader));
+}
+
+/// Failure: a page found to need a heavy worker as it's drawn for a tab left ends the asking for the pages after it, which a normal worker can draw. It's passed over, counted, and the rest are drawn.
+#[test]
+fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
+    // Left across the foot of page 20 and the head of page 21.
+    let mut reader = reader_on(40);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    let page = reader.docs.get(&1).unwrap().layout.rect(20);
+    reader.set_viewport(view(page.y + page.height - 450.0));
+    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    let owed = reader.sleep_material(1, None).unwrap().in_view;
+    assert!(owed.len() >= 2, "{owed:?}");
+    let mut drawn = Vec::new();
+    for _ in 0..10_000 {
+        reader.host.take_ops();
+        reader.applied();
+        let Some(job) = reader.next_job() else { break };
+        reader.note_started(&job, None);
+        let preview = job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. });
+        let outcome = if preview && job.position == owed[0] {
+            Outcome::Unstarted { heavy: true }
+        } else {
+            if preview {
+                drawn.push(job.position);
+            }
+            answer(&job, |_| letter())
+        };
+        reader.finish(job, outcome);
+    }
+    assert_eq!(drawn, owed[1..], "{}", draws(&reader));
+    assert_eq!(draws(&reader)["heavy_passed"], 1);
+    assert_eq!(draws(&reader)["ended"]["done"], 1);
+}
+
+/// Failure: a page its map has no file for ended the asking as though the tab had gone cold, which it hadn't. Its own reason.
+#[test]
+fn a_page_with_no_file_ends_the_asking_with_its_own_reason() {
+    let mut reader = left_undrawn();
+    reader.docs.get_mut(&1).unwrap().map.slots = Some(Vec::new());
+    assert!(run_jobs(&mut reader, &[]).iter().all(|job| job.tab == 2));
+    assert_eq!(draws(&reader)["ended"]["no_source"], 1, "{}", draws(&reader));
+    assert_eq!(draws(&reader)["ended"]["cold"], 0, "{}", draws(&reader));
 }

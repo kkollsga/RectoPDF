@@ -110,7 +110,7 @@ fn window_view() -> recto_reader::Viewport {
     }
 }
 
-/// **Stands in for the host's UI thread,** which the kit has none of: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn. Bounded.
+/// **Stands in for the host's UI thread,** which the kit has none of: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included. Bounded.
 fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
     let engine = &app.core().engine;
     let began = std::time::Instant::now();
@@ -131,7 +131,8 @@ fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_read
                 quiet = false;
             }
         }
-        if quiet && (!settled || engine.wait_settled(std::time::Duration::from_millis(20))) {
+        // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
+        if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
             return;
         }
         assert!(

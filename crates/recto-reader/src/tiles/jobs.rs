@@ -141,6 +141,10 @@ pub enum Outcome {
         low_res: Option<(TileRect, LowResWhy)>,
     },
     Cancelled,
+    /// Not done: only the worker there could do it, and it would have taken another, a heavy one if `heavy`. Only for a tab off screen's place ([`super::sleep_draw`]).
+    Unstarted {
+        heavy: bool,
+    },
     /// The page can't be drawn now or ever, in these words.
     PageFailed {
         message: String,

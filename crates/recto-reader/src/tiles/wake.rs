@@ -116,12 +116,13 @@ pub struct WakeReport {
 pub const WAKE_REPORT_BYTES: usize = 48;
 const _: () = assert!(std::mem::size_of::<WakeReport>() <= WAKE_REPORT_BYTES);
 
-/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Its exact place if it was left with one, or else the anchor it was left at. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes.
+/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it ([`Reader::place_y`] once it's back at the anchor it was left at): its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
 pub(super) fn left_place(reader: &Reader, doc: &DocView) -> (Vec<u32>, f64, f64) {
-    let y = doc
-        .place
-        .exact_y
-        .map_or_else(|| doc.place.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
+    let anchor = doc.place.left_at.map_or(doc.place.anchor, |(_, anchor)| anchor);
+    let y = match doc.place.exact_y {
+        Some((y, height)) if height == doc.layout.document_height() => y,
+        _ => doc.layout.anchor_y(anchor),
+    };
     let window_height = reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE);
     let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
     let pages = if doc.layout.count() == 0 {

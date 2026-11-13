@@ -837,6 +837,7 @@ impl Reader {
             (JobKind::Draw { .. }, Outcome::Cancelled) => {
                 self.counts.cancelled += 1;
             }
+            (_, Outcome::Unstarted { heavy }) => sleep_draw::SleepDraws::unstarted(self, tab, position, heavy),
             (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }
