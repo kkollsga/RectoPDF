@@ -25,6 +25,7 @@ mod editing;
 #[cfg(test)]
 mod headless;
 mod launching;
+pub mod menu_rows;
 mod navigation;
 mod opening;
 pub mod person;
@@ -34,6 +35,7 @@ mod record_commands;
 pub mod showing;
 mod unlocking;
 mod viewing;
+mod window_rows;
 pub mod zoom;
 
 pub use host::*;
@@ -55,7 +57,7 @@ use crate::watchdog::Watchdog;
 use crate::{ContentsEntry, PaneSnapshot, panes};
 use crate::{linking, lock, passwords};
 use qa::QaBridge;
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
@@ -235,6 +237,9 @@ pub struct Serving {
     /// until a test asks.
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) heard: Mutex<crate::testkit::heard::Overheard>,
+    /// Where a test comes between the reads of the views' places and their take-in, and the looks counted: [`crate::testkit::place_seams::PlaceSeams`].
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
 }
 
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the

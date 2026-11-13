@@ -62,6 +62,24 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     inner.listener.model_changed();
 }
 
+/// **Find's menu ids** ([`super::menu_rows`]): ⌘F is `find --open`, and then the field takes the keyboard; ⌘G and ⇧⌘G are `find --next|--previous`, a step.
+pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    Some(match asked.action.as_ref()? {
+        crate::menus::Action::FindOpen => Row::Command {
+            command: Find { open: true, ..Find::default() }.into(),
+            when_run: None,
+            host: super::HostAction::FocusFind,
+        },
+        crate::menus::Action::FindStep(forward) => Row::command(Find {
+            next: *forward,
+            previous: !*forward,
+            ..Find::default()
+        }),
+        _ => return None,
+    })
+}
+
 impl Inner {
     /// What's in the Find field now, as it's typed: `find <query>`.
     pub fn find_typed_for_person(self: &Arc<Self>, text: String) {

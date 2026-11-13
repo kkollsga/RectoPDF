@@ -6,7 +6,7 @@
 //! - **A print to a file is an export.** When the panel's answer saves or previews a PDF rather than printing on paper, a file that asks not to be copied gets the notice a copy has, with "Print anyway" (owner, 2026-11-08: exports ask "anyway" like Copy). Print to paper never asks.
 //! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
 
-use super::{CoreCall, Inner, SelectionNotice, lock};
+use super::{CoreCall, HostAction, Inner, SelectionNotice, lock};
 use recto_agent::print;
 use recto_session::TabId;
 use std::path::{Path, PathBuf};
@@ -219,18 +219,39 @@ pub fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Opt
     (from <= to).then_some((from, to))
 }
 
-/// What a menu item or notice button does, if it's printing's: Stop, or a notice's "Print anyway", which asks again only what that notice refused. Says whether it was printing's.
-pub fn perform(inner: &Arc<Inner>, id: &str) -> bool {
-    if id == STOP_ID {
-        inner.tools.printing.cancel();
-        return true;
+/// **Printing's menu ids** ([`super::menu_rows`]), all the window's alone: Print… opens the system's panel, Stop stops the print being prepared for it, and a
+/// notice's "Print anyway" asks again only what that notice refused.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    if asked.id == "file.print" {
+        return Some(Row::host(
+            "opens the system's print panel for the person",
+            super::menu_rows::Agents::ItsOwn("`recto print`"),
+            asked.host()?,
+        ));
     }
-    let Some(serial) = id.strip_prefix(ANYWAY_PREFIX) else { return false };
-    if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
-        start(inner, Request { anyway: true, ..request });
+    if asked.id == STOP_ID {
+        return Some(Row::window(
+            "stops the person's print being prepared for the system's print panel",
+            super::menu_rows::Agents::Never,
+            move || {
+                inner.tools.printing.cancel();
+                HostAction::None
+            },
+        ));
     }
-    inner.core.push(CoreCall::Reconcile);
-    true
+    let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
+    Some(Row::window(
+        "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
+        super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
+        move || {
+            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
+                start(inner, Request { anyway: true, ..request });
+            }
+            inner.core.push(CoreCall::Reconcile);
+            HostAction::None
+        },
+    ))
 }
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.

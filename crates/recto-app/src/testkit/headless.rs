@@ -246,6 +246,7 @@ impl Builder {
             disk: Some(disk),
             host: std::sync::Mutex::new(HostPlay::default()),
             open: self.open.clone(),
+            view: std::sync::Mutex::new(super::scrolled::ScrolledView::default()),
         };
         let state_held = self.held.contains(&Seam::State);
         // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
@@ -378,6 +379,9 @@ pub struct HeadlessApp {
     host: std::sync::Mutex<HostPlay>,
     /// Files named at launch.
     open: Vec<PathBuf>,
+    /// The page being read's view as the host has it, by [`Self::person_scrolls`]: where it's scrolled to and the last scroll it was sent that it's
+    /// arrived at; and the last scroll it was sent, from the layer changes taken, `(y, seq)`.
+    pub(super) view: std::sync::Mutex<super::scrolled::ScrolledView>,
 }
 
 impl HeadlessApp {
@@ -538,6 +542,11 @@ impl HeadlessApp {
         if persons > 0 {
             busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
         }
+        // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
+        let saves = inner.tools.save_ui.running.load(Ordering::SeqCst);
+        if saves > 0 {
+            busy.push(format!("{saves} of the window's save(s)"));
+        }
         if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
             busy.push("the other tabs' files being looked at".to_string());
         }
@@ -558,8 +567,12 @@ impl HeadlessApp {
     /// The page views' layer changes, taken and applied as the host's UI thread does on `ops_ready`, so what's drawn and let go goes as it would.
     fn take_ops(&self) {
         let inner = self.core();
+        let reading = inner.panes.reading_engine(&inner.engine);
         for engine in inner.panes.engines(&inner.engine) {
-            drop(engine.drain());
+            let ops = engine.drain();
+            if engine.same_as(&reading) {
+                self.note_scrolls_sent(&ops);
+            }
             engine.applied();
         }
     }

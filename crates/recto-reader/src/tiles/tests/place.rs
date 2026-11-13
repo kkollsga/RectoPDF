@@ -488,3 +488,105 @@ fn a_resize_keeps_the_reader_on_their_page() {
     let top = reader.doc().unwrap().layout.top(40);
     assert!((*new_y - top).abs() < 1.0, "{new_y} against {top}");
 }
+
+/// Failure: a way of moving where a page view says a tab is doesn't move the place clock, so a read of its places after that move carries the stamp of a
+/// read before it, and the session can't tell which is newer: an older read taken in after a newer one undoes the newer (the person's scroll lost to a
+/// command's read still landing), and a jump sent and since moved on from is kept as where the reader is. Walks every entry point of the reader's that
+/// moves the place, and fails on any whose read changed while the clock stood still; each must move something, so the walk can't pass by doing nothing.
+/// **A new way to move the place goes in this list.** Only the clock's order is asserted, never its value (it's the process's: see `place_stamp`).
+#[test]
+fn every_way_the_place_moves_moves_the_place_clock() {
+    fn range(page: u32) -> recto_index::select::Range {
+        recto_index::select::Range {
+            start: recto_index::select::Place { page, at: 0 },
+            end: recto_index::select::Place { page, at: 4 },
+        }
+    }
+    type Step = fn(&mut Reader);
+    let steps: [(&str, Step); 12] = [
+        ("the reader's own scroll", |reader| drop(reader.set_viewport(view(reader.viewport.y + 500.0)))),
+        ("a viewport of another width, which lays out again", |reader| {
+            let mut narrower = view(reader.viewport.y);
+            narrower.frame_width = 600.0;
+            narrower.width = 600.0;
+            drop(reader.set_viewport(narrower));
+        }),
+        ("synced scroll's follow", |reader| {
+            reader.follow(7, 0.5);
+        }),
+        ("a jump to a page's top", |reader| {
+            reader.jump_to(3, 0.0);
+        }),
+        ("a jump a way down a page", |reader| {
+            reader.jump_to(4, 0.4);
+        }),
+        ("a zoom", |reader| {
+            reader.zoom(Zoom::In);
+        }),
+        ("another spread", |reader| reader.set_spread(Spread::TwoUp)),
+        ("other margins", |reader| {
+            // In a view narrow enough that the pages' room is what fits them, as a comparison's pane is.
+            let mut narrow = view(reader.viewport.y);
+            narrow.frame_width = 600.0;
+            narrow.width = 600.0;
+            drop(reader.set_viewport(narrow));
+            let before = (place_stamp(), reader.places());
+            reader.set_margins(0.0, 0.0);
+            let after = (place_stamp(), reader.places());
+            assert!(after.1 != before.1, "other margins moved the place");
+            assert!(
+                after.0 > before.0,
+                "other margins moved the place and not the clock: {:?} to {:?}",
+                before.1,
+                after.1
+            );
+        }),
+        ("another tab shown", |reader| reader.activate(2, 20, 5, map(), &[1], None, Spread::Single)),
+        ("the tab shown at another page", |reader| {
+            reader.activate(1, 10, 8, map(), &[], None, Spread::Single)
+        }),
+        ("Find's hit on a page not showing", |reader| reader.reveal_range(range(6))),
+        ("Find's hit placed once its page's text is here", |reader| {
+            reader.reveal_range(range(6));
+            let to = last_scroll_to(reader);
+            drop(reader.set_viewport(view(to)));
+            let before = (place_stamp(), reader.places());
+            reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
+            // What the text's arrival did is what's walked here: the reveal's own jump to the page is the step above.
+            let after = (place_stamp(), reader.places());
+            assert!(after.1 != before.1, "the hit's placing moved the place");
+            assert!(
+                after.0 > before.0,
+                "the hit's placing moved the place and not the clock: {:?} to {:?}",
+                before.1,
+                after.1
+            );
+        }),
+    ];
+    let mut quiet = Vec::new();
+    for (name, step) in steps {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        drop(reader.set_viewport(view(1000.0)));
+        settle(&mut reader);
+        let (stamp, places, anchor) = (place_stamp(), reader.places(), reader.reading_anchor());
+        step(&mut reader);
+        let (now, places_now, anchor_now) = (place_stamp(), reader.places(), reader.reading_anchor());
+        assert!(places_now != places || anchor_now != anchor, "{name} moved nothing, so it walks nothing");
+        if now <= stamp {
+            quiet.push(format!("{name}: {places:?} to {places_now:?}"));
+        }
+    }
+    assert!(quiet.is_empty(), "moved the place with the clock standing: {quiet:#?}");
+}
+
+/// Where the last scroll sent to the host goes.
+fn last_scroll_to(reader: &mut Reader) -> f64 {
+    reader
+        .host
+        .take_ops()
+        .into_iter()
+        .rev()
+        .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+        .expect("a scroll")
+}
