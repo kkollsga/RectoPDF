@@ -203,6 +203,23 @@ fn tab_numbers_dont_wrap() {
     assert_eq!(s.open(Path::new("/d/a.pdf")), Err(SessionError::TooManyTabs));
 }
 
+/// Failure: a folder is kept with no tab in it to let it go, so it stays for the rest of the session: an open refused because the tab numbers have run out, or a move to a path that names no file. Each refused file in another folder grows the folders kept, without a cap.
+#[test]
+fn no_folder_is_kept_without_a_tab() {
+    let mut s = session(5);
+    s.tabs.set_next_id(MAX_TAB_ID);
+    for path in ["/d/a.pdf", "/e/b.pdf", "/f/c.pdf"] {
+        assert_eq!(s.open(Path::new(path)), Err(SessionError::TooManyTabs));
+    }
+    assert_eq!(s.tabs.dirs_kept(), 0, "an open refused keeps no folder");
+
+    let mut s = session(5);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.relocate(a, Path::new("/elsewhere/.."));
+    assert_eq!(s.path_of(a), Some(PathBuf::from("/d/a.pdf")), "a move to no file doesn't move it");
+    assert_eq!(s.tabs.dirs_kept(), 1, "and keeps no other folder");
+}
+
 /// Failure: a protected PDF just says it needs a password, with nothing to say why it's asking again, or a password is written down. The words say it isn't kept, and nothing in a record's fields could hold one.
 #[test]
 fn a_protected_pdf_asks_again() {

@@ -153,10 +153,11 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
         }
-        let dir = self.tabs.intern_dir(dir_path);
+        // Refused before its folder's kept: a folder is let go of only when its last tab goes, and this would have none.
         if self.tabs.next_id() >= MAX_TAB_ID {
             return Err(SessionError::TooManyTabs);
         }
+        let dir = self.tabs.intern_dir(dir_path);
         let id = self.tabs.take_id();
         let name = tab_name(path);
         self.tabs.push(TabRecord {
@@ -272,6 +273,10 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
+        // With no tab, or no file to move to, there'd be nothing in a new folder to let it go.
+        if self.tab(id).is_none() || path.file_name().is_none() {
+            return;
+        }
         let dir = self.tabs.intern_dir(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
         let mut left = None;
