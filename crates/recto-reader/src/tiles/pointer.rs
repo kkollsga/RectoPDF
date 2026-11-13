@@ -17,6 +17,18 @@ pub(super) struct Pointer {
     pub(super) revealing: Option<(u32, recto_index::select::Range, bool)>,
 }
 
+impl Pointer {
+    /// **The last thing asked for wins:** a jump the session sends to another page than Find's hit waiting for its page's text is the newer ask, so the
+    /// hit isn't brought into view when the text comes, which would take the view back from where the session has it and be told of as the reader's own
+    /// move. The session's own jump to the hit's page, which comes after the reveal it went with, leaves it. Every jump the session sends says this first:
+    /// `Reader::jump_to` (with or without a place down the page) and `Reader::jump_to_anchor`.
+    pub(super) fn forget_reveal_unless(&mut self, page: u32) {
+        if self.revealing.is_some_and(|(_, range, _)| range.start.page != page) {
+            self.revealing = None;
+        }
+    }
+}
+
 impl Reader {
     /// Tells the host what's changed about highlights. A short look at nothing, with nothing selected.
     pub(super) fn highlight_ops(&mut self) {
