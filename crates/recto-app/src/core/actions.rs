@@ -1,7 +1,7 @@
 //! **What a menu item, a panel button or a key does,** and whether it can be chosen now: the person's actions, as `AppCore` forwards them and as ⌘K's palette and
 //! `recto palette --run` run them, with the menu bar as it stands.
 
-use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, find, lock, menus, saving, updates};
+use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, lock, menus, saving, updates};
 use crate::menus::RecentItem;
 use recto_session::{Paper, TabId, ViewSettings, record};
 use std::path::PathBuf;
@@ -64,10 +64,10 @@ impl Inner {
             menus::Action::OpenRecent(key) => self.open_recent(key),
             menus::Action::ClearRecent => super::opening::clear_recent(self),
             menus::Action::FindOpen => {
-                self.core.push(CoreCall::Find(find::FindCall::Open));
+                self.find_open_for_person();
                 return HostAction::FocusFind;
             }
-            menus::Action::FindStep(forward) => self.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
+            menus::Action::FindStep(forward) => self.find_step_for_person(forward, false),
             menus::Action::LeaveEditMode => self.edit_mode_for_person(false),
             menus::Action::Step(back) => self.step_for_person(back),
             menus::Action::ClearEditHistory => self.clear_history_for_person(),

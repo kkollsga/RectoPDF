@@ -191,7 +191,8 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         &self.finder
     }
 
-    /// What the Find field does, by the same steps as `recto find`: a query, which runs in the background.
+    /// A query, by the same step as `recto find`'s, which runs in the background, with the person's passwords: for a test that drives the Finder itself. The
+    /// window's Find is the person's `find`.
     pub fn find_begin(&self, query: &str) -> Result<u64, AgentError> {
         recto_agent::find::begin_keyed(&self.access(), query, self.find_keys.get().cloned())
     }
@@ -206,24 +207,9 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         self.find_keys.get().cloned()
     }
 
-    /// What's in the Find field that the hits held aren't of, if anything.
-    pub fn find_stale_query(&self) -> Option<String> {
-        recto_agent::find::stale_query(&self.access(), &self.finder)
-    }
-
-    /// ⌘G and ⇧⌘G, by the same step as `recto find --next`, or Return and ⇧Return in the field, the person's jump.
+    /// The person's step kept for its hit, taken when the Finder's news says it's known: the same step as `recto find --next`'s.
     pub fn find_step(&self, forward: bool, going: recto_agent::find::Going) -> Option<(u32, recto_agent::find::Hit)> {
         recto_agent::find::step(&self.access(), &self.finder, forward, going)
-    }
-
-    /// A click on a hit's row.
-    pub fn find_choose(&self, index: usize) -> Option<(u32, recto_agent::find::Hit)> {
-        recto_agent::find::choose(&self.access(), &self.finder, index, recto_session::Author::Owner)
-    }
-
-    /// Escape in the field, by the same step as `recto find --close`.
-    pub fn find_close(&self) {
-        recto_agent::find::close(&self.access());
     }
 
     /// With the one backup of each original kept on its first save, in the state folder. Old backups go now, as a session starts, never on a timer.
@@ -292,7 +278,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 
     /// **A command on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`, off this thread, and it
-    /// runs again once that's in ([`recto_agent::later`]). Its answer isn't read, as the window draws what the session publishes, so a command that would build
+    /// runs again once that's in ([`recto_agent::later`]). What it asks of the window is carried out by `effects`, there and then. Its answer isn't read, as the window draws what the session publishes, so a command that would build
     /// a costly one doesn't (`SessionAccess::answer_read`). Otherwise as [`Host::run`].
     pub fn run_reading_later(
         &self,
@@ -300,11 +286,13 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         command: &Command,
         events: &mut Vec<Event>,
         reads: &dyn recto_agent::later::ReadLater,
+        effects: &Effects,
     ) -> Result<Value, AgentError> {
         self.run_on(
             &Hosted {
                 reads_later: Some(reads),
                 answer_read: false,
+                effects: Some(effects),
                 ..self.access()
             },
             actor,

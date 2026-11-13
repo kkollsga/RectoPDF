@@ -1,4 +1,4 @@
-//! **The sidebar's Find**: its field, the line under it and the hit list, as Rust's. The host draws them and says what was typed, clicked or pressed. Every step is the one `recto find` takes, through `SessionHost`'s `find_*`, on the session thread; the UI thread only reads what's published here and the Finder's hits, each under a short lock.
+//! **The sidebar's Find**: its field, the line under it and the hit list, as Rust's. The host draws them and says what was typed, clicked or pressed, which is the person's `find`, the command an agent sends, run by the one executor on the session thread (`core/find.rs`); what's here is what it shows, the step it keeps for a hit not known yet, and keeping up with the document being read. The UI thread only reads what's published here and the Finder's hits, each under a short lock.
 //!
 //! **Where it goes** (owner, 2026-11-06: "We need to maximize vertical reading space"): in the sidebar, over the tabs, and only while it's open, so nothing is above or over a page and the sidebar at rest is still names and contents. Its list takes at most [`MOST_OF_ROOM`] of the sidebar's height and scrolls inside that, as the contents do, so the tabs and the contents stay on screen (owner, 2026-11-07: "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen").
 //!
@@ -14,7 +14,6 @@ use recto_agent::find::{self, Finding, Going, Row};
 use recto_agent::{DrawableLoader, Event};
 use recto_control::host::SessionHost;
 use recto_reader::Engine;
-use recto_session::ViewSettings;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,28 +43,30 @@ pub struct Field {
     note: Option<String>,
 }
 
+impl Field {
+    /// A step kept for its hit, forgotten: Find's closed.
+    pub fn clear_pending(&mut self) {
+        self.pending_step = None;
+    }
+
+    /// Why what was typed can't be found, in Rust's words, or nothing.
+    pub fn set_note(&mut self, note: Option<String>) {
+        self.note = note;
+    }
+}
+
 /// Whether Find's open, as the UI thread last heard: under the mirror's short lock, never the session's.
 pub fn is_open(field: &Mutex<Field>) -> bool {
     lock(field).open
 }
 
-/// What the host's told to do about Find, through the session thread's queue.
+/// What's left for Find on the session thread's queue: what the person does at it is `find`, the command (`core/find.rs`).
 #[derive(Debug)]
 pub enum FindCall {
-    /// What's in the field now, as typed: found at once, the last query stopping.
-    Typed(String),
-    /// ⌘F: open, with what was last typed found again.
-    Open,
-    /// Escape in the field.
-    Close,
-    /// ⌘G and ⇧⌘G, which step, and Return and ⇧Return in the field, which jump: forward or not, and which.
-    Step(bool, Going),
-    /// A click on a row of the list.
-    Choose(u32),
     /// The Finder has more, or has finished.
     News,
-    /// A command went to a hit, which the page view selects: `Effect::Reveal`, whoever asked.
-    Reveal(u32, find::Hit),
+    /// What an agent's `find` asks of the window: its hit selected on the page (`Effect::Reveal`).
+    Effect(recto_agent::Effect),
 }
 
 impl FindCall {
@@ -73,9 +74,8 @@ impl FindCall {
     #[must_use]
     pub fn is_user_action(&self) -> bool {
         match self {
-            Self::Typed(_) | Self::Open | Self::Close | Self::Step(..) | Self::Choose(_) => true,
             // An agent's step, shown as a person's: it moves the page view, which wouldn't come back.
-            Self::Reveal(..) => true,
+            Self::Effect(_) => true,
             Self::News => false,
         }
     }
@@ -143,9 +143,6 @@ pub fn heights(room: f64, open: bool, rows: u32) -> Heights {
     }
 }
 
-/// The app's one way to change the view: the change, and the event it adds for watchers.
-pub type SetView<'a> = dyn Fn(&mut Vec<Event>, fn(&mut ViewSettings)) + 'a;
-
 /// What Find reaches: the handful of the app's parts it uses, borrowed for one call.
 pub struct FindHandle<'a, L: Listener + ?Sized> {
     pub session: &'a SessionHost<DrawableLoader>,
@@ -157,8 +154,6 @@ pub struct FindHandle<'a, L: Listener + ?Sized> {
     /// The app's own page view, pane 0.
     pub engine: &'a Engine,
     pub listener: &'a L,
-    /// The app's one way to change the view, with the event it sends.
-    pub set_view: &'a SetView<'a>,
 }
 
 impl<L: Listener + ?Sized> FindHandle<'_, L> {
@@ -236,8 +231,9 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         out
     }
 
-    /// The hit a row is, if it's a hit's.
-    fn hit_of_row(&self, row: u32) -> Option<usize> {
+    /// The hit a row is, if it's a hit's: what a click on it goes to, by the hit's index.
+    #[must_use]
+    pub fn hit_of_row(&self, row: u32) -> Option<usize> {
         let mut hit = None;
         self.session.finder().with_results(&mut |results| {
             if let Some(Row::Hit(index)) = results.rows().get(row as usize) {
@@ -245,35 +241,6 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             }
         });
         hit
-    }
-
-    /// Opens Find if it isn't, showing the sidebar it's in.
-    fn open_find(&self, events: &mut Vec<Event>) {
-        let session = self.session;
-        if session.with_session(|s| s.view().sidebar_hidden) {
-            (self.set_view)(events, |view| view.sidebar_hidden = false);
-        }
-        session.with_session(|s| {
-            let find = s.find().clone();
-            s.set_find(true, &find.query, &find.draft);
-        });
-    }
-
-    /// Finds what's typed, unless it can't be: nothing to find, or too long, which the line under the field says, as `recto find` does.
-    fn find_typed(&self, text: &str) {
-        let session = self.session;
-        let mut end = text.len().min(recto_session::record::MAX_FIND_BYTES);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        let text = &text[..end];
-        let too_long = text.len() > find::MAX_QUERY_BYTES;
-        lock(self.field).note = too_long.then(|| find::too_long().message);
-        if !too_long && find::needle(text).is_some() && session.find_begin(text).is_ok() {
-            return;
-        }
-        session.finder().clear();
-        session.with_session(|s| s.set_find(true, "", text));
     }
 
     /// Tries a step, or keeps it for when a hit for it is known: a query still running may not have reached it.
@@ -288,56 +255,19 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         }
     }
 
-    /// Does what the host asked, on the session thread.
+    /// What a command asks of the window: a hit selected on the page, or the person's step kept for when its hit is known, which the Finder's news tries
+    /// again. Announces nothing: what watchers hear of a hit gone to is said where it's gone to.
+    pub fn carry_out(&self, effect: recto_agent::Effect) {
+        match effect {
+            recto_agent::Effect::Reveal { tab, hit } => self.reveal(tab.0, &hit),
+            recto_agent::Effect::FindStepPending { forward, going } => lock(self.field).pending_step = Some((forward, going)),
+        }
+    }
+
+    /// Does what the queue holds for Find, on the session thread.
     pub fn act(&self, call: FindCall, events: &mut Vec<Event>) {
         let session = self.session;
         match call {
-            FindCall::Typed(text) => {
-                self.find_typed(&text);
-                events.push(Event::FindOpened { page: None });
-            }
-            FindCall::Open => {
-                let before = session.with_session(|s| s.find().clone());
-                self.open_find(events);
-                // What was typed last is found again, as it would be on a Mac: it's been closed, so its hits went.
-                let (query, draft) = session.with_session(|s| (s.find().query.clone(), s.find().draft.clone()));
-                if query.is_empty() && !draft.is_empty() {
-                    self.find_typed(&draft);
-                }
-                // Announced when Find changed, and only then: ⌘F with it open already only gives its field the keyboard.
-                if session.with_session(|s| *s.find() != before) {
-                    events.push(Event::FindOpened { page: None });
-                }
-            }
-            FindCall::Close => {
-                session.find_close();
-                lock(self.field).pending_step = None;
-                events.push(Event::FindClosed);
-            }
-            FindCall::Step(forward, going) => {
-                // ⌘G with Find closed opens it with what was typed last, as on a Mac.
-                let (open, query, draft) = session.with_session(|s| (s.find().open, s.find().query.clone(), s.find().draft.clone()));
-                if !open || query.is_empty() {
-                    self.open_find(events);
-                    if query.is_empty() && !draft.is_empty() {
-                        self.find_typed(&draft);
-                    }
-                }
-                match session.find_stale_query() {
-                    Some(query) => {
-                        let _ = session.find_begin(&query);
-                        lock(self.field).pending_step = Some((forward, going));
-                    }
-                    None => self.try_step(forward, going, events),
-                }
-            }
-            FindCall::Choose(row) => {
-                if let Some(index) = self.hit_of_row(row)
-                    && let Some((tab, hit)) = session.find_choose(index)
-                {
-                    self.went(tab, &hit, events);
-                }
-            }
             FindCall::News => {
                 // Taken out first: a guard in the `if let` would be held through the step, which locks the field again, and the session thread would wait on itself. A step waiting for hits waits on through a hand-off's freeze, as it would move the page after what comes back was written.
                 let pending = lock(self.field).pending_step;
@@ -358,7 +288,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 }
             }
             // What watchers hear of it is the command's, which said it as it went.
-            FindCall::Reveal(tab, hit) => self.reveal(tab, &hit),
+            FindCall::Effect(effect) => self.carry_out(effect),
         }
         self.keep_up();
         self.listener.model_changed();

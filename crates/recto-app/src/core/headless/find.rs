@@ -1,7 +1,7 @@
 //! The sidebar's Find across a quit and a launch whose state comes in late, and whose page text comes later still.
 
-use crate::core::find::{self, FindCall};
-use crate::queue::CoreCall;
+use crate::core::controls::UiAction;
+use crate::core::find;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_platform::slow::Seam;
 
@@ -29,13 +29,10 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     let app = disk.start();
     app.open(&doc);
     // `pdf page 1` on page 1 and pages 10 to 19: eleven hits on eleven pages.
-    app.send(CoreCall::Find(FindCall::Typed("pdf page 1".into())));
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
     app.settle();
     for _ in 0..3 {
-        app.send(CoreCall::Find(FindCall::Step(
-            true,
-            recto_agent::find::Going::Jump(recto_session::Author::Owner),
-        )));
+        app.act(UiAction::FindReturn { forward: true });
     }
     app.settle();
     let before = shown(&app);
@@ -60,10 +57,7 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     assert!(app.core().life.remade(), "the window made again from the state");
     assert_eq!(shown(&app), before, "still, on the window made from it");
     assert_eq!(selected(&app), Some(hit), "and selected there");
-    app.send(CoreCall::Find(FindCall::Step(
-        true,
-        recto_agent::find::Going::Jump(recto_session::Author::Owner),
-    )));
+    app.act(UiAction::FindReturn { forward: true });
     app.settle();
     assert_eq!(shown(&app).2, Some(7), "and it goes on from there");
 }

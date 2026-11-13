@@ -144,3 +144,131 @@ fn an_agent_jumps_to_a_hit_chooses_one_and_opens_find() {
     assert!(app.reader().sidebar_hidden, "an agent's Find leaves the sidebar hidden");
     assert!(app.recto(Level::ReadOnly, &["find", "--open"]).is_err(), "at Control");
 }
+
+/// Failure (R2.3, C5g): the person's Find does something other than the `find` an agent sends: other hits, another hit gone to, another page, another
+/// event, or something else kept in the record. Each control on one app, and its line at Full on another with the same file: typing, ⌘G, Return, a click on
+/// a hit's row, Escape and ⌘F. Who a jump was by is the one difference, and the caller's (`by_agent`).
+#[test]
+fn the_windows_find_is_the_agents_find() {
+    let twins = super::twins::Twins::on(&[("a.pdf", 12)]);
+    // `page 1` is on pages 1, 10, 11 and 12; the list is a page's row and its hit for each, so row 5 is the third hit.
+    let steps: Vec<(&str, UiAction, &str)> = vec![
+        ("typing", UiAction::FindTyped { text: "page 1".into() }, r#"{"cmd":"find","query":"page 1"}"#),
+        ("⌘G", UiAction::Menu { id: "find.next".into() }, r#"{"cmd":"find","next":true}"#),
+        ("Return", UiAction::FindReturn { forward: true }, r#"{"cmd":"find","next":true,"jump":true}"#),
+        ("a hit's row", UiAction::FindChoose { row: 5 }, r#"{"cmd":"find","hit":2}"#),
+        ("Escape", UiAction::FindClose, r#"{"cmd":"find","close":true}"#),
+        ("⌘F", UiAction::FindOpen, r#"{"cmd":"find","open":true}"#),
+    ];
+    for (what, action, line) in steps {
+        let before = (twins.person.session_json()["find"].clone(), twins.person.reader());
+        let (said, agent_said) = twins.both(action, line);
+        assert_eq!(said, agent_said, "{what} and {line}: the same said");
+        assert!(!said.is_empty(), "{what}: something announced");
+        assert_ne!(
+            (twins.person.session_json()["find"].clone(), twins.person.reader()),
+            before,
+            "{what}: something changed"
+        );
+        twins.assert_same(&format!("{what} and {line}"), &["by_agent"]);
+        assert_eq!(find_view(&twins.person), find_view(&twins.agent), "{what}: Find shows the same");
+    }
+}
+
+/// Failure (R2.3, A6): the person's ⌘F with the sidebar hidden opens Find where it can't be seen, as Find lives in the sidebar, or isn't heard as a change
+/// to the view; or the person's ⌘G with Find closed doesn't open it with what was typed last. ⌘F shows the sidebar and is heard as `view_changed`; Escape,
+/// then ⌘G, opens Find with the query found again and goes to its first hit.
+#[test]
+fn the_persons_find_shows_the_sidebar_and_opens_with_what_was_typed() {
+    let app = findable();
+    app.act(UiAction::ToggleSidebar);
+    app.settle();
+    assert!(app.reader().sidebar_hidden);
+    drop(app.heard_events());
+    app.act(UiAction::FindOpen);
+    app.settle();
+    assert!(!app.reader().sidebar_hidden, "⌘F shows the sidebar");
+    assert_eq!(names(&app.heard_events()), ["view_changed", "find_changed"]);
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.act(UiAction::FindClose);
+    app.act(UiAction::ToggleSidebar);
+    app.settle();
+    app.act(UiAction::Menu { id: "find.next".into() });
+    app.settle();
+    let view = find_view(&app);
+    assert!(view.open && view.row_count == 22 && view.current_row == Some(1), "{view:?}");
+    assert!(!app.reader().sidebar_hidden, "⌘G opening Find shows the sidebar");
+}
+
+/// Failure: a query too long to find is searched anyway, or the line under the field doesn't say why nothing's found, or what was typed is lost from the
+/// field; or the line keeps saying it once something findable is typed.
+#[test]
+fn a_query_too_long_is_said_and_not_searched() {
+    let app = findable();
+    let text = "x".repeat(recto_agent::find::MAX_QUERY_BYTES + 1);
+    app.act(UiAction::FindTyped { text: text.clone() });
+    app.settle();
+    let view = find_view(&app);
+    assert!(view.open);
+    assert_eq!(view.status, recto_agent::find::too_long().message, "the line says why");
+    assert_eq!(view.text, text, "the field keeps what was typed");
+    assert!(!view.running && view.row_count == 0, "nothing searched: {view:?}");
+    assert_eq!(app.session_json()["find"]["query"], "", "nothing searched for");
+    app.act(UiAction::FindTyped { text: "pdf".into() });
+    app.settle();
+    assert_ne!(find_view(&app).status, recto_agent::find::too_long().message, "said no more");
+}
+
+/// Failure (rule 6, R2.3 C5g): an agent's `find`, in any form, on a document the person opened with its password, gets a hit, a page or a count read with
+/// the password, at any level, or the person's own Find there finds nothing, as their passwords went with the command. The person's Find finds its hits and
+/// goes to one, and what watchers hear of it has no page; every form of an agent's `find` is refused, or says nothing of what's in it.
+#[test]
+fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 3));
+    app.core().open_file(file);
+    app.settle();
+    let id = app.reader().password_prompt.expect("it asks for its password").id;
+    app.core().password_answered(id, Some("right".into()));
+    app.settle();
+    app.hear_events();
+    app.act(UiAction::FindTyped { text: "locked page".into() });
+    app.settle();
+    let view = find_view(&app);
+    assert_eq!(view.row_count, 6, "the person's Find finds its three hits: {view:?}");
+    drop(app.heard_events());
+    app.act(UiAction::FindReturn { forward: true });
+    app.act(UiAction::FindReturn { forward: true });
+    app.settle();
+    let heard = app.heard_events();
+    assert_eq!(names(&heard), ["page_changed", "find_changed", "page_changed", "find_changed"]);
+    let shown = format!("{heard:?}");
+    assert!(!shown.contains("Some("), "no page for watchers: {shown}");
+    let leaks = |value: &serde_json::Value| {
+        let text = value.to_string();
+        text.contains("Locked page") || text.contains("\"hits_total\":3") || text.contains("\"page\":2")
+    };
+    for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+        for line in [
+            r#"{"cmd":"find","query":"locked page"}"#,
+            r#"{"cmd":"find"}"#,
+            r#"{"cmd":"find","next":true}"#,
+            r#"{"cmd":"find","previous":true,"jump":true}"#,
+            r#"{"cmd":"find","hit":0}"#,
+            r#"{"cmd":"find","open":true}"#,
+            r#"{"cmd":"find","close":true}"#,
+        ] {
+            let (result, said) = app.agent_heard(level, line);
+            let answer = result.unwrap_or_else(|error| serde_json::json!(format!("{error:?}")));
+            assert!(!leaks(&answer), "{level:?} {line}: {answer}");
+            assert!(!format!("{said:?}").contains("Some("), "{level:?} {line}: {said:?}");
+        }
+    }
+    app.settle();
+    assert_eq!(find_view(&app).row_count, 6, "and the person's Find is as it was");
+}
+
+/// What the sidebar draws of Find.
+fn find_view(app: &HeadlessApp) -> crate::core::find::FindView {
+    crate::core::find::view(app.core())
+}

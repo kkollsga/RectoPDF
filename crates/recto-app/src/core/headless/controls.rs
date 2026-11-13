@@ -87,10 +87,13 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::Chevron { first: 0 },
         UiAction::Open { path: a.clone() },
         UiAction::OpenRecent { key: "0".repeat(16) },
+        // Find's field, its list and its keys are the person's `find` (C5g): a query, opening, a jump each way, a hit's row and a page's, and closing.
         UiAction::FindTyped { text: "page".into() },
         UiAction::FindOpen,
         UiAction::FindReturn { forward: true },
+        UiAction::FindReturn { forward: false },
         UiAction::FindChoose { row: 0 },
+        UiAction::FindChoose { row: 1 },
         UiAction::FindClose,
         UiAction::PageTyped { text: "2".into() },
         UiAction::Swiped { delta_x: 1.0 },

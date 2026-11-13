@@ -73,6 +73,7 @@ const ANSWERED: &[fn(&Inner, &Ran<'_>)] = &[
     super::closing::answered,
     super::editing::answered,
     super::comparison::answered,
+    super::find::answered,
 ];
 
 fn answered(inner: &Inner, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
@@ -138,7 +139,10 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         command: &command,
         fetched: RefCell::new(fetched),
     };
-    let result = inner.host.session.run_reading_later(Actor::Person, &command, events, &later);
+    let result = inner
+        .host
+        .session
+        .run_reading_later(Actor::Person, &command, events, &later, &super::find::effects_now(inner));
     answered(inner, &command, origin, &result);
     result
 }

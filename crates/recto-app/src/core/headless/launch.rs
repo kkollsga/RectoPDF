@@ -112,7 +112,6 @@ fn a_late_state_and_a_late_remake_come_in_the_order_theyre_let_through() {
 /// the field then has the keyboard is the window's, held by the app test's normal-tier run.)
 #[test]
 fn what_is_done_before_the_window_is_made_from_a_late_state_waits_for_it() {
-    use crate::queue::CoreCall;
     let disk = Disk::new();
     let doc = disk.pdf("alpha.pdf", 20);
     let app = disk.start();
@@ -134,7 +133,7 @@ fn what_is_done_before_the_window_is_made_from_a_late_state_waits_for_it() {
     app.settle();
     assert!(app.core().menu_item_enabled("find.open".into()), "on the window made from the state, it is");
     app.core().perform("find.open".into());
-    app.send(CoreCall::Find(crate::find::FindCall::Typed("words".into())));
+    app.act(crate::core::controls::UiAction::FindTyped { text: "words".into() });
     app.settle();
     let session = app.session_json();
     assert_eq!(session["find"]["open"], true, "{}", session["find"]);
