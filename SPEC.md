@@ -106,6 +106,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 
 ## 5. Agent
 
+- **A quiet run only uses files in its own folders** (coordinator's brief, 2026-11-13, from the owner's rules that raising access needs the user at a real terminal and that quiet runs use temp state only). Every session on a state folder set with `RECTO_STATE_DIR` (a quiet run's, `recto serve`'s, `recto session`'s, `recto local`'s) opens and writes files only in the system's temp folders, whoever asks and at whatever level. Anything else is refused with one wording: "A quiet run only uses files in its own folders, the system's temp folders. That file isn't in them, so nothing was opened or written."
 - **`recto stop` doesn't quit the app someone is using.** In a normal app it refuses, and says only the user quits the app. A quiet QA run stops when told. A default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 - The app starts the user's **existing `claude` install** if there is one, and never handles credentials. If it's missing, the panel shows
   setup steps and the reader works as normal.
