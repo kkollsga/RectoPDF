@@ -4,6 +4,9 @@ mod as_person;
 mod levers;
 mod values;
 
+#[cfg(test)]
+mod files_tests;
+
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_agent::commands::Cmd;
@@ -375,7 +378,7 @@ impl QaBridge {
         // A shot of a page mid-draw shows it blurred, and one of the contents mid-slide shows two rows over each other: it waits for settled, as `qa wait-settled` has it, every pane and the window's animations, for as long as a shot may, and says if it didn't (review).
         let started = Instant::now();
         let settled = self.settled(SHOT_SETTLE).is_ok();
-        let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
+        let temp = values::shot_file(self.next_id.fetch_add(1, Ordering::SeqCst));
         let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
             recto_agent::publish_picture(&temp, out)?;
@@ -760,10 +763,10 @@ pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError>
     as_person::check_tests_files(inner, &[path.as_path()])
 }
 
-/// **What acts as the person is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its `owner-edit` alias and `qa
-/// save-as` are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
+/// **What acts as the person, or replaces a tab's file, is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its
+/// `owner-edit` alias, `qa save-as` and `qa save-from` (2026-11-13) are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
 fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
-    if release && matches!(verb, "as_person" | "owner_edit" | "save_as") {
+    if release && matches!(verb, "as_person" | "owner_edit" | "save_as" | "save_from") {
         return Err(AgentError::new(
             "qa_refused",
             "A release build doesn't act as the person for a test: this QA verb is only in a development build.",
@@ -846,52 +849,6 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
     }
 
-    /// **The arguments whose value carries a file the table can't see as one**, each put through the one rule by what reads it: `qa print-to-pdf`'s by
-    /// its verb, `qa compare-budget`'s list by `recto_control::quiet::check_here`. The guard below fails an argument that names a whole path and is neither
-    /// a file to the table nor here.
-    const FILE_IN_A_VALUE: &[(&str, &str)] = &[("qa compare-budget", "files"), ("qa print-to-pdf", "value")];
-
-    /// Failure (2026-11-13): a QA verb's value names a file the table declares as text, so the session's wall never sees it, and a quiet run writes a
-    /// print, or opens a file, outside its folders. Every argument whose help names a whole path is a file to the table or on [`FILE_IN_A_VALUE`], and each
-    /// of those is refused outside, through the verb as a client sends it, writing nothing.
-    #[test]
-    fn every_file_in_a_qa_value_is_held_to_the_run() {
-        use recto_agent::table::{Kind, TABLE};
-        let named: Vec<(&str, &str)> = TABLE
-            .iter()
-            .flat_map(|spec| spec.args.iter().map(move |arg| (spec, arg)))
-            .filter(|(_, arg)| arg.kind != Kind::Path && arg.help.contains("whole path"))
-            .map(|(spec, arg)| (spec.name, arg.key))
-            .collect();
-        assert_eq!(named, FILE_IN_A_VALUE, "a whole path that isn't a file to the table");
-        let app = HeadlessApp::start();
-        let qa = bridge(&app);
-        app.open(&app.disk().pdf("own.pdf", 2));
-        let Some(outside) = outside_the_tests_folders("recto-print.pdf") else {
-            return;
-        };
-        let refused = drive(&qa, "print_to_pdf", &outside.to_string_lossy()).expect_err("a print outside the run's folders");
-        assert_eq!(refused.code, "outside_quiet_run", "{refused:?}");
-        let refused = drive(&qa, "print_to_pdf", &format!("{}|1|1", outside.display())).expect_err("with a range");
-        assert_eq!(refused.code, "outside_quiet_run", "{refused:?}");
-        assert!(!outside.exists(), "a print was written outside");
-        let spec = TABLE.iter().find(|spec| spec.name == "qa compare-budget").unwrap();
-        let mut fields = serde_json::Map::new();
-        let own = app.disk().pdf("other.pdf", 1);
-        fields.insert("files".into(), json!(format!("{},{}", own.display(), outside.display())));
-        let line = recto_agent::table::Invocation {
-            spec,
-            fields,
-            json: true,
-            help: false,
-            rest: Vec::new(),
-        };
-        assert_eq!(
-            recto_control::quiet::check_here(app.disk().paths(), &line).unwrap_err().code,
-            "outside_quiet_run"
-        );
-    }
-
     /// Failure (owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?"): `qa menu` (and `qa button`, `qa key-action`, `qa print-to-pdf`)
     /// acts on whatever tab the window shows and its answer doesn't say which; or `--tab` naming another tab acts anyway. With `--tab` naming another
     /// it's refused before anything is asked of the window, naming the one shown, and nothing changes; with the one shown, or none, the answer says which it
@@ -954,7 +911,7 @@ mod tests {
     /// there, and nothing else is.
     #[test]
     fn a_release_doesnt_act_as_the_person() {
-        for verb in ["as_person", "owner_edit", "save_as"] {
+        for verb in ["as_person", "owner_edit", "save_as", "save_from"] {
             assert_eq!(refused_in_a_release(true, verb).unwrap_err().code, "qa_refused", "{verb}");
             assert!(refused_in_a_release(false, verb).is_ok(), "{verb} in a development build");
         }

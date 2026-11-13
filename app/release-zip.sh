@@ -156,10 +156,11 @@ assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it wa
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
-# Nor does it act as the person for a test, whoever started it with --qa: as-person, its owner-edit alias and the Save As sheet's answer.
+# Nor does it act as the person for a test, whoever started it with --qa: as-person, its owner-edit alias, the Save As sheet's answer, and a test's file put in place of a tab's.
 if "$APP/Contents/MacOS/recto" qa as-person undo >/dev/null 2>&1; then echo "a release acts as the person for a test" >&2; exit 1; fi
 if "$APP/Contents/MacOS/recto" qa owner-edit undo >/dev/null 2>&1; then echo "a release makes an owner's edit for a test" >&2; exit 1; fi
 if "$APP/Contents/MacOS/recto" qa save-as "$SMOKE/copy.pdf" >/dev/null 2>&1; then echo "a release answers Save As for a test" >&2; exit 1; fi
+if "$APP/Contents/MacOS/recto" qa save-from "$SMOKE/copy.pdf" >/dev/null 2>&1; then echo "a release puts a test's file in place of a tab's" >&2; exit 1; fi
 "$APP/Contents/MacOS/recto" qa quit now >/dev/null
 unset RECTO_STATE_DIR
 }
