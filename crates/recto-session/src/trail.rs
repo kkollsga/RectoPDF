@@ -209,8 +209,7 @@ impl<L: DocLoader> Session<L> {
 
     fn land(&mut self, id: TabId, to: trail::Stop) -> Result<(), SessionError> {
         self.go_to(id, to.page)?;
-        self.jumps.retain(|(tab, _)| *tab != id);
-        self.jumps.push((id, to));
+        self.mail.jump(id, to);
         Ok(())
     }
 
@@ -227,8 +226,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
     pub fn take_jump(&mut self, id: TabId) -> Option<trail::Stop> {
-        let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
-        Some(self.jumps.swap_remove(at).1)
+        self.mail.take_jump(id)
     }
 }
 

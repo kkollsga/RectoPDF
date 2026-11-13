@@ -117,7 +117,7 @@ impl<L: DocLoader> Session<L> {
                 trail.follow_pages(|page| now.get(&page).copied().flatten());
             }
         }
-        self.draws.retain(|draw| draw.tab != id);
+        self.mail.forget_draws(id);
         self.drop_list_if_idle(id);
         let pages = self.pages_in(id);
         let found = place.and_then(|(source, page, near)| match self.edits.get(&id) {
@@ -125,7 +125,7 @@ impl<L: DocLoader> Session<L> {
             None => (source == 0 && page < pages).then_some(page),
         });
         let near = place.map_or(0, |(_, _, near)| near);
-        self.place_lost = place.is_some() && found.is_none();
+        self.mail.set_place_lost(place.is_some() && found.is_none());
         let last = pages.saturating_sub(1);
         if let Some(tab) = self.tab_mut(id) {
             tab.page = found.unwrap_or(near).min(last);

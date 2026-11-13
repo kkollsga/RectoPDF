@@ -22,8 +22,7 @@ impl<L: DocLoader> Session<L> {
             just_read: None,
             woken_from_file: Vec::new(),
             left_warm: Vec::new(),
-            draws: VecDeque::new(),
-            place_lost: false,
+            mail: mail::PageViewMail::default(),
             journaling: false,
             journals: HashMap::new(),
             fresh_journals: Vec::new(),
@@ -34,7 +33,6 @@ impl<L: DocLoader> Session<L> {
             generated: Vec::new(),
             comparison: None,
             saves: saves::Saves::default(),
-            jumps: Vec::new(),
             recent: recent::Recent::default(),
         }
     }
@@ -348,11 +346,10 @@ impl<L: DocLoader> Session<L> {
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
         let closed = self.tabs.remove(index);
         self.let_go_of_dir_if_unused(closed.dir);
-        self.draws.retain(|d| d.tab != id);
+        self.mail.forget(id);
         self.warm.retain(|(tab, _)| *tab != id);
         self.generated.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
-        self.jumps.retain(|(tab, _)| *tab != id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
         if let Some(comparison) = &mut self.comparison

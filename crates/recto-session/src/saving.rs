@@ -59,7 +59,7 @@ impl<L: DocLoader> Session<L> {
             tab.problem = None;
             tab.place_dirty = true;
         }
-        self.draws.retain(|draw| draw.tab != id);
+        self.mail.forget_draws(id);
         if self.edits.get(&id).is_some_and(|list| !list.has_history()) {
             self.let_go_of_list(id);
         } else if self.edits.contains_key(&id) {

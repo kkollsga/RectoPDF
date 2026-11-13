@@ -17,6 +17,7 @@ mod dirs;
 mod editing;
 mod files;
 mod journal;
+mod mail;
 mod pages;
 mod recent;
 mod restore;
@@ -794,12 +795,10 @@ pub struct Session<L = DiskLoader> {
     just_read: Option<(TabId, sleep::SleepFile)>,
     woken_from_file: Vec<TabId>,
     left_warm: Vec<(TabId, Arc<Toc>)>,
-    /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
-    draws: VecDeque<DrawNote>,
+    /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
+    mail: mail::PageViewMail,
     /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
     woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
-    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
-    place_lost: bool,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.
@@ -822,8 +821,6 @@ pub struct Session<L = DiskLoader> {
     generated: Vec<(TabId, GeneratedView)>,
     /// Files opened lately, for File > Open Recent and ⌘K.
     recent: recent::Recent,
-    /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
-    jumps: Vec<(TabId, trail::Stop)>,
 }
 
 /// A file opened lately, for File > Open Recent and ⌘K.

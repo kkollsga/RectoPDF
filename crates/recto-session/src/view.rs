@@ -114,20 +114,16 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
     pub fn take_place_lost(&mut self) -> bool {
-        std::mem::take(&mut self.place_lost)
+        self.mail.take_place_lost()
     }
 
     /// Notes that a page finished drawing, or couldn't be.
     pub fn note_drawn(&mut self, note: DrawNote) {
-        self.draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
-        self.draws.push_back(note);
-        while self.draws.len() > MAX_DRAWS_KEPT {
-            self.draws.pop_front();
-        }
+        self.mail.note_drawn(note);
     }
 
     /// What's known about a page's latest draw, if it's still remembered.
     pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
-        self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
+        self.mail.draw_note(tab, page)
     }
 }

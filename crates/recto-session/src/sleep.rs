@@ -434,7 +434,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.warm.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
-        self.draws.retain(|draw| draw.tab != id);
+        self.mail.forget_draws(id);
         !self.edits.contains_key(&id) || self.put_list_to_sleep(id)
     }
 
