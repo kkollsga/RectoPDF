@@ -4,7 +4,7 @@
 //!
 //! **What goes where, by how often it changes** (SPEC decision 25: the owner's rule on SSD wear). A main record in two slots, of which the older is overwritten, so a crash or a torn write leaves the other one whole with no need to force the drive to flush. A small append-only log of what changes while reading, so a place turning over at most once a minute doesn't rewrite a thousand tabs: see [`PlaceDelta`]. And for each tab with unsaved edits, an append-only journal of compact steps, never rewritten to add one: see [`JournalOp`]. The header line of a main record says the kind, version, sequence, body's length and CRC-32, and is read first, so a record from a newer app is recognised without parsing a word of it.
 //!
-//! **Growth.** A field added with `#[serde(default)]` needs no new version: an older app ignores it. A new version is for what an older app would misread, and a decoder for the old one stays here with a fixed sample in `tests/fixtures`, so reading an old record can't quietly break. **Selection** goes in [`TabEntry::selection`], already carried, with [`Session::set_selection`](crate::Session::set_selection) to set it.
+//! **Growth.** A field added with `#[serde(default)]` needs no new version: an older app ignores it. A new version is for what an older app would misread, and a decoder for the old one stays here with a fixed sample in `tests/fixtures`, so reading an old record can't quietly break. **Selection** goes in [`TabEntry::selection`], already carried, with [`PartMut::note_selection`](crate::PartMut::note_selection) to set it.
 
 use crate::edit::{MAX_HISTORY_BYTES, MAX_PAGES, MAX_SOURCES};
 use crate::{Author, MAX_TABS};
@@ -733,7 +733,7 @@ pub struct TabEntry {
     pub layout: Spread,
     #[serde(default)]
     pub renderer_only: bool,
-    /// Selection work: this is what's kept. It's set with `Session::set_selection`.
+    /// Selection work: this is what's kept. It's set with `PartMut::note_selection`, the tabs' handle.
     #[serde(default)]
     pub selection: Option<Selection>,
     #[serde(default)]

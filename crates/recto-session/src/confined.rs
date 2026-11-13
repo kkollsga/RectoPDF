@@ -53,6 +53,23 @@ impl Confinement {
         self.0.get().is_none() || edits.added_sources().iter().chain(edits.keeping()).all(|added| self.admits(&added.path))
     }
 
+    /// Whether this is the same cell as `other`: one made from the other by [`Self::shared`], or by the same.
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// **Whether this cell may take `current`'s place in a session without widening what it may use,** a free one first taking `current`'s folders
+    /// (so the host whose cell it is becomes confined with its session, the safe direction). A confined one may only if each of its folders is in one of
+    /// `current`'s. So a session confined can't come out of [`crate::parts::PartMut::keep_confinement`] free, or with wider folders, whatever cell it's
+    /// handed: a `Confinement::default()` made for the purpose included.
+    pub(crate) fn may_replace(&self, current: &Self) -> bool {
+        let Some(folders) = current.folders() else { return true };
+        self.confine(RunFolders::clone(folders));
+        self.folders()
+            .is_some_and(|mine| mine.roots().iter().all(|root| folders.roots().iter().any(|theirs| root.starts_with(theirs))))
+    }
+
     /// Whether a file may be the session's: anywhere, unless it's confined. Looks at the disk only when it is.
     pub fn admits(&self, path: &Path) -> bool {
         self.0.get().is_none_or(|folders| folders.admits(path))

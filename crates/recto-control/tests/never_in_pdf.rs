@@ -50,7 +50,7 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     std::fs::write(&added, pages(&[body(UNDONE_FILE_TEXT)])).unwrap();
 
     let mut session = Session::new(DiskLoader);
-    session.set_journaling(true);
+    session.journals_mut().set_journaling(true);
     let tab = session.open(&file).unwrap();
     session.edit_pages_as(tab, Author::Owner, |edits| edits.delete(1, 1)).unwrap();
     session.insert_pdf(tab, 0, &added).unwrap();
@@ -95,7 +95,7 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
         pages: &order,
         added: &added_files,
     };
-    let needed = session.own_pages_needed(tab);
+    let needed = session.lists().own_pages_needed(tab);
     assert_eq!(needed, [1], "the history can put back the deleted page, and only that");
     let mut hooks = Keeping {
         session: &mut session,
@@ -136,9 +136,9 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
         !found(&kept_bytes, "first page") && !found(&kept_bytes, "third page"),
         "only the page that was removed is kept"
     );
-    assert!(!session.is_edited(tab));
+    assert!(!session.lists().is_edited(tab));
     assert!(session.undo_edit(tab), "the delete");
-    assert!(session.is_edited(tab));
+    assert!(session.lists().is_edited(tab));
     let back = session.page_source(tab, 1).unwrap();
     assert_eq!(
         (back.path, back.page),

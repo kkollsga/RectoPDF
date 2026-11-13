@@ -84,14 +84,11 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
-    pub fn choose_generated(&mut self, id: TabId, generated: bool) {
-        if let Some(tab) = self.tabs.tab_mut(id)
-            && tab.generated_contents != generated
-        {
-            tab.generated_contents = generated;
-            tab.folds = None;
-        }
+    /// **Generated contents stopped:** the tab shows its file's own, and where generated ones stood is forgotten, so the note offers them again. One
+    /// operation, as the tab's choice and the generated contents it's about change together.
+    pub fn stop_generated_contents(&mut self, id: TabId) {
+        self.tabs.choose_generated(id, false);
+        self.generated.forget(id);
     }
 
     /// Opens a contents section that's closed, or closes one that's open, as its chevron does. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". What following the place opens is the default, and only what differs from it is kept, at most [`record::MAX_CONTENTS_FOLDS`], in the record.

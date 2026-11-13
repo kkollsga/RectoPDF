@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 /// Files opened lately, for File > Open Recent and ⌘K. What's public here says when the list changed, or clears it; a file's noted on opening it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Recent {
     /// Newest first, at most [`MAX_RECENT`]. In the state record.
     recent: VecDeque<PathBuf>,
@@ -15,6 +15,14 @@ pub struct Recent {
 }
 
 impl Recent {
+    /// No files yet. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            recent: VecDeque::new(),
+            recent_version: 0,
+        }
+    }
+
     /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
     pub(crate) fn note(&mut self, path: &Path) {
         if !path.is_absolute() || !PathField::from_path(path).fits() {
@@ -39,14 +47,6 @@ impl Recent {
         self.recent_version
     }
 
-    /// File > Open Recent > Clear Menu. Says whether there were any.
-    pub fn clear(&mut self) -> bool {
-        let had = !self.recent.is_empty();
-        self.recent.clear();
-        self.recent_version += 1;
-        had
-    }
-
     /// As a record has them: only whole paths that fit, at most [`MAX_RECENT`].
     pub(crate) fn restore(&mut self, recent: &[PathField]) {
         self.recent = recent
@@ -62,5 +62,17 @@ impl Recent {
     /// For the record.
     pub(crate) fn to_record(&self) -> Vec<PathField> {
         self.recent.iter().map(|path| PathField::from_path(path)).collect()
+    }
+}
+
+/// What a caller outside the crate may change of the recent files: only clearing them. A file's noted on opening it.
+impl crate::parts::PartMut<'_, Recent> {
+    /// File > Open Recent > Clear Menu. Says whether there were any.
+    pub fn clear(&mut self) -> bool {
+        let recent = &mut *self.0;
+        let had = !recent.recent.is_empty();
+        recent.recent.clear();
+        recent.recent_version += 1;
+        had
     }
 }

@@ -150,6 +150,15 @@ impl Notices<'_> {
         }
     }
 
+    /// **What the tab's own file must be for its page numbers to hold, if they depend on it:** nothing for a tab with no list in memory, whose positions
+    /// are its file's pages whatever the file is now; for one with a list, the version its edits are about, or no version (`Some(None)`) when they
+    /// don't fit the file ([`Self::fit`]) or its version isn't known, so that no version of the file can be taken to be current. A list asleep gives
+    /// nothing, as for none: a caller reading pages wakes the list first (`recto-agent`'s executor does, for every command about a tab), and one that
+    /// couldn't be woken is refused before any page is read.
+    pub fn own_file_expected(&self, id: TabId) -> Option<Option<FileStamp>> {
+        self.lists.get(id).map(|_| self.tabs.own_stamp(id).filter(|_| self.fit(id).fits()))
+    }
+
     /// What a tab says of its file, if anything: that it can't be found first, then that its edits don't fit it, which nothing else may hide, then its notice.
     pub fn said(&self, id: TabId) -> Option<NoticeSaid> {
         let tab = self.tabs.tab(id)?;

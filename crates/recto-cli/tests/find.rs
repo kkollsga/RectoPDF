@@ -215,7 +215,7 @@ fn a_stopped_query_stops_at_the_next_page() {
         }),
     )
     .unwrap();
-    let id = session.active().unwrap();
+    let id = session.tabs().active().unwrap();
     let plan = find::plan(&session, id).unwrap();
     let stop = AtomicBool::new(false);
     let (end, progress) = find::run(&plan, &find::needle("alpha").unwrap(), None, &stop, &mut |_, _| {

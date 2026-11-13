@@ -125,7 +125,10 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
         #[cfg(test)]
         SESSION_LOCKS.with(|locks| locks.set(locks.get() + 1));
-        self.session.with(step)
+        let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = step(&mut session);
+        keep_the_hosts_cell(&mut session, self.confinement);
+        result
     }
     fn indexing(&self) -> Option<&dyn Indexing> {
         self.indexer.map(|indexer| indexer as &dyn Indexing)
@@ -348,7 +351,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| {
                 let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                acted_tab(&session, command).and_then(|id| session.path_of(id))
+                acted_tab(&session, command).and_then(|id| session.tabs().path_of(id))
             })
             .flatten();
         let result = recto_agent::execute(access, actor, command, events);
@@ -372,7 +375,9 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
-        Some(step(&mut session))
+        let result = step(&mut session);
+        keep_the_hosts_cell(&mut session, &self.confinement);
+        Some(result)
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
@@ -380,11 +385,24 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let (result, tabs) = {
             let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let result = step(&mut session);
+            keep_the_hosts_cell(&mut session, &self.confinement);
             (result, session.tabs().len())
         };
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result
     }
+}
+
+/// **After a step run with the session in hand, the session goes by the host's confinement cell** (R3.5a): the host reads that cell with no lock, so
+/// it's the authority. A step that replaced the whole session (`*session = Session::new(..)`, or a swap with another host's) brought a cell of its own;
+/// the host's is put back, never widening the session ([`recto_session::PartMut::keep_confinement`]). No shipping code does that, so it's a loud failure
+/// in a debug build, and quietly mended in a release one. An `Arc::ptr_eq` when nothing was replaced, under the lock the step already holds.
+fn keep_the_hosts_cell<L: DocLoader>(session: &mut Session<L>, cell: &recto_session::confined::Confinement) {
+    let kept = session.tabs_mut().keep_confinement(cell);
+    debug_assert!(
+        kept,
+        "a step replaced the host's session, and its confinement cell with it: make a session with its host, never inside its lock"
+    );
 }
 
 /// What's known about a record, for `session show`. Numbers, and Rust's own words.
@@ -452,7 +470,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         session
             .tabs()
             .iter()
-            .filter(|tab| session.is_edited(tab.id) || session.undo_and_redo(tab.id).1)
+            .filter(|tab| session.lists().is_edited(tab.id) || session.lists().undo_and_redo(tab.id).1)
             .map(|tab| (tab.id, tab.name.to_string()))
             .collect()
     }

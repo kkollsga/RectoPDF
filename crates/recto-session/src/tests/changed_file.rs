@@ -61,7 +61,7 @@ impl Bed {
             pages: Rc::clone(&pages),
             replace_with: Rc::clone(&replace_with),
         });
-        s.set_journaling(true);
+        s.journals_mut().set_journaling(true);
         let a = s.open(&dir.join("a.pdf")).unwrap();
         let b = s.open(&dir.join("b.pdf")).unwrap();
         s.tap(a).unwrap();
@@ -293,7 +293,7 @@ fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_fil
     bed.s.tap(a).unwrap();
     assert_eq!(bed.s.tabs().own_stamp(a), Some(made_on), "the edits' version is kept");
     assert_eq!(bed.s.tier(a), Tier::Hot, "the other version's contents are held");
-    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    bed.s.tabs.tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
     assert_known_not_to_fit(&bed, a, "under history's notice");
     bed.s.tap(b).unwrap();
     assert_eq!(bed.s.tier(a), Tier::Warm);
@@ -375,7 +375,7 @@ fn no_notice_over_edits_that_dont_fit_changes_what_is_allowed() {
         let fit = bed.s.notices().fit(a);
         assert!(!fit.fits(), "{what}");
         for notice in notices.clone() {
-            bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(notice.clone());
+            bed.s.tabs.tab_mut(a).unwrap().file.set_notice(notice.clone());
             assert_eq!(bed.s.notices().fit(a), fit, "{what}, under {notice:?}");
             assert!(!bed.s.page_source(a, 2).unwrap().is_current(), "{what}, under {notice:?}");
             assert!(bed.s.sleep_facts(a).is_none(), "{what}, under {notice:?}");
@@ -451,7 +451,7 @@ fn a_second_change_under_edits_that_dont_fit_is_news_and_a_third_look_isnt() {
         bed.s.forget_read(a);
         bed.make_cold(a, b);
         bed.s.tap(a).unwrap();
-        bed.s.tabs_mut().tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
+        bed.s.tabs.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
         assert!(!bed.s.apply_file_status(a, look(&bed)), "{what}: v2 again is nothing new");
         assert!(bed.s.tabs().tab(a).unwrap().folds.is_some(), "{what}: so its fold stays");
         replace_file(&bed.path(), b"v3, saved by another app again, longer");

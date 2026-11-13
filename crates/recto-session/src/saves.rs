@@ -8,7 +8,7 @@ pub(crate) const MAX_ABANDONED_SAVES: usize = 64;
 
 /// Tabs being saved, and what saves lately moved their tabs on from. What's public here only reads; a save begins and ends with the session, as it goes
 /// with the tab's list and file.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Saves {
     /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
     saving: Vec<TabId>,
@@ -23,6 +23,16 @@ pub struct Saves {
 }
 
 impl Saves {
+    /// No saves. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            saving: Vec::new(),
+            saved_over: Vec::new(),
+            abandoned: Vec::new(),
+            beyond: false,
+        }
+    }
+
     /// A restore: saves under way belong to the session it replaces, and what was remembered of saves is about its tabs.
     pub(crate) fn restored(&mut self) {
         for id in std::mem::take(&mut self.saving) {

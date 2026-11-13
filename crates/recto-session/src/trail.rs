@@ -156,7 +156,7 @@ impl<L: DocLoader> Session<L> {
     /// far down it the page view said in the newest read taken in. A read from before such a jump is about where the view was before it, and on the same page
     /// would mark the wrong place down it: Back straight after a jump on the page showing kept the old place for Forward, and so did Back whose read of the
     /// views was taken in after the session thread's look sent the jump, the read having been made before the send. Which read is newer, and whether it came
-    /// after a send, goes by the place clock ([`Self::view_told_of`], [`Self::jump_sent`]): the newer read wins, whoever took it in.
+    /// after a send, goes by the place clock ([`Self::view_told_of`], [`PartMut::jump_sent`](crate::PartMut::jump_sent)): the newer read wins, whoever took it in.
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tabs.tab(id)?;
         // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
