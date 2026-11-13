@@ -3,7 +3,7 @@
 //! Every word and rule's here, and the host only draws. What it needs of the app, it asks through [`Host`], which is all a test needs to stand in for.
 
 use crate::fetch::FetchError;
-use crate::plan::{Files, Outcome, OutcomeKind, Plan, TestLaunch, beside_app, helper_alive, log, new_app_in, previous_app_in};
+use crate::plan::{Files, Plan, TestLaunch, beside_app, helper_alive, log, new_app_in, previous_app_in};
 use crate::rules::{self, AutoLook, AutoStep, Latest, is_newer};
 use crate::saved::{LastUpdate, Probation, Saved};
 use crate::source::{Mode, Source};
@@ -23,10 +23,13 @@ mod menu;
 mod now;
 mod said;
 pub mod seams;
+mod settle;
+mod started;
+use started::say_started;
 mod words;
 use flow::Going;
 pub use now::UpdateAction;
-pub use said::{Said, SaidKind};
+pub use said::{InstallRefused, Said, SaidKind};
 use seams::duration_ms;
 pub use seams::{Releases, Seams, WallClock};
 
@@ -209,29 +212,6 @@ pub struct MenuItem {
     pub enabled: bool,
 }
 
-/// What a command's asked to install came to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InstallRefused {
-    NotInThisBuild,
-    NothingOnOffer,
-    Underway,
-    /// Another copy of the app has the state, and it's the one that can.
-    AnotherCopy,
-    /// A development build handed over, and *Allow development builds* is off.
-    DevBuildsOff,
-    /// What was handed over isn't a `RectoPDF-<version>.zip`.
-    NotABuild,
-    /// It's the version that's running.
-    SameVersion,
-    /// This copy is signed by the team, and takes no build signed ad hoc: the first goes in by `tools/dev-build.sh --first-install --replace-release`.
-    TeamSignedCopy,
-    /// It was checked, and it isn't one to install: the code and our own words.
-    Refused {
-        code: &'static str,
-        why: String,
-    },
-}
-
 struct St {
     status: Status,
     saved: Saved,
@@ -407,8 +387,14 @@ impl Updater {
         {
             crate::plan::move_to_new_names(&beside);
         }
+        // A second copy settles nothing (the plan, the outcome and `updates.json` are the first copy's, or the next launch's that keeps the record), but reads
+        // whether an update opened it, so that a new version that came up and drew a page as a second copy still tells the installer it started
+        // ([`Self::first_frame`]), and isn't sent back for not keeping the record.
         let settled = if second_copy {
-            Settled::default()
+            Settled {
+                arrived: Plan::read(&self.files.plan()).filter(|plan| plan.to == current),
+                ..Settled::default()
+            }
         } else {
             self.settle_last_install(&mut saved, &current, &app, now)
         };
@@ -458,7 +444,7 @@ impl Updater {
             st.second_copy = second_copy;
             st.status = status;
             st.notice = settled.notice;
-            st.reopened_by_update = settled.arrived.is_some() || settled.reopened;
+            st.reopened_by_update = !second_copy && (settled.arrived.is_some() || settled.reopened);
             st.fall_back = settled.fall_back;
             st.arrived = settled.arrived;
             if may_replace && offered.is_some() {
@@ -558,128 +544,6 @@ impl Updater {
         }
         drop(st);
         self.log("what the version that didn't work left couldn't be read, so the record from before the update was put back");
-    }
-
-    /// What the last install left behind. The installer tidies up when it finishes: this is for when it didn't get to.
-    fn settle_last_install(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> Settled {
-        let mut settled = Settled::default();
-        let Some(beside) = beside_app(app) else { return settled };
-        if let Some(outcome) = Outcome::read(&self.files.outcome()) {
-            let _ = std::fs::remove_file(self.files.outcome());
-            let _ = std::fs::remove_file(self.files.plan());
-            let _ = std::fs::remove_file(self.files.helper_pid());
-            // Gone back with it put back, the copy's for nothing. Stuck on a version that didn't come up, it's the state before it, and stays. Gone back with the record as it was, it's what to fall back on if the previous version can't read that, and it goes after its week as ever.
-            let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
-            if kept_ending {
-                settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
-            } else if outcome.kind != OutcomeKind::CouldntGoBack {
-                let _ = std::fs::remove_dir_all(self.files.before());
-            }
-            settled.reopened = match outcome.kind {
-                OutcomeKind::WentBack => true,
-                OutcomeKind::NotInstalled => installer_reopened(&outcome.why),
-                OutcomeKind::CouldntGoBack => false,
-            };
-            settled.changed = true;
-            settled.plan_gone = true;
-            match outcome.kind {
-                OutcomeKind::WentBack => {
-                    saved.note_failed_version(&outcome.to);
-                    saved.install_failures = 0;
-                    settled.status = Some(Status::WentBack {
-                        version: outcome.to.clone(),
-                        back_on: current.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: went_back_words(&outcome.why, &outcome.to, current),
-                        fades: true,
-                    });
-                    self.log(&format!("{} didn't work ({}), and {current} came back", outcome.to, clean_code(&outcome.why)));
-                }
-                OutcomeKind::CouldntGoBack => {
-                    saved.note_failed_version(&outcome.to);
-                    let why = "it didn't come up, and there was no earlier version to go back to";
-                    settled.status = Some(Status::Failed {
-                        version: outcome.to.clone(),
-                        why: why.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: format!("{APP_NAME} {} is what's installed, and {why}.", outcome.to),
-                        fades: true,
-                    });
-                    self.log(&format!("{} didn't come up, and couldn't go back: {}", outcome.to, clean_code(&outcome.why)));
-                }
-                OutcomeKind::NotInstalled => {
-                    saved.install_failures = saved.install_failures.saturating_add(1);
-                    saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
-                    saved.last_install_ms = Some(now);
-                    let (why, lasting) = why_not_installed(&outcome.why);
-                    // Whatever it was, the app went away and came back for nothing, and the user may have seen that. Say so, and don't do it for ever.
-                    if lasting || saved.quits_for_nothing >= QUITS_FOR_NOTHING {
-                        saved.note_failed_version(&outcome.to);
-                    }
-                    settled.status = Some(Status::Failed {
-                        version: outcome.to.clone(),
-                        why: why.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: format!("Couldn't update to {}: {why}. {APP_NAME} is unchanged.", outcome.to),
-                        fades: true,
-                    });
-                    self.log(&format!("{} wasn't installed: {}", outcome.to, clean_code(&outcome.why)));
-                }
-            }
-            return settled;
-        }
-        let Some(plan) = Plan::read(&self.files.plan()) else {
-            settled.plan_gone = true;
-            return settled;
-        };
-        settled.changed = true;
-        let alive = helper_alive(&self.files);
-        if plan.to == current {
-            settled.status = Some(Status::Updated(plan.to.clone()));
-            settled.notice = Some(Notice {
-                text: builds::arrived_words(&plan),
-                fades: true,
-            });
-            saved.offered = None;
-            saved.install_failures = 0;
-            saved.quits_for_nothing = 0;
-            saved.failures = 0;
-            if !alive {
-                self.tidy_after_swap(&plan, &beside);
-            }
-            settled.arrived = Some(plan);
-        } else if alive {
-            // Reopened by someone in the moment it was gone, with the installer still about. It stands down when it sees this, and there's nothing here to wait for: this copy goes on as normal, and the next launch hears how it ended.
-            self.log("the app was reopened while an installer was at work");
-        } else {
-            // The installer was stopped before it swapped, so this is the old app, and there's no harm done.
-            saved.install_failures = saved.install_failures.saturating_add(1);
-            saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
-            saved.last_install_ms = Some(now);
-            if saved.quits_for_nothing >= QUITS_FOR_NOTHING {
-                saved.note_failed_version(&plan.to);
-            }
-            settled.status = Some(Status::Failed {
-                version: plan.to.clone(),
-                why: "the installer stopped before it finished".to_owned(),
-            });
-            settled.notice = Some(Notice {
-                text: format!(
-                    "Couldn't update to {}: the installer stopped before it finished. {APP_NAME} is unchanged.",
-                    plan.to
-                ),
-                fades: true,
-            });
-            self.log(&format!("the install of {} stopped before it finished, and {current} is unchanged", plan.to));
-            let _ = std::fs::remove_file(self.files.plan());
-            let _ = std::fs::remove_file(self.files.helper_pid());
-            let _ = std::fs::remove_dir_all(self.files.before());
-            stage::clear_staged(app);
-        }
-        settled
     }
 
     /// The new version's here and the installer isn't: moves the old app to where it's kept, if it stopped short of that, and clears up.
@@ -858,19 +722,28 @@ impl Updater {
             let kept = previous_app_in(&beside).is_dir();
             (version, arrived.clone(), new_here && (arrived.is_some() || kept), st.second_copy, kept)
         };
-        if second_copy {
+        // A second copy an update didn't open leaves it all to the first. One an update opened says it started, if it draws, and nothing more: see below.
+        if second_copy && arrived.is_none() {
             return;
         }
-        if to_prove {
+        if to_prove || second_copy {
             self.ready_folder();
         }
-        if to_prove && !self.host.can_draw() {
+        if (to_prove || second_copy) && !self.host.can_draw() {
             self.log(&format!("{version} can't draw a page"));
             // Without the word from here the installer would find out only by waiting. With no installer, the launches that don't come up are what count.
             if arrived.is_some() {
                 self.ready_folder();
                 let _ = local::write_private_file(&self.files.launch_failed(), version.as_bytes());
             }
+            return;
+        }
+        // **A new version an update opened, up and drawing, as a second copy** (another RectoPDF keeps the record): the installer's told it started, so a good
+        // update isn't sent back under a person's hands, and with no tab count, as it read no record and so can't have misread one (`plan::misread` passes a
+        // count it isn't given). Nothing else: what's proven, its watch for early ends and the last update are written by the next launch that keeps the record.
+        if second_copy {
+            started::say_started_as_a_second_copy(&self.files, &version, shown_at_ms);
+            self.log(&format!("{version} came up as a second copy, after an update: another copy keeps the record"));
             return;
         }
         let mut watched = false;
@@ -904,9 +777,7 @@ impl Updater {
             changed
         };
         if let Some(plan) = arrived {
-            self.ready_folder();
-            let line = crate::plan::launch_ok_line(&version, std::process::id(), shown_at_ms, self.host.tabs_restored());
-            let _ = local::write_private_file(&self.files.launch_ok(), line.as_bytes());
+            say_started(&self.files, &version, shown_at_ms, self.host.tabs_restored());
             self.log(&format!(
                 "updated from {} to {}: {} ms from quit to first frame",
                 plan.from,
@@ -1385,8 +1256,10 @@ fn clean_code(code: &str) -> String {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    mod second_copy;
     use super::*;
     use crate::fetch::tests::{Answer, Server};
+    use crate::plan::{Outcome, OutcomeKind};
     use crate::stage::tests::{fake_app, fake_app_at, latest_json, temp_dir, zip_of};
     use std::sync::atomic::AtomicU32;
     use std::time::Instant;
@@ -2294,6 +2167,86 @@ mod tests {
         second.first_frame(10);
         assert_eq!(std::fs::read(root.join("updates.json")).unwrap(), before, "it writes nothing of the first's");
         assert_eq!(second.menu_item().title, "Check for Updates…");
+    }
+
+    /// Failure (the coordinator's decision, 2026-11-13: an update is never rolled back for a launch that came up as a second copy): a new version an update opened
+    /// comes up and draws while another copy keeps the record, writes no launch-ok, and the installer waits out its two minutes, stops it under the person's
+    /// hands and puts the old version back; or, told, it settles the install or writes `updates.json` as if it kept the record; or a second copy no update opened
+    /// tells an installer anything. Opened by an update: launch-ok without a tab count, which the installer reads as started; can't draw: launch-failed, as
+    /// any new version; nothing else written. Not opened by one: nothing.
+    #[test]
+    fn a_second_copy_an_update_opened_tells_the_installer_it_started_and_nothing_more() {
+        for (opened_by_update, draws) in [(true, true), (true, false), (false, true)] {
+            let bed = Bed::new("second-arrived");
+            let root = bed.dir.join("state");
+            let files = Files::in_state(&root);
+            local::ensure_private_dir(&files.work).unwrap();
+            let plan = Plan {
+                id: "1-1".into(),
+                cdhash: "a".repeat(40),
+                team_required: false,
+                any_version: false,
+                development_build: false,
+                team_signed: false,
+                from: "0.1.0".into(),
+                to: if opened_by_update { "0.2.0" } else { "0.3.0" }.into(),
+                pid: 1,
+                app: bed.app.clone(),
+                beside: beside_app(&bed.app).unwrap(),
+                root: root.clone(),
+                quit_at_ms: 5,
+                background: false,
+                quit_limit_ms: 1,
+                start_limit_ms: 1,
+                handed_off_tabs: Some(4),
+                open: Vec::new(),
+                keep_record: false,
+                test: None,
+            };
+            plan.write(&files.plan()).unwrap();
+            let before = std::fs::read(root.join("updates.json")).ok();
+            let plan_before = std::fs::read(files.plan()).unwrap();
+            bed.fake.second_copy.store(true, Ordering::SeqCst);
+            bed.fake.cant_draw.store(!draws, Ordering::SeqCst);
+            let second = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            second.launched(Facts {
+                version: "0.2.0".into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
+            assert!(
+                !second.reopened_by_update(),
+                "a second copy isn't taken as reopened by the update it didn't settle"
+            );
+            second.first_frame(10);
+            let said = std::fs::read_to_string(files.launch_ok()).ok();
+            match (opened_by_update, draws) {
+                (true, true) => {
+                    let said = said.expect("launch-ok");
+                    assert_eq!(crate::plan::read_launch_ok(&said), Some(("0.2.0", None)), "{said}");
+                    assert!(!crate::plan::misread(plan.handed_off_tabs, None), "never a misread to the installer");
+                }
+                (true, false) => {
+                    assert_eq!(said, None);
+                    assert!(files.launch_failed().exists(), "can't draw: said, as any new version");
+                }
+                (false, _) => {
+                    assert_eq!(said, None, "not opened by an update: nothing");
+                    assert!(!files.launch_failed().exists());
+                }
+            }
+            assert_eq!(
+                std::fs::read(root.join("updates.json")).ok(),
+                before,
+                "{opened_by_update} {draws}: nothing of updates.json"
+            );
+            assert_eq!(
+                std::fs::read(files.plan()).unwrap(),
+                plan_before,
+                "{opened_by_update} {draws}: the plan as it was"
+            );
+            assert!(!files.outcome().exists());
+        }
     }
 
     /// Failure: an app that can't be replaced quits and reopens for ever, a day apart, saying nothing, which the review proved. It's told once it's back, and that's held against the version. Anything else that quit for nothing gets three goes, and then the same.

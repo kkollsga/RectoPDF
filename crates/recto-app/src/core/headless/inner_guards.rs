@@ -35,11 +35,13 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 }
 
 /// The budgets, in bytes: the sizes on 2026-11-13, before the moves, with Inner's 16 bytes more from main's merge that evening (`Panes`' plan keeping when
-/// its zoom was asked, R3.6a), and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it draws (`find::Field`, R3.7 S2's fix:
-/// Find announced with nothing changed).
+/// its zoom was asked, R3.6a); Lifecycle's 48 more from the record's-lock retry: the launch held back from the updater (`LaunchFacts`' `held` and the
+/// first frame's time beside the facts), the window `touched` since the launch, and the keeping state the life holds (`lifecycle::keeping`), one of each per
+/// app, not per tab or page view; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it draws (`find::Field`, R3.7 S2's
+/// fix: Find announced with nothing changed).
 const BUDGETS: [(&str, usize); 7] = [
     ("Inner", 4888),
-    ("Lifecycle", 296),
+    ("Lifecycle", 344),
     ("Serving", 1064),
     ("Window", 464),
     ("Tools", 1448),
@@ -183,7 +185,7 @@ Lifecycle.pub(crate) others_looking: AtomicU32
 Lifecycle.pub(crate) persons_running: AtomicU32
 Lifecycle.pub(crate) qa_hold_reads: AtomicBool
 Lifecycle.pub(crate) reads_running: AtomicU32
-Lifecycle.pub(crate) update_facts: Mutex<Option<recto_update::updater::Facts>>
+Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>

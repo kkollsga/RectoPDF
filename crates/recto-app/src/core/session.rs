@@ -9,7 +9,8 @@ pub fn apply_restored(
     loaded: Loaded,
     synced: &mut Synced,
     reads: &mut FileReads,
-    deferred: &mut Vec<Box<crate::queue::PersonCommand>>,
+    deferred: &mut Vec<CoreCall>,
+    appearance_then: Option<record::Appearance>,
 ) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
@@ -34,6 +35,9 @@ pub fn apply_restored(
     let holds_the_record = inner.saver.store.holds_the_record();
     host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
+    let other_instance = matches!(loaded, Loaded::OtherInstance);
+    // A late keep's restore: the window keeps its own until it's made again from what was saved (`keeping::window_as_it_is`).
+    let real_window = inner.life.keeping().restoring().then(|| lock(&inner.window.app).clone());
     match loaded {
         Loaded::Restored(restored) => {
             let restored = *restored;
@@ -59,7 +63,13 @@ pub fn apply_restored(
                     if let Some(window) = app.window.as_mut() {
                         window.minimised = updates::out_of_sight_when_restored(window.minimised, minimised_now);
                     }
-                    app.appearance = saved.appearance;
+                    // A window that's up and taking input isn't made again from a state that comes now, so what it shows stays, its appearance with it: the host
+                    // applies the state's appearance as it hears it (`restoredLate`), and the record says what the window shows. A late keep's window goes by
+                    // `keeping::window_as_it_is`.
+                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.takes_input();
+                    if !shown_as_it_is {
+                        app.appearance = saved.appearance;
+                    }
                     app.focus = saved.focus;
                     let active = restored.record.active.map(TabId);
                     app.contents_resume = active.zip(saved.contents_scroll);
@@ -81,6 +91,9 @@ pub fn apply_restored(
                         };
                         app.from_state = Some(Box::new(state));
                     }
+                    if let Some(real) = &real_window {
+                        keeping::window_as_it_is(&mut app, real, appearance_then);
+                    }
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
@@ -94,6 +107,10 @@ pub fn apply_restored(
         }
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
+    }
+    let (say_notice, remake) = keeping::taken_in(inner, other_instance, first_time, reads);
+    if !say_notice {
+        notice = None;
     }
     if let Some(words) = notice {
         *lock(&host.notice) = Some(words.to_string());
@@ -111,15 +128,58 @@ pub fn apply_restored(
         look_at_other_files(inner, id);
     }
     inner.saver.start();
-    let ready = inner.life.step(crate::lifecycle::Event::StateRead);
-    if !first_time {
-        return ready;
+    let ready = inner.life.step(crate::lifecycle::Event::StateRead).or(remake);
+    if first_time {
+        start_serving(inner);
     }
-    start_serving(inner);
-    for run in deferred.drain(..) {
-        inner.core.push(CoreCall::Run(run));
-    }
+    // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
+    release(inner, deferred);
     ready
+}
+
+/// What the person did while a late keep's restore was read, let go once it's no longer restoring without the restore coming in (its patience ran out, or its
+/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that.
+fn release_held(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
+    if deferred.is_empty() || !inner.life.state_read() || inner.life.keeping().restoring() {
+        return;
+    }
+    release(inner, deferred);
+}
+
+/// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again.
+fn release(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
+    for call in deferred.drain(..) {
+        match call {
+            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => person::submit(inner, run.command),
+            call => inner.core.push(call),
+        }
+    }
+}
+
+/// **Whether a call waits, and holds it if it does:** an open, for the launch's state, as what's opened goes over what comes back; and anything the person
+/// does, for a late keep's restore, so what they ask for last lands on the restored session (a command, Find's step on the page, and a command that runs on a
+/// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread.
+fn hold(inner: &Arc<Inner>, call: CoreCall, deferred: &mut Vec<CoreCall>) -> Option<CoreCall> {
+    if waits(&call, inner.life.state_read(), inner.life.keeping().restoring()) {
+        deferred.push(call);
+        return None;
+    }
+    match call {
+        CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => {
+            person::submit(inner, run.command);
+            None
+        }
+        call => Some(call),
+    }
+}
+
+/// Whether a call waits now ([`hold`]), by whether the launch's state has been read and whether a late keep's saved session is being read.
+fn waits(call: &CoreCall, state_read: bool, restoring: bool) -> bool {
+    match call {
+        CoreCall::Run(run) => (!state_read && opening::is_open(&run.command)) || restoring,
+        CoreCall::Find(find) => find.is_user_action() && restoring,
+        _ => false,
+    }
 }
 
 /// The two small files that held the paper and the agent icon before there was a record. Read once, and they go when the record's written.
@@ -221,14 +281,19 @@ pub fn start_serving(inner: &Arc<Inner>) {
 pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
-    let mut deferred: Vec<Box<crate::queue::PersonCommand>> = Vec::new();
+    let mut deferred: Vec<CoreCall> = Vec::new();
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
-            [inner.saver.wait_for_due(), inner.sleeper.wait_for_due(), inner.life.due()]
-                .into_iter()
-                .flatten()
-                .min()
+            [
+                inner.saver.wait_for_due(),
+                inner.sleeper.wait_for_due(),
+                inner.life.due(),
+                inner.life.keeping_due(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
         }) else {
             if inner.core.has_ended() {
                 return;
@@ -237,6 +302,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
+            keeping::when_due(inner, &reads);
+            release_held(inner, &mut deferred);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
@@ -249,6 +316,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             continue;
         };
+        let Some(call) = hold(inner, call, &mut deferred) else { continue };
         let mut events = Vec::new();
         let host = &inner.host;
         match call {
@@ -256,7 +324,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::LookAtShown => look_at_shown(inner),
             CoreCall::Unlocked(ask, loaded, stamp, password) => unlocked(inner, ask, loaded, stamp, password, &mut events),
             CoreCall::Restored(loaded) => {
-                let ready = apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
+                let ready = apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred, None);
                 // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
                 after_call(inner, &mut synced, &mut reads, events);
                 // The first time only: the host's told, late or not.
@@ -264,12 +332,19 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 recto_platform::slow::pause(recto_platform::slow::Seam::Session);
                 continue;
             }
-            CoreCall::RestorePatienceOver => restore_patience_over(inner),
-            // An open waits for the state to be read, as what's opened goes over what comes back.
-            CoreCall::Run(run) if !inner.life.state_read() && opening::is_open(&run.command) => {
-                deferred.push(run);
+            // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
+            CoreCall::LateRead(read) => {
+                let Some(loaded) = keeping::late_read(inner, read) else {
+                    release_held(inner, &mut deferred);
+                    after_call(inner, &mut synced, &mut reads, events);
+                    continue;
+                };
+                let ready = apply_restored(inner, loaded.0, &mut synced, &mut reads, &mut deferred, Some(loaded.1));
+                after_call(inner, &mut synced, &mut reads, events);
+                inner.carry_out(ready);
                 continue;
             }
+            CoreCall::RestorePatienceOver => restore_patience_over(inner),
             CoreCall::Read(read) => {
                 // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
                 if let Some(run) = reads.finished(inner, *read) {
@@ -291,6 +366,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
+            CoreCall::TryBack(back) => keeping::try_back(inner, &reads, back),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
@@ -316,6 +392,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
+    keeping::look_after_call(inner, reads);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);
@@ -522,5 +599,36 @@ pub fn restore_patience_over(inner: &Arc<Inner>) {
     // A tab's file not answering: on to what's on the record. The page says it isn't answering.
     if lock(&inner.life.holding_tab).take().is_some() {
         host.session.with_session(|session| session.wake_active());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review, 2026-11-13, S5): while a late keep's saved session is read, Find's step on the page (an agent's `find`, shown as the person's) wasn't
+    /// held as the person's commands are, so it landed on the window before the restore, and the restore replaced it; or something that isn't the person's
+    /// doing (the Finder's news, a read coming in) is held and waits on the restore. What the person does waits while it restores, and only that.
+    #[test]
+    fn what_the_person_does_waits_for_a_late_keeps_restore_and_nothing_else() {
+        let tab = TabId(1);
+        let hit = recto_agent::find::Hit {
+            page: 0,
+            start: 0,
+            end: 1,
+            before: "".into(),
+            matched: "".into(),
+            after: "".into(),
+            hidden: false,
+        };
+        let step = CoreCall::Find(crate::find::FindCall::Effect(recto_agent::Effect::Reveal { tab, hit }));
+        let run = CoreCall::Run(crate::queue::PersonCommand::input(
+            recto_agent::parse(r#"{"cmd":"view","paper":"dark"}"#).expect("a command"),
+        ));
+        let news = CoreCall::Find(crate::find::FindCall::News);
+        for (call, while_restoring) in [(&step, true), (&run, true), (&news, false), (&CoreCall::Reconcile, false)] {
+            assert_eq!(waits(call, true, true), while_restoring, "{call:?} while restoring");
+            assert!(!waits(call, true, false), "{call:?} once it isn't");
+        }
     }
 }
