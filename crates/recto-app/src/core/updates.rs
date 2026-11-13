@@ -156,9 +156,12 @@ impl Host for Hooks {
     }
 
     /// Whether this copy keeps the record as the updater's told of the launch ([`tell_launch`]: after the launch's one wait for the lock, or held back until
-    /// whether it's kept has settled): never asking for the lock here, so a launch told it's a second copy can't take it after.
+    /// whether it's kept has settled): it holds the lock and claims the record ([`crate::lifecycle::keeping::Keeping::claims`]), so a lock a try or a late read
+    /// still holds once keeping's settled not to (the third read's 4a and 4c) isn't taken as keeping it. Never asking for the lock here, so a launch told it's a
+    /// second copy can't take it after.
     fn keeps_the_record(&self) -> bool {
-        self.inner().is_some_and(|inner| inner.saver.store.holds_the_record())
+        self.inner()
+            .is_some_and(|inner| inner.life.keeping().claims() && inner.saver.store.holds_the_record())
     }
 
     /// A build goes in only while agent access is Full, as it was when an agent handed it over: read from the level's file now.

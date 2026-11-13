@@ -207,6 +207,7 @@ impl Life {
             // Taken again, unless a quit that's writing or going holds it.
             Event::HandOffUndone => {
                 self.hand_off = HandOff::Idle;
+                let _ = self.keeping.step(keeping::Event::Resumed, now_ms);
                 (!self.frozen()).then_some(Out::Freeze(false))
             }
             Event::QuitAsked => {
@@ -226,13 +227,14 @@ impl Life {
             // Only a question asked has an answer: a Stay that comes with none changes nothing.
             Event::QuitStayed if self.quit == Quit::Asking => {
                 self.quit = Quit::No;
+                let _ = self.keeping.step(keeping::Event::Resumed, now_ms);
                 Some(Out::QuitStayed)
             }
             Event::QuitStayed => None,
             // Kept late: the window may be made again from it, once ([`Self::may_remake_window`]); the caller tells the host as at a launch, and the updater.
             Event::Keeping(event) => {
                 let out = self.keeping.step(event, now_ms);
-                if out == Some(keeping::Out::Kept { remake: true }) {
+                if out.and_then(|out| out.settle) == Some(keeping::Settle::Kept { remake: true }) {
                     self.late_kept = true;
                 }
                 out.map(Out::Keeping)

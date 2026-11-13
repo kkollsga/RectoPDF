@@ -584,10 +584,19 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
     for touched in [false, true] {
         let mut life = trying_for_the_lock();
         assert!(!life.may_remake_window(500, false, false), "nothing to make while it tries");
-        assert_eq!(life.step(Event::Keeping(keeping::Event::Asking), 3_000), Some(Out::Keeping(keeping::Out::Ask)));
         assert_eq!(
-            life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000),
-            Some(Out::Keeping(keeping::Out::Restore))
+            life.step(Event::Keeping(keeping::Event::Asking), 3_000),
+            Some(Out::Keeping(keeping::Out {
+                lock: Some(keeping::Lock::Ask),
+                settle: None
+            }))
+        );
+        assert_eq!(
+            life.step(Event::Keeping(keeping::Event::Tried { got: true, busy: false }), 3_000),
+            Some(Out::Keeping(keeping::Out {
+                lock: Some(keeping::Lock::Restore),
+                settle: None
+            }))
         );
         assert!(!life.may_remake_window(3_000, false, false), "nor while the saved session's read");
         assert_eq!(
@@ -599,7 +608,10 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
                 }),
                 3_050
             ),
-            Some(Out::Keeping(keeping::Out::Kept { remake: true })),
+            Some(Out::Keeping(keeping::Out {
+                lock: None,
+                settle: Some(keeping::Settle::Kept { remake: true })
+            })),
             "kept, the window to be made again from it: the host's told, as at a launch"
         );
         assert_eq!(life.may_remake_window(3_060, touched, false), !touched, "touched {touched}");
@@ -614,7 +626,7 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
 fn a_window_with_a_sheet_up_is_not_made_again() {
     let mut life = trying_for_the_lock();
     let _ = life.step(Event::Keeping(keeping::Event::Asking), 3_000);
-    let _ = life.step(Event::Keeping(keeping::Event::Tried { got: true }), 3_000);
+    let _ = life.step(Event::Keeping(keeping::Event::Tried { got: true, busy: false }), 3_000);
     let _ = life.step(
         Event::Keeping(keeping::Event::Read {
             keeps: true,
@@ -650,7 +662,10 @@ fn the_ordinary_late_state_is_made_into_the_window_as_before() {
             }),
             0
         ),
-        Some(Out::Keeping(keeping::Out::Kept { remake: false }))
+        Some(Out::Keeping(keeping::Out {
+            lock: None,
+            settle: Some(keeping::Settle::Kept { remake: false })
+        }))
     );
     let _ = life.step(
         Event::PatienceOver {
@@ -674,9 +689,35 @@ fn a_quit_or_a_hand_off_stops_trying_for_the_lock() {
     for event in [Event::QuitAsked, Event::HandOffWriting] {
         let mut life = trying_for_the_lock();
         let _ = life.step(event, 400);
-        assert_eq!(life.keeping(), keeping::Keeping::Stopped, "{event:?}");
+        assert!(matches!(life.keeping(), keeping::Keeping::Stopped { .. }), "{event:?}");
         assert_eq!(life.keeping_due(1_000), None, "{event:?}: no more tries");
     }
+}
+
+/// Failure (third read, 2026-11-13): a hand-off begun while it tries (from QA) is undone, and the trying stays stopped for good: the copy never settles, never
+/// says it won't be remembered, writes nothing, and the updater is never told for the run. Undone, the trying is taken up again, the next try a second on, and
+/// it settles as it would have: with the lock, or said when the tries run out.
+#[test]
+fn a_hand_off_undone_takes_the_trying_up_again() {
+    let mut life = trying_for_the_lock();
+    let _ = life.step(Event::HandOffWriting, 400);
+    assert!(!life.keeping().trying(), "stopped while the hand-off writes");
+    let _ = life.step(Event::HandOffUndone, 30_000);
+    assert!(life.keeping().trying(), "taken up again: {:?}", life.keeping());
+    assert_eq!(
+        life.keeping_due(30_000),
+        Some(Duration::from_millis(1_000)),
+        "the next try a second on, not a burst"
+    );
+    let mut now = 30_000;
+    let mut settled = None;
+    while let Some(wait) = life.keeping_due(now) {
+        now += u64::try_from(wait.as_millis()).expect("ms");
+        let _ = life.step(Event::Keeping(keeping::Event::Asking), now);
+        settled = life.step(Event::Keeping(keeping::Event::Tried { got: false, busy: false }), now).or(settled);
+    }
+    assert_eq!(life.keeping(), keeping::Keeping::NotKept, "settled when the tries ran out");
+    assert!(settled.is_some(), "and said");
 }
 
 /// Failure (review, 2026-11-13: `record.remade`, which explains a failing launch test, must say what happened): the window went up without the state, and the

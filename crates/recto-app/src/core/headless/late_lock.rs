@@ -15,19 +15,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The words of the notice a window that won't be remembered shows.
-fn not_kept_words() -> Option<String> {
+pub(super) fn not_kept_words() -> Option<String> {
     notices::words(notices::OTHER_INSTANCE).map(str::to_owned)
 }
 
 /// The copy before this one, still holding the record: a store of the test's on the disk.
-fn the_copy_before(disk: &Disk) -> RecordStore {
+pub(super) fn the_copy_before(disk: &Disk) -> RecordStore {
     let store = RecordStore::open(disk.paths(), Flavor::App);
     assert!(store.holds_the_record(), "the copy before keeps the record");
     store
 }
 
 /// How many tries it has made, while it's trying.
-fn tries(app: &HeadlessApp) -> Option<u32> {
+pub(super) fn tries(app: &HeadlessApp) -> Option<u32> {
     match app.core().life.keeping() {
         Keeping::Trying { tries, .. } => Some(tries),
         _ => None,
@@ -35,7 +35,7 @@ fn tries(app: &HeadlessApp) -> Option<u32> {
 }
 
 /// The clock moved on to the next try, and that try made (and failed).
-fn next_try_fails(app: &HeadlessApp) {
+pub(super) fn next_try_fails(app: &HeadlessApp) {
     let before = tries(app).expect("trying");
     app.advance(TRY_EVERY_MS);
     app.wait_until("the next try", || tries(app) != Some(before));
@@ -43,7 +43,7 @@ fn next_try_fails(app: &HeadlessApp) {
 }
 
 /// Every file of the record's folder, by its bytes: what a window that doesn't keep the record must leave as it is.
-fn record_folder(disk: &Disk) -> BTreeMap<PathBuf, Vec<u8>> {
+pub(super) fn record_folder(disk: &Disk) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(folder: &Path, found: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
             if entry.path().is_dir() {
@@ -86,7 +86,7 @@ fn window_x(app: &HeadlessApp) -> Option<f64> {
 
 /// A session of two tabs, the first with a page turned and not saved, its window at [`SAVED_X`], quit as the copy before: its record and the first tab's journal
 /// on disk.
-fn a_saved_session() -> Disk {
+pub(super) fn a_saved_session() -> Disk {
     let app = HeadlessApp::start();
     let (a, b) = (app.disk().pdf("a.pdf", 3), app.disk().pdf("b.pdf", 3));
     app.open(&a);
@@ -100,7 +100,7 @@ fn a_saved_session() -> Disk {
 }
 
 /// The page, counted from 0, of the tab on the file named.
-fn page_of(app: &HeadlessApp, file: &str) -> u64 {
+pub(super) fn page_of(app: &HeadlessApp, file: &str) -> u64 {
     let session = app.session_json();
     let tab = session["tabs"]
         .as_array()
@@ -111,7 +111,7 @@ fn page_of(app: &HeadlessApp, file: &str) -> u64 {
         .unwrap_or_else(|| panic!("no tab on {file}: {session}"))
 }
 
-fn tab_names(app: &HeadlessApp) -> Vec<String> {
+pub(super) fn tab_names(app: &HeadlessApp) -> Vec<String> {
     app.tabs().into_iter().map(|row| row.text).collect()
 }
 
@@ -264,7 +264,7 @@ fn a_window_that_doesnt_keep_the_record_never_says_its_state_couldnt_be_saved() 
 
 /// An update handed off and installed, with the old copy still holding the record: the disk the new version launches on, the plan the installer went by, and
 /// the old copy on its way out.
-fn handed_off_with_the_old_copy_holding() -> (Disk, crate::testkit::update_bed::UpdateBed, recto_update::plan::Plan, RecordStore) {
+pub(super) fn handed_off_with_the_old_copy_holding() -> (Disk, crate::testkit::update_bed::UpdateBed, recto_update::plan::Plan, RecordStore) {
     use crate::testkit::update_bed::{Installed, NEW, OLD, UpdateBed};
     let disk = Disk::new();
     disk.install_app(OLD);
@@ -285,7 +285,7 @@ fn handed_off_with_the_old_copy_holding() -> (Disk, crate::testkit::update_bed::
 
 /// What the installer would make of the new version now, as `new_app_started` reads it: up (the version it was going to, with the tabs it was handed), or why
 /// not yet.
-fn installer_sees(disk: &Disk, plan: &recto_update::plan::Plan) -> Result<(), String> {
+pub(super) fn installer_sees(disk: &Disk, plan: &recto_update::plan::Plan) -> Result<(), String> {
     let text = std::fs::read_to_string(disk.update_files().launch_ok()).map_err(|_| "no launch-ok".to_owned())?;
     let (version, tabs) = recto_update::plan::read_launch_ok(&text).ok_or_else(|| format!("unreadable: {text}"))?;
     if version != plan.to {
@@ -418,23 +418,23 @@ fn nothing_of_an_update_begins_while_it_tries() {
 }
 
 /// What the installer was told, as it reads it: the version, and the tab count if one was said.
-fn launch_ok_says(disk: &Disk) -> Option<(String, Option<u32>)> {
+pub(super) fn launch_ok_says(disk: &Disk) -> Option<(String, Option<u32>)> {
     let text = std::fs::read_to_string(disk.update_files().launch_ok()).ok()?;
     recto_update::plan::read_launch_ok(&text).map(|(version, tabs)| (version.to_owned(), tabs))
 }
 
 /// The record's folder by its files' bytes, `updates.json` and the installer's plan.
-type StateFiles = (BTreeMap<PathBuf, Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+pub(super) type StateFiles = (BTreeMap<PathBuf, Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
 
 /// The state folder's files that a second copy must leave as they were: the record's folder, `updates.json` and the installer's plan.
-fn state_but_the_launch_ok(disk: &Disk) -> StateFiles {
+pub(super) fn state_but_the_launch_ok(disk: &Disk) -> StateFiles {
     let files = disk.update_files();
     (record_folder(disk), std::fs::read(&files.saved).ok(), std::fs::read(files.plan()).ok())
 }
 
 /// The new version as a second copy that came up after an update: the notice, `update status` says so, and the installer was told it started, with no tab
 /// count, so it reads it as up and never as a misread.
-fn a_second_copy_that_started(app: &HeadlessApp, plan: &recto_update::plan::Plan) {
+pub(super) fn a_second_copy_that_started(app: &HeadlessApp, plan: &recto_update::plan::Plan) {
     use crate::testkit::update_bed::NEW;
     app.wait_until("the notice", || app.reader().note == not_kept_words());
     app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
@@ -569,7 +569,7 @@ fn a_late_keep_after_a_version_that_kept_ending_falls_back_to_the_record_from_be
 }
 
 /// The saved session as the copy before left it, at the next launch: both tabs, the first one's unsaved turn, and nothing else lost.
-fn comes_back_at_the_next_launch(disk: Disk) {
+pub(super) fn comes_back_at_the_next_launch(disk: Disk) {
     let again = disk.start();
     assert_eq!(tab_names(&again), ["a", "b"], "the saved session at the next launch");
     assert_eq!(
@@ -909,17 +909,18 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
             assert!(tab_names(&app).is_empty(), "the person's open waits for the restore");
             app.advance(crate::lifecycle::keeping::RESTORING_PATIENCE_MS);
         }
-        app.wait_until("the restore over", || app.core().life.keeping() == Keeping::NotKept);
-        app.wait_until("the lock let go", || !app.core().saver.store.holds_the_record());
+        app.wait_until("the restore over", || app.core().life.keeping().not_kept());
         app.settle();
         assert_eq!(app.reader().note, not_kept_words(), "{goes:?}");
         if let ReadGoes::NeverBack = goes {
             assert_eq!(tab_names(&app), ["c"], "the person's open ran on the window as it is");
+            assert!(app.core().saver.store.holds_the_record(), "the lock stays with the read while it's inside");
             app.let_through(Seam::State, 1);
+            app.wait_until("the read's thread out", || app.core().life.keeping() == Keeping::NotKept);
             app.settle();
-            app.wait_until("the read's thread gone", || app.core().core.flush(WAIT_LIMIT));
             assert_eq!(tab_names(&app), ["c"], "the read that came late wasn't put over it");
         }
+        app.wait_until("the lock let go", || !app.core().saver.store.holds_the_record());
         app.core().saver.write_soon();
         app.settle();
         let (_, disk) = app.quit();

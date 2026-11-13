@@ -191,7 +191,8 @@ pub(super) fn read_state(inner: &Arc<Inner>) {
     inner.core.push(CoreCall::Restored(Box::new(loaded)));
 }
 
-/// The state, read as [`read_state`] says, for the caller to hand on: a launch's as [`CoreCall::Restored`], a late try's as its own ([`super::keeping`]).
+/// The launch's state, read as [`read_state`] says. A late try's read is its own ([`super::keeping`]): it tells the updater after it reads, once it has claimed
+/// the record, so a read that runs past its patience is a second copy's.
 pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
     let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
     let keeps = inner.saver.store.wait_for_lock();

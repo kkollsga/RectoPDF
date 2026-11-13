@@ -15,6 +15,7 @@ mod find;
 mod finding;
 mod input_to_frame;
 mod late_lock;
+mod late_lock_order;
 mod launch;
 mod levels;
 mod menu_agents;
