@@ -482,8 +482,9 @@ impl Inner {
     /// them, held to the same checks as a sleep file's (this version of its file, these pages).
     pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>) {
         let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
+        // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before.
         let back = back.map(|(facts, material)| with_material(facts.sleep, material));
-        let sleep = read.or(back).or_else(|| {
+        let sleep = back.or(read).or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)
         });

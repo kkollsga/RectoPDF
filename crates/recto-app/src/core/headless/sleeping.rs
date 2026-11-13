@@ -504,15 +504,15 @@ fn a_tab_shown_again_before_its_queued_sleep_file_is_written_has_none_written() 
     drop(app.quit());
 }
 
-/// **Measures what flicking through tabs writes,** and asserts nothing: ten tabs opened, then each shown in turn for three seconds of the app's clock, twice
-/// round, the window up; then what the sleep writer wrote and what its queue held at most. For the cool-down on a pushed-out tab's write (owner, 2026-11-13),
-/// before and after: `cargo nextest run -p recto-app -p recto-render-service --run-ignored only --no-capture -E 'test(=core::headless::sleeping::flicking_through_tabs_writes)'`.
-#[test]
-#[ignore = "a measurement, run when asked"]
-fn flicking_through_tabs_writes() {
+/// **Measures what switching tabs writes and how tabs wake,** asserting nothing: `tabs` documents opened, then the first `cycle` of them shown in a seeded
+/// random order, each for `dwell` milliseconds of the app's clock (low to high), until `total` has gone by, the window up, and with `reading` moved to
+/// another page before it's left; with the cool-down at `wait` and the hour's cap at `cap`. Each showing is classed as from warm (no wake), from a picture, or bare. Synthetic pages: their files are a few KB, a real page's about
+/// 72 KB, so the files written are what to read for the cap, at the real size.
+fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64, cap: u64, reading: bool) -> String {
     let disk = Disk::new();
-    let docs: Vec<_> = (0..10).map(|at| disk.pdf(&format!("t{at}.pdf"), 6)).collect();
-    let app = disk.start();
+    let docs: Vec<_> = (0..tabs).map(|at| disk.pdf(&format!("t{at}.pdf"), 6)).collect();
+    let app = disk.builder().leaving_wait(wait).start();
+    app.core().sleeper.set_hour_cap(cap);
     let engine = app.core().engine.clone();
     engine.waking().window_up();
     let mut view = window_view();
@@ -521,36 +521,82 @@ fn flicking_through_tabs_writes() {
         view = window_view();
         drop(engine.set_viewport(view));
         host_turns(&app, &mut view, true);
-        app.advance(3_000);
+        app.advance(dwell.0);
     }
-    let ids: Vec<u64> = (0..10).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
-    let mut wakes = (0, 0);
-    for _round in 0..2 {
-        for id in &ids {
-            let wake = woken_at_once(&app, *id, &mut view);
-            if wake["tab"] == *id && wake["from_sleep"] == true {
-                wakes.0 += 1;
-                wakes.1 += u64::from(wake["had"] == "sleep_file");
-            }
-            app.advance(3_000);
+    let ids: Vec<u64> = (0..cycle).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
+    let (mut warm, mut picture, mut bare, mut elapsed, mut seed) = (0, 0, 0, 0, 7_u64);
+    let mut next = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        seed >> 33
+    };
+    let mut shown = ids[0];
+    while elapsed < total {
+        let mut id = ids[usize::try_from(next()).unwrap_or(0) % ids.len()];
+        if id == shown {
+            id = ids[(ids.iter().position(|at| *at == id).unwrap_or(0) + 1) % ids.len()];
         }
+        let before = engine.report().0["last_wake"].clone();
+        let wake = woken_at_once(&app, id, &mut view);
+        if wake == before || wake["tab"] != id {
+            warm += 1;
+        } else if wake["had"] == "sleep_file" {
+            picture += 1;
+        } else {
+            bare += 1;
+        }
+        shown = id;
+        // Reading on: another page of its six before it's left.
+        if reading {
+            full(&app, &["goto", &format!("{}", 1 + next() % 6)]);
+            host_turns(&app, &mut view, true);
+        }
+        let dwell = dwell.0 + next() % (dwell.1 - dwell.0 + 1);
+        app.advance(dwell);
+        elapsed += dwell;
     }
+    app.advance(wait + 1);
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
     let sleep = app.record_json()["sleep"].clone();
     let leaving = &sleep["leaving"];
-    println!(
-        "flicking 10 tabs twice, 3 s each: sleep files written {}, bytes written {}, writes put off {}, peak queued {} tabs / {} bytes, dropped {}, \
-         wakes from a sleep file {} of {} woken cold",
+    let line = format!(
+        "{tabs} tabs, {cycle} switched among, {}-{} s each for {} s; cool-down {} s, hour's cap {} B: wakes from warm {warm}, from a picture {picture}, bare \
+         {bare}; sleep files written {}, bytes {}, put off {}, for the place {}; queue peak {} tabs / {} B, handed back {}, taken while being written {}, pictures dropped {}",
+        dwell.0 / 1000,
+        dwell.1 / 1000,
+        total / 1000,
+        wait / 1000,
+        cap,
         sleep["sleep_files_written"],
         sleep["sleep_bytes_written"],
         sleep["writes_put_off"],
+        sleep["writes_for_place"],
         leaving["peak_tabs"],
         leaving["peak_bytes"],
-        leaving["dropped"],
-        wakes.1,
-        wakes.0
+        leaving["handed_back"],
+        leaving["stale_skipped"],
+        leaving["pictures_dropped"],
     );
     drop(app.quit());
+    line
+}
+
+/// **Measures switching, before and after the cool-down and the 4 MiB cap:** ten tabs flicked through twice, three seconds each; and twelve tabs with six
+/// switched among every 5 to 15 seconds for an hour of the app's clock. Run when asked:
+/// `cargo nextest run -p recto-app -p recto-render-service --run-ignored only --no-capture -E 'test(=core::headless::sleeping::switching_tabs_writes)'`.
+#[test]
+#[ignore = "a measurement, run when asked"]
+fn switching_tabs_writes() {
+    let (old_cap, cap) = (1024 * 1024, crate::sleeper::SLEEP_BYTES_PER_HOUR);
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let runs = [
+        ("flicking", 10, 10, (3_000, 3_000), 60_000, false),
+        ("an hour, reading on", 12, 6, (5_000, 15_000), 3_600_000, true),
+    ];
+    for (what, tabs, cycle, dwell, total, reading) in runs {
+        for (when, wait, cap) in [("before", 0, old_cap), ("4 MiB cap, no wait", 0, cap), ("after", wait, cap)] {
+            println!("{what}, {when}: {}", switching(tabs, cycle, dwell, total, wait, cap, reading));
+        }
+    }
 }
 
 /// The name of `tab`'s sleep file, as its facts say now.
@@ -738,5 +784,34 @@ fn session_sleep_keeps_to_the_limits_on_writing() {
     let capped = counts();
     assert_eq!(capped["sleep_files_written"], 5, "past the hour's cap: {capped}");
     assert_eq!(capped["writes_put_off"].as_u64().unwrap(), put_off + 1, "{capped}");
+    drop(app.quit());
+}
+
+/// Failure (the cool-down's own measurement, 2026-11-13: 77 of 363 showings bare in an hour of switching with reading on, against none before): a tab shown
+/// again inside its wait, with a sleep file on disk from the time before, was woken from that file, read on the way, and not from what was handed back, so its
+/// first frame was a picture of where it had been. a's file is written at the top; a's moved to page 4 and pushed out again, and shown inside the wait: its
+/// first frame is of page 4.
+#[test]
+fn a_tab_shown_inside_its_cool_down_wakes_from_what_it_left_with_not_an_older_file() {
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let (app, a, mut view) = a_pushed_out_and_waiting(Disk::new(), wait);
+    app.advance(wait);
+    app.wait_until("a's first file written", || sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)));
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["goto", "4"]);
+    host_turns(&app, &mut view, true);
+    for name in ["b.pdf", "c.pdf", "d.pdf"] {
+        full(&app, &["tap", &format!("#{}", tab_named(&app, name))]);
+        host_turns(&app, &mut view, true);
+    }
+    app.advance(wait / 2);
+    let wake = woken_at_once(&app, a, &mut view);
+    assert_eq!(wake["tab"], a, "{wake}");
+    assert_eq!(wake["had"], "sleep_file", "{wake}");
+    assert!(
+        wake["sleep_in_view"].as_u64().unwrap() >= 1,
+        "a picture of where it was the time before: {wake}"
+    );
     drop(app.quit());
 }
