@@ -370,9 +370,20 @@ Pending (private struct, derives Default)
 Place (pub(super) struct, derives Debug)
 Placement (pub(super) struct, derives Clone, Copy, Debug, PartialEq)
 PlanKind (pub(super) enum, derives Debug)
-Pointer (pub(super) struct, derives Debug, Default)
+Pointer (pub(crate) struct, derives Debug)
+Pointer::pub(crate) fn dismiss_selection_notice(&mut self)
+Pointer::pub(crate) fn has_selection(&self) -> bool
+Pointer::pub(crate) fn selection_can_be_sent(&self, pages: u32) -> bool
+Pointer::pub(crate) fn selection_notice(&self) -> Option<Notice>
+Pointer::pub(crate) fn selection_range(&self) -> Option<recto_index::select::Range>
+Pointer::pub(crate) fn selection_release(&mut self)
+Pointer::pub(crate) fn selection_text_now(&self, pages: u32) -> Option<String>
+Pointer::pub(crate) fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit>
+Pointer::pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::CopiedText>
+Pointer::pub(crate) fn take_copy_signal(&mut self) -> bool
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 Reader (pub struct)
+Reader.pub(crate) pointer: Pointer
 Reader: Default (trait impl)
 Reader: Default::fn default() -> Self
 Reader::pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread)
@@ -380,7 +391,6 @@ Reader::pub fn applied(&mut self)
 Reader::pub fn clear_selection(&mut self)
 Reader::pub fn counts(&self) -> &ReaderCounts
 Reader::pub fn deactivate(&mut self)
-Reader::pub fn dismiss_selection_notice(&mut self)
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
 Reader::pub fn empty_discardable(&mut self) -> usize
 Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>
@@ -390,7 +400,6 @@ Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
 Reader::pub fn give_sleep(&mut self, tab: u32, view: SleepView)
 Reader::pub fn has_ops(&self) -> bool
-Reader::pub fn has_selection(&self) -> bool
 Reader::pub fn hold_drawing(&mut self, on: bool)
 Reader::pub fn holds(&self, tab: u32) -> bool
 Reader::pub fn hot_tab(&self) -> Option<u32>
@@ -401,7 +410,6 @@ Reader::pub fn is_showable(&self) -> bool
 Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
 Reader::pub fn key_given(&mut self, path: &std::path::Path)
 Reader::pub fn last_wake(&self) -> Option<WakeReport>
-Reader::pub fn link_pages_held(&self) -> usize
 Reader::pub fn memory_pressure(&mut self, critical: bool)
 Reader::pub fn new() -> Self
 Reader::pub fn next_plan(&mut self) -> Option<JobPlan>
@@ -417,13 +425,8 @@ Reader::pub fn restore_selection(&mut self, range: recto_index::select::Range)
 Reader::pub fn reveal_range(&mut self, range: recto_index::select::Range)
 Reader::pub fn running_is_wanted(&self) -> bool
 Reader::pub fn select_all(&mut self)
-Reader::pub fn selection_can_be_sent(&self) -> bool
 Reader::pub fn selection_drag(&mut self, x: f64, y: f64)
-Reader::pub fn selection_notice(&self) -> Option<Notice>
 Reader::pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool)
-Reader::pub fn selection_range(&self) -> Option<recto_index::select::Range>
-Reader::pub fn selection_release(&mut self)
-Reader::pub fn selection_text_now(&self) -> Option<String>
 Reader::pub fn set_cancel(&mut self, cancel: CancelHandle)
 Reader::pub fn set_margins(&mut self, left: f64, right: f64)
 Reader::pub fn set_paper(&mut self, paper: PaperKind)
@@ -433,9 +436,6 @@ Reader::pub fn set_viewport(&mut self, viewport: Viewport) -> Vec<Op>
 Reader::pub fn set_warm(&mut self, warm: &[u32])
 Reader::pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial>
 Reader::pub fn start_copy(&mut self, anyway: bool)
-Reader::pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit>
-Reader::pub fn take_copied(&mut self) -> Option<recto_index::select::CopiedText>
-Reader::pub fn take_copy_signal(&mut self) -> bool
 Reader::pub fn take_keyless(&mut self) -> Vec<PathBuf>
 Reader::pub fn take_moved_page(&mut self) -> Option<u32>
 Reader::pub fn take_reopen_files(&mut self) -> Vec<PathBuf>

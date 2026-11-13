@@ -10,7 +10,7 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
         end: recto_index::select::Place { page: 6, at: 4 },
     };
     reader.reveal_range(range);
-    assert_eq!(reader.selection_range(), Some(range), "selected");
+    assert_eq!(reader.pointer.selection_range(), Some(range), "selected");
     let to_page = reader
         .host
         .take_ops()
@@ -119,11 +119,11 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
     assert_eq!(reader.doc().unwrap().position_in_same_file(0, 4), Some(4));
     reader.selection_press(x, y, 1, false);
-    reader.selection_release();
-    assert_eq!(reader.take_clicked_link().map(|hit| hit.page), Some(0));
+    reader.pointer.selection_release();
+    assert_eq!(reader.pointer.take_clicked_link().map(|hit| hit.page), Some(0));
     // Another tab: what's known goes with the one that was showing.
     reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
-    assert_eq!(reader.link_pages_held(), 0);
+    assert_eq!(reader.pointer.link_pages_held(), 0);
 }
 
 /// Failure: a hidden-text check that takes seconds keeps the page the reader has just scrolled to blank, over and over on a hostile file, as a running text job couldn't be told to stop. Its first read, which is quick and is what the reader's hand is waiting on, isn't given up for a scroll.

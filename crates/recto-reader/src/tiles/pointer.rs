@@ -6,8 +6,9 @@ use recto_index::select::Range;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Default)]
-pub(super) struct Pointer {
+/// Built only in the tiles module ([`Pointer::new`]), with no `Default`: the engine reaches it through `Reader`'s field to call the methods below, and can neither build one nor put another in its place.
+#[derive(Debug)]
+pub(crate) struct Pointer {
     pub(super) selecting: Selecting,
     /// Links on the tab showing, read as they're pointed at.
     pub(super) linking: crate::links::Linking,
@@ -22,6 +23,67 @@ pub(super) struct Pointer {
 const _: () = assert!(size_of::<Pointer>() <= 664, "what the pointer does grew");
 
 impl Pointer {
+    pub(super) fn new() -> Self {
+        Self {
+            selecting: Selecting::default(),
+            linking: crate::links::Linking::default(),
+            selection_before_change: None,
+            revealing: None,
+        }
+    }
+
+    /// The mouse went up: a drag that was selecting or pressing a link ends.
+    pub(crate) fn selection_release(&mut self) {
+        self.linking.release();
+        self.selecting.release();
+    }
+
+    /// The link a click has just landed on, taken once.
+    pub(crate) fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit> {
+        self.linking.take_clicked()
+    }
+
+    /// Pages whose links are held, for a test: nothing outside asks since R3.6 found `Engine::link_pages_held` called by nobody.
+    #[cfg(test)]
+    pub(crate) fn link_pages_held(&self) -> usize {
+        self.linking.pages_held()
+    }
+
+    /// What's selected on the tab showing, for the state record.
+    pub(crate) fn selection_range(&self) -> Option<recto_index::select::Range> {
+        self.selecting.range()
+    }
+
+    pub(crate) fn has_selection(&self) -> bool {
+        self.selecting.has_selection()
+    }
+
+    pub(crate) fn take_copy_signal(&mut self) -> bool {
+        self.selecting.take_copy_signal()
+    }
+
+    pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::CopiedText> {
+        self.selecting.take_copied()
+    }
+
+    /// The selection's text if it's all here, for what can't wait for it, in a tab of `pages` pages.
+    pub(crate) fn selection_text_now(&self, pages: u32) -> Option<String> {
+        self.selecting.text_now(pages)
+    }
+
+    /// Whether the selection can be offered to the Services menu as it stands, in a tab of `pages` pages.
+    pub(crate) fn selection_can_be_sent(&self, pages: u32) -> bool {
+        self.selecting.can_offer(pages)
+    }
+
+    pub(crate) fn selection_notice(&self) -> Option<Notice> {
+        self.selecting.notice().cloned()
+    }
+
+    pub(crate) fn dismiss_selection_notice(&mut self) {
+        self.selecting.dismiss_notice();
+    }
+
     /// **The last thing asked for wins:** a jump the session sends to another page than Find's hit waiting for its page's text is the newer ask, so the
     /// hit isn't brought into view when the text comes, which would take the view back from where the session has it and be told of as the reader's own
     /// move. The session's own jump to the hit's page, which comes after the reveal it went with, leaves it. Every jump the session sends says this first:
@@ -68,25 +130,10 @@ impl Reader {
         }
     }
 
-    pub fn selection_release(&mut self) {
-        self.pointer.linking.release();
-        self.pointer.selecting.release();
-    }
-
     /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
     pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
         let point = self.doc().and_then(|doc| doc.point_on_page(x, y).filter(|point| doc.is_on_its_page(*point)))?;
         self.pointer.linking.at(point)
-    }
-
-    /// The link a click has just landed on, taken once.
-    pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit> {
-        self.pointer.linking.take_clicked()
-    }
-
-    /// Pages whose links are held, for QA.
-    pub fn link_pages_held(&self) -> usize {
-        self.pointer.linking.pages_held()
     }
 
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
@@ -112,11 +159,6 @@ impl Reader {
         self.highlight_ops();
     }
 
-    /// What's selected on the tab showing, for the state record.
-    pub fn selection_range(&self) -> Option<recto_index::select::Range> {
-        self.pointer.selecting.range()
-    }
-
     /// Puts back what was selected, from the state record. It's held to the document's pages, as a record can say anything.
     pub fn restore_selection(&mut self, range: recto_index::select::Range) {
         let pages = self.doc().map_or(0, |doc| doc.layout.count());
@@ -124,10 +166,6 @@ impl Reader {
             self.pointer.selecting.set_range(range);
             self.highlight_ops();
         }
-    }
-
-    pub fn has_selection(&self) -> bool {
-        self.pointer.selecting.has_selection()
     }
 
     /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the hit is put a third of the way down the view. A hit already showing, away from the view's edges, stays where it is, so stepping through hits on one screen doesn't move it. Held to the document's pages.
@@ -187,31 +225,6 @@ impl Reader {
         self.pointer
             .selecting
             .start_copy(anyway, pages, |page| heavy.get(&page).copied().unwrap_or(false));
-    }
-
-    pub fn take_copy_signal(&mut self) -> bool {
-        self.pointer.selecting.take_copy_signal()
-    }
-
-    pub fn take_copied(&mut self) -> Option<recto_index::select::CopiedText> {
-        self.pointer.selecting.take_copied()
-    }
-
-    /// The selection's text if it's all here, for what can't wait for it.
-    pub fn selection_text_now(&self) -> Option<String> {
-        self.pointer.selecting.text_now(self.doc()?.layout.count())
-    }
-
-    pub fn selection_can_be_sent(&self) -> bool {
-        self.doc().is_some_and(|doc| self.pointer.selecting.can_offer(doc.layout.count()))
-    }
-
-    pub fn selection_notice(&self) -> Option<Notice> {
-        self.pointer.selecting.notice().cloned()
-    }
-
-    pub fn dismiss_selection_notice(&mut self) {
-        self.pointer.selecting.dismiss_notice();
     }
 
     /// Text arrived, or couldn't be read.

@@ -421,7 +421,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
             "{label}: as far down: {before:?} then {after:?}"
         );
         assert_eq!(after.x, before.x, "{label}: as far across");
-        assert_eq!(reader.selection_range(), Some(selected), "{label}: what was selected");
+        assert_eq!(reader.pointer.selection_range(), Some(selected), "{label}: what was selected");
     }
     // Any other new version is other pages: nothing's carried.
     let mut reader = reader_on(10);
@@ -440,7 +440,11 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         None,
         Spread::Single,
     );
-    assert_eq!(reader.selection_range(), None, "a save from another version than the one shown carries nothing");
+    assert_eq!(
+        reader.pointer.selection_range(),
+        None,
+        "a save from another version than the one shown carries nothing"
+    );
 }
 
 /// Failure: a lower-resolution page looks like a sharp one, with nothing to say so. SPEC §3: it says so. And one that may clear is tried again once its time is up.

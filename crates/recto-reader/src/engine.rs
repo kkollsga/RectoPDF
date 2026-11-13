@@ -490,7 +490,7 @@ impl Engine {
 
     /// The link the last click landed on, taken once.
     pub fn take_clicked_link(&self) -> Option<crate::links::LinkHit> {
-        lock(&self.shared.reader).take_clicked_link()
+        lock(&self.shared.reader).pointer.take_clicked_link()
     }
 
     /// Where a link's page is now: see [`crate::tiles::DocView::position_in_same_file`].
@@ -572,12 +572,13 @@ impl Engine {
     }
 
     pub fn selection_release(&self) -> Vec<Op> {
-        self.pointer_did(Reader::selection_release)
+        self.pointer_did(|reader| reader.pointer.selection_release())
     }
 
     /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.
     pub fn selection_can_be_sent(&self) -> bool {
-        lock(&self.shared.reader).selection_can_be_sent()
+        let reader = lock(&self.shared.reader);
+        reader.doc().is_some_and(|doc| reader.pointer.selection_can_be_sent(doc.page_count()))
     }
 
     /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
@@ -598,7 +599,7 @@ impl Engine {
     /// Which tab is showing, and what's selected on it. A short lock, for the state record.
     pub fn hot_selection(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
         let reader = lock(&self.shared.reader);
-        reader.hot_tab().map(|tab| (tab, reader.selection_range()))
+        reader.hot_tab().map(|tab| (tab, reader.pointer.selection_range()))
     }
 
     /// Puts back what was selected, from the state record.
@@ -612,7 +613,7 @@ impl Engine {
     }
 
     pub fn has_selection(&self) -> bool {
-        lock(&self.shared.reader).has_selection()
+        lock(&self.shared.reader).pointer.has_selection()
     }
 
     /// Selects Find's hit and brings it into view: characters `start..end` of a page, from 0. Off the UI thread.
@@ -638,23 +639,24 @@ impl Engine {
 
     pub fn take_copied(&self) -> Option<recto_index::select::CopiedText> {
         let mut reader = lock(&self.shared.reader);
-        let copied = reader.take_copied();
+        let copied = reader.pointer.take_copied();
         drop(reader);
         self.shared.settled.notify_all();
         copied
     }
 
     pub fn selection_text_now(&self) -> Option<String> {
-        lock(&self.shared.reader).selection_text_now()
+        let reader = lock(&self.shared.reader);
+        reader.pointer.selection_text_now(reader.doc()?.page_count())
     }
 
     pub fn selection_notice(&self) -> Option<Notice> {
-        lock(&self.shared.reader).selection_notice()
+        lock(&self.shared.reader).pointer.selection_notice()
     }
 
     pub fn dismiss_selection_notice(&self) {
         let mut reader = lock(&self.shared.reader);
-        reader.dismiss_selection_notice();
+        reader.pointer.dismiss_selection_notice();
         self.after(reader);
     }
 
@@ -812,8 +814,8 @@ struct SelectingNews {
 
 fn selecting_news(reader: &mut Reader) -> SelectingNews {
     SelectingNews {
-        notice: reader.selection_notice(),
-        copy_ready: reader.take_copy_signal(),
+        notice: reader.pointer.selection_notice(),
+        copy_ready: reader.pointer.take_copy_signal(),
     }
 }
 

@@ -238,7 +238,8 @@ pub struct Reader {
     place: Place,
     counts: ReaderCounts,
     note: Option<String>,
-    pointer: Pointer,
+    /// What the pointer does on a page: the engine calls its methods for the selection's and the links' own state, which reach nothing else.
+    pub(crate) pointer: Pointer,
     wake: Waking,
     /// The least room either side of the pages: a comparison's pane has less than a window.
     margins: (f64, f64),
@@ -277,7 +278,7 @@ impl Reader {
             place: Place::new(),
             counts: ReaderCounts::default(),
             note: None,
-            pointer: Pointer::default(),
+            pointer: Pointer::new(),
             wake: Waking::default(),
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
             scratch: Scratch::default(),
