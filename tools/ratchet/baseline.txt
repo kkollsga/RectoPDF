@@ -19,7 +19,6 @@ fn crates/recto-core/src/save.rs::save 213
 fn crates/recto-fuzz/src/targets/pdf.rs::build_tree 250
 fn crates/recto-index/src/select.rs::PageText::find_edges 181
 fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162
-fn crates/recto-reader/src/engine.rs::run 179
 fn crates/recto-render/src/pdfium/contents.rs::Walk::image 217
 fn crates/recto-render/src/pdfium/contents.rs::Walk::send_pending 180
 fn crates/recto-update/src/zip.rs::read_directory 182
