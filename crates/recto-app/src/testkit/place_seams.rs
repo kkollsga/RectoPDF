@@ -75,7 +75,7 @@ impl PlaceSeams {
     }
 
     /// The records the session thread's searches for a tab had looked at when its last look ended.
-    #[cfg(debug_assertions)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn searched_at_look_end(&self) -> u64 {
         self.searched_at_look_end.load(Ordering::SeqCst)
     }
