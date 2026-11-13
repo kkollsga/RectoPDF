@@ -34,7 +34,7 @@ const PERSONS_OWN: &[&str] = &[
 /// An agent's palette run of `id` on `app` at `level`, as `recto palette --run` makes it once the row's found, settled: the code it was refused with, if it was.
 fn agents_run(app: &HeadlessApp, level: Level, id: &str) -> Result<(), String> {
     let core = app.core();
-    let result = core.host.run_menu_id(Actor::Agent(level), core, id, &mut Vec::new());
+    let result = core.host.run_menu_id(Actor::Agent(level), core, id, None, &mut Vec::new());
     app.settle();
     result.map(drop).map_err(|error| error.code.to_string())
 }

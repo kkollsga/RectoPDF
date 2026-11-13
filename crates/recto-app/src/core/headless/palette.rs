@@ -110,3 +110,33 @@ fn an_agents_palette_run_never_runs_as_the_person() {
     assert!(closed.is_err(), "{closed:?}");
     assert_eq!(app.tabs().len(), 1, "the tab and its edit stay");
 }
+
+/// Failure (review of R2.3, F3): an agent's palette run of the update item runs what the updater offers when it runs, not what the agent matched, so one at
+/// Full that asked for *Check for Updates…* installs an offer that landed in between (`update install --now`). The run names the title it matched, and is
+/// refused `changed` with nothing started when the palette's title for the id is no longer that; the title it matched now runs.
+#[test]
+fn the_palettes_update_runs_what_the_agent_matched_or_nothing() {
+    use crate::testkit::update_bed::{NEW, OLD, UpdateBed};
+    let disk = crate::testkit::headless::Disk::new();
+    disk.install_app(OLD);
+    let bed = UpdateBed::new();
+    let file = disk.pdf("alpha.pdf", 3);
+    let app = disk.builder().update(&bed).start();
+    app.open(&file);
+    let core = app.core();
+    let matched = crate::core::palette::title_now(core, "app.update").expect("listed");
+    assert!(matched.starts_with("Check for Updates"), "{matched}");
+    bed.releases.offer(NEW);
+    app.agent(Level::Full, r#"{"cmd":"update_check"}"#).expect("checked");
+    app.settle();
+    let run = |matched: &str| {
+        let result = core
+            .host
+            .run_menu_id(recto_agent::Actor::Agent(Level::Full), core, "app.update", Some(matched), &mut Vec::new());
+        app.settle();
+        result.map(drop).map_err(|error| error.code.to_string())
+    };
+    let offered = app.update_status()["status"].clone();
+    assert_eq!(run(&matched), Err("changed".to_string()), "the offer landed between the match and the run");
+    assert_eq!(app.update_status()["status"], offered, "nothing started");
+}

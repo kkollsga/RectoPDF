@@ -57,7 +57,7 @@ use crate::watchdog::Watchdog;
 use crate::{ContentsEntry, PaneSnapshot, panes};
 use crate::{linking, lock, passwords};
 use qa::QaBridge;
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
+use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;

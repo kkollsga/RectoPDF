@@ -204,7 +204,7 @@ impl AppHost {
                     self.run_counted(actor, &direct, events)?;
                     HostAction::None
                 }
-                None => self.run_menu_id(actor, &inner, id, events)?,
+                None => self.run_menu_id(actor, &inner, id, Some(&first.title), events)?,
             };
             let ran = if first.from_file {
                 json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) })
@@ -222,10 +222,33 @@ impl AppHost {
     /// **An agent's palette run of a menu id:** what it comes to as an agent's own command runs as that, at the agent's level, with that command's checks,
     /// and as the agent's step, resolved by the session as it is now where the row goes by it. What's the window's alone is done only where the row lets an
     /// agent have it, at the level it says (Full, or `copy`'s), by its way, which sends nothing as anyone; the person's own is refused at every level.
-    pub(crate) fn run_menu_id(&self, actor: Actor, inner: &Arc<Inner>, id: &str, events: &mut Vec<Event>) -> Result<HostAction, AgentError> {
-        match super::menu_rows::for_agent(inner, id, |when_run, command| {
+    ///
+    /// `matched` is the title the agent's query matched, as the palette listed it: the run names what it matched, and is refused if the palette's title for
+    /// the id is no longer that, as what it would run has changed under it (*Check for Updates…* become *Update to X…* as an offer lands). `None` for a run
+    /// of an id whatever the palette lists, as a test makes it.
+    pub(crate) fn run_menu_id(
+        &self,
+        actor: Actor,
+        inner: &Arc<Inner>,
+        id: &str,
+        matched: Option<&str>,
+        events: &mut Vec<Event>,
+    ) -> Result<HostAction, AgentError> {
+        let ran = super::menu_rows::for_agent(inner, id, |when_run, command| {
             self.session.with_session(|session| when_run(session, actor, command))
-        })? {
+        })?;
+        if matches!(ran, super::menu_rows::ForAgent::Command(_) | super::menu_rows::ForAgent::Window { .. })
+            && let Some(matched) = matched
+            && palette::title_now(inner, id).as_deref() != Some(matched)
+        {
+            return Err(AgentError::new(
+                "changed",
+                format!("“{matched}” changed between being found and being run, so nothing was run."),
+                recto_agent::exit::FAILED,
+            )
+            .then("`recto palette` lists what there is now."));
+        }
+        match ran {
             super::menu_rows::ForAgent::Command(direct) => {
                 inner.tools.palette.close();
                 self.run_counted(actor, &direct, events)?;

@@ -323,7 +323,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             };
             Some(Row::own_way(
                 command.clone(),
-                "the person's is said in an alert too when there's no document window to say it in (the updater's mark), and does nothing with something under way, which was someone else's to ask for; on a thread of its own",
+                "the person's is said in an alert too when there's no document window to say it in (the updater's mark), on a thread of its own. With something under way the item can't be chosen; a choice that races it sends nothing, so the mark isn't put on someone else's, and that is the window's alone: the command does nothing then for anyone (a check under way isn't started again, and an install is refused `update_under_way`)",
                 move || {
                     if inner.updates.menu().mark() {
                         super::person::submit(inner, command);
