@@ -480,14 +480,14 @@ impl Bed {
 }
 
 impl Drop for Bed {
-    /// Every process of the bed's copies ended, and the system made to forget the folder's bundles until its dump says so twice in a row, before the folder goes. Once, without a look, was not enough: an update's new app is started a moment before a test ends, and its registration lands after a forgetting that came first (2026-11-13: `install/RectoPDF.app` left registered, found by another tree's stage).
+    /// Every process of the bed's copies ended and the system told once to forget the folder's bundles (`end_cheaply`), before the folder goes. No look: an update's new app is started a moment before a test ends and can be registered after that, so the `registrations` stage, which runs last, settles every copy of this tree's together, once (2026-11-13: `install/RectoPDF.app` left registered; settling in each bed cost CI about a minute).
     fn drop(&mut self) {
         let kept = recto_update::plan::previous_app_in(&recto_update::plan::beside_app(&self.app).unwrap());
         let programs: Vec<PathBuf> = [&self.app, &kept]
             .into_iter()
             .flat_map(|app| ["RectoPDF", "recto-updater"].map(|name| app.join("Contents/MacOS").join(name)))
             .collect();
-        crate::common::app::end_and_forget(&self.folder, &programs);
+        crate::common::app::end_cheaply(&self.folder, &programs);
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
