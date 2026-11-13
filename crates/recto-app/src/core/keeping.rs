@@ -121,7 +121,7 @@ fn ask(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &st
         return;
     }
     match heard.recv() {
-        Ok(Verdict::Read) => read_late(inner),
+        Ok(Verdict::Read(appearance_then)) => read_late(inner, appearance_then),
         Ok(Verdict::LetGo) => inner.saver.store.let_go(),
         Ok(Verdict::GiveBack) => inner.saver.store.give_back(),
         // The session thread ended without deciding: the app's going, and the process takes the lock with it.
@@ -132,7 +132,7 @@ fn ask(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &st
 /// **A late try's saved session read,** on the try's thread, as a launch reads its state ([`launching::read`]), and handed to the session thread, which takes it
 /// in only while it's still restoring. A panic on the way (in the updater's look at the launch or the read) still says so, by the guard, so the restore's
 /// end never waits on a thread that's gone; one that never returns is bounded by the restore's patience.
-fn read_late(inner: &Arc<Inner>) {
+fn read_late(inner: &Arc<Inner>, appearance_then: record::Appearance) {
     struct Guard<'a>(&'a Inner, bool);
     impl Drop for Guard<'_> {
         fn drop(&mut self) {
@@ -146,7 +146,7 @@ fn read_late(inner: &Arc<Inner>) {
     assert!(!PANIC_IN_THE_LATE_READ.load(Ordering::SeqCst), "a test's panic in the late read");
     let loaded = launching::read(inner);
     guard.1 = true;
-    inner.core.push(CoreCall::LateRead(Some(Box::new(loaded))));
+    inner.core.push(CoreCall::LateRead(Some(Box::new((loaded, appearance_then)))));
 }
 
 /// A test's read that panics, in its own process (each test is one).
@@ -162,8 +162,9 @@ pub(crate) fn panic_in_the_late_read() {
 /// What the session thread decided about a try that came back with the lock.
 #[derive(Debug)]
 pub enum Verdict {
-    /// Keep it: read the saved session, as a launch does.
-    Read,
+    /// Keep it: read the saved session, as a launch does. With the appearance the window had then, so one the person chooses while it's read is kept
+    /// ([`window_as_it_is`]).
+    Read(record::Appearance),
     /// The trying stopped while it was out: let it go again, writing nothing.
     LetGo,
     /// Not now (a person's command came under way while it was out): give it back, and try again on the next turn.
@@ -195,16 +196,16 @@ pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back_from: TryBack
 }
 
 fn back(inner: &Arc<Inner>, reads: &FileReads, got: bool, verdict: Option<&std::sync::mpsc::Sender<Verdict>>) {
-    let mut given_back = false;
     if inner.life.keeping().trying() {
         let now_as = as_done(inner, reads);
         let _ = step(inner, KeepingEvent::Looked { now_as });
-        given_back = got && inner.life.keeping().trying() && busy(inner);
     }
-    let out = inner.life.step(LifeEvent::Keeping(KeepingEvent::Tried { got: got && !given_back }));
+    let appearance_then = lock(&inner.window.app).appearance;
+    // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
+    let (out, given_back) = inner.life.tried(got, || busy(inner));
     let decided = match out {
         _ if given_back => Some(Verdict::GiveBack),
-        Some(crate::lifecycle::Out::Keeping(KeepingOut::Restore)) => Some(Verdict::Read),
+        Some(crate::lifecycle::Out::Keeping(KeepingOut::Restore)) => Some(Verdict::Read(appearance_then)),
         Some(crate::lifecycle::Out::Keeping(KeepingOut::LetGo)) => Some(Verdict::LetGo),
         out => {
             let _ = settled(inner, out);
@@ -236,7 +237,7 @@ pub(crate) fn answers_agents(command: &recto_agent::Command) -> bool {
 /// **A late try's saved session, come in from its thread:** what's taken in, while it's still restoring; and nothing once its patience has run out and the
 /// lock's been let go (the window went on as it was, said, and the read is left for the next launch, as what's done meanwhile would otherwise be replaced),
 /// or if the thread ended without it, which is the same as the patience running out.
-pub(super) fn late_read(inner: &Arc<Inner>, read: Option<Box<Loaded>>) -> Option<Loaded> {
+pub(super) fn late_read(inner: &Arc<Inner>, read: Option<Box<(Loaded, record::Appearance)>>) -> Option<(Loaded, record::Appearance)> {
     if !inner.life.keeping().restoring() {
         return None;
     }
@@ -329,8 +330,15 @@ fn tell(inner: &Inner, let_go: bool, facts: Option<recto_update::updater::Facts>
 
 /// **The window as it is, kept until it's made again** from a late keep's restore (`apply_restored`): its frame, focus, sidebar width and Settings, which the
 /// restore put in `from_state` for the window made again ([`Inner::window_replaced`]), so if the person touches it first and it isn't made again, the record says
-/// what the real window is.
-pub(super) fn window_as_it_is(app: &mut AppState, real: &AppState) {
+/// what the real window is. And the appearance, if the person chose one while the saved session was read (it isn't `appearance_then`, what it was as the try
+/// was kept): what they chose last wins over what was saved, in the record and in the window made again.
+pub(super) fn window_as_it_is(app: &mut AppState, real: &AppState, appearance_then: Option<record::Appearance>) {
+    if appearance_then.is_some_and(|then| then != real.appearance) {
+        app.appearance = real.appearance;
+        if let Some(state) = app.from_state.as_mut() {
+            state.appearance = real.appearance;
+        }
+    }
     app.window.clone_from(&real.window);
     app.focus = real.focus;
     app.sidebar_width = real.sidebar_width;

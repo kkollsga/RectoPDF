@@ -932,6 +932,56 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
     }
 }
 
+/// A late keep held with its saved session being read: the copy before let go, a try took the lock, and the read waits at its seam.
+fn restoring_held(disk: Disk) -> HeadlessApp {
+    let before = the_copy_before(&disk);
+    let app = disk.builder().another_keeps().start();
+    recto_platform::slow::gate::hold(&[Seam::State]);
+    drop(before);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the saved session's read held", || app.waiting(Seam::State) > 0);
+    assert!(app.core().life.keeping().restoring());
+    app
+}
+
+/// The restore let in, and kept.
+fn let_the_restore_in(app: &HeadlessApp) {
+    app.let_through(Seam::State, 1);
+    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+    app.settle();
+}
+
+/// Failure (review, 2026-11-13, S5: "the last thing a person asked for wins"): while a late keep's saved session is read, what the person does is held and runs
+/// on it once it's in, but a command that runs on a thread of its own (⌘K's palette running a row, a check for updates, anything that may wait) wasn't held:
+/// it ran on the window before the restore, and the restore replaced what it did. Dark paper chosen from the palette while it's read is the paper once it's
+/// in.
+#[test]
+fn a_palette_row_run_while_the_saved_session_is_read_lands_on_it() {
+    let app = restoring_held(a_saved_session());
+    app.person(r#"{"cmd":"palette","query":"dark paper","run":true}"#);
+    app.settle();
+    let_the_restore_in(&app);
+    assert_eq!(tab_names(&app), ["a", "b"]);
+    let paper = app.core().host.session.with_session(|session| session.viewing().view().paper);
+    assert_eq!(paper, Some(recto_session::Paper::Dark), "the person's last choice, on the restored session");
+    drop(app.quit());
+}
+
+/// Failure (review, 2026-11-13, S5): the person sets the appearance (which the window sets directly, not by a command) while a late keep's saved session is read,
+/// and the restore puts the saved appearance over it, and the window then flips back to the saved one. What the person chose last stays.
+#[test]
+fn an_appearance_chosen_while_the_saved_session_is_read_stays() {
+    use recto_session::record::Appearance;
+    let app = restoring_held(a_saved_session());
+    assert_eq!(app.core().app_record().appearance, Appearance::System, "as the copy before left it");
+    crate::lock(&app.core().window.app).appearance = Appearance::Dark;
+    app.core().saver.view_changed();
+    let_the_restore_in(&app);
+    assert_eq!(tab_names(&app), ["a", "b"]);
+    assert_eq!(app.core().app_record().appearance, Appearance::Dark, "what the person chose last");
+    drop(app.quit());
+}
+
 /// Failure (review, 2026-11-13: only opening a file was tested): the person changes the paper, or the appearance, before the lock comes, and the restore then
 /// replaces their choice, or keeps the record with it and writes it over the saved session. Each stops the trying and says so (the paper at once, as a call on
 /// the session thread; the appearance, set by the window directly, by the look before the next try), and the saved session waits for the next launch.

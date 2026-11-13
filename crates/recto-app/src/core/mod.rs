@@ -360,6 +360,20 @@ impl Lifecycle {
         self.life().keeping_due(now)
     }
 
+    /// **A late try at the record's lock, back:** taken in as one that got it only if nothing's `busy` (a person's command under way on its own thread), looked
+    /// at under this lock, as `person::submit` counts and then looks at the machine; otherwise as one that didn't, and said so (`true`) for the lock to be given
+    /// back. `busy` is a load of two atomics: nothing under this lock touches the disk.
+    pub(crate) fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> (Option<crate::lifecycle::Out>, bool) {
+        let now = self.now_ms();
+        let mut life = lock(&self.life);
+        let given_back = got && life.keeping().trying() && busy();
+        let out = life.step(
+            crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got: got && !given_back }),
+            now,
+        );
+        (out, given_back)
+    }
+
     /// Whether the window is made again from the state now ([`crate::lifecycle::Life::may_remake_window`]): what the host asks on the UI thread, cheap and
     /// bounded.
     pub fn may_remake_window(&self) -> bool {
@@ -719,13 +733,7 @@ mod tests {
         }
         assert_eq!(
             early,
-            [
-                "CoreCall::Restored",
-                "CoreCall::LateRead",
-                "CoreCall::LateRead",
-                "CoreCall::Run",
-                "CoreCall::Page"
-            ],
+            ["CoreCall::Restored", "CoreCall::LateRead", "CoreCall::LateRead", "CoreCall::Page"],
             "the arms that leave early"
         );
         assert!(

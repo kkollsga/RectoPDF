@@ -60,8 +60,9 @@ pub enum CoreCall {
     Run(Box<PersonCommand>),
     /// A late try at the record's lock is back from its own thread ([`crate::core::keeping`]).
     TryBack(crate::core::keeping::TryBack),
-    /// A late try's saved session, read on its thread; or `None`, the thread ended without it (a panic). Taken in only while it's still restoring.
-    LateRead(Option<Box<Loaded>>),
+    /// A late try's saved session, read on its thread, with the appearance the window had as the try was kept; or `None`, the thread ended without it (a
+    /// panic). Taken in only while it's still restoring.
+    LateRead(Option<Box<(Loaded, recto_session::record::Appearance)>>),
 }
 
 /// A person's command, as it's queued: what it is, where it came from, and what was read for it, if it's running again once a file's in.
