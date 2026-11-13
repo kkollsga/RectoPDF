@@ -40,7 +40,6 @@ impl<L: DocLoader> Session<L> {
             saved_over: _,
             jumps: _,
             recent,
-            recent_version: _,
         } = self;
         let ViewSettings {
             paper,
@@ -104,7 +103,7 @@ impl<L: DocLoader> Session<L> {
             synced: comparison.synced,
             sync_from: comparison.sync_from.clone(),
         });
-        let recent = recent.iter().map(|path| PathField::from_path(path)).collect();
+        let recent = recent.to_record();
         SessionRecord {
             app: record::AppRecord::default(),
             view: ViewRecord {
@@ -160,15 +159,7 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
-        self.recent = record
-            .recent
-            .iter()
-            .filter(|path| path.fits())
-            .filter_map(PathField::to_path)
-            .filter(|path| path.is_absolute())
-            .take(MAX_RECENT)
-            .collect();
-        self.recent_version += 1;
+        self.recent.restore(&record.recent);
         self.edit_mode = record.edit_mode;
         let sidebar_hidden = record.view.sidebar_comes_back_hidden();
         let ViewRecord {

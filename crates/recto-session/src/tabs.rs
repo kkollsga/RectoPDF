@@ -38,8 +38,7 @@ impl<L: DocLoader> Session<L> {
             saving: Vec::new(),
             saved_over: Vec::new(),
             jumps: Vec::new(),
-            recent: VecDeque::new(),
-            recent_version: 0,
+            recent: recent::Recent::default(),
         }
     }
 
@@ -126,22 +125,13 @@ impl<L: DocLoader> Session<L> {
 
     /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
     pub fn note_recent(&mut self, path: &Path) {
-        if !path.is_absolute() || !PathField::from_path(path).fits() {
-            return;
-        }
-        if self.recent.front().is_some_and(|front| front == path) {
-            return;
-        }
-        self.recent.retain(|known| known != path);
-        self.recent.push_front(path.to_path_buf());
-        self.recent.truncate(MAX_RECENT);
-        self.recent_version += 1;
+        self.recent.note(path);
     }
 
     /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
     pub fn recent_files(&self) -> Vec<RecentFile> {
         self.recent
-            .iter()
+            .paths()
             .map(|path| RecentFile {
                 path: path.clone(),
                 name: tab_name(path),
@@ -152,15 +142,12 @@ impl<L: DocLoader> Session<L> {
 
     /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
     pub fn recent_version(&self) -> u64 {
-        self.recent_version
+        self.recent.version()
     }
 
     /// File > Open Recent > Clear Menu.
     pub fn clear_recent(&mut self) -> bool {
-        let had = !self.recent.is_empty();
-        self.recent.clear();
-        self.recent_version += 1;
-        had
+        self.recent.clear()
     }
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.

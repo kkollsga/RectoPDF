@@ -18,6 +18,7 @@ mod editing;
 mod files;
 mod journal;
 mod pages;
+mod recent;
 mod restore;
 mod saving;
 mod tabs;
@@ -822,10 +823,8 @@ pub struct Session<L = DiskLoader> {
     generated: Vec<(TabId, GeneratedView)>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
     saved_over: Vec<(TabId, FileStamp, FileStamp)>,
-    /// Files opened lately, newest first, at most [`MAX_RECENT`]. In the state record.
-    recent: VecDeque<PathBuf>,
-    /// Moves whenever `recent` does, so the app rebuilds what it shows of it only then.
-    recent_version: u64,
+    /// Files opened lately, for File > Open Recent and ⌘K.
+    recent: recent::Recent,
     /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
     jumps: Vec<(TabId, trail::Stop)>,
 }
