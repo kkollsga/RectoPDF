@@ -3,6 +3,8 @@
 
 /// The real app in a quiet run.
 pub mod app;
+/// Whose a bed's temp folder is, by its name.
+pub mod bed_folder;
 /// What a failing test that started the app leaves behind, and how to run it again.
 pub mod evidence;
 /// A process's threads by name, for a count's failure to say which they were.

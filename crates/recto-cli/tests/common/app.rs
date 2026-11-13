@@ -153,46 +153,50 @@ impl OwnCopy {
 }
 
 impl Drop for OwnCopy {
-    /// Every run of this copy ended, as only this test can reach it, and the system made to forget it until its dump says so twice in a row,
-    /// both again until they hold, within 20 s; then the folder. A copy launched a moment ago is registered as the launch goes on, so one forgetting before it
-    /// had finished, or before its run had quit, was undone (CI run 43101058944: `own-34946-0` left registered).
+    /// Every run of this copy ended and the system made to forget it (`end_and_forget`), then the folder.
     fn drop(&mut self) {
-        let executable = self.executable();
-        let running = || recto_platform::local::processes_running(&executable);
-        let began = Instant::now();
-        let mut clean = 0;
-        loop {
-            for signal in ["-TERM", "-KILL"] {
-                if running().is_empty() {
-                    break;
-                }
-                for pid in running() {
-                    let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
-                }
-                let asked = Instant::now();
-                while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-            // Twice in a row clean, as a registration still on its way can land after one clean look: seen once in six, the copy
-            // registered again after its first look said it had gone.
-            let forgotten = recto_platform::registry::forget_until_gone(&self.bundle, Duration::ZERO);
-            clean = if forgotten && running().is_empty() { clean + 1 } else { 0 };
-            if clean >= 2 {
-                break;
-            }
-            if began.elapsed() > Duration::from_secs(20) {
-                eprintln!(
-                    "{} was still registered or running after 20 s of ending and forgetting it",
-                    self.bundle.display()
-                );
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        end_and_forget(&self.bundle, &[self.executable()]);
         if let Some(folder) = self.bundle.parent() {
             let _ = std::fs::remove_dir_all(folder);
         }
+    }
+}
+
+/// Ends every run of these executables, as only the test that started them can reach them, and makes the system forget `root` and every bundle inside it until its dump says so twice in a row with no run left, both again until they hold, within 20 s. A copy launched a moment ago is registered as the launch goes on, so one forgetting before the system had finished, or before its run had quit, was undone (CI run 43101058944: `own-34946-0` left registered; 2026-11-13: an update test's `install/RectoPDF.app`, which forgot once and was registered after, in another tree's stage). Seen here: a copy killed 20 ms after its start was registered 2 s after its forgetting (1 of 18 kills at 0 to 400 ms). Call it before the folder goes.
+pub fn end_and_forget(root: &Path, executables: &[PathBuf]) {
+    let running = || {
+        executables
+            .iter()
+            .flat_map(|executable| recto_platform::local::processes_running(executable))
+            .collect::<Vec<_>>()
+    };
+    let began = Instant::now();
+    let mut clean = 0;
+    loop {
+        for signal in ["-TERM", "-KILL"] {
+            if running().is_empty() {
+                break;
+            }
+            for pid in running() {
+                let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
+            }
+            let asked = Instant::now();
+            while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        // Twice in a row clean, as a registration still on its way can land after one clean look: seen once in six, the copy
+        // registered again after its first look said it had gone.
+        let forgotten = recto_platform::registry::forget_until_gone(root, Duration::ZERO);
+        clean = if forgotten && running().is_empty() { clean + 1 } else { 0 };
+        if clean >= 2 {
+            break;
+        }
+        if began.elapsed() > Duration::from_secs(20) {
+            eprintln!("{} was still registered or running after 20 s of ending and forgetting it", root.display());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
