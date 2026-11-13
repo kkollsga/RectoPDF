@@ -4,6 +4,7 @@ use crate::TabId;
 use crate::lists::Lists;
 use crate::registry::Tabs;
 use crate::warm::Warm;
+use recto_platform::FileStamp;
 
 /// What a tab's pages are called and how many it has now, borrowed from the session for one look: [`crate::Session::pages`].
 pub struct Pages<'a> {
@@ -81,6 +82,14 @@ impl Pages<'_> {
                     .and_then(|at| u32::try_from(at).ok())
             }
         }
+    }
+
+    /// **What the tab's own file must still be for its page numbers to hold:** its version, once it has a list of edits in memory, whose page numbers
+    /// are about that version; nothing for a tab with no list in memory, whose positions are its file's pages whatever the file is now. A list asleep
+    /// gives nothing here, as for none: a caller reading pages wakes the list first (`recto-agent`'s executor does, for every command about a tab), and
+    /// one that couldn't be woken is refused before any page is read.
+    pub fn own_file_expected(&self, id: TabId) -> Option<FileStamp> {
+        self.lists.get(id).and_then(|_| self.tabs.own_stamp(id))
     }
 
     /// How many pages a tab has now, counting unsaved edits.

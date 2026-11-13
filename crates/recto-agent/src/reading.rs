@@ -67,7 +67,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                 renderer_only: record.renderer_only,
                 positions,
                 changed: false,
-                check_against: s.lists().get(id).is_some().then(|| s.tabs().own_stamp(id)).flatten(),
+                check_against: s.pages().own_file_expected(id),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.

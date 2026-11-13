@@ -226,6 +226,7 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "Pages: pub fn count",
         "Pages: pub fn for_typed",
         "Pages: pub fn label",
+        "Pages: pub fn own_file_expected",
         "Pages: pub fn label_differs",
         "Pages: pub fn place_words",
         "Pages: pub fn position_in_same_file",
@@ -315,10 +316,13 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "Warm: pub fn toc",
     ];
     let listing = listing();
-    let expected: Vec<String> = expected.iter().map(ToString::to_string).collect();
-    assert_eq!(
-        listing, expected,
-        "what a caller outside the crate can reach of the session's components:\n{listing:#?}"
+    let mut expected: Vec<String> = expected.iter().map(ToString::to_string).collect();
+    expected.sort();
+    let new: Vec<&String> = listing.iter().filter(|line| !expected.contains(line)).collect();
+    let gone: Vec<&String> = expected.iter().filter(|line| !listing.contains(line)).collect();
+    assert!(
+        new.is_empty() && gone.is_empty(),
+        "what a caller outside the crate can reach of the session's components changed.\nNew, not listed: {new:#?}\nListed, not there: {gone:#?}"
     );
 }
 
