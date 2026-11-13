@@ -193,8 +193,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;
     if let SaveTo::As { out, replace } = &to {
-        // The session's own wall, beside the table's: a confined session's Save As writes only in its folders (review of the branch, F4).
-        crate::quiet_files::check_new_file(access, out)?;
+        crate::quiet_files::check_new_file(access, out)?; // The session's own wall, beside the table's (F4).
         check_save_path(out)?;
         if *replace && level < Level::Full {
             return Err(needs_full("Replacing another file"));
