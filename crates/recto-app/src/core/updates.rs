@@ -116,6 +116,11 @@ impl Host for Hooks {
         self.inner().is_some_and(|inner| inner.hand_off_quit_now())
     }
 
+    /// Attached once and let go of since: the headless kit's app has ended, as a real one ends only with its process.
+    fn gone(&self) -> bool {
+        self.inner.get().is_some_and(|inner| inner.strong_count() == 0)
+    }
+
     fn cancelled(&self) {
         if let Some(inner) = self.inner() {
             inner.hand_off_cancelled();
