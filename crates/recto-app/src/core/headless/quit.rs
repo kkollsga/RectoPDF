@@ -157,3 +157,36 @@ fn a_quit_whose_thread_wont_start_still_answers() {
     crate::core::quitting::QUIT_THREAD_REFUSED.store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(!answer.go, "the unsaved edit isn't known to be kept, so it asks: {answer:?}");
 }
+
+/// Failure (coordinator, 2026-11-13, found beside R2.3's S1): what a quit that couldn't write the state and `recto stop` ask about, the tabs that would lose
+/// something, misses a tab whose edit list is asleep: its unsaved edits are read from the list's summary, but its undone steps only from a list in memory, so
+/// a tab asleep with only undone steps isn't named, and a quit goes ahead without asking. Both are named, asleep as awake.
+#[test]
+fn a_tab_asleep_is_named_among_those_that_would_lose_something() {
+    let disk = Disk::new();
+    let (a, b, c) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 3));
+    let app = disk.start();
+    for file in [&a, &b, &c] {
+        app.open(file);
+    }
+    for line in [
+        r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##,
+        r##"{"cmd":"page_rotate","tab":"#2","pages":"1","degrees":90}"##,
+        r##"{"cmd":"undo","tab":"#2"}"##,
+        r##"{"cmd":"tap","tab":"#3"}"##,
+    ] {
+        app.person(line);
+        app.settle();
+    }
+    for tab in [1, 2] {
+        let slept = app
+            .agent(recto_agent::Level::Full, &format!(r##"{{"cmd":"session_sleep","tab":"#{tab}"}}"##))
+            .expect("put to sleep");
+        assert_eq!(slept["list_asleep"], true, "#{tab}: {slept}");
+    }
+    let named: Vec<u32> = recto_control::host::Host::unsaved_tabs(&app.core().host.session)
+        .into_iter()
+        .map(|(id, _)| id.0)
+        .collect();
+    assert_eq!(named, vec![1, 2], "the edited tab and the one with only undone steps, both asleep");
+}

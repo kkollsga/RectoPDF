@@ -151,7 +151,14 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         when_run,
     } = run;
     let command = match when_run {
-        Some(resolve) => inner.host.session.with_session(|session| resolve(session, command)),
+        Some(resolve) => match inner.host.session.with_session(|session| resolve(session, Actor::Person, command.clone())) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let result = Err(error);
+                answered(inner, &command, origin, &result);
+                return result;
+            }
+        },
         None => command,
     };
     if origin == Origin::Input {

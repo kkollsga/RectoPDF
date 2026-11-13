@@ -32,7 +32,8 @@ fn the_palettes_run_keeps_to_each_commands_level() {
 
 /// Failure (R2.3, the coordinator's ruling of 2026-11-13): the palette's update item runs as something other than the command the updater's state gives it, at the
 /// agent's level: an agent at Control installs an update through it, as `update install --now` needs Full, or is refused the check `update check` lets it
-/// make, or one at Read-only does either. *Check for Updates…* is `update check` (Control), *Update to X…* `update install --now` (Full).
+/// make. *Check for Updates…* is `update check` (Control), *Update to X…* `update install --now` (Full). (Below Control the palette's own level refuses
+/// any run before a row is looked at, so a check there couldn't tell the two apart.)
 #[test]
 fn the_palettes_update_is_the_updaters_command_at_the_agents_level() {
     use crate::testkit::update_bed::{NEW, OLD, UpdateBed};
@@ -44,11 +45,6 @@ fn the_palettes_update_is_the_updaters_command_at_the_agents_level() {
     app.open(&file);
     let run = |level: Level, query: &str| app.agent(level, &format!(r#"{{"cmd":"palette","query":"{query}","run":true}}"#));
     let refused = |result: Result<serde_json::Value, recto_agent::AgentError>| result.map(drop).map_err(|error| error.code.to_string());
-    assert_eq!(
-        refused(run(Level::ReadOnly, "check for updates")),
-        Err("permission_denied".into()),
-        "below Control"
-    );
     let checked = run(Level::Control, "check for updates").expect("the check at Control");
     assert_eq!(checked["ran"]["id"], "app.update", "{checked}");
     bed.releases.offer(NEW);
@@ -61,7 +57,6 @@ fn the_palettes_update_is_the_updaters_command_at_the_agents_level() {
         direct,
         "the palette's Update to X… is refused as that command is"
     );
-    assert_eq!(refused(run(Level::ReadOnly, "update to")), Err("permission_denied".into()), "below Control");
 }
 
 /// Failure (rule 6 and the levels, review of 2026-11-13): an agent's `palette --run` of a row with no command of its own ran as the person, through the
@@ -109,4 +104,34 @@ fn an_agents_palette_run_never_runs_as_the_person() {
     app.settle();
     assert!(closed.is_err(), "{closed:?}");
     assert_eq!(app.tabs().len(), 1, "the tab and its edit stay");
+}
+
+/// Failure (review of R2.3, F3): an agent's palette run of the update item runs what the updater offers when it runs, not what the agent matched, so one at
+/// Full that asked for *Check for Updates…* installs an offer that landed in between (`update install --now`). The run names the title it matched, and is
+/// refused `changed` with nothing started when the palette's title for the id is no longer that; the title it matched now runs.
+#[test]
+fn the_palettes_update_runs_what_the_agent_matched_or_nothing() {
+    use crate::testkit::update_bed::{NEW, OLD, UpdateBed};
+    let disk = crate::testkit::headless::Disk::new();
+    disk.install_app(OLD);
+    let bed = UpdateBed::new();
+    let file = disk.pdf("alpha.pdf", 3);
+    let app = disk.builder().update(&bed).start();
+    app.open(&file);
+    let core = app.core();
+    let matched = crate::core::palette::title_now(core, "app.update").expect("listed");
+    assert!(matched.starts_with("Check for Updates"), "{matched}");
+    bed.releases.offer(NEW);
+    app.agent(Level::Full, r#"{"cmd":"update_check"}"#).expect("checked");
+    app.settle();
+    let run = |matched: &str| {
+        let result = core
+            .host
+            .run_menu_id(recto_agent::Actor::Agent(Level::Full), core, "app.update", Some(matched), &mut Vec::new());
+        app.settle();
+        result.map(drop).map_err(|error| error.code.to_string())
+    };
+    let offered = app.update_status()["status"].clone();
+    assert_eq!(run(&matched), Err("changed".to_string()), "the offer landed between the match and the run");
+    assert_eq!(app.update_status()["status"], offered, "nothing started");
 }

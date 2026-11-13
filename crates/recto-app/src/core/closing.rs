@@ -61,7 +61,11 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
                 },
             ))
         }
-        (crate::menus::Action::Host(host), "file.close_window") => Some(Row::host("closes the window, which is the system's", *host)),
+        (crate::menus::Action::Host(host), "file.close_window") => Some(Row::host(
+            "closes the window, which is the system's, and the app's lifecycle the person's",
+            super::menu_rows::Agents::Never,
+            *host,
+        )),
         _ => None,
     }
 }

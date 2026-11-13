@@ -81,52 +81,29 @@ impl Twins {
 
     /// **Both apps show and keep the same:** the reader's model as the window pulls it, the sidebar's, and the record as it would be written, each with its
     /// disk's folder and its files' stamps (`file`: their inodes and times, which two disks never share) taken out. `except` names more record keys left out
-    /// of the comparison, and fields of the window's models that say yes or no, which the caller checks itself (who a jump or an edit was by).
+    /// of the comparison, and fields of the window's models that say yes or no, which the caller checks itself (who a jump or an edit was by). The
+    /// comparison is [`Self::differences`]'s.
     pub fn assert_same(&self, what: &str, except: &[&str]) {
-        let shown = |app: &HeadlessApp, root: &str| {
-            let mut shown = format!("{:?} {:?}", app.reader(), app.sidebar()).replace(root, "<files>");
-            for key in except {
-                shown = shown
-                    .replace(&format!("{key}: true"), &format!("{key}: _"))
-                    .replace(&format!("{key}: false"), &format!("{key}: _"));
-            }
-            shown
-        };
-        assert_eq!(
-            shown(&self.person, &self.roots[0]),
-            shown(&self.agent, &self.roots[1]),
-            "{what}: the window shows the same"
-        );
-        let zoom = |app: &HeadlessApp| {
-            let inner = app.core();
-            inner
-                .panes
-                .engines(&inner.engine)
-                .iter()
-                .map(recto_reader::Engine::magnification)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(zoom(&self.person), zoom(&self.agent), "{what}: the pages are zoomed the same");
-        let kept = |app: &HeadlessApp, root: &str| {
-            let mut record: Value = serde_json::from_str(&app.session_json().to_string().replace(root, "<files>")).expect("json");
-            strip(&mut record, &[&["file"], except].concat());
-            record
-        };
-        assert_eq!(
-            kept(&self.person, &self.roots[0]),
-            kept(&self.agent, &self.roots[1]),
-            "{what}: the record keeps the same"
-        );
+        let found = self.differences(except);
+        assert!(found.is_empty(), "{what}: {}", found.join("; "));
     }
 
     /// [`Self::assert_same`]'s comparison, said rather than asserted, short: where the two apps' window models differ (their fields, as `Debug` prints them),
     /// whether their pages are zoomed the same, and the record's keys that differ. Empty when they show and keep the same. For a test that lists every
     /// difference it finds before it fails.
     pub fn differences(&self, except: &[&str]) -> Vec<String> {
+        self.differences_whose(except, &[])
+    }
+
+    /// [`Self::differences`], with the record's marks of whose something is compared by actor rather than left out: where the two records differ at a
+    /// key `marks` names, the person's must have the person's mark and the agent's the agent's (an edit's `by`, `o` and `a`), and anything else there is a
+    /// difference. The window's models leave the marks' yes-or-no fields out, as the record says them.
+    pub fn differences_whose(&self, except: &[&str], marks: &[Mark]) -> Vec<String> {
         let mut found = Vec::new();
+        let marked: Vec<&str> = marks.iter().map(|mark| mark.key).collect();
         let fields = |app: &HeadlessApp, root: &str| {
             let mut shown = format!("{:?} {:?}", app.reader(), app.sidebar()).replace(root, "<files>");
-            for key in except {
+            for key in except.iter().chain(&marked) {
                 shown = shown
                     .replace(&format!("{key}: true"), &format!("{key}: _"))
                     .replace(&format!("{key}: false"), &format!("{key}: _"));
@@ -161,18 +138,44 @@ impl Twins {
             strip(&mut record, &[&["file"], except].concat());
             record
         };
+        let mut leaves = Vec::new();
+        differing("", None, &kept(&self.person, &self.roots[0]), &kept(&self.agent, &self.roots[1]), &mut leaves);
+        let short = |value: &Value| value.to_string().chars().take(100).collect::<String>();
         let mut paths = Vec::new();
-        differing("", &kept(&self.person, &self.roots[0]), &kept(&self.agent, &self.roots[1]), &mut paths);
+        for (path, key, person, agent) in &leaves {
+            match marks.iter().find(|mark| Some(mark.key) == key.as_deref()) {
+                Some(mark) if mark.is(person, &mark.person) && mark.is(agent, &mark.agent) => {}
+                Some(_) => paths.push(format!("{path}, whose otherwise (person {}, agent {})", short(person), short(agent))),
+                None => paths.push(format!("{path} (person {}, agent {})", short(person), short(agent))),
+            }
+        }
         if !paths.is_empty() {
-            found.push(format!("the record keeps otherwise at {}", paths.join(", ")));
+            let more = paths.len().saturating_sub(6);
+            paths.truncate(6);
+            let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+            found.push(format!("the record keeps otherwise at {}{more}", paths.join(", ")));
         }
         found
     }
 }
 
-/// The paths where two records differ, the first few.
-fn differing(at: &str, person: &Value, agent: &Value, paths: &mut Vec<String>) {
-    if paths.len() >= 6 || person == agent {
+/// A key of the record that says whose something is, with the person's mark and the agent's: where the two records differ there, each must be its own.
+pub struct Mark {
+    pub key: &'static str,
+    pub person: Value,
+    pub agent: Value,
+}
+
+impl Mark {
+    /// Whether `value` is `mark`: a record leaves out a mark that's false, so nothing there is false.
+    fn is(&self, value: &Value, mark: &Value) -> bool {
+        value == mark || (*mark == Value::Bool(false) && value.is_null())
+    }
+}
+
+/// The leaves where two records differ: the path, the key it's under, and the two values.
+fn differing(at: &str, key: Option<&str>, person: &Value, agent: &Value, leaves: &mut Vec<(String, Option<String>, Value, Value)>) {
+    if person == agent {
         return;
     }
     match (person, agent) {
@@ -180,16 +183,46 @@ fn differing(at: &str, person: &Value, agent: &Value, paths: &mut Vec<String>) {
             for key in one.keys().chain(other.keys().filter(|key| !one.contains_key(*key))) {
                 differing(
                     &format!("{at}.{key}"),
+                    Some(key),
                     one.get(key).unwrap_or(&Value::Null),
                     other.get(key).unwrap_or(&Value::Null),
-                    paths,
+                    leaves,
                 );
             }
         }
-        _ => {
-            let short = |value: &Value| value.to_string().chars().take(100).collect::<String>();
-            paths.push(format!("{at} (person {}, agent {})", short(person), short(agent)));
+        (Value::Array(one), Value::Array(other)) if one.len() == other.len() => {
+            for (at_index, (one, other)) in one.iter().zip(other).enumerate() {
+                differing(&format!("{at}.{at_index}"), key, one, other, leaves);
+            }
         }
+        _ => leaves.push((at.to_string(), key.map(str::to_string), person.clone(), agent.clone())),
+    }
+}
+
+/// **How many of the record's steps and stops are the owner's and how many an agent's:** an edit's entry (`by`, `a` an agent's) and a stop in a tab's
+/// trail (`back` and `forward`, `by_agent`). An undo moves an entry, as it was, from one list to another, and a step back a stop, so a run that makes none
+/// leaves both counts as they were or lower, and one that does adds to its own actor's.
+pub fn authored(record: &Value) -> (usize, usize) {
+    let mut found = Vec::new();
+    authored_in(record, false, &mut found);
+    let agents = found.iter().filter(|(_, agent)| *agent).count();
+    (found.len() - agents, agents)
+}
+
+/// Every edit entry and trail stop under `value`. `in_trail`: inside a `back` or `forward` list, where each object is a stop.
+fn authored_in(value: &Value, in_trail: bool, out: &mut Vec<(String, bool)>) {
+    match value {
+        Value::Object(map) if in_trail => out.push((value.to_string(), map.get("by_agent") == Some(&Value::Bool(true)))),
+        Value::Object(map) => match map.get("by") {
+            Some(by) if map.contains_key("step") => out.push((value.to_string(), by == "a")),
+            _ => {
+                for (key, value) in map {
+                    authored_in(value, matches!(key.as_str(), "back" | "forward"), out);
+                }
+            }
+        },
+        Value::Array(list) => list.iter().for_each(|value| authored_in(value, in_trail, out)),
+        _ => {}
     }
 }
 

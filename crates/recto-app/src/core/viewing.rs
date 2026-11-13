@@ -1,7 +1,7 @@
 //! **How pages are shown, as the person changes it** (step R2.3, C5a): the paper, the sidebar, the agent icon and a tab's layout are each `view`, the command
 //! an agent sends, run for the person on the session thread ([`super::person::submit`]); the zoom is [`super::zoom`]'s, on the thread that asked.
 
-use super::menu_rows::{Asked, Row};
+use super::menu_rows::{Agents, Asked, Row};
 use super::{HostAction, Inner, person};
 use crate::menus::Action;
 use recto_agent::commands::view::View;
@@ -29,7 +29,9 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
             tab: inner.panes.tab_of(inner.panes.reading()).map(|tab| format!("#{}", tab.0)),
             ..View::default()
         },
-        Action::Host(HostAction::None) if asked.id == "view.paper" => return Some(Row::host("a submenu's own item only opens it", HostAction::None)),
+        Action::Host(HostAction::None) if asked.id == "view.paper" => {
+            return Some(Row::host("a submenu's own item only opens it", Agents::Never, HostAction::None));
+        }
         _ => return None,
     };
     Some(Row::command(view))

@@ -45,14 +45,14 @@ recent_clear level=control tab=None draws=false reads_pages=false route=session 
 budget level=read_only tab=None draws=false reads_pages=false route=session log=null
 budget level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
-view level=control tab=None draws=false reads_pages=false route=app log=null
+view level=control tab=Some("active") draws=false reads_pages=false route=app log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
 view level=read_only tab=None draws=false reads_pages=false route=session log=null
-view level=control tab=None draws=false reads_pages=false route=app log=null
+view level=control tab=Some("active") draws=false reads_pages=false route=app log=null
 palette level=read_only tab=None draws=false reads_pages=false route=app log={"query":null,"run":false}
 palette level=control tab=None draws=false reads_pages=false route=app log={"query":"q","run":true}
 palette level=read_only tab=None draws=false reads_pages=false route=app log={"query":null,"run":false}

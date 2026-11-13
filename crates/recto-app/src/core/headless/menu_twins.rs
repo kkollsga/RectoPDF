@@ -1,15 +1,19 @@
 //! **A menu id is one action whoever runs it** (step R2.3; owner, 2026-11-12: "all features should be implemented once"): every menu id ⌘K's palette can
 //! run, chosen by the person at the window on one app, and run by an agent at Full with `recto palette --run` on another with the same documents, in a small
-//! grid of what's showing. Each must publish, announce and keep the same, but for who it's by and for what the actor rules decide.
+//! grid of what's showing. Each must publish, announce and keep the same, but for what the actor rules decide, and each run must be whose it is: the
+//! person's sent as theirs and marked the owner's, an agent's never sent as the person and marked an agent's. Where the owner's edits or a protected
+//! document decide, an agent's palette run at Control must be its command at Control.
 
-use super::twins::Twins;
+use super::twins::{Mark, Twins};
 use crate::core::controls::UiAction;
+use crate::core::menu_rows::{ForAgent, Row};
 use crate::testkit::headless::HeadlessApp;
-use recto_agent::Level;
+use recto_agent::{Actor, Level};
+use serde_json::json;
 
 /// What's showing when the id is run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Showing {
+pub(super) enum Showing {
     /// Two tabs, the second in front on its page 3, the sidebar shown, edit mode off.
     Reading,
     SidebarHidden,
@@ -25,9 +29,20 @@ enum Showing {
     Selected,
     /// The owner's unsaved edits, one of them undone, and a step back made, so Undo, Redo, Forward, Save and Clear History can be chosen.
     Edited,
+    /// A third tab in front, a document the person opened with its password, which every agent's command about it is refused (`protected`).
+    Protected,
+    /// The same, with its text selected, so Copy and Select All can be chosen on it.
+    ProtectedSelected,
 }
 
-const GRID: [Showing; 8] = [
+impl Showing {
+    /// Whether a document the person opened with its password is in front.
+    fn protected(self) -> bool {
+        matches!(self, Self::Protected | Self::ProtectedSelected)
+    }
+}
+
+pub(super) const GRID: [Showing; 10] = [
     Showing::Reading,
     Showing::SidebarHidden,
     Showing::EditMode,
@@ -36,24 +51,47 @@ const GRID: [Showing; 8] = [
     Showing::FindClosed,
     Showing::Selected,
     Showing::Edited,
+    Showing::Protected,
+    Showing::ProtectedSelected,
 ];
 
-/// What the record and the window say of who something was by, which the actor decides: an agent's steps and jumps are an agent's, the person's the owner's.
-const WHOSE: &[&str] = &[
-    "by",
-    "by_agent",
-    "holds_owner_edits",
-    "owner_steps_undone",
-    "undone_owner_steps",
-    "owner_step_dropped",
-    "journal",
-];
+/// The states an agent's run at Control is checked in too: where the owner's edits and a protected document decide what an agent below Full may do.
+const AT_CONTROL: [Showing; 3] = [Showing::Edited, Showing::Protected, Showing::ProtectedSelected];
+
+/// **What the record says of whose something is,** which the actor decides: an edit's step is `by` the owner (`o`) or an agent (`a`), a jump in the trail is
+/// `by_agent` or not, and what the session keeps says whether the owner's edits are there. Where the twins differ at one of these, the person's must be the
+/// person's and the agent's the agent's.
+fn whose() -> Vec<Mark> {
+    let mark = |key, person, agent| Mark { key, person, agent };
+    vec![
+        mark("by", json!("o"), json!("a")),
+        mark("by_agent", json!(false), json!(true)),
+        mark("holds_owner_edits", json!(true), json!(false)),
+        mark("owner_steps_undone", json!(true), json!(false)),
+        mark("undone_owner_steps", json!(true), json!(false)),
+        mark("owner_step_dropped", json!(true), json!(false)),
+    ]
+}
+
+/// The window's fields that say whose, left out of a comparison of two runs by different actors: the record says them, and [`whose`] checks it.
+const WHOSE_FIELDS: &[&str] = &["holds_owner_edits", "undone_owner_steps"];
+
+/// What the record names by the file's own stamp, which two disks never share: a tab's journal, once a save or a cleared history starts a new one.
+const STAMPED: &[&str] = &["journal"];
 
 /// The person's own commands that make `showing`, on one of the twins, settled, with what they announced heard and forgotten.
-fn set_up(app: &HeadlessApp, showing: Showing) {
+pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
+    if showing.protected() {
+        let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 5));
+        app.core().open_file(file);
+        app.settle();
+        let id = app.reader().password_prompt.expect("it asks for its password").id;
+        app.core().password_answered(id, Some("right".into()));
+        app.settle();
+    }
     let mut lines = vec![r#"{"cmd":"goto","tab":"active","page":3}"#];
     lines.extend(match showing {
-        Showing::Reading => vec![],
+        Showing::Reading | Showing::Protected | Showing::ProtectedSelected => vec![],
         Showing::SidebarHidden => vec![r#"{"cmd":"view","sidebar":"off"}"#],
         Showing::EditMode => vec![r#"{"cmd":"edit_mode","set":"on"}"#],
         Showing::Comparing => vec![r##"{"cmd":"compare","toggle":"#1"}"##],
@@ -75,7 +113,7 @@ fn set_up(app: &HeadlessApp, showing: Showing) {
         app.person(line);
         app.settle();
     }
-    if showing == Showing::Selected {
+    if matches!(showing, Showing::Selected | Showing::ProtectedSelected) {
         app.act(UiAction::Menu { id: "edit.select_all".into() });
         app.settle();
     }
@@ -87,11 +125,6 @@ fn twins(showing: Showing) -> Twins {
     set_up(&twins.person, showing);
     set_up(&twins.agent, showing);
     twins
-}
-
-/// The palette's rows of menu ids with `showing`, as the window lists them: (id, title).
-fn rows(showing: Showing) -> Vec<(String, String)> {
-    rows_now(&twins(showing).agent)
 }
 
 /// An agent's `palette --run` of `title`'s row.
@@ -108,15 +141,31 @@ enum ActorRule {
     FindStepWithFindClosed,
     /// The same rule: the person's ⌘F shows the sidebar Find is in (A6); an agent's opens Find and leaves the sidebar as it is.
     FindOpenWithTheSidebarHidden,
-    /// The close rule (`refuse_close_that_loses_something`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
+    /// The close rule (`recto_agent::close_rule`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
     CloseThatLosesEdits,
+    /// A row that's the window's alone and the person's own (`menu_rows::Agents::Never` or `ItsOwn`): the person's run does it, and an agent's is
+    /// refused `persons_own` with nothing changed.
+    PersonsOwn,
+    /// A document the person opened with its password gives an agent nothing (agent report §5.5): an agent's command about it is refused `protected`,
+    /// with nothing changed, and the person's does what it does. An agent's run that isn't refused is an agent's command (which `differences_at_control`
+    /// holds to what that command does) or the window's own state, which reads nothing of a document; any other is a difference.
+    Protected,
 }
 
 /// The actor rule that decides `id` on `app` as it is now, if one does.
-fn actor_rule(app: &HeadlessApp, id: &str) -> Option<ActorRule> {
+fn actor_rule(app: &HeadlessApp, showing: Showing, id: &str) -> Option<ActorRule> {
     let reader = app.reader();
     let find_open = app.session_json()["find"]["open"] == true;
+    let persons_own = matches!(
+        crate::core::menu_rows::row(app.core(), id),
+        Some(Row::Window {
+            agents: crate::core::menu_rows::Agents::Never | crate::core::menu_rows::Agents::ItsOwn(_),
+            ..
+        })
+    );
     match id {
+        _ if persons_own => Some(ActorRule::PersonsOwn),
+        _ if showing.protected() => Some(ActorRule::Protected),
         "find.next" | "find.previous" if !find_open => Some(ActorRule::FindStepWithFindClosed),
         "find.open" if reader.sidebar_hidden => Some(ActorRule::FindOpenWithTheSidebarHidden),
         "file.close" if reader.edited => Some(ActorRule::CloseThatLosesEdits),
@@ -124,20 +173,67 @@ fn actor_rule(app: &HeadlessApp, id: &str) -> Option<ActorRule> {
     }
 }
 
-/// How the id run by each actor differed with `showing`, said, or nothing.
-fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
-    let twins = twins(showing);
-    let rule = actor_rule(&twins.person, id);
+/// Whether the person's run of `id` sends its command as theirs: a row that's an agent's command does, unless the close rule asks first.
+fn sends_a_command(app: &HeadlessApp, id: &str) -> bool {
+    matches!(crate::core::menu_rows::row(app.core(), id), Some(Row::Command { .. } | Row::OwnWay { .. }))
+}
+
+/// How the id run by each actor differed with `showing`, on `twins` as they are, said, or nothing: the person at the window and an agent at Full by the
+/// palette, which must publish, announce and keep the same but for whose it is, and be each its own.
+fn differences(twins: &Twins, showing: Showing, id: &str, title: &str) -> Vec<String> {
+    let rule = actor_rule(&twins.person, showing, id);
+    let sends = sends_a_command(&twins.person, id);
+    let row = crate::core::menu_rows::row(twins.agent.core(), id).map(|row| match row {
+        Row::Window { agents, why, .. } => Row::Window {
+            agents,
+            why,
+            does: Box::new(|| crate::menus::HostAction::None),
+        },
+        other => other,
+    });
+    let person_before = twins.person.session_json();
     let (find_before, kept_before) = (twins.person.session_json()["find"].clone(), twins.agent.session_json());
+    twins.person.keep_sent();
+    twins.agent.keep_sent();
     let acted = twins.person.act(UiAction::Menu { id: id.into() });
     twins.person.settle();
     let mut person_said = twins.person.heard_events();
     let (result, mut agent_said) = twins.agent.agent_heard(Level::Full, &palette_run(title));
     twins.agent.settle();
     agent_said.extend(twins.agent.heard_events());
+    let (person_sent, agent_sent) = (twins.person.sent(), twins.agent.sent());
     let mut found = Vec::new();
+    // Nothing an agent runs puts anything on the person's clipboard: no copy is on its way, nor waiting for the host.
+    let selection = twins.agent.core().panes.reading_engine(&twins.agent.core().engine).report().0["selection"].clone();
+    if selection["copying"] == true || selection["copy_waiting_for_host"] == true {
+        found.push(format!("the agent's run started a copy to the person's clipboard: {selection}"));
+    }
+    // Every step and stop a run made is its actor's, whether or not the twins differ there: the person's run adds none of an agent's, an agent's none of
+    // the owner's.
+    let (person_was, agent_was) = (super::twins::authored(&person_before), super::twins::authored(&kept_before));
+    let (person_now, agent_now) = (
+        super::twins::authored(&twins.person.session_json()),
+        super::twins::authored(&twins.agent.session_json()),
+    );
+    if person_now.1 > person_was.1 {
+        found.push(format!(
+            "the person's run made an agent's step or stop (owner's and agent's: {person_was:?} to {person_now:?})"
+        ));
+    }
+    if agent_now.0 > agent_was.0 {
+        found.push(format!(
+            "the agent's run made an owner's step or stop (owner's and agent's: {agent_was:?} to {agent_now:?})"
+        ));
+    }
+    // Whose it is, by the one route each has: the person's sent as theirs, an agent's never.
+    if !agent_sent.is_empty() {
+        found.push(format!("the agent's run sent as the person {agent_sent:?}"));
+    }
+    if sends && person_sent.is_empty() && acted.host != crate::menus::HostAction::ConfirmClose {
+        found.push("the person's run sent nothing as theirs".into());
+    }
     let refused = result.as_ref().err().map(|error| error.code.to_string());
-    let mut except = WHOSE.to_vec();
+    let mut except = [WHOSE_FIELDS, STAMPED].concat();
     match rule {
         Some(ActorRule::FindStepWithFindClosed) => {
             let find = &twins.person.session_json()["find"];
@@ -170,10 +266,38 @@ fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
                     acted.host
                 ));
             }
-            found.extend(twins.differences(&except));
+            found.extend(twins.differences_whose(&except, &whose()));
             return found;
         }
-        None => {}
+        Some(ActorRule::PersonsOwn) => {
+            if refused.as_deref() != Some("persons_own") || twins.agent.session_json() != kept_before {
+                found.push(format!(
+                    "an agent's run of the person's own wasn't refused `persons_own` with nothing changed: {result:?}"
+                ));
+            }
+            return found;
+        }
+        Some(ActorRule::Protected) if refused.as_deref() == Some("protected") => {
+            if twins.agent.session_json() != kept_before {
+                found.push("an agent's run refused `protected` changed something".into());
+            }
+            return found;
+        }
+        Some(ActorRule::Protected)
+            if refused.is_none()
+                && !matches!(
+                    row,
+                    Some(Row::Command { .. } | Row::OwnWay { .. })
+                        | Some(Row::Window {
+                            agents: crate::core::menu_rows::Agents::AsTheMenu(_),
+                            ..
+                        })
+                ) =>
+        {
+            found.push("an agent's run on a protected document went through, and is neither its command nor the window's own".into());
+            return found;
+        }
+        Some(ActorRule::Protected) | None => {}
     }
     match &result {
         Err(error) => found.push(format!("the agent's run was refused ({}: {})", error.code, error.message)),
@@ -187,8 +311,73 @@ fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
             super::twins::names(&agent_said)
         ));
     }
-    found.extend(twins.differences(&except));
+    found.extend(twins.differences_whose(&except, &whose()));
     found
+}
+
+/// **An agent's run at Control by the palette is its command at Control,** on `twins` as they are: the person's twin runs the row's command itself as an
+/// agent at Control, the agent's twin the palette's row, and the two must come to the same, refused with the same code or not, and publish, announce and
+/// keep the same, whose it is included. For a row that's an agent's command.
+fn differences_at_control(twins: &Twins, id: &str, title: &str) -> Vec<String> {
+    let at_control = Actor::Agent(Level::Control);
+    let direct = {
+        let core = twins.person.core();
+        let command = crate::core::menu_rows::for_agent(core, id, |when_run, command| {
+            core.host.session.with_session(|session| when_run(session, at_control, command))
+        });
+        let mut events = Vec::new();
+        let result = match command {
+            Ok(ForAgent::Command(command)) => recto_control::host::Host::run(&*core.host, at_control, &command, &mut events),
+            Ok(_) => return Vec::new(),
+            Err(error) => Err(error),
+        };
+        twins.person.settle();
+        events.extend(twins.person.heard_events());
+        (result.map(drop).map_err(|error| error.code), events)
+    };
+    let (result, mut said) = twins.agent.agent_heard(Level::Control, &palette_run(title));
+    twins.agent.settle();
+    said.extend(twins.agent.heard_events());
+    let mut found = Vec::new();
+    let by_palette = result.map(drop).map_err(|error| error.code);
+    if by_palette != direct.0 {
+        found.push(format!("at Control: its command came to {:?}, the palette's run to {by_palette:?}", direct.0));
+    }
+    if direct.1 != said {
+        found.push(format!(
+            "at Control, announced otherwise: its command {:?}, the palette {:?}",
+            super::twins::names(&direct.1),
+            super::twins::names(&said)
+        ));
+    }
+    found.extend(twins.differences(STAMPED).into_iter().map(|difference| format!("at Control: {difference}")));
+    found
+}
+
+/// What one app shows and keeps, to tell whether a row left it as it found it.
+fn state(app: &HeadlessApp) -> String {
+    let inner = app.core();
+    let zoom: Vec<Option<f64>> = inner.panes.engines(&inner.engine).iter().map(recto_reader::Engine::magnification).collect();
+    format!("{:?} {:?} {} {zoom:?}", app.reader(), app.sidebar(), app.session_json())
+}
+
+/// **Every row of every state, each run on twins in that state:** a pair is made for the state, and kept for the next row while the row leaves both apps
+/// as it found them, which most do (a panel shown, a refusal, a sheet for the host); one that changes something gets a new pair after it. `check` runs a
+/// row on a pair and says what differed.
+fn each_row(showing: Showing, check: impl Fn(&Twins, &str, &str) -> Vec<String>, wrong: &mut Vec<String>) -> Vec<String> {
+    let mut pair = Some(twins(showing));
+    let rows = rows_now(&pair.as_ref().expect("a pair").agent);
+    for (id, title) in &rows {
+        let twins = pair.get_or_insert_with(|| self::twins(showing));
+        let before = (state(&twins.person), state(&twins.agent));
+        for difference in check(twins, id, title) {
+            wrong.push(format!("{showing:?} {id}: {difference}"));
+        }
+        if (state(&twins.person), state(&twins.agent)) != before {
+            pair = None;
+        }
+    }
+    rows.into_iter().map(|(id, _)| id).collect()
 }
 
 /// The person's two quick presses of a toggle, and an agent's two quick runs of its row, each pair made before the window has caught up with the first.
@@ -212,7 +401,7 @@ fn twice_quickly(id: &str) -> Vec<String> {
         }
     }
     twins.agent.settle();
-    found.extend(twins.differences(WHOSE));
+    found.extend(twins.differences_whose(&[WHOSE_FIELDS, STAMPED].concat(), &whose()));
     found
 }
 
@@ -231,24 +420,25 @@ fn rows_now(app: &HeadlessApp) -> Vec<(String, String)> {
     .collect()
 }
 
-/// Failure (R2.3, the review's "Rule 4, in hand"): a menu id does one thing chosen by the person and another run by an agent through the palette, so the
-/// action is implemented twice and the two have drifted: a toggle worked out from what the window last showed for the agent and toggled when it runs for the
-/// person (two quick runs leave it otherwise), an edit mode Rotate the person can make and the agent's palette refuses, a row the agent's palette refuses that
-/// the person's menu runs as a command. Every menu id the palette lists in each state of a small grid, each on twins of its own: the same published,
-/// announced and kept, but for whose it is.
+/// Failure (R2.3, the review's "Rule 4, in hand", and its review's F4): a menu id does one thing chosen by the person and another run by an agent through
+/// the palette, so the action is implemented twice and the two have drifted: a toggle worked out from what the window last showed for the agent and
+/// toggled when it runs for the person (two quick runs leave it otherwise), an edit mode Rotate the person can make and the agent's palette refuses, a row
+/// the agent's palette refuses that the person's menu runs as a command; or an agent's row runs as the person, which the two coming out the same can't
+/// show. Every menu id the palette lists in each state of a small grid: the same published, announced and kept, each run whose it is (the person's sent as
+/// theirs and marked the owner's, an agent's never sent as the person and marked an agent's), a protected document's refused for the agent as its commands
+/// are; and where the owner's edits or a protected document decide, an agent's run at Control by the palette is its command at Control.
 #[test]
 fn every_menu_id_is_one_action_for_the_person_and_an_agent() {
     let mut wrong = Vec::new();
     let mut ran = 0;
     let mut ids = std::collections::BTreeSet::new();
     for showing in GRID {
-        for (id, title) in rows(showing) {
-            ran += 1;
-            ids.insert(id.clone());
-            for difference in differences(showing, &id, &title) {
-                wrong.push(format!("{showing:?} {id}: {difference}"));
-            }
-        }
+        let listed = each_row(showing, |twins, id, title| differences(twins, showing, id, title), &mut wrong);
+        ran += listed.len();
+        ids.extend(listed);
+    }
+    for showing in AT_CONTROL {
+        each_row(showing, differences_at_control, &mut wrong);
     }
     for id in ["view.sidebar", "view.agent_icon"] {
         for difference in twice_quickly(id) {
@@ -304,12 +494,15 @@ fn a_rows_refusal_is_its_commands() {
         app.settle();
     }
     let protected = Err("protected".to_string());
-    let layout = format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{tab}"}}"##);
+    // A layout names its tab or goes by the one showing: which tab decides, not how it was named (review, F1).
+    let layout_named = format!(r##"{{"cmd":"view","layout":"two-up","tab":"#{tab}"}}"##);
+    let layout_showing = r#"{"cmd":"view","layout":"two-up"}"#.to_string();
     for (id, line) in [
         ("find.open", r#"{"cmd":"find","open":true}"#),
         ("go.back", r#"{"cmd":"back"}"#),
         ("go.forward", r#"{"cmd":"forward"}"#),
-        ("layout.two_up", layout.as_str()),
+        ("layout.two_up", layout_named.as_str()),
+        ("layout.two_up", layout_showing.as_str()),
     ] {
         let title = title_of(&app, id);
         assert_eq!(refusal(&app, Level::Full, line), protected, "{id}: `{line}` on a protected tab");
@@ -319,18 +512,21 @@ fn a_rows_refusal_is_its_commands() {
             "{id} by the palette, as its command"
         );
     }
+    // Leave Edit Mode by the palette at Control is `edit mode off`, which edit mode on a protected tab doesn't stop: it goes off. (Below Control the
+    // palette's own level refuses any run before a row is looked at, so a check there couldn't tell this row from another.)
     let title = title_of(&app, "edit_mode.done");
-    let below = Err("permission_denied".to_string());
     assert_eq!(
-        refusal(&app, Level::ReadOnly, r#"{"cmd":"edit_mode","set":"off"}"#),
-        below,
-        "edit mode off below Control"
+        refusal(&app, Level::Control, &palette_run(&title)),
+        Ok(()),
+        "Leave Edit Mode by the palette at Control"
     );
-    assert_eq!(
-        refusal(&app, Level::ReadOnly, &palette_run(&title)),
-        below,
-        "Leave Edit Mode by the palette below Control"
-    );
+    assert!(!app.reader().edit_mode, "edit mode went off");
+    // What's shown, asked with no tab, says the paper and the sidebar, and nothing of the protected tab's layout.
+    let shown = app.agent(Level::Full, r#"{"cmd":"view"}"#).expect("asking how things are shown");
+    assert!(shown.get("layout").is_none_or(serde_json::Value::is_null), "{shown}");
+    assert!(shown["paper"].is_string(), "{shown}");
+    // The paper touches no tab, and stays the agent's to change.
+    assert_eq!(refusal(&app, Level::Full, r#"{"cmd":"view","paper":"warm"}"#), Ok(()), "the paper");
     // The person's layout on the protected tab applies; the agent's was refused above.
     app.act(UiAction::Menu { id: "layout.two_up".into() });
     app.settle();

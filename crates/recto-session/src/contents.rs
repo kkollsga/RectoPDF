@@ -18,7 +18,7 @@ impl<L: DocLoader> Session<L> {
                 page: None,
                 depth: 0,
                 current: is_active,
-                notice: tab_notice_words(tab, self.has_list(tab.id)),
+                notice: tab_notice_words(tab, self.lists.has_list(tab.id)),
                 action: None,
                 entry: NONE,
                 expandable: false,

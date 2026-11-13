@@ -124,3 +124,55 @@ fn file_save_is_heard_once_settled() {
     let said = twins.person.heard_events();
     assert_eq!(names(&said), ["saved", "edits_changed"], "{said:?}");
 }
+
+/// Failure (review of R2.3, S1, and the coordinator's ruling that unknown is "would lose"): an agent's `close` of a tab whose edit list is asleep, with only
+/// the owner's undone steps in it and its journal unreadable just now, was refused with the guidance for a tab with nothing of the owner's, and would have
+/// gone ahead at Full. With what it would lose not all known, an agent is refused `edits_unreadable` at Control and at Full, in plain words; the person's
+/// File > Close asks first, from the list's summary, as for the owner's undone steps.
+#[test]
+fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    for line in [
+        r##"{"cmd":"tap","tab":"#1"}"##,
+        r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##,
+        r##"{"cmd":"undo","tab":"#1"}"##,
+        r##"{"cmd":"tap","tab":"#2"}"##,
+    ] {
+        app.person(line);
+        app.settle();
+    }
+    let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
+    assert_eq!(slept["list_asleep"], true, "{slept}");
+    // Its journal can't be read back just now, so the list stays asleep through the command, with only its summary to go by.
+    journals_written_over(&app);
+    for level in [Level::Control, Level::Full] {
+        let error = app
+            .agent(level, r##"{"cmd":"close","tab":"#1"}"##)
+            .expect_err("not all of what it would lose is known");
+        assert_eq!(error.code, "edits_unreadable", "{level:?}: {error:?}");
+        assert!(error.message.contains("couldn't be read back"), "{error:?}");
+    }
+    assert_eq!(app.tabs().len(), 2, "it stays");
+    assert!(
+        app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1))),
+        "the list was asleep when the close was asked"
+    );
+    app.person(r##"{"cmd":"tap","tab":"#1"}"##);
+    app.settle();
+    let acted = app.act(UiAction::Menu { id: "file.close".into() });
+    assert_eq!(acted.host, crate::menus::HostAction::ConfirmClose, "the person is asked first");
+}
+
+/// Every journal in the state folder written over, so a list asleep can't be read back: what a disk that lost them, or a journal another build wrote, leaves.
+pub(super) fn journals_written_over(app: &HeadlessApp) {
+    let journals = app.core().saver.store.main_folder().join("journals");
+    for entry in std::fs::read_dir(&journals).expect("the journals").flatten() {
+        if entry.file_name().to_string_lossy().starts_with("journal-") {
+            std::fs::write(entry.path(), b"not a journal").expect("written over");
+        }
+    }
+}

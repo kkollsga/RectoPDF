@@ -37,6 +37,11 @@ fn items(inner: &Arc<Inner>) -> Vec<app::PaletteRow> {
     app::items(bar, enabled, edit_mode, can_rotate)
 }
 
+/// **The title the palette lists `id` by now,** if it lists it: what an agent's run is checked against, so it runs what it matched.
+pub fn title_now(inner: &Arc<Inner>, id: &str) -> Option<String> {
+    items(inner).into_iter().find(|row| row.id == id).map(|row| row.title)
+}
+
 /// The rows a query finds, best first: the tabs, the files opened lately and the commands ranked together, in that order among equals, so an empty query lists the tabs, then the recent files, then the commands. The tabs' ranking is kept for the query and the tab list's version.
 pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
     let version = lock(&inner.published).sidebar.tabs_version;
@@ -62,14 +67,18 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     if asked.action != Some(crate::menus::Action::PaletteOpen) {
         return None;
     }
-    Some(super::menu_rows::Row::window("the palette's field takes the keyboard", move || {
-        if lock(&inner.published).reader.sidebar_hidden {
-            inner.show_sidebar();
-        }
-        inner.tools.palette.open();
-        inner.listener.model_changed();
-        HostAction::FocusPalette
-    }))
+    Some(super::menu_rows::Row::window(
+        "the palette's field takes the person's keyboard",
+        super::menu_rows::Agents::Never,
+        move || {
+            if lock(&inner.published).reader.sidebar_hidden {
+                inner.show_sidebar();
+            }
+            inner.tools.palette.open();
+            inner.listener.model_changed();
+            HostAction::FocusPalette
+        },
+    ))
 }
 
 /// What the host draws now.

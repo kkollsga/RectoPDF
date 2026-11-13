@@ -148,7 +148,11 @@ pub fn row<'a>(inner: &'a Arc<super::Inner>, asked: &super::menu_rows::Asked<'_>
                 super::HostAction::None
             },
         )),
-        (crate::menus::Action::Host(host), "file.save_as") => Some(Row::host("opens the Save As sheet; its answer is `SaveAs`", *host)),
+        (crate::menus::Action::Host(host), "file.save_as") => Some(Row::host(
+            "opens the Save As sheet for the person; its answer is `SaveAs`",
+            super::menu_rows::Agents::ItsOwn("`recto save --out <path>`"),
+            *host,
+        )),
         _ => None,
     }
 }
