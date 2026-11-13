@@ -1,5 +1,6 @@
 //! The QA verbs' rows, part of [`super::ROWS_QA`]: The features, driven as a person would: Find, the palette, editing and saving, updates, quitting and handing off, and sleep.
 
+use super::verbs::{Area::*, QaKind::*, QaVerb, verb};
 use crate::Level;
 use crate::table::*;
 
@@ -601,4 +602,44 @@ pub(crate) const ROWS: &[Spec] = &[
         examples: &["recto qa memory-pressure warning"],
         ..BASE
     },
+];
+
+/// These rows' verbs in the table ([`super::verbs`]): what kind each is, and the host's area that answers it.
+pub(super) const VERBS: &[QaVerb] = &[
+    verb("find", StandIn, None),
+    verb("find_query", StandIn, None),
+    // What a record brings back that no one action makes: text in the field that wasn't found for.
+    verb("find_draft", Condition, None),
+    verb("find_type", HostInput, Some(Find)),
+    verb("find_key", StandIn, Some(Find)),
+    verb("find_click", HostInput, Some(Find)),
+    verb("palette_type", HostInput, Some(Sidebar)),
+    verb("palette_key", HostInput, Some(Sidebar)),
+    verb("edit_mode", StandIn, None),
+    // What an older record brings back: no action turns a tab's view any more.
+    verb("view_rotation", Condition, None),
+    verb("sheet_answer", HostInput, Some(Dialogs)),
+    verb("save_as", StandIn, None),
+    // A save with the writing done by the test.
+    verb("save_from", Condition, None),
+    verb("owner_edit", StandIn, None),
+    verb("note_input", Condition, None),
+    verb("open_file", StandIn, Some(Dialogs)),
+    verb("hold_reads", Condition, None),
+    verb("hand_off_quit", Condition, None),
+    verb("sheet", Condition, Some(Dialogs)),
+    verb("update_tick", Condition, None),
+    verb("update_clock", Condition, None),
+    verb("settings", HostInput, Some(Dialogs)),
+    verb("shot_settings", Look, Some(Shots)),
+    verb("shot_menus", Look, Some(Shots)),
+    verb("shot_menu", Look, Some(Shots)),
+    verb("quit", HostInput, Some(Window)),
+    // An update's hand-off, measured, with nothing installed.
+    verb("handoff", Condition, None),
+    verb("dormant_after", Condition, None),
+    verb("hold_drawing", Condition, None),
+    verb("sleep_write_gap", Condition, None),
+    verb("live_budget", Condition, None),
+    verb("memory_pressure", Condition, None),
 ];

@@ -5,6 +5,7 @@
 mod rows_features;
 mod rows_recto;
 mod rows_window;
+pub mod verbs;
 
 use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::table::*;
@@ -36,7 +37,7 @@ impl Cmd for QaRead {
         None
     }
     fn access(&self) -> Access {
-        row_access(Self::TAG)
+        verb_access(Self::TAG, &self.verb)
     }
     fn route(&self) -> Runs {
         Runs::App
@@ -74,7 +75,7 @@ impl Cmd for QaDrive {
         None
     }
     fn access(&self) -> Access {
-        row_access(Self::TAG)
+        verb_access(Self::TAG, &self.verb)
     }
     fn route(&self) -> Runs {
         Runs::App
@@ -88,6 +89,14 @@ impl Cmd for QaDrive {
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
     }
+}
+
+/// **A verb's level is its own row's,** so one verb can need more than the rest. A verb no row of this command sends has the command's first row's level,
+/// and is refused as no QA command where it's answered.
+fn verb_access(tag: &str, verb: &str) -> Access {
+    verbs::row_of(verb)
+        .filter(|row| row.tag == tag)
+        .map_or_else(|| row_access(tag), |row| row.access)
 }
 
 impl super::Qa {

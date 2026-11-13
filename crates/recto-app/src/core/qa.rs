@@ -2,8 +2,9 @@
 
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
+use recto_agent::commands::Cmd;
 use recto_agent::commands::Qa;
-use recto_agent::commands::qa::{QaDrive, QaRead};
+use recto_agent::commands::qa::{QaDrive, QaRead, verbs};
 use recto_agent::{AgentError, exit};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
@@ -310,6 +311,10 @@ impl QaBridge {
 
     /// Asks the UI thread and waits for it. No answer in time means the UI thread is stuck, which is its own kind of failure.
     fn ask(&self, verb: &str, value: &str) -> Result<Value, AgentError> {
+        // Only what the table says the host answers goes to it: a verb it doesn't would come back as no QA command from the host, after a wait.
+        if !verbs::host_answers(verb) {
+            return Err(bad("That isn't a QA command the window answers."));
+        }
         // What acts on the window waits for it to take input, as a person's click would have to: a window up without the state is made again from it, and what was done to it would go (CI, 2026-11-11). Looking doesn't wait.
         if !matches!(verb, "state" | "animations" | "copied") {
             let began = Instant::now();
@@ -379,6 +384,10 @@ impl QaBridge {
     }
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
+        // The table says what a client may drive: a verb with a `qa_drive` row. Nothing else gets further, here or at the host.
+        if verbs::row_of(verb).is_none_or(|row| row.tag != QaDrive::TAG) {
+            return Err(bad("That isn't a QA command."));
+        }
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
             value
                 .parse::<f64>()
