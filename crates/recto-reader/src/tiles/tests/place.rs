@@ -10,7 +10,7 @@ fn a_jump_isnt_reported_back_as_a_move() {
     base.scrolled_to = 0;
     reader.set_viewport(base);
     reader.take_moved_page();
-    reader.jump_to(50);
+    reader.jump_to(50, 0.0);
     let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
@@ -36,7 +36,7 @@ fn a_view_the_host_rounded_to_its_pixels_is_still_on_the_place() {
     base.scrolled_to = 0;
     reader.set_viewport(base);
     reader.take_moved_page();
-    reader.jump_to(8);
+    reader.jump_to(8, 0.0);
     let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
@@ -131,7 +131,7 @@ fn side_by_side_keeps_the_page_of_its_row_the_reader_was_on() {
     reader.set_spread(Spread::TwoUp);
     settle(&mut reader);
     reader.take_moved_page();
-    reader.jump_to(51);
+    reader.jump_to(51, 0.0);
     let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
@@ -168,7 +168,7 @@ fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
             reader.place.scrolled_to = 0;
             reader.set_spread(Spread::TwoUp);
             settle(&mut reader);
-            reader.jump_to(target);
+            reader.jump_to(target, 0.0);
             let mut at = follow_host(&mut reader, view(0.0));
             reader.take_moved_page();
             for scroll in [0.0, 37.0] {
@@ -266,7 +266,7 @@ fn a_change_of_layout_after_a_scroll_keeps_the_page() {
         reader.place.scrolled_to = 0;
         reader.set_spread(from);
         settle(&mut reader);
-        reader.jump_to(51);
+        reader.jump_to(51, 0.0);
         let at = follow_host(&mut reader, view(0.0));
         let mut scrolled = at;
         scrolled.y += 20.0;

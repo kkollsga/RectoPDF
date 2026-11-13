@@ -128,14 +128,17 @@ fn every_edit_survives_a_kill() {
 
 /// Failure (SPEC decision 24: an update "while the user is using it"): an edit is lost across an update's hand-off. Handed off as `qa handoff now` does it, the
 /// state written, forced and read back, the app gone, and each kind comes back in the app that takes over. (Replaces the app test
-/// `every_edit_survives_a_hand_off`.)
+/// `every_edit_survives_a_hand_off`.) And the host is told to quit once, as a QA run asks twice (`handoff`'s own thread, then `hand_off_quit`), each answered yes.
 #[test]
 fn every_edit_survives_a_hand_off() {
     let app = HeadlessApp::start();
     let (docs, extra) = one_of_each(&app);
     let before = edits(&app);
+    assert!(!app.core().hand_off_quit_now(), "not before it's handed off");
     app.core().hand_off(crate::testkit::headless::WAIT_LIMIT).expect("handed off");
     assert!(app.core().hand_off_quit_now(), "told to quit");
+    assert!(app.core().hand_off_quit_now(), "asked again, still quitting");
+    assert_eq!(app.listener().count(&crate::testkit::Heard::HandOffQuit), 1, "told once");
     let app = again(app.kill());
     assert_eq!(edits(&app), before, "after a hand-off");
     untouched(&docs, &extra);
@@ -240,4 +243,93 @@ fn journaled(app: &HeadlessApp) {
     };
     app.advance(6_000);
     app.wait_until("every tab's edits in its journal", written);
+}
+
+/// The tab in front's edits, as `edits` says them.
+fn edits_of(app: &HeadlessApp, tab: TabId) -> Value {
+    full(app, &["edits", "--tab", &format!("#{}", tab.0)])
+}
+
+/// Failure: closing a tab with unsaved edits loses them without asking, Cancel closes it anyway, Don't Save writes something, or Save brings what was only ever in
+/// the history into the PDF (owner: "you definitely don't want history to leak into the pdf file"); or what an answer did doesn't hold across a launch. Every
+/// kind asks, with Save first; Cancel keeps the tab and its edits; Save, on the tab with a turn and a PDF added and undone first (its name and text only in the
+/// history), appends the turn and nothing of the history; Don't Save closes the rest with each PDF as it was; and nothing comes back as a tab. The prompt's
+/// answers are the core's (`close_answered`); what the window's sheet shows and which button is which stays the app test's, thinned to one kind. (Replaces the
+/// Rust part of the app test `restore::exits::closing_a_tab_asks_and_each_answer_does_what_it_says`, 14 s on CI.)
+#[test]
+fn closing_a_tab_asks_and_each_answer_does_what_it_says() {
+    use crate::core::controls::UiAction;
+    use crate::menus::HostAction;
+    use crate::saving::CloseChoice;
+    const MARK: &str = "HISTORYMARKUNDONEADD";
+    let app = HeadlessApp::start();
+    let (docs, _) = one_of_each(&app);
+    let marked = app.disk().file(
+        &format!("{MARK}.pdf"),
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[MARK]))]),
+    );
+    let tap = |tab: TabId| {
+        full(&app, &["tap", &format!("#{}", tab.0)]);
+        app.settle();
+    };
+    let answer = |tab: TabId, choice| {
+        app.act(UiAction::CloseAnswered { tab: tab.0, choice });
+        app.settle();
+    };
+    for doc in &docs {
+        let tab = tab_of(&app, doc);
+        tap(tab);
+        let before = edits_of(&app, tab);
+        assert_eq!(app.core().perform("file.close".into()), HostAction::ConfirmClose, "{}: it asks", doc.kind);
+        let prompt = app.core().close_prompt();
+        assert_eq!((prompt.tab, prompt.buttons[0].choice), (tab.0, CloseChoice::Save), "{}: {prompt:?}", doc.kind);
+        answer(tab, CloseChoice::Cancel);
+        assert_eq!(edits_of(&app, tab), before, "{}: Cancel keeps it", doc.kind);
+    }
+    // Save, on the tab with the turn, with a PDF added and undone first so its name and text are only in the history.
+    let turn = &docs[0];
+    let tab = tab_of(&app, turn);
+    tap(tab);
+    full(&app, &["page", "insert", marked.to_str().expect("a path"), "--at", "1"]);
+    full(&app, &["undo"]);
+    full(&app, &["session", "save"]);
+    let has_mark = |bytes: &[u8]| bytes.windows(MARK.len()).any(|window| window == MARK.as_bytes());
+    // The state folder holds only the state: the mark's in a journal there.
+    let mut folders = vec![app.disk().paths().root.clone()];
+    let mut in_history = false;
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            if entry.path().is_dir() {
+                folders.push(entry.path());
+            } else {
+                in_history |= std::fs::read(entry.path()).is_ok_and(|bytes| has_mark(&bytes));
+            }
+        }
+    }
+    assert!(in_history, "the mark is in the history");
+    assert_eq!(app.core().perform("file.close".into()), HostAction::ConfirmClose);
+    app.act(UiAction::CloseAnswered {
+        tab: tab.0,
+        choice: CloseChoice::Save,
+    });
+    app.wait_until("saved and closed", || app.tabs().len() == KINDS.len() - 1);
+    let saved = std::fs::read(&turn.path).expect("the PDF");
+    assert!(saved.starts_with(&turn.original) && saved.len() > turn.original.len(), "the turn was appended");
+    assert!(!has_mark(&saved), "nothing of the history in the PDF");
+    // Don't Save, on every other: closed, and its PDF as it was.
+    for doc in &docs[1..] {
+        let tab = tab_of(&app, doc);
+        tap(tab);
+        answer(tab, CloseChoice::DontSave);
+        assert!(
+            std::fs::read(&doc.path).expect("the PDF") == doc.original,
+            "{}: Don't Save wrote nothing",
+            doc.kind
+        );
+    }
+    assert!(app.tabs().is_empty(), "all closed");
+    let (_, disk) = app.quit();
+    let app = again(disk);
+    assert!(app.tabs().is_empty(), "nothing comes back as a tab: {}", app.session_json()["tabs"]);
+    drop(app.quit());
 }

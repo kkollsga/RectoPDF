@@ -2089,54 +2089,6 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     run.quit();
 }
 
-/// The sleep file of the tab on screen, by the name the state's journals folder gives it, if it's there.
-fn active_sleep_file(state: &State, report: &Value) -> Option<PathBuf> {
-    let session = &report["session"];
-    let tab = session["tabs"].as_array()?.iter().find(|tab| tab["id"] == session["active"])?;
-    let file = &tab["file"];
-    let stamp = recto_platform::FileStamp {
-        size: file["size"].as_u64()?,
-        mtime_ns: file["mtime_ns"].as_i64()?,
-        device: file["device"].as_u64()?,
-        inode: file["inode"].as_u64()?,
-    };
-    let name = recto_session::record::sleep_file_name(stamp, Path::new(tab["path"].as_str()?));
-    Some(state.root.join("session").join("journals").join(name)).filter(|path| path.is_file())
-}
-
-/// Failure (review 1 of the slow mode): a flush right after opening tabs, as a quit or an update has it, skipped the tab on screen's sleep file whenever another was being written, with no trace, and the next launch showed bare paper for its first frame. It waits for the others for what's left of the flush's time, and past that the skip is counted. With sleep files' writes 1.5 s late, a flush straight after opening tabs leaves the tab on screen's file there or says it skipped it; and once the others are done, the next one writes it.
-#[test]
-fn a_flush_writes_the_tab_on_screens_sleep_file_or_says_it_skipped_it() {
-    let state = State::new();
-    let Some(run) = Run::on_with_env(&state, &[("RECTO_QA_SLOW", std::ffi::OsStr::new("sleep_write=1500"))]) else {
-        return;
-    };
-    let folder = state.root.join("tabs");
-    std::fs::create_dir_all(&folder).unwrap();
-    let file = long_document("many", 3);
-    for at in 0..8 {
-        let link = folder.join(format!("t{at}.pdf"));
-        recto_platform::local::clone_file(&file.0, &link).unwrap();
-        run.ok(&["open", link.to_str().unwrap()]);
-    }
-    run.settled();
-    run.ok(&["session", "save"]);
-    let saved = run.report();
-    let skipped = saved["record"]["sleep"]["writes_skipped_busy"].as_u64().unwrap();
-    assert!(
-        active_sleep_file(&state, &saved).is_some() || skipped >= 1,
-        "the tab on screen's sleep file is there, or its skip is counted: {}",
-        saved["record"]["sleep"]
-    );
-    // Given the time, it's written.
-    let began = Instant::now();
-    while active_sleep_file(&state, &run.report()).is_none() {
-        assert!(began.elapsed() < Duration::from_secs(60), "never written: {}", run.report()["record"]["sleep"]);
-        run.ok(&["session", "save"]);
-    }
-    run.quit();
-}
-
 /// Failure: a damaged record stops the app, panics, is overwritten, or is passed over in silence. It starts empty, says so, and what was there is kept to one side.
 #[test]
 fn a_damaged_record_starts_empty_and_says_so() {

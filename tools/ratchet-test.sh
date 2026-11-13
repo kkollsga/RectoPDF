@@ -212,6 +212,53 @@ out=$(R --report main); rc=$?
 check "the report never fails" "0" "$rc"; has "it lists the hub with lines added" "crates/recto-session/src/lib.rs" "$out"; has "and the count" "+2 -0" "$out"
 check "and leaves other files out" "0" "$(echo "$out" | grep -c other.rs)"
 
+# --resolve: two branches that each lowered a number conflict in the baseline; the tool writes the merge and leaves the check and the add to the user
+# Failure (the coordinator resolved it by hand on nearly every merge): taking one side whole raises the other side's lowered numbers, and a key one side
+# dropped came back from the other.
+# merge3 BASE OURS THEIRS: a repo with the baseline in the three versions (printf formats), the merge of theirs into ours done and left in conflict.
+merge3() {
+    local g="$X/m"; rm -rf "$g"; mkdir -p "$g/tools/ratchet"
+    git -C "$g" init -q -b main; git -C "$g" config user.email t@t; git -C "$g" config user.name t
+    printf "$1" > "$g/tools/ratchet/baseline.txt"; git -C "$g" add . && git -C "$g" commit -qm base
+    git -C "$g" checkout -qb other; printf "$3" > "$g/tools/ratchet/baseline.txt"; git -C "$g" commit -qam theirs
+    git -C "$g" checkout -q main; printf "$2" > "$g/tools/ratchet/baseline.txt"; git -C "$g" commit -qam ours
+    git -C "$g" merge other >/dev/null 2>&1
+}
+RES() { "$SOURCE/tools/ratchet.sh" --resolve --root "$X/m" 2>&1; }
+MB() { cat "$X/m/tools/ratchet/baseline.txt"; }
+merge3 'file a.rs 50\nfn a.rs::f 30\nsleep t.rs 2\n' 'file a.rs 40\nfn a.rs::f 30\nsleep t.rs 2\n' 'file a.rs 45\nfn a.rs::f 20\nsleep t.rs 2\n'
+out=$(RES); rc=$?
+check "resolve: both lowered the same key, the lower wins and a key only one lowered keeps that" "0" "$rc"
+check "and the file is the merge" "file a.rs 40|fn a.rs::f 20|sleep t.rs 2|" "$(MB | tr '\n' '|')"
+has "it says the key both lowered" "file a.rs: ours 40, theirs 45 -> 40" "$out"
+has "and the one only one side lowered" "fn a.rs::f: ours 30, theirs 20 -> 20" "$out"
+check "a key the sides agree on isn't listed" "0" "$(echo "$out" | grep -c 'sleep t.rs:')"
+has "it tells to run the check" "tools/ratchet.sh on the merged tree" "$out"
+check "and does not git add the file" "" "$(git -C "$X/m" diff --name-only --cached --diff-filter=M | grep baseline)"
+check "the index still has the conflict" "3" "$(git -C "$X/m" ls-files -u | wc -l | tr -d ' ')"
+merge3 'file a.rs 50\n' 'file a.rs 50\nstruct b.rs::S 20\n' 'file a.rs 45\nenum c.rs::E 41\nimpl d.rs::T 50\n'
+out=$(RES); rc=$?
+check "resolve: keys each side added are kept, with the other's lowered number" "0" "$rc"
+check "all kinds" "enum c.rs::E 41|file a.rs 45|impl d.rs::T 50|struct b.rs::S 20|" "$(MB | tr '\n' '|')"
+has "it says who added" "struct b.rs::S: added by ours at 20 -> kept" "$out"; has "both ways" "enum c.rs::E: added by theirs at 41 -> kept" "$out"
+merge3 'file a.rs 50\nfn a.rs::f 30\nfile b.rs 60\nsleep t.rs 2\n' 'file a.rs 40\nfile b.rs 60\nsleep t.rs 2\n' 'file a.rs 50\nfn a.rs::f 20\nsleep t.rs 2\n'
+out=$(RES); rc=$?
+check "resolve: a key either side dropped is gone, even if the other lowered it" "0" "$rc"
+check "the file" "file a.rs 40|sleep t.rs 2|" "$(MB | tr '\n' '|')"
+has "said for the key the other side lowered" "fn a.rs::f: dropped by ours -> gone" "$out"; has "and the other side's drop" "file b.rs: dropped by theirs -> gone" "$out"
+merge3 'ffi crates/x 5\n' 'ffi crates/x 5\napptest crates/t 9\n' 'ffi crates/x 5\napptest crates/t 7\n'
+out=$(RES); rc=$?
+check "resolve: a key both sides added with two numbers takes the lower" "0" "$rc"
+check "the file" "apptest crates/t 7|ffi crates/x 5|" "$(MB | tr '\n' '|')"
+has "and says it needs the check" "apptest crates/t: ours 9, theirs 7 -> 7  (both sides added it: needs the check)" "$out"
+before=$(MB); git -C "$X/m" merge --abort 2>/dev/null; git -C "$X/m" reset -q --hard; before=$(MB)
+out=$(RES); rc=$?
+check "resolve: with no merge under way it refuses" "1" "$rc"; has "saying so" "not in conflict" "$out"; check "and changes nothing" "$before" "$(MB)"
+merge3 'file a.rs 50\n' 'file a.rs 40\n' 'file a.rs not-a-number\n'
+before=$(MB); out=$(RES); rc=$?
+check "resolve: a line that doesn't parse is refused" "1" "$rc"; has "naming stage and line" "stage 3 (theirs) line 1 is not \"kind key number\": 'file a.rs not-a-number'" "$out"
+check "and nothing is written" "$before" "$(MB)"
+
 # the real tree is ok
 out=$(env -u RATCHET_FILE_LINES -u RATCHET_FN_LINES -u RATCHET_STRUCT_FIELDS -u RATCHET_ENUM_VARIANTS -u RATCHET_IMPL_METHODS -u RATCHET_TYPE_METHODS "$SOURCE/tools/ratchet.sh"); rc=$?; check "the checked-in baseline holds for this tree" "0" "$rc"
 

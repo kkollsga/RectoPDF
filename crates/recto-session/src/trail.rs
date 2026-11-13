@@ -150,9 +150,16 @@ impl<L: DocLoader> Session<L> {
         Ok(())
     }
 
-    /// **Where the reader is in a tab,** for a jump to mark: the page, and how far down it if the page view has said lately.
+    /// **Where the reader is in a tab,** for a jump to mark: a jump the page view hasn't taken yet, while the tab is still on its page, as that's where the
+    /// session has sent the reader; or else the page, and how far down it if the page view has said lately. The page view's word is about where it was
+    /// before such a jump, and on the same page would mark the wrong place down it (Back straight after a jump on the page showing kept the old place for
+    /// Forward).
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tab(id)?;
+        // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
+        if let Some(waiting) = self.mail.waiting_jump(id).filter(|waiting| waiting.page == tab.page) {
+            return Some(trail::Stop::new(waiting.page, f64::from(waiting.within)));
+        }
         let within = tab
             .reading
             .place

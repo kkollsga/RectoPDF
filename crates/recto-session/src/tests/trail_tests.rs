@@ -148,3 +148,21 @@ fn a_place_is_only_used_on_its_own_page_and_only_written_when_it_moves() {
     assert_eq!(s.place_to_show(a), None, "it's for page 1, and the reader's on page 5");
     assert_eq!(s.take_place_delta(4).places.len(), 1);
 }
+
+/// Failure: a step straight after a jump the page view hasn't taken marks where the page view last said it was, not where the session sent the reader, so
+/// Forward after Back lands at the old place on the page; or a move since that sent no jump of its own (Find's step) is passed over for the jump before it.
+#[test]
+fn a_jump_not_yet_taken_is_where_the_reader_is() {
+    let mut s = Session::new(Labelled);
+    let id = s.open(Path::new("/d/book.pdf")).unwrap();
+    s.jump(id, 4, 0.3).unwrap();
+    s.take_jump(id);
+    s.jump(id, 4, 0.8).unwrap();
+    assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.8)), "the jump waiting");
+    assert!(s.go_back(id).unwrap());
+    assert!(s.go_forward(id).unwrap());
+    assert_eq!(s.take_jump(id), Some(trail::Stop::new(4, 0.8)), "Forward comes back to it");
+    s.jump(id, 6, 0.5).unwrap();
+    s.go_to(id, 7).unwrap();
+    assert_eq!(s.here(id), Some(trail::Stop::new(7, 0.0)), "a move since, with no jump of its own");
+}

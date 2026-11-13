@@ -468,3 +468,86 @@ fn the_window_is_said_to_be_made_again_only_when_it_was() {
         }
     }
 }
+
+/// Every way to put the steps of these sequences in one order, each as the list of events that comes of it.
+fn every_interleaving(sequences: &[&[Event]]) -> Vec<Vec<Event>> {
+    fn go(sequences: &[&[Event]], at: &mut Vec<usize>, order: &mut Vec<Event>, all: &mut Vec<Vec<Event>>) {
+        if sequences.iter().zip(at.iter()).all(|(sequence, at)| *at == sequence.len()) {
+            all.push(order.clone());
+            return;
+        }
+        for which in 0..sequences.len() {
+            if at[which] < sequences[which].len() {
+                order.push(sequences[which][at[which]]);
+                at[which] += 1;
+                go(sequences, at, order, all);
+                at[which] -= 1;
+                order.pop();
+            }
+        }
+    }
+    let mut all = Vec::new();
+    go(sequences, &mut vec![0; sequences.len()], &mut Vec::new(), &mut all);
+    all
+}
+
+/// Failure (the `Listener`'s promises, which until R1.4's fifth slice held `hand_off_quit` and `session_ended` to once only by convention): the host is told to
+/// quit for a hand-off more than once, as a QA run asks twice (its `handoff`'s own thread and `hand_off_quit`) and the updater may ask too; or told for a
+/// hand-off that was undone, or before it's written; or told the session ended twice; or a quit's answer is lost or doubled among them. Every interleaving of a
+/// quit (kept or not, then Stay), the socket's server returning twice, and hand-offs that are written and asked to quit twice, undone before or after being
+/// written or told, and done again after an undo: each hand-off that's written tells the host at most once and only after it's written, the session's end is
+/// told once, and the quit's answer once and after its begin.
+#[test]
+fn the_host_is_told_to_quit_for_a_hand_off_and_that_the_session_ended_at_most_once_in_every_order() {
+    use Event::{HandOffQuit as Ask, HandOffUndone as Undone, HandOffWriting as Writing, HandOffWritten as Written};
+    // Each hand-off's events, and how many times the host should be told to quit for them in all.
+    let hand_offs: [(&[Event], usize); 6] = [
+        (&[Writing, Written, Ask, Ask], 1),
+        (&[Ask, Writing, Undone, Ask], 0),
+        (&[Writing, Undone, Written, Ask], 0),
+        (&[Writing, Written, Ask, Undone, Ask], 1),
+        (&[Writing, Written, Undone, Writing, Written, Ask, Ask], 1),
+        (&[Writing, Written, Ask, Undone, Writing, Written, Ask], 2),
+    ];
+    let ends = [Event::SocketEnded, Event::SocketEnded];
+    let mut orders = 0;
+    for (hand_off, told) in hand_offs {
+        for written in [true, false] {
+            let quit = [Event::QuitAsked, Event::QuitWritten { written, unsaved_tabs: 1 }, Event::QuitStayed];
+            for order in every_interleaving(&[hand_off, &quit, &ends]) {
+                orders += 1;
+                let mut life = Life::default();
+                let (mut heard, mut written_since_writing) = (Vec::new(), false);
+                let mut told_this_hand_off = 0;
+                for event in &order {
+                    match event {
+                        Event::HandOffWriting => (written_since_writing, told_this_hand_off) = (false, 0),
+                        Event::HandOffUndone => written_since_writing = false,
+                        _ => {}
+                    }
+                    let before = life;
+                    let out = life.step(*event, 0);
+                    if *event == Event::HandOffWritten && before.hand_off() == HandOff::Writing {
+                        written_since_writing = true;
+                    }
+                    if out == Some(Out::HandOffQuit) {
+                        told_this_hand_off += 1;
+                        assert!(written_since_writing, "{order:?}: told to quit for a hand-off that isn't written");
+                        assert_eq!(told_this_hand_off, 1, "{order:?}: told twice for one hand-off");
+                    }
+                    if let Some(out) = out {
+                        heard.push(out);
+                    }
+                }
+                let count = |what: fn(&Out) -> bool| heard.iter().filter(|out| what(out)).count();
+                assert_eq!(count(|out| *out == Out::HandOffQuit), told, "{order:?}: {heard:?}");
+                assert_eq!(count(|out| *out == Out::SessionEnded), 1, "{order:?}: {heard:?}");
+                assert_eq!(count(|out| matches!(out, Out::QuitAnswer { .. })), 1, "{order:?}: {heard:?}");
+                let begun = heard.iter().position(|out| *out == Out::QuitBegins);
+                let answered = heard.iter().position(|out| matches!(out, Out::QuitAnswer { .. }));
+                assert!(begun < answered, "{order:?}: the quit's answer before its begin: {heard:?}");
+            }
+        }
+    }
+    assert!(orders > 10_000, "{orders} orders");
+}

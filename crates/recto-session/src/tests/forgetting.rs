@@ -13,7 +13,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("comparison", s.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))),
         ("generated", s.generated.view(id).is_some()),
         ("saved_over", s.saves.remembers(id)),
-        ("jumps", s.mail.holds_jump_of(id)),
+        ("jumps", s.mail.waiting_jump(id).is_some()),
     ];
     let mut holding: Vec<&'static str> = parts
         .into_iter()
