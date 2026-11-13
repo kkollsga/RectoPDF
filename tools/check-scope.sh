@@ -12,7 +12,7 @@
 # selective `--full`, because a change in one crate breaks the list in another (recto-session's edit showed up in recto-agent's table, 2 minutes into a
 # full check). `test(~x)` is a substring of the test's name (its module path included), and `test(~module::)` is a whole module's tests.
 # A new guard goes here, with the failure it catches in its own doc comment.
-GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~every_edit_by_a_person_is_the_owners) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does) | test(~every_route_answers_as_declared_on_a_session_with_no_record) | test(~the_server_answers_only_server_commands_and_sends_on_the_rest) | test(~every_command_reaches_its_own_handler_through_the_app_at_every_level) | test(~only_looks_the_record_save_and_qa_go_past_an_update) | test(~no_test_starts_the_build_folders_app_itself) | test(~the_check_sees_the_shapes_it_is_for) | test(~every_control_is_a_command_or_the_hosts_with_a_reason) | test(~the_bridge_queues_none_of_a_persons_calls)'
+GUARD_TESTS='test(~every_thread_the_code_starts_is_named) | test(~table::tests::) | test(~every_command_has_a_row_and_every_session_row_has_a_command) | test(~every_error_says_the_next_step) | test(~every_edit_through_the_agent_interface_is_an_agents) | test(~every_edit_by_a_person_is_the_owners) | test(~each_level_says_what_its_commands_do) | test(~every_row_that_runs_here_is_wired_up) | test(~every_row_answers_in_plain_words_and_in_versioned_json) | test(~every_row_is_enforced_at_every_level_over_the_socket) | test(~the_known_paths_and_exceptions_are_sorted_with_no_duplicates) | test(~every_test_the_slow_stage_names_is_there) | test(~every_menu_id_has_an_enable_rule) | test(~every_person_originated_call_is_frozen_during_a_hand_off) | test(~a_frozen_queue_takes_nothing_a_person_does) | test(~every_route_answers_as_declared_on_a_session_with_no_record) | test(~the_server_answers_only_server_commands_and_sends_on_the_rest) | test(~every_command_reaches_its_own_handler_through_the_app_at_every_level) | test(~only_looks_the_record_save_and_qa_go_past_an_update) | test(~no_test_starts_the_build_folders_app_itself) | test(~the_check_sees_the_shapes_it_is_for) | test(~every_control_is_a_command_or_the_hosts_with_a_reason) | test(~the_bridge_queues_none_of_a_persons_calls) | test(~every_qa_row_has_one_verb_and_back) | test(~swift_answers_exactly_the_tables_verbs) | test(~the_swift_reading_sees_what_it_is_for)'
 
 # --- Tiers of the tests that launch the app --------------------------------------------------------------------------------------------------------------
 # Every test in these binaries (recto-cli's) starts the real app in a quiet run. APP_BINARIES is all of them: `scope_names_missing` fails when a test file
@@ -115,18 +115,30 @@ ci_base() {
   printf '%s\n' "$base"
 }
 
+# Which of the tools' own tests a changed file under TOOLS_PATHS needs, as words (ratchet, hygiene, check) in `tool_tests`. Each test holds the tool it is named
+# for: ratchet-test.sh the ratchet, target-hygiene-test.sh target-hygiene.sh, check-test.sh check.sh and everything it copies into its throwaway repository
+# (the scope, times, rerun, like-ci and push-main scripts, the hooks, the queue). A file mapped to none of them runs all three, as it did before.
+tool_tests_for() {
+  case "$1" in
+    tools/ratchet.sh | tools/ratchet/* | tools/ratchet-test.sh) tool_tests="ratchet" ;;
+    tools/target-hygiene.sh | tools/target-hygiene-test.sh) tool_tests="hygiene" ;;
+    tools/check.sh | tools/check-*.sh | tools/push-main.sh | tools/hooks/* | tools/sysguard/heavy.sh) tool_tests="check" ;;
+    *) tool_tests="ratchet hygiene check" ;;
+  esac
+}
+
 # Chooses what a run covers, from what changed since the branch left main (or $CHECK_BASE, or on CI `ci_base`) and what isn't committed. Arguments: the mode
-# (--quick or --full). Sets: scope_tools (1 when the tools' tests run) and scope_tools_why (why, or why not), scope_all (1 when everything runs),
+# (--quick or --full). Sets: scope_tools (1 when the tools' tests run), scope_tools_which (which: ratchet, hygiene, check) and scope_tools_why (why, or why not), scope_all (1 when everything runs),
 # scope_changed (crates changed), scope_affected (those and their dependents), scope_window, scope_lifecycle (1 when the tier runs), scope_app (1 when app/
 # changed), scope_key ("all" or a short hash of the selection, for the memory of a pass) and scope_report (the lines the run prints at its start, saying what
 # it selected and why, and what it skipped).
 select_scope() {
   local mode=$1 base files file c all_crates affected="" reasons="" skipped=""
-  scope_tools=0 scope_tools_why="" scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
+  scope_tools=0 scope_tools_which="" scope_tools_why="" scope_all=0 scope_changed="" scope_affected="" scope_window=0 scope_lifecycle=0 scope_app=0 scope_key="" scope_report=""
   all_crates=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
   base=${CHECK_BASE:-}
   if [ -z "$base" ] && [ -n "${CI:-}" ]; then
-    base=$(ci_base) || { base="" scope_tools=1 scope_tools_why="CI's base couldn't be worked out, so they run"; }
+    base=$(ci_base) || { base="" scope_tools=1 scope_tools_which="ratchet hygiene check" scope_tools_why="CI's base couldn't be worked out, so they run"; }
   fi
   [ -n "$base" ] || base=$(git merge-base main HEAD 2>/dev/null || true)
   if [ "$mode" = --full ]; then
@@ -144,8 +156,11 @@ select_scope() {
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    if [ "$scope_tools" = 0 ] && [[ $file =~ $TOOLS_PATHS ]]; then
-      scope_tools=1 scope_tools_why="$file changed since $(printf '%s' "$base" | cut -c1-12)"
+    if [[ $file =~ $TOOLS_PATHS ]]; then
+      [ "$scope_tools" = 1 ] || scope_tools_why="$file changed since $(printf '%s' "$base" | cut -c1-12)"
+      scope_tools=1
+      tool_tests_for "$file"
+      scope_tools_which="$scope_tools_which $tool_tests"
     fi
     case "$file" in
       crates/recto-headings/*) headings=1 ;;

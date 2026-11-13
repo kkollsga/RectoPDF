@@ -3,8 +3,29 @@
 # The real heavy.sh runs on a throwaway lock, so the queue's refusals are the real ones. Run it after any change to tools/check.sh.
 #
 #   tools/check-test.sh
+#
+# One script, run as parts. The cases below are grouped into SEGMENTS (seg_A ... below the prologue), each of which builds its own throwaway repository from
+# the prologue and carries state only inside itself: a segment's header says what it starts from, and a new case goes in the segment whose state it needs
+# (or a new one). Run with no argument, the script starts every segment as a process of its own, CHECK_TEST_JOBS at a time (default 3: CI's cores), keeps each one's
+# output in its own file, and prints them all, in order, whole. CHECK_TEST_SEGMENT=<name> runs one alone. The longest are first, so none starts last.
+SEGMENTS="N1 J2 D K1 C N2 J1 F B A L M I K2 G O"
 set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -z "${CHECK_TEST_SEGMENT:-}" ]; then
+  seg_out=$(mktemp -d "${TMPDIR:-/tmp}/check-test-out.XXXXXX")
+  trap 'rm -rf "$seg_out"' EXIT
+  export SEG_OUT="$seg_out" SEG_SELF="$SOURCE/tools/check-test.sh"
+  # Each segment: its own process, its own mktemp folder (repository, queue lock, stubs), so none shares a file with another.
+  printf '%s\n' $SEGMENTS | xargs -P "${CHECK_TEST_JOBS:-3}" -I{} sh -c 'CHECK_TEST_SEGMENT={} bash "$SEG_SELF" > "$SEG_OUT/{}.out" 2>&1; echo $? > "$SEG_OUT/{}.rc"'
+  bad=0
+  for s in $SEGMENTS; do
+    cat "$seg_out/$s.out" 2>/dev/null
+    if [ "$(cat "$seg_out/$s.rc" 2>/dev/null)" != 0 ]; then echo "FAIL  segment $s did not pass (exit $(cat "$seg_out/$s.rc" 2>/dev/null || echo none)); its output is above"; bad=$((bad + 1)); fi
+  done
+  if [ "$bad" -gt 0 ]; then echo "$bad segment(s) failed."; exit 1; fi
+  echo "All passed."
+  exit 0
+fi
 X=$(mktemp -d "${TMPDIR:-/tmp}/check-test.XXXXXX")
 trap 'rm -rf "$X"' EXIT
 export HEAVY_LOCK="$X/lock" HEAVY_TESTING=1 MIN_FREE=0
@@ -15,7 +36,7 @@ unset CHECK_ALL CHECK_BASE CHECK_AGAIN CHECK_PART HEAVY_RETRY HEAVY_SOLO HEAVY_P
 # ERE, as macOS's sed has no `\|` in a basic expression: written that way this loop unset nothing, and a run of this inside `check.sh --full` took its
 # CHECK_RERUN=0 (2026-11-12), as one on CI would take its 4. What check.sh exports to its children is unset by name too.
 unset CHECK_RERUN CHECK_RERUN_TESTS CHECK_RERUN_SECONDS CHECK_SLOW_SEED CHECK_EVIDENCE_ROOT CHECK_LIKE_CI CHECK_LIKE_CI_WRAP CHECK_STAGE CHECK_STAGE_JOBS LIKE_CI_LIMITS
-for name in $(env | sed -nE 's/^((GITHUB|NEXTEST|CHECK|PUSH_MAIN|LIKE)_[A-Z0-9_]*)=.*/\1/p'); do [ "$name" = CHECK_TEST_SLICE ] || unset "$name"; done
+for name in $(env | sed -nE 's/^((GITHUB|NEXTEST|CHECK|PUSH_MAIN|LIKE)_[A-Z0-9_]*)=.*/\1/p'); do case "$name" in CHECK_TEST_SLICE|CHECK_TEST_SEGMENT) ;; *) unset "$name" ;; esac; done
 for name in $(env | sed -n 's/^\(RECTO_[A-Z0-9_]*\)=.*/\1/p'); do unset "$name"; done
 fails=0
 check() { # name, expected, actual
@@ -127,7 +148,11 @@ WINDOW_TESTS="test(~window_test) & !($LIFECYCLE_TESTS)"
 WINDOW_CRATES='beta'
 LIFECYCLE_PATHS='^app/|^crates/gamma/|^crates/beta/src/record\.rs$'
 SCOPE
-cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh
+# The queue is the real one only where a case is about it (segment C: its refusal of a command that failed on unchanged code); everywhere else check.sh's
+# two calls to it (the compile gate and the tests) go to a stand-in that runs the command, as the real one does for a command it lets through. The real
+# one's own start-up (its slot arithmetic, ps and sysctl calls, named pipes and waits) cost about 0.7 s of the 1 s a stubbed full run took.
+real_queue() { cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh; }
+printf '#!/usr/bin/env bash\nexec "$@"\n' > tools/sysguard/heavy.sh; chmod +x tools/sysguard/heavy.sh
 cp "$SOURCE/tools/hooks/pre-push" tools/hooks/pre-push
 printf '#!/usr/bin/env bash\n' > tools/pdfium.sh
 # The ratchet has its own test (tools/ratchet-test.sh); here it, and the tools' tests, only log that they ran, and STUB_FAIL can fail them.
@@ -161,6 +186,16 @@ commit_code() { echo "$1" >> crates/alpha/src/lib.rs; git add . && git commit -q
 hook_accepts() { printf 'refs/heads/main %s refs/heads/main 0\n' "$(git rev-parse HEAD)" | tools/hooks/pre-push >/dev/null 2>&1 && echo yes || echo no; }
 fresh_ledger() { rm -f "$LEDGER" "$PASSES" "$CHECKED"; : > "$CALLS"; }
 
+# Helpers more than one segment uses.
+quick() { : > "$CALLS"; tools/check.sh --quick > "$X/quick.out" 2>&1; echo $?; cp "$CALLS" "$X/quick.calls"; : > "$CALLS"; }
+quick_tests() { grep '^nextest run' "$X/quick.calls" || true; }
+branch_with() { git checkout -q main; git checkout -qb "$1"; fresh_ledger; }
+sel() { : > "$CALLS"; rm -f "$CALLS.slow"; sel_full "$@" > "$X/sel.out"; echo $?; cp "$CALLS" "$X/sel.calls"; : > "$CALLS"; }
+sel_has() { grep -c -- "$1" "$X/sel.calls" | tr -d ' '; }
+run_of() { printf '[{"conclusion":"%s","databaseId":%s,"headSha":"%s","status":"%s","url":"https://ci/%s"}]' "$1" "$2" "$3" "${4:-completed}" "$2"; }
+
+# Segment A. Starts from: the prologue's repository (branch main, pushed to origin); makes branch `work` and runs a full run on it. The ledger carries from case to case, up to the dirty-tree cases.
+seg_A() {
 # Failure: a tool's stage removed or moved past a slower one by accident: every stage runs, compile errors surface before anything runs, the app comes last.
 git checkout -qb work
 commit_code alpha-change
@@ -171,7 +206,7 @@ check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt
 has "each stage says how long it took" "check: app-tests took" "$out"
 # Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
 if [ -z "${CHECK_TEST_SLICE:-}" ]; then
-  slice=$(CI=true CHECK_PART=core CHECK_ALL=1 CHECK_BASE=HEAD NEXTEST_PROFILE=ci GITHUB_ACTIONS=true RECTO_QA_SLOW=ci CHECK_TEST_SLICE=1 bash "$SOURCE/tools/check-test.sh" 2>&1)
+  slice=$(CI=true CHECK_PART=core CHECK_ALL=1 CHECK_BASE=HEAD NEXTEST_PROFILE=ci GITHUB_ACTIONS=true RECTO_QA_SLOW=ci CHECK_TEST_SLICE=1 CHECK_TEST_SEGMENT=A bash "$SOURCE/tools/check-test.sh" 2>&1)
   check "the cases pass with CI's variables set (CI, CHECK_PART, NEXTEST_PROFILE, GITHUB_*)" "0" "$(printf '%s\n' "$slice" | grep -c '^FAIL')"
   has "and that slice did run" "ok    every stage runs" "$slice"
 else
@@ -251,6 +286,11 @@ chmod +x crates/alpha/src/lib.rs && git add . && git commit -qm mode
 full --why "mode test" > /dev/null
 check "a changed file mode is changed code" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
 
+}
+
+# Segment B. Starts from: branch `work` (made here), a clean ledger; every block below begins with fresh_ledger. Commits and runs made while a run is under way.
+seg_B() {
+  git checkout -qb work
 # Failure: a commit made while a run is under way reported as what that run tested.
 fresh_ledger
 commit_code during-base
@@ -310,6 +350,12 @@ check "another nextest version runs it again" "true" "$([ "$(ran)" -gt 0 ] && ec
 RECTO_BENCH100=/somewhere full --why "corpus" > /dev/null
 check "a setting that changes what the tests do runs it again" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
 
+}
+
+# Segment C. Starts from: branch `work` (made here), a clean ledger; every block begins with fresh_ledger. A failing stage, the queue's refusal of it, and what a run records.
+seg_C() {
+  real_queue; git add . && git commit -qm real-queue
+  git checkout -qb work
 # Failure: everything after the first failure still runs, minutes spent on an answer already known.
 fresh_ledger
 commit_code clippy-fails
@@ -400,6 +446,11 @@ check "a run stopped from outside is in the ledger as stopped" "stopped" "$(last
 counted=$(tools/check.sh --runs | sed -n 's/^work: \([0-9]*\) of.*/\1/p')
 check "and doesn't count" "0" "$counted"
 
+}
+
+# Segment D. Starts from: branch `work` (made here), a clean ledger. The budget of two full runs on a branch, then --runs (which counts what this segment's own three runs left, so keep these together).
+seg_D() {
+  git checkout -qb work
 # Failure: runs mount up with nobody deciding. A third needs a reason, and the refusal shows everything needed.
 fresh_ledger
 commit_code budget-1
@@ -455,6 +506,10 @@ git merge -q --no-edit main
 out=$(tools/check.sh --runs)
 has "a branch that has taken in main's new code starts its budget again" "work: 0 of 2" "$out"
 
+}
+
+# Segment F. Starts from: branch main as the prologue leaves it (pushed). main's budget per range not yet pushed, and merges.
+seg_F() {
 # How main works: a budget per range not yet pushed. Failure: every merge's needed check needing a reason, or a push blocked.
 fresh_ledger
 git checkout -q main
@@ -515,6 +570,10 @@ git merge -q --no-ff --no-edit merged2
 full > /dev/null
 check "a merge that makes new code gets a real run" "true" "$([ "$(ran)" -gt 0 ] && echo true || echo false)"
 
+}
+
+# Segment G. Starts from: branch main as the prologue leaves it. Static rules on the scripts, worktrees, a change to every crate, the empty ledger and a run on CI.
+seg_G() {
 # Failure: the guard's idea of a document and the memory's drifting apart, so a code change is called a document and a stale pass accepted.
 check "this script and the push guard agree on what a document is" "1" "$(grep -c "grep -vE '^docs/|\\\\.md\$'" "$SOURCE/tools/hooks/pre-push")"
 check "the memory uses that same rule" "1" "$(grep -c '\$2 !~ /^docs\\/|\\.md\$/' "$SOURCE/tools/check.sh")"
@@ -564,11 +623,13 @@ has "and the app tests still run" "-p recto-cli --test app --test restore --test
 rm -f "$CALLS.slow"
 
 
+}
+
+# Segment I. Starts from: branch main as the prologue leaves it. --quick: each case makes its own branch from main.
+seg_I() {
 # ---- R0.1: the quick check ------------------------------------------------------------------------------------------------------------------------------
 # Failure: `--quick` looked only at uncommitted files, so after a commit it fell back to the whole workspace (or, with nothing changed, tested nothing).
 # It takes what changed since the branch left main, committed or not, and untracked files too.
-quick() { : > "$CALLS"; tools/check.sh --quick > "$X/quick.out" 2>&1; echo $?; cp "$CALLS" "$X/quick.calls"; : > "$CALLS"; }
-quick_tests() { grep '^nextest run' "$X/quick.calls" || true; }
 git checkout -q main
 git checkout -qb quick-1
 echo q >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-committed
@@ -633,11 +694,12 @@ check "nor the workers built" "0" "$(grep -c '^build' "$CALLS")"
 : > "$CALLS"
 git checkout -q main
 
+}
+
+# Segment J1. Starts from: branch main; branch_with starts every case on a fresh branch from main. The tools' tests in a full run, and the selection of a window crate and its memory.
+seg_J1() {
 # ---- R0.2: --full by what changed -----------------------------------------------------------------------------------------------------------------------
 # Failure: a change to one crate ran every test and every app test, 514 s on average. The selection:
-branch_with() { git checkout -q main; git checkout -qb "$1"; fresh_ledger; }
-sel() { : > "$CALLS"; rm -f "$CALLS.slow"; sel_full "$@" > "$X/sel.out"; echo $?; cp "$CALLS" "$X/sel.calls"; : > "$CALLS"; }
-sel_has() { grep -c -- "$1" "$X/sel.calls" | tr -d ' '; }
 # Failure: structure that grew found only after the queue, or a tool's own test run by hand and forgotten. The ratchet runs first in every mode; the tools'
 # tests run in a full run when something under tools/ changed, before the gate, and a failure there queues nothing.
 git checkout -q main
@@ -699,6 +761,10 @@ check "another selection on the same branch runs for real" "true" "$(sel --why s
 # Failure: main moved, so the same branch code is selected differently (its base changed), and the earlier pass was for another selection.
 check "a different base selects differently, so the old pass doesn't answer" "true" "$(CHECK_BASE=HEAD~1 sel --why base > /dev/null; [ "$(wc -l < "$X/sel.calls" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
 
+}
+
+# Segment J2. Starts from: branch main; branch_with starts every case on a fresh branch from main. The selection of other changes (lifecycle, dependents, app, tools, docs, CI, main), merges and dirty runs.
+seg_J2() {
 branch_with sel-lifecycle
 echo l >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-only
 check "a change to the lifecycle's crates passes" "0" "$(sel)"
@@ -765,6 +831,10 @@ check "they count against the budget of two" "2" "$(tools/check.sh --runs | sed 
 check "so a third needs a reason" "3" "$(sel)"
 git checkout -q -- crates/gamma/src/lib.rs
 
+}
+
+# Segment K1. Starts from: branch main; branch_with times makes its branch. Durations kept under .git/recto-test-times and what --slow says of them.
+seg_K1() {
 # --- Test durations (tools/check-times.sh) and named parts of a full run ---------------------------------------------------------------------------------
 TIMES=.git/recto-test-times
 branch_with times
@@ -851,6 +921,10 @@ check "a test in two stages counts once, with the time of the stage where it ran
 check "the slow stage is kept apart and never added into a tier" "slow 2 17.0" "$(printf '%s\n' "$got" | awk -F'\t' '$1 == "slow" { print "slow " $2, $3 }')"
 check "and the slowest list names each test once" "1" "$(printf '%s\n' "$got" | grep -c '^test	3	.*	a_window_test$')"
 
+}
+
+# Segment K2. Starts from: branch main; branch_with parts makes its branch. A named part of a full run, and the parts together.
+seg_K2() {
 # Failure: a part of a full run does the other part's work, or is remembered as a pass of everything, or CI's jobs overlap in what they run.
 branch_with parts
 echo p >> crates/alpha/src/lib.rs && git add . && git commit -qm parts-1
@@ -895,6 +969,10 @@ parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
 check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
 check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session --test evidence -j 4$' "$CALLS")"
 
+}
+
+# Segment L. Starts from: branch main as the prologue leaves it, with origin/main as pushed. CI's base for the tools' tests (branches, main's push event).
+seg_L() {
 # Failure: CI ran the tools' own tests on every run, 173 s of core whatever changed (run 43195226598), or skips them when what they test changed since CI's
 # base, or when that base can't be worked out. The base: on main the commit the push came after, on a branch where it left origin/main. What they test is
 # tools/ (the hooks too), .config/ and .github/, here and on CI alike.
@@ -914,14 +992,33 @@ mkdir -p tools/ratchet && echo "file crates/alpha/src/lib.rs 1" >> tools/ratchet
 echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate after the baseline"
 check "on CI, a branch that changed only the ratchet's baseline among the tools skips the tools' tests" "0 0" "$(branch_ci)"
 check "and here its check is still by what changed, not everything" "no" "$(sel_full 2>&1 | grep -q 'everything runs' && echo yes || echo no)"
+# Which of the tools' tests a changed file needs: the hook is only in check-test.sh's repository, so only that one runs for it; what no rule maps runs both.
 for changed in tools/hooks/pre-push .config/nextest.toml .github/workflows/ci.yml; do
+  case "$changed" in tools/hooks/*) wanted="1 0" ;; *) wanted="1 1" ;; esac
   git checkout -q main; git checkout -qb "ci-$(basename "$changed")"
   mkdir -p "$(dirname "$changed")" && echo "# $changed" >> "$changed" && git add . && git commit -qm "ci $changed"
   echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate after $changed"
-  check "on CI, a branch that changed $changed runs them, whatever came after" "1 1" "$(branch_ci)"
+  check "on CI, a branch that changed $changed runs what it needs, whatever came after" "$wanted" "$(branch_ci)"
   has "naming it" "the tools' tests run: $changed changed since" "$(cat "$X/ci.out")"
 done
 check "and here, off CI, a branch that changed .github/ runs them too, by the same rule" "1 1" "$(: > "$CALLS"; sel_full > /dev/null; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")")"
+# Failure (2026-11-13): a change to one tool ran the tests of all three (254 to 309 s on CI, of which check-test.sh was nearly all). A file maps to the test of its
+# own tool, and one that maps to none runs all three. The table is checked directly, and through the check on two files whose test is in this repository.
+tests_for() { (. tools/check-scope.sh; tool_tests_for "$1"; echo "$tool_tests"); }
+check "a change to the ratchet needs the ratchet's test alone" "ratchet ratchet" "$(tests_for tools/ratchet.sh) $(tests_for tools/ratchet/ratchet.py)"
+check "and to its test, the same" "ratchet" "$(tests_for tools/ratchet-test.sh)"
+check "target-hygiene's is its own" "hygiene hygiene" "$(tests_for tools/target-hygiene.sh) $(tests_for tools/target-hygiene-test.sh)"
+check "check.sh and what its test copies into its repository need check-test.sh" "check check check check check check check" "$(for f in tools/check.sh tools/check-scope.sh tools/check-times.sh tools/check-rerun.sh tools/check-like-ci.sh tools/push-main.sh tools/sysguard/heavy.sh; do tests_for $f; done | tr '\n' ' ' | sed 's/ $//')"
+check "and so does its own test" "check" "$(tests_for tools/check-test.sh)"
+check "a file no rule maps runs all three" "ratchet hygiene check" "$(tests_for tools/dev-build.sh)"
+check "and so does .config/ and .github/" "ratchet hygiene check ratchet hygiene check" "$(tests_for .config/nextest.toml) $(tests_for .github/workflows/ci.yml)"
+git checkout -q main; git checkout -qb ci-scope-tool
+echo "# x" >> tools/ratchet.sh; git add . && git commit -qm "ci ratchet only"
+echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate"
+check "on CI, a change to the ratchet alone runs its test and not check-test.sh" "0 1" "$(branch_ci)"
+echo "# x" >> tools/check-scope.sh; git add . && git commit -qm "ci scope"
+check "and with check-scope.sh changed too, both" "1 1" "$(branch_ci)"
+has "each test says its seconds" "check: tools/ratchet-test.sh took" "$(cat "$X/ci.out")"
 git checkout -q ci-crate
 git update-ref -d refs/remotes/origin/main
 check "a branch with no origin/main to compare with runs them" "1 1" "$(branch_ci)"
@@ -945,6 +1042,10 @@ check "an event that isn't a push runs them" "1 1" "$(ci_core GITHUB_EVENT_NAME=
 check "an event file that isn't JSON runs them" "1 1" "$(echo 'not json' > "$X/bad.json"; ci_core GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$X/bad.json")"
 check "and CHECK_BASE still decides when it's given" "0 0" "$(ci_core CHECK_BASE=HEAD GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch)"
 
+}
+
+# Segment M. Starts from: branch main as the prologue leaves it. The slow stage's seed, and a failed test's reruns and evidence (R0.7b, R0.7c).
+seg_M() {
 # Failure (PLAN R0.7b): the slow stage's seed can't be given, so an order of arrivals it found can't be replayed; or a seed is drawn when none was asked.
 commit_code slow-seed
 rm -f "$CALLS.slow"
@@ -999,12 +1100,15 @@ check "a root given in RECTO_EVIDENCE (CI's) is never emptied, and gets the evid
 check "the reruns' junit helpers find the failed test" "recto-cli::app	flaky_one" "$(printf '<testcase name="a" classname="x"/>\n<testcase name="flaky_one" classname="recto-cli::app" time="1">\n<failure type="t">b</failure>\n</testcase>\n<testcase name="c" classname="x">\n</testcase>\n' > "$X/j.xml"; . tools/check-rerun.sh; junit_failed "$X/j.xml")"
 check "and take a stage's filter off its arguments, keeping the rest" "--locked -p recto-cli -j 4" "$(. tools/check-rerun.sh; args_without_filter --locked -p recto-cli -j 4 -E 'test(x)' --no-tests=pass | tr '\0' ' ' | sed 's/ $//')"
 
+}
+
+# Segment N1. Starts from: branch main, pushed (this segment pushes and reads origin/main itself). main's CI read through gh, and the stamp.
+seg_N1() {
 # Failure (PLAN R0.7e): main's CI is red and nothing says so, so the next merge is checked, stamped and pushed over it (four times by 2026-11-12); or a
 # red marked known never ends; or gh missing, signed out or offline hangs the check or stops the stamp; or a branch's check asks GitHub at all.
 git checkout -q main
 git push -q origin main
 pushed=$(git rev-parse origin/main)
-run_of() { printf '[{"conclusion":"%s","databaseId":%s,"headSha":"%s","status":"%s","url":"https://ci/%s"}]' "$1" "$2" "$3" "${4:-completed}" "$2"; }
 red=$(run_of failure 7 "$pushed")
 commit_code after-red
 out=$(STUB_GH_RUNS=$red full --why "red main"); rc=$?
@@ -1058,6 +1162,12 @@ commit_code branch-change
 rm -f "$CALLS.gh"
 STUB_GH_RUNS=$red sel_full > /dev/null
 check "a branch's check never asks GitHub" "no" "$([ -s "$CALLS.gh" ] && echo yes || echo no)"
+}
+
+# Segment N2. Starts from: branch main, pushed (this segment pushes and reads origin/main itself). The CI watcher (tools/push-main.sh --watch), its time budget and runs that never ran.
+seg_N2() {
+  git push -q origin main
+  pushed=$(git rev-parse origin/main)
 # The watcher: the pushed commit's run to its end, the result, and on a failure the jobs, the tests, their rates and the artifacts.
 out=$(STUB_GH_RUNS="$(run_of failure 13 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a red watch ends with 1" "1" "$rc"
@@ -1141,6 +1251,10 @@ commit_code after-real-red
 out=$(STUB_GH_RUNS="$(run_of failure 22 "$pushed")" full --why "real red"); rc=$?
 check "while a run whose part failed still does" "4" "$rc"
 
+}
+
+# Segment O. Starts from: branch main as the prologue leaves it. --like-ci.
+seg_O() {
 # Failure (PLAN R0.7d): a CI-like run isn't CI's profile, concurrency or limits, holds the build to the limits too, runs the slow stage CI doesn't, counts
 # as a pass for the push guard, or doesn't say what it can't give; or a test filter's rerun can't be repeated to give its rate here.
 git checkout -q main
@@ -1174,6 +1288,10 @@ check "a filter that matches nothing says so" "2 yes" "$rc $(printf '%s' "$out" 
 rm -f "$CALLS.policy"; : > "$CALLS"
 LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' > /dev/null 2>&1
 check "with the limits off (LIKE_CI_LIMITS=''), no taskpolicy, and 3 at once for a test that isn't the app's" "no 1" "$([ -s "$CALLS.policy" ] && echo yes || echo no) $(grep -c -- '--workspace -j 3 -E test(=t1)' "$CALLS")"
+
+}
+
+seg_"$CHECK_TEST_SEGMENT"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

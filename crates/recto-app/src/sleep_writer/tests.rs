@@ -363,3 +363,83 @@ fn the_budget_is_looked_at_once_a_second_or_at_a_change_of_tab_and_the_oldest_go
     let counts = machine.counts();
     assert_eq!((counts.left_alone, counts.budget, counts.pressure, counts.asked), (2, 2, 2, 2));
 }
+
+/// A sleep file of one list and one version, with these pages' pictures (each a small flat one).
+fn file_with(pages: &[u32]) -> SleepFile {
+    SleepFile {
+        file: recto_platform::FileStamp {
+            size: 10,
+            mtime_ns: 1,
+            device: 1,
+            inode: 1,
+        },
+        file_pages: 40,
+        pages: 40,
+        list_seq: 3,
+        renderer_only: false,
+        version: Some(9),
+        toc: recto_core::Toc::default(),
+        usual: Some((612.0, 792.0)),
+        sizes: Vec::new(),
+        pictures: pages
+            .iter()
+            .map(|page| recto_session::sleep::SleepPicture {
+                page: *page,
+                scale: 0.5,
+                width: 64,
+                height: 80,
+                dark: false,
+                bgra: (0..64 * 80 * 4).map(|at| (at * 7 + *page as usize) as u8).collect(),
+            })
+            .collect(),
+    }
+}
+
+fn pages_of(file: &SleepFile) -> Vec<u32> {
+    file.pictures.iter().map(|picture| picture.page).collect()
+}
+
+/// Failure (2026-11-13, `a_long_session_stays_flat` under load: a wake from a sleep file whose two pictures were of pages 12 and 13 while the tab was at page 19, so its first frame was bare): a tab slept at one place with pictures, woke, moved, and slept again with nothing drawn at the new place, and the writer kept the older pictures "if it's the same list", so the file carried pictures of a place the tab had left: bytes written and read at a wake for a picture that can't be shown. A file keeps older pictures only if they are of the pages at its place, and writes fewer bytes without them.
+#[test]
+fn a_sleep_file_never_carries_pictures_that_are_not_at_its_place() {
+    let first = file_with(&[12, 13]);
+    // Slept again at page 19, nothing drawn there: its facts only.
+    let moved = with_older_pictures(file_with(&[]), Some(first.clone()), &[19]);
+    assert_eq!(pages_of(&moved), Vec::<u32>::new(), "no picture of the place it left");
+    let before = recto_session::sleep::encode_sleep(&first).len();
+    let after = recto_session::sleep::encode_sleep(&moved).len();
+    println!("a sleep file at a place it has no picture of: {before} bytes with the older pictures, {after} without");
+    assert!(after * 4 < before, "{after} against {before}");
+    // And what a wake loads from it is what it can show: nothing, and nothing held for it.
+    let woken = recto_session::sleep::decode_sleep(&recto_session::sleep::encode_sleep(&moved), u32::MAX).unwrap();
+    assert!(woken.pictures.is_empty());
+}
+
+/// Failure: the same rule, thrown too far, drops pictures that do cover the place: the system took a page's tiles since the file was written, so there are no new pictures, and the older file's, of the same pages, are what a wake can still show.
+#[test]
+fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
+    let there = file_with(&[12, 13, 30]);
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[12, 13])),
+        vec![12, 13],
+        "those at the place, not the one beside"
+    );
+    assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13])), vec![13]);
+    // One page of the place has none: the file can't cover it.
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13, 14])),
+        Vec::<u32>::new()
+    );
+    // A place with no pages (a closed window, no layout) is a place nothing is owed at.
+    assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[])), Vec::<u32>::new());
+    // Another list, or another version, or no file: as before, nothing from it.
+    let mut other_list = there.clone();
+    other_list.list_seq = 4;
+    assert!(with_older_pictures(file_with(&[]), Some(other_list), &[12]).pictures.is_empty());
+    let mut other_version = there.clone();
+    other_version.version = Some(10);
+    assert!(with_older_pictures(file_with(&[]), Some(other_version), &[12]).pictures.is_empty());
+    assert!(with_older_pictures(file_with(&[]), None, &[12]).pictures.is_empty());
+    // New pictures are the file's own, whatever was there.
+    assert_eq!(pages_of(&with_older_pictures(file_with(&[19]), Some(there), &[19])), vec![19]);
+}

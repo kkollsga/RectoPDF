@@ -40,6 +40,18 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 const LOOK_EVERY: Duration = Duration::from_millis(2);
 
 /// **A state folder and a folder for the test's files, kept between runs of the app,** as a disk is between launches. [`HeadlessApp::quit`] gives it back, to
+/// **A file's path outside every folder a quiet run's test may use** (its state and the system's temp folders), for a test of what's refused there: in the
+/// build's own `target` folder. `None` when the checkout itself is in a temp folder, where nothing near it is outside; the test then says it skipped that
+/// part rather than calling a test's own file someone else's.
+pub fn outside_the_tests_folders(name: &str) -> Option<PathBuf> {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").canonicalize().ok()?;
+    if recto_control::quiet::temp_folders().iter().any(|temp| target.starts_with(temp)) {
+        eprintln!("this checkout is in a temp folder: the part about a file outside the test's folders is skipped");
+        return None;
+    }
+    Some(target.join(format!("{}-{name}", std::process::id())))
+}
+
 /// [`Disk::start`] again on.
 pub struct Disk {
     root: TempDir,
@@ -657,11 +669,25 @@ impl HeadlessApp {
     ///
     /// Past [`WAIT_LIMIT`], naming `what` and what's still under way.
     pub fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
+        self.wait_for(what, || if done() { Ok(()) } else { Err(String::new()) });
+    }
+
+    /// Waits for `what`, as [`Self::wait_until`] does, with `done` saying what's still missing, which a failure says too.
+    ///
+    /// # Panics
+    ///
+    /// Past [`WAIT_LIMIT`], naming `what`, what was still missing at the last look, and what's still under way.
+    pub fn wait_for(&self, what: &str, done: impl Fn() -> Result<(), String>) {
         let began = Instant::now();
-        while !done() {
+        loop {
+            let missing = match done() {
+                Ok(()) => return,
+                Err(missing) if missing.is_empty() => String::new(),
+                Err(missing) => format!(", missing: {missing}"),
+            };
             assert!(
                 began.elapsed() < WAIT_LIMIT,
-                "waited {WAIT_LIMIT:?} for {what}; under way: {:?}; heard: {:?}",
+                "waited {WAIT_LIMIT:?} for {what}{missing}; under way: {:?}; heard: {:?}",
                 self.under_way(),
                 self.listener.heard().len()
             );

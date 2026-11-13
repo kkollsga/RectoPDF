@@ -2069,10 +2069,11 @@ mod tests {
         );
     }
 
-    /// Failure: two faces of one command disagree on what they need, so which row is found first decides who gets in.
+    /// Failure: two faces of one command disagree on what they need, so which row is found first decides who gets in. QA's two commands are the
+    /// exception, held in their own module: each verb's level is its own row's (`commands::qa::verbs`).
     #[test]
     fn rows_sharing_a_command_share_their_access() {
-        for spec in table::TABLE {
+        for spec in table::TABLE.iter().filter(|spec| !matches!(spec.tag, "qa_read" | "qa_drive")) {
             let first = table::by_tag(spec.tag).unwrap();
             assert_eq!(first.access, spec.access, "{}", spec.name);
         }

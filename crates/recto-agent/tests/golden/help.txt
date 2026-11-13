@@ -163,22 +163,19 @@ Testing the app:
   qa minimise          Says the window went into the Dock or came out of it, by what AppKit tells the app.
   qa hide              Says the app was hidden (⌘H) or shown again, by what AppKit tells it.
   qa sidebar-width     Sets the sidebar's width, by what dragging its edge does.
-  qa find              Opens or closes Find in the sidebar, by what ⌘F and Escape do.
-  qa find-query        Sets what Find has found for, leaving what's in the field as it is, as a record from before a restart does.
   qa find-draft        Sets what's in Find's field without finding it, as text typed and not run that a record brings back.
   qa find-type         Types into Find's field, by what a change in the field calls: it's found at once, the last query stopping.
-  qa find-key          Presses a key in Find's field, by what the field calls for it: Return goes to the next hit, ⇧Return to the one before, Escape closes Find.
+  qa find-key          Presses Escape in Find's field, by what the field calls for it, which closes Find.
   qa find-click        Clicks a row of Find's list, by what a click calls: a hit's row goes to it and selects it on the page.
   qa palette-type      Types into ⌘K's palette, by what a change in its field calls.
   qa palette-key       Presses a key in ⌘K's palette, by what its field calls for it: ↑ and ↓ move the selection, Return runs it, Escape closes the palette.
-  qa edit-mode         Goes into edit mode or out.
   qa view-rotation     Turns the active tab's view by quarter turns, as the state record carries it: every page is drawn turned on screen, and nothing about the file changes.
   qa sheet-answer      Answers the sheet over the window, as its button does: the close prompt's `first` is Save, `second` Cancel and `third` Don't Save; a save problem's `first` is OK and `second` Save As; a link's `first` is Open, which a quiet run notes in `app.links.address_opened` and opens nothing, and `second` Cancel; `cancel` closes Save As's sheet.
-  qa save-as           What Save As's sheet does when it's answered with a new file's path: the window's save, off its thread, the tab going over to the new file.
+  qa save-as           Answers Save As's sheet with a new file's path, by what the sheet's ending sends (the window's own Save As answer, which the system's sheet can't be typed into for): the window's save, off its thread, its notes said by the page, the tab going over to the new file.
   qa save-from         A quiet run's test of what happens around a save's writing, with a file the caller has written in place of the save's own writer: keeps the pages undo needs, notes what's coming, puts the file in place of the active tab's, and confirms.
-  qa owner-edit        Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.
+  qa as-person         Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait.
+  qa owner-edit        Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules.
   qa note-input        Says the user just touched the app, by what the event monitor calls.
-  qa open-file         Opens a file by the route a drop or the menu takes, which reads it off the session thread.
   qa hold-reads        Holds files being read for opening where they are until it's told otherwise, as a slow disk would, for what's waiting on them to be seen.
   qa hand-off-quit     Asks to quit for an update, by what the updater calls.
   qa sheet             Says a sheet or panel opened or closed over the window, by what opening one does.

@@ -42,8 +42,17 @@ impl StatePaths {
     pub fn from_env() -> Result<Self, AgentError> {
         match std::env::var_os(STATE_ENV) {
             Some(path) => Self::overridden(Path::new(&path)),
-            None => Ok(Self::at(default_root()?, false)),
+            None => Self::users_own(),
         }
+    }
+
+    /// The user's own folders, as a run with nothing set has them. Nothing is created.
+    ///
+    /// # Errors
+    ///
+    /// When this user's home can't be found.
+    pub fn users_own() -> Result<Self, AgentError> {
+        Ok(Self::at(default_root()?, false))
     }
 
     /// A state folder other than the user's own, after checking it isn't their home in disguise. Nothing is created until a checked path comes back.
@@ -99,6 +108,44 @@ impl StatePaths {
         }
     }
 
+    /// **A quiet run's state** (`AGENTS.md`: quiet runs "use temp state only"): the override, and only one that's a folder inside the system's temp folder,
+    /// never the user's own. A quiet run's level starts at Full, and its QA verbs can act as the person, so a state folder named on purpose isn't enough:
+    /// it has to be throwaway. `recto qa start` and the app's `--qa` both start here.
+    ///
+    /// # Errors
+    ///
+    /// `needs_temp_state`, saying what to set, when nothing was set or the folder is the user's own or outside the temp folders.
+    pub fn for_quiet_run() -> Result<Self, AgentError> {
+        Self::from_env()?.for_a_quiet_run()
+    }
+
+    /// [`Self::for_quiet_run`] on folders already chosen: these, if a quiet run may have them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::for_quiet_run`].
+    pub fn for_a_quiet_run(self) -> Result<Self, AgentError> {
+        let paths = self;
+        let real = default_root().ok().and_then(|real| resolved(&real));
+        let temps = crate::quiet::temp_folders();
+        if !paths.overridden || real.as_deref().is_none_or(|real| refuses_for_quiet_run(&paths.root, real, &temps)) {
+            return Err(AgentError::new(
+                "needs_temp_state",
+                if paths.overridden {
+                    format!(
+                        "A QA run's {STATE_ENV} has to be a new folder in the system's temp folder, and {} isn't.",
+                        display(&paths.root)
+                    )
+                } else {
+                    format!("A QA run needs {STATE_ENV} set to a new folder in a temp folder. It won't use the real state.")
+                },
+                exit::PERMISSION,
+            )
+            .then(format!("Set {STATE_ENV} to a new folder in a temp folder, as `mktemp -d` makes.")));
+        }
+        Ok(paths)
+    }
+
     /// Makes the folders, private to this user. A folder that's already there and isn't private is refused, never fixed: it may be a trap.
     pub fn prepare(&self) -> Result<(), AgentError> {
         let failed = |path: &Path| {
@@ -112,6 +159,10 @@ impl StatePaths {
         local::ensure_private_dir(&self.root).map_err(|_| failed(&self.root))?;
         local::ensure_private_dir(&self.root.join("run")).map_err(|_| failed(&self.root))?;
         local::ensure_private_dir(&self.run_dir).map_err(|_| failed(&self.run_dir))?;
+        // A folder named on purpose was checked where it really was; a link planted on a part of it that was missing then would have taken it elsewhere.
+        if self.overridden && self.root.canonicalize().ok().as_ref() != Some(&self.root) {
+            return Err(failed(&self.root));
+        }
         Ok(())
     }
 }
@@ -157,6 +208,16 @@ pub fn refuses_real_home(wanted: &Path, home: &Path, temp: Option<&Path>) -> boo
         return true;
     }
     !temp.is_some_and(|temp| !home.starts_with(temp) && wanted.starts_with(temp))
+}
+
+/// **The rule for a quiet run's state folder,** with every path already resolved through its links: refused when it's the user's own state folder, holds
+/// it or is inside it, and unless it's inside one of the temp folders and isn't the temp folder itself. A temp folder that holds the user's own proves
+/// nothing, so it doesn't count.
+pub fn refuses_for_quiet_run(wanted: &Path, real: &Path, temps: &[PathBuf]) -> bool {
+    if wanted.starts_with(real) || real.starts_with(wanted) {
+        return true;
+    }
+    !temps.iter().any(|temp| wanted.starts_with(temp) && wanted != temp && !real.starts_with(temp))
 }
 
 /// Whether a path, wherever links and `..` really take it, is in this user's real home.
@@ -333,5 +394,83 @@ mod tests {
             assert!(is_in_real_home(&other_name.join("a/folder/that/isnt/there/x.png")));
         }
         assert!(!is_in_real_home(&std::env::temp_dir().join("x.png")) || std::env::temp_dir().canonicalize().unwrap().starts_with(&home));
+    }
+
+    /// Failure: a quiet run, whose level starts at Full and whose QA verbs act as the person, runs on a state folder that isn't throwaway: the user's own,
+    /// one somewhere in the home, one reached by a link from a temp folder into the home, or the temp folder itself. With a made-up home and temp folder,
+    /// as the paths come out of [`resolved`].
+    #[test]
+    fn a_quiet_run_takes_only_a_folder_in_a_temp_folder() {
+        let made = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-quiet-rule-{}", std::process::id()));
+        let (home, temp) = (made.join("home"), made.join("temp"));
+        let real = default_root_in(&home);
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(home.join("Documents/state")).unwrap();
+        std::fs::create_dir_all(&temp).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(home.join("Documents"), temp.join("link")).unwrap();
+        let temps = [temp.clone()];
+        let refused = |path: &Path| refuses_for_quiet_run(&resolved(path).unwrap(), &real, &temps);
+        assert!(refused(&real), "the user's own");
+        assert!(refused(&real.join("inside")), "inside the user's own");
+        assert!(refused(&home), "the home, which holds it");
+        assert!(refused(&home.join("Documents/state")), "a folder in the home");
+        #[cfg(unix)]
+        assert!(refused(&temp.join("link/state")), "a link from the temp folder into the home");
+        assert!(refused(&temp), "the temp folder itself");
+        assert!(!refused(&temp.join("run-1")), "a new folder in the temp folder");
+        assert!(!refused(&temp.join("run-1/deeper")), "and one inside that");
+        assert!(
+            refuses_for_quiet_run(&temp.join("a"), &real, std::slice::from_ref(&made)),
+            "a temp folder holding the user's own proves nothing"
+        );
+        assert!(refuses_for_quiet_run(&temp.join("a"), &real, &[]), "no temp folder");
+        let _ = std::fs::remove_dir_all(&made);
+    }
+
+    /// Failure: a quiet run starts on state that isn't throwaway: with no state folder named (the user's own), or with the user's own folder named, as
+    /// the app's `--qa` and `recto qa start` both ask it. A new folder in the temp folder is taken.
+    #[test]
+    fn a_quiet_run_refuses_the_users_own_state_named_or_not() {
+        let refused = StatePaths::users_own().unwrap().for_a_quiet_run().expect_err("none named");
+        assert_eq!(refused.code, "needs_temp_state");
+        assert!(refused.message.contains(STATE_ENV), "it says what to set: {}", refused.message);
+        let real = resolved(&default_root().unwrap()).unwrap();
+        assert_eq!(
+            StatePaths::at(real, true).for_a_quiet_run().expect_err("the user's own, named").code,
+            "needs_temp_state"
+        );
+        let temp = local::system_temp_dir()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-quiet-{}", std::process::id()));
+        assert!(
+            StatePaths::overridden(&temp).unwrap().for_a_quiet_run().is_ok(),
+            "a new folder in the temp folder"
+        );
+    }
+
+    /// Failure (review of R2.4, item 8): a state folder checked while a middle part of it was missing is made through a link planted there afterwards, so
+    /// the run keeps its state, its level and its socket wherever the link points (the home, say) though the check said a temp folder. What was made is
+    /// resolved again, and refused when it isn't the folder that was checked.
+    #[test]
+    fn a_link_planted_after_the_check_is_refused() {
+        let made = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-planted-{}", std::process::id()));
+        let (base, elsewhere) = (made.join("base"), made.join("elsewhere"));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let paths = StatePaths::overridden(&base.join("missing/s")).expect("checked while `missing` isn't there");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&elsewhere, base.join("missing")).unwrap();
+        let refused = paths.prepare();
+        let _ = std::fs::remove_dir_all(&made);
+        assert_eq!(refused.expect_err("made through the planted link").code, "state_refused");
     }
 }

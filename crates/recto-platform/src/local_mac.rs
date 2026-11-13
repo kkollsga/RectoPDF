@@ -240,7 +240,8 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            match std::fs::create_dir(path) {
+            match create_private_dir(path) {
+                // Only ever narrows: what a umask took from this user's own bits.
                 Ok(()) => std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
@@ -250,6 +251,13 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         Ok(_) => {}
     }
     check_private_dir(path)
+}
+
+/// **Makes a folder that is private from the moment it exists,** in the one call. Another thread can find it there between this and anything after it, and
+/// [`check_private_dir`] refuses a folder others can reach: made wider and narrowed after, as it was, a second writer making the same folder at the same time
+/// was refused it, and its write failed (the app's first journal and a sleep file, both making `journals/`).
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(path)
 }
 
 /// Whether a folder is really this user's alone.
@@ -1072,6 +1080,16 @@ mod tests {
         assert_eq!(client.peer_uid().unwrap(), current_uid());
         assert!(listener.accept().unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: a folder another thread is making at the same moment is refused, so that thread's own write fails: the folder is seen as it is the moment
+    /// it exists, before the maker narrows it, which [`check_private_dir`] refuses. The step that makes it leaves it private already.
+    #[test]
+    fn a_folder_is_private_the_moment_it_exists() {
+        let root = temp("at-once");
+        let dir = root.join("made");
+        create_private_dir(&dir).unwrap();
+        check_private_dir(&dir).expect("what another thread sees, with nothing after the call that made it");
     }
 
     /// Failure: a folder others can reach, or a link planted where the private folder should be, is used anyway.
