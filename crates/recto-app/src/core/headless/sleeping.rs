@@ -94,3 +94,126 @@ fn a_flush_counts_the_tab_on_screens_sleep_file_it_skipped_and_writes_it_given_t
     assert!(active_has_a_sleep_file(&app), "given the time, it's written: {}", app.record_json()["sleep"]);
     drop(app.quit());
 }
+
+/// The view the host would have, at the top of the document: a Retina window, the page at its fit.
+fn window_view() -> recto_reader::Viewport {
+    recto_reader::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    }
+}
+
+/// **Stands in for the host's UI thread,** which the kit has none of: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn. Bounded.
+fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
+    let engine = &app.core().engine;
+    let began = std::time::Instant::now();
+    loop {
+        assert!(
+            app.core().core.flush(crate::testkit::headless::WAIT_LIMIT),
+            "the session thread took what was queued"
+        );
+        let mut ops = engine.drain();
+        engine.applied();
+        let mut quiet = ops.is_empty();
+        while let Some(op) = ops.pop() {
+            if let recto_reader::Op::ScrollTo { y, seq } = op {
+                view.y = y;
+                view.scrolled_to = seq;
+                ops = engine.set_viewport(*view);
+                engine.applied();
+                quiet = false;
+            }
+        }
+        if quiet && (!settled || engine.wait_settled(std::time::Duration::from_millis(20))) {
+            return;
+        }
+        assert!(
+            began.elapsed() < crate::testkit::headless::WAIT_LIMIT,
+            "the page view didn't come to rest: {}",
+            engine.report().0
+        );
+    }
+}
+
+fn tab_named(app: &crate::testkit::headless::HeadlessApp, name: &str) -> u64 {
+    app.session_json()["tabs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(name)))
+        .and_then(|tab| tab["id"].as_u64())
+        .expect("the tab")
+}
+
+fn full(app: &crate::testkit::headless::HeadlessApp, words: &[&str]) -> serde_json::Value {
+    app.recto(recto_agent::Level::Full, words)
+        .unwrap_or_else(|error| panic!("{words:?}: {error:?}"))
+}
+
+/// Opens a document, at the top of a window, drawn; then sends it to page 30 with nothing drawn there, as a `goto` and a change of tab before the renderer answers do.
+fn opened_and_moved(app: &crate::testkit::headless::HeadlessApp, doc: &std::path::Path, view: &mut recto_reader::Viewport) {
+    app.open(doc);
+    *view = window_view();
+    drop(app.core().engine.set_viewport(*view));
+    host_turns(app, view, true);
+    app.core().engine.hold_drawing(true);
+    full(app, &["goto", "30"]);
+    host_turns(app, view, false);
+}
+
+/// Failure (owner, 2026-11-13, asked whether the place should be drawn first: "I think it makes sense, and extra draw is not costly right?"): a tab moved and left before its place was drawn went to sleep with no picture of where it was, and woke to bare paper until the renderer caught up. On the app's own core with real workers: tab a, moved and left for b, has its place drawn once b is, and put to sleep (after the system has taken back what's discardable) and woken it starts from a picture of that place from its sleep file. Tab c, moved and left the same way with its drawing held till it sleeps, as it was before this, wakes with nothing to show. And leaving b where it was drawn asks the renderer for nothing.
+#[test]
+fn a_tab_moved_and_left_before_its_place_is_drawn_wakes_with_a_picture_of_it() {
+    let disk = Disk::new();
+    let (a, b, c) = (disk.pdf("a.pdf", 40), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 40));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    opened_and_moved(&app, &a, &mut view);
+    app.open(&b);
+    engine.hold_drawing(false);
+    view = window_view();
+    drop(engine.set_viewport(view));
+    host_turns(&app, &mut view, true);
+    let draws = engine.report().0["sleep_draws"].clone();
+    assert_eq!(draws["leaves_owing"], 1, "{draws}");
+    assert_eq!(draws["ended"]["done"], 1, "a's place is drawn: {draws}");
+    assert!(draws["pictures"].as_u64().unwrap() >= 1, "{draws}");
+
+    // b left where it was drawn: nothing more's asked of the renderer for it.
+    let jobs = draws["jobs"].clone();
+    opened_and_moved(&app, &c, &mut view);
+    let draws = engine.report().0["sleep_draws"].clone();
+    assert_eq!(draws["leaves_pictured"], 1, "{draws}");
+    assert_eq!(draws["jobs"], jobs, "{draws}");
+    // c left for b with its drawing held, so it sleeps as a tab left that way did before.
+    full(&app, &["tap", &format!("#{}", tab_named(&app, "b.pdf"))]);
+    host_turns(&app, &mut view, false);
+    // What the tabs off screen have drawn is discardable, and the system takes it back whenever it likes: what a sleeps with is what it was left with.
+    assert!(engine.empty_discardable() > 0);
+    for name in ["a.pdf", "c.pdf"] {
+        full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, name))]);
+    }
+    engine.hold_drawing(false);
+    host_turns(&app, &mut view, true);
+
+    let mut woke = |name: &str| {
+        full(&app, &["tap", &format!("#{}", tab_named(&app, name))]);
+        host_turns(&app, &mut view, true);
+        engine.report().0["last_wake"].clone()
+    };
+    let a_woke = woke("a.pdf");
+    assert_eq!(a_woke["tab"], tab_named(&app, "a.pdf"), "{a_woke}");
+    assert_eq!(a_woke["had"], "sleep_file", "a picture of its place, from its sleep file: {a_woke}");
+    assert!(a_woke["sleep_in_view"].as_u64().unwrap() >= 1, "{a_woke}");
+    let c_woke = woke("c.pdf");
+    assert_eq!(c_woke["had"], "nothing", "as it was before: {c_woke}");
+    drop(app.quit());
+}

@@ -95,6 +95,8 @@ fn a_tab_left_at_an_undrawn_place_has_it_drawn_after_the_tab_showing() {
     // At the scale a sleep picture of the page is, from the tab showing's: it's what a preview of tab 2 was drawn at, the pages being the same size.
     let preview_scale = did.iter().find(|job| job.tab == 2 && job.kind == "preview").unwrap().scale;
     assert!(for_left.iter().filter(|job| job.kind == "preview").all(|job| job.scale == preview_scale));
+    // What a tab off screen has drawn is discardable, and the system takes it back whenever it likes: its sleep file has its place all the same.
+    assert!(reader.empty_discardable() > 0);
     let material = reader.sleep_material(1, None).unwrap();
     let pictured: Vec<u32> = material
         .pictures
