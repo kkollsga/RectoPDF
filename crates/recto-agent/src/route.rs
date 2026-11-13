@@ -30,7 +30,7 @@ impl Command {
             Self::Session(command) => command.route(),
             Self::Qa(command) => command.route(),
             Self::Record(command) => command.route(),
-            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => Runs::App,
+            Self::Updates(command) => command.route(),
         }
     }
 
@@ -41,23 +41,10 @@ impl Command {
             Self::Qa(command) => command.only_asks(),
             Self::Move(Move::View(command)) => command.only_asks(),
             Self::Move(Move::Palette(command)) => command.only_asks(),
-            Self::UpdateStatus {} => true,
-            Self::UpdateDevBuilds { set } => set.is_none(),
-            Self::Settings { auto_update } => auto_update.is_none(),
-            Self::UpdateCheck {} | Self::UpdateInstall { .. } => false,
+            Self::Updates(command) => command.only_asks(),
             Self::Measure(_) | Self::Edit(_) | Self::Move(_) | Self::Read(_) | Self::Start(_) | Self::Waits(_) | Self::Rights(_) | Self::Session(_) => false,
         }
     }
-}
-
-/// Updates and settings are the app's. A session with no window has nothing to replace, and nothing to set.
-pub fn update_needs_app() -> AgentError {
-    AgentError::new(
-        "needs_app",
-        "Updates and settings belong to the app, and this session has no window.",
-        exit::FAILED,
-    )
-    .then("Open RectoPDF, and `recto` will talk to that.")
 }
 
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.

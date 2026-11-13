@@ -152,9 +152,7 @@ impl AppHost {
             },
             Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) => self.zoom(level, asked, word, events),
             Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(level, query, run, limit, events),
-            Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall { .. } | Command::UpdateDevBuilds { .. } | Command::Settings { .. } => {
-                self.saver.inner().ok_or_else(recto_agent::update_needs_app)?.update_command(command)
-            }
+            Command::Updates(_) => self.saver.inner().ok_or_else(recto_agent::update_needs_app)?.update_command(command),
             // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
             _ => self.run_session(level, command, events),
         }

@@ -92,11 +92,7 @@ impl<H: Host> Loop<H> {
             | Command::Read(_)
             | Command::Qa(_)
             | Command::Record(_)
-            | Command::UpdateStatus {}
-            | Command::UpdateCheck {}
-            | Command::UpdateInstall { .. }
-            | Command::UpdateDevBuilds { .. }
-            | Command::Settings { .. } => self.send_on(index, command),
+            | Command::Updates(_) => self.send_on(index, command),
         }
     }
 }

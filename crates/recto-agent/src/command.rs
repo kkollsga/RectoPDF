@@ -1,8 +1,8 @@
-//! The top-level command: a family's, or one of the commands the app's own code still builds and matches by their fields (`recto-ffi`, `recto-app`). Those move into families when the window runs commands itself (step R2.2's next slice, then R2.3). Every list here is spelled out for every command, with no default arm, so a command can't be left out of one.
+//! The top-level command: every command is a family's, and each list here hands it to its family. Spelled out for every family, with no default arm, so a family can't be left out of one.
 
-use crate::table::{self, Access};
-use crate::{Command, Level, file_label};
-use serde_json::{Value, json};
+use crate::Command;
+use crate::table::Access;
+use serde_json::Value;
 
 impl Command {
     /// The name on the wire, which is the first column of the command table with spaces as underscores.
@@ -18,18 +18,12 @@ impl Command {
             Self::Session(command) => command.tag(),
             Self::Qa(command) => command.tag(),
             Self::Record(command) => command.tag(),
-            Self::UpdateStatus {} => "update_status",
-            Self::UpdateCheck {} => "update_check",
-            Self::UpdateInstall { .. } => "update_install",
-            Self::UpdateDevBuilds { .. } => "update_dev_builds",
-            Self::Settings { .. } => "settings",
+            Self::Updates(command) => command.tag(),
         }
     }
 
     /// Who may run this: its row's level, or what it asks for when that's more.
     pub fn access(&self) -> Access {
-        // A command with no row can't run: the table is the list.
-        let row = || table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access);
         match self {
             Self::Measure(command) => command.access(),
             Self::Edit(command) => command.access(),
@@ -41,11 +35,7 @@ impl Command {
             Self::Session(command) => command.access(),
             Self::Qa(command) => command.access(),
             Self::Record(command) => command.access(),
-            // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
-            Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
-            // The same for development builds: the switch is what lets a build that isn't a release replace the app.
-            Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
-            Self::Settings { .. } | Self::UpdateDevBuilds { .. } | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } => row(),
+            Self::Updates(command) => command.access(),
         }
     }
 
@@ -62,7 +52,7 @@ impl Command {
             Self::Session(command) => command.draws(),
             Self::Qa(command) => command.draws(),
             Self::Record(command) => command.draws(),
-            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
+            Self::Updates(command) => command.draws(),
         }
     }
 
@@ -79,7 +69,7 @@ impl Command {
             Self::Session(command) => command.reads_pages(),
             Self::Qa(command) => command.reads_pages(),
             Self::Record(command) => command.reads_pages(),
-            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
+            Self::Updates(command) => command.reads_pages(),
         }
     }
 
@@ -96,7 +86,7 @@ impl Command {
             Self::Session(command) => command.protected_ok(),
             Self::Qa(command) => command.protected_ok(),
             Self::Record(command) => command.protected_ok(),
-            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
+            Self::Updates(command) => command.protected_ok(),
         }
     }
 
@@ -113,7 +103,7 @@ impl Command {
             Self::Session(command) => command.tab(),
             Self::Qa(command) => command.tab(),
             Self::Record(command) => command.tab(),
-            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => None,
+            Self::Updates(command) => command.tab(),
         }
     }
 
@@ -130,10 +120,7 @@ impl Command {
             Self::Session(command) => command.log_details(),
             Self::Qa(command) => command.log_details(),
             Self::Record(command) => command.log_details(),
-            Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
-            Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
-            Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),
-            Self::UpdateStatus {} | Self::UpdateCheck {} => Value::Null,
+            Self::Updates(command) => command.log_details(),
         }
     }
 }
