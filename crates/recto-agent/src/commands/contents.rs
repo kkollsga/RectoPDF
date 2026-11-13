@@ -83,17 +83,25 @@ pub enum Which {
 }
 
 impl Which {
+    /// Every value, in the order of [`Which::WORDS`].
     pub const ALL: [Self; 2] = [Self::Own, Self::Generated];
+    /// Its words on the wire, which its row offers.
+    pub const WORDS: &'static [&'static str] = &["own", "generated"];
 
     /// Its word on the wire.
     #[must_use]
     pub fn word(self) -> &'static str {
-        match self {
-            Self::Own => "own",
-            Self::Generated => "generated",
-        }
+        super::words::word_of(&Self::ALL, Self::WORDS, &self)
+    }
+
+    /// The value a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        super::words::value_of(&Self::ALL, Self::WORDS, word)
     }
 }
+
+const _: () = assert!(Which::ALL.len() == Which::WORDS.len(), "a value without a word");
 
 /// `contents show` as it's written on the wire.
 pub mod line {
@@ -112,7 +120,7 @@ pub mod line {
 impl TryFrom<line::ContentsShow> for ContentsShow {
     type Error = AgentError;
     fn try_from(line: line::ContentsShow) -> Result<Self, AgentError> {
-        let which = Which::ALL.into_iter().find(|which| which.word() == line.which).ok_or_else(|| {
+        let which = Which::from_word(&line.which).ok_or_else(|| {
             AgentError::new(
                 Code::USAGE,
                 format!("`{}` isn't a list of contents. It's `own` or `generated`.", recto_core::clean_line(&line.which)),
@@ -297,7 +305,7 @@ pub(crate) const ROWS_CONTENTS_SHOW: &[Spec] = &[Spec {
         Arg {
             key: "which",
             flag: None,
-            kind: Kind::Choice(&["own", "generated"]),
+            kind: Kind::Choice(Which::WORDS),
             required: true,
             help: "`own` or `generated`.",
         },

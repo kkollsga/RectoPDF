@@ -110,7 +110,7 @@ pub(crate) const ROWS_EDIT_MODE: &[Spec] = &[Spec {
     args: &[Arg {
         key: "set",
         flag: None,
-        kind: Kind::Choice(&["on", "off"]),
+        kind: Kind::Choice(OnOff::WORDS),
         required: true,
         help: "`on` or `off`.",
     }],

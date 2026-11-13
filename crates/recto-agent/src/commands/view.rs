@@ -37,16 +37,21 @@ pub enum PaperChoice {
 }
 
 impl PaperChoice {
-    /// Every choice, in the order the row lists their words.
+    /// Every choice, in the order of [`PaperChoice::WORDS`].
     pub const ALL: [Self; 4] = [Self::Is(Paper::White), Self::Is(Paper::Warm), Self::Is(Paper::Dark), Self::Auto];
+    /// Its words on the wire, which its row offers: each paper's name as the record keeps it (a test holds them to [`Paper::name`]), then `auto`.
+    pub const WORDS: &'static [&'static str] = &["white", "warm", "dark", "auto"];
 
     /// Its word on the wire.
     #[must_use]
     pub fn word(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Is(paper) => paper.name(),
-        }
+        super::words::word_of(&Self::ALL, Self::WORDS, &self)
+    }
+
+    /// The choice a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        super::words::value_of(&Self::ALL, Self::WORDS, word)
     }
 
     /// The paper it sets: none for `auto`.
@@ -69,16 +74,21 @@ pub enum Shown {
 }
 
 impl Shown {
+    /// Every value, in the order of [`Shown::WORDS`].
     pub const ALL: [Self; 3] = [Self::On, Self::Off, Self::Toggle];
+    /// Its words on the wire, which its rows offer.
+    pub const WORDS: &'static [&'static str] = &["on", "off", "toggle"];
 
     /// Its word on the wire.
     #[must_use]
     pub fn word(self) -> &'static str {
-        match self {
-            Self::On => "on",
-            Self::Off => "off",
-            Self::Toggle => "toggle",
-        }
+        super::words::word_of(&Self::ALL, Self::WORDS, &self)
+    }
+
+    /// The value a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        super::words::value_of(&Self::ALL, Self::WORDS, word)
     }
 
     /// Whether it's hidden after, from whether it's hidden now.
@@ -91,6 +101,12 @@ impl Shown {
         }
     }
 }
+
+/// A layout's words on the wire, in the order of [`Spread::ALL`], which the row offers and `view` reads and prints: each as the record keeps it, which a
+/// test holds to [`Spread::name`].
+pub const LAYOUT_WORDS: &[&str] = &["single", "two-up", "two-up-cover"];
+
+const _: () = assert!(PaperChoice::ALL.len() == PaperChoice::WORDS.len() && Shown::ALL.len() == Shown::WORDS.len() && Spread::ALL.len() == LAYOUT_WORDS.len());
 
 /// `view` as it's written on the wire.
 pub mod line {
@@ -122,10 +138,7 @@ fn usage(message: String) -> AgentError {
 /// A word for something hidden or not, or the refusal of one that isn't.
 fn shown(word: Option<String>, what: &str) -> Result<Option<Shown>, AgentError> {
     word.map(|word| {
-        Shown::ALL
-            .into_iter()
-            .find(|shown| shown.word() == word)
-            .ok_or_else(|| usage(format!("`{}` isn't for {what}. It's `on`, `off` or `toggle`.", recto_core::clean_line(&word))))
+        Shown::from_word(&word).ok_or_else(|| usage(format!("`{}` isn't for {what}. It's `on`, `off` or `toggle`.", recto_core::clean_line(&word))))
     })
     .transpose()
 }
@@ -145,18 +158,18 @@ impl TryFrom<line::View> for View {
         } = line;
         let layout = layout
             .map(|name| {
-                Spread::from_name(&name).ok_or_else(|| {
+                super::words::value_of(&Spread::ALL, LAYOUT_WORDS, &name).ok_or_else(|| {
                     usage(format!(
                         "`{}` isn't a layout. It's one of {}.",
                         recto_core::clean_line(&name),
-                        Spread::ALL.map(Spread::name).join(", ")
+                        LAYOUT_WORDS.join(", ")
                     ))
                 })
             })
             .transpose()?;
         let paper = paper
             .map(|name| {
-                PaperChoice::ALL.into_iter().find(|choice| choice.word() == name).ok_or_else(|| {
+                PaperChoice::from_word(&name).ok_or_else(|| {
                     usage(format!(
                         "`{}` isn't a paper. It's one of {}, or `auto`.",
                         recto_core::clean_line(&name),
@@ -183,7 +196,9 @@ impl From<&View> for line::View {
             sidebar: asked.sidebar.map(|shown| shown.word().to_string()),
             agent_icon: asked.agent_icon.map(|shown| shown.word().to_string()),
             zoom: asked.zoom.clone(),
-            layout: asked.layout.map(|layout| layout.name().to_string()),
+            layout: asked
+                .layout
+                .map(|layout| super::words::word_of(&Spread::ALL, LAYOUT_WORDS, &layout).to_string()),
             tab: asked.tab.clone(),
         }
     }
@@ -410,28 +425,28 @@ pub(crate) const ROWS_VIEW: &[Spec] = &[Spec {
         Arg {
             key: "paper",
             flag: Some("--paper"),
-            kind: Kind::Choice(&["white", "warm", "dark", "auto"]),
+            kind: Kind::Choice(PaperChoice::WORDS),
             required: false,
             help: "`white`, `warm`, `dark`, or `auto`, which goes with the window: white with a light one, dark with a dark one.",
         },
         Arg {
             key: "sidebar",
             flag: Some("--sidebar"),
-            kind: Kind::Choice(&["on", "off", "toggle"]),
+            kind: Kind::Choice(Shown::WORDS),
             required: false,
             help: "`off` hides the sidebar, as its button beside the window's controls does, and it's remembered. `toggle` shows it if it's hidden and hides it if not, as that button does.",
         },
         Arg {
             key: "agent_icon",
             flag: Some("--agent-icon"),
-            kind: Kind::Choice(&["on", "off", "toggle"]),
+            kind: Kind::Choice(Shown::WORDS),
             required: false,
             help: "`off` hides the agent icon, and it's remembered. `toggle` shows it if it's hidden and hides it if not, as View > Agent Icon does.",
         },
         Arg {
             key: "layout",
             flag: Some("--layout"),
-            kind: Kind::Choice(&["single", "two-up", "two-up-cover"]),
+            kind: Kind::Choice(LAYOUT_WORDS),
             required: false,
             help: "The tab showing's layout: `single`, a page to a row; `two-up`, two side by side; `two-up-cover`, the first page alone, then two side by side. Each tab keeps its own.",
         },

@@ -354,7 +354,7 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
         Arg {
             key: "sync",
             flag: Some("--sync"),
-            kind: Kind::Choice(&["on", "off"]),
+            kind: Kind::Choice(OnOff::WORDS),
             required: false,
             help: "`on` for synced scroll, from where each pane is now, or `off` for separate, the default.",
         },

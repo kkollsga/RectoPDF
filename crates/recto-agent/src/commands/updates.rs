@@ -411,7 +411,7 @@ pub(crate) const ROWS_UPDATE_DEV_BUILDS: &[Spec] = &[Spec {
     args: &[Arg {
         key: "set",
         flag: None,
-        kind: Kind::Choice(&["on", "off"]),
+        kind: Kind::Choice(OnOff::WORDS),
         required: false,
         help: "`on` or `off`. Left out, says how it is.",
     }],
@@ -428,7 +428,7 @@ pub(crate) const ROWS_SETTINGS: &[Spec] = &[Spec {
     args: &[Arg {
         key: "auto_update",
         flag: Some("--auto-update"),
-        kind: Kind::Choice(&["on", "off"]),
+        kind: Kind::Choice(OnOff::WORDS),
         required: false,
         help: "`on` installs a new version by itself once the user hasn't touched the app for 30 minutes. `off` leaves it to the menu. The daily check runs either way.",
     }],

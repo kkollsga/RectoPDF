@@ -121,34 +121,6 @@ fn every_typed_value_is_the_line_it_writes() {
     assert_eq!(lines.len(), all.len(), "two values print as one line");
 }
 
-/// The words a row offers for an argument, by its key.
-fn row_words(name: &str, key: &str) -> Vec<&'static str> {
-    let spec = table::TABLE.iter().find(|spec| spec.name == name).unwrap_or_else(|| panic!("no row {name}"));
-    let arg = spec.args.iter().find(|arg| arg.key == key).unwrap_or_else(|| panic!("{name} has no {key}"));
-    match arg.kind {
-        table::Kind::Choice(words) => words.to_vec(),
-        other => panic!("{name} {key} is {other:?}"),
-    }
-}
-
-/// Failure: the CLI's words for a choice and the type's drift apart, so `recto` offers a word the command refuses, or refuses one it takes.
-#[test]
-fn a_rows_words_are_its_types_words() {
-    let on_off = OnOff::ALL.map(OnOff::word).to_vec();
-    assert_eq!(row_words("edit mode", "set"), on_off);
-    assert_eq!(row_words("update dev-builds", "set"), on_off);
-    assert_eq!(row_words("settings", "auto_update"), on_off);
-    assert_eq!(row_words("contents show", "which"), Which::ALL.map(Which::word).to_vec());
-    assert_eq!(row_words("compare", "sync"), on_off);
-    assert_eq!(row_words("view", "paper"), PaperChoice::ALL.map(PaperChoice::word).to_vec());
-    assert_eq!(row_words("view", "sidebar"), Shown::ALL.map(Shown::word).to_vec());
-    assert_eq!(row_words("view", "agent_icon"), Shown::ALL.map(Shown::word).to_vec());
-    assert_eq!(
-        row_words("view", "layout"),
-        recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).to_vec()
-    );
-}
-
 /// Requests whose words no type takes, sent as JSON, each with the word that's wrong in it after a tab. One file, which the fuzz crate's walk of refusals
 /// made as a line is read starts from too.
 const MALFORMED: &str = include_str!("golden/malformed.txt");

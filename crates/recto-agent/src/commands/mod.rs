@@ -125,6 +125,16 @@ macro_rules! from_line {
     };
 }
 
+/// A typed payload's tag, or none for a command that's its own line.
+macro_rules! typed_tag {
+    ($line:ty ; $payload:ty) => {
+        Some(<$payload as $crate::commands::Cmd>::TAG)
+    };
+    (; $payload:ty) => {
+        None
+    };
+}
+
 /// Declares a family: the enum, and everything about its commands taken from their payloads. Written as a plain enum, so the ratchet counts its variants.
 /// A variant marked `#[line(module::line::Name)]` is a typed payload, read from that line and checked whole when it's parsed (step R2.5).
 macro_rules! family {
@@ -151,6 +161,9 @@ macro_rules! family {
 
             /// The wire names this family reads.
             pub const TAGS: &'static [&'static str] = &[$(<$payload as $crate::commands::Cmd>::TAG,)*];
+
+            /// Which of them are typed payloads, read from a line of their own and checked whole (step R2.5).
+            pub const TYPED: &'static [Option<&'static str>] = &[$(typed_tag!($($line)? ; $payload),)*];
 
             /// Reads a line known to name one of this family's commands: as serde reads its line, refused as no command if that fails, and then, for a
             /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5). A refusal of what a line holds is the
@@ -431,30 +444,36 @@ pub(crate) fn tag_of(line: &str) -> Option<std::borrow::Cow<'_, str>> {
 
 type Reads = fn(&str) -> Result<Command, crate::Refused>;
 type Words = fn(&str, &Value) -> Option<String>;
+type Typed = &'static [Option<&'static str>];
 
-/// Every family: the wire names it reads, how it reads one, and its commands' plain words. One line each.
-const FAMILIES: &[(&[&str], Reads, Words)] = &[
-    (Start::TAGS, Start::parse, Start::human),
-    (Read::TAGS, Read::parse, Read::human),
-    (Move::TAGS, Move::parse, Move::human),
-    (Edit::TAGS, Edit::parse, Edit::human),
-    (Measure::TAGS, Measure::parse, Measure::human),
-    (Waits::TAGS, Waits::parse, Waits::human),
-    (Rights::TAGS, Rights::parse, Rights::human),
-    (Session::TAGS, Session::parse, Session::human),
-    (Qa::TAGS, Qa::parse, Qa::human),
-    (Record::TAGS, Record::parse, Record::human),
-    (Updates::TAGS, Updates::parse, Updates::human),
+/// Every family: the wire names it reads, how it reads one, its commands' plain words, and which are typed payloads. One line each.
+const FAMILIES: &[(&[&str], Reads, Words, Typed)] = &[
+    (Start::TAGS, Start::parse, Start::human, Start::TYPED),
+    (Read::TAGS, Read::parse, Read::human, Read::TYPED),
+    (Move::TAGS, Move::parse, Move::human, Move::TYPED),
+    (Edit::TAGS, Edit::parse, Edit::human, Edit::TYPED),
+    (Measure::TAGS, Measure::parse, Measure::human, Measure::TYPED),
+    (Waits::TAGS, Waits::parse, Waits::human, Waits::TYPED),
+    (Rights::TAGS, Rights::parse, Rights::human, Rights::TYPED),
+    (Session::TAGS, Session::parse, Session::human, Session::TYPED),
+    (Qa::TAGS, Qa::parse, Qa::human, Qa::TYPED),
+    (Record::TAGS, Record::parse, Record::human, Record::TYPED),
+    (Updates::TAGS, Updates::parse, Updates::human, Updates::TYPED),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
 pub(crate) fn parser_for(tag: &str) -> Option<Reads> {
-    FAMILIES.iter().find(|(tags, _, _)| tags.contains(&tag)).map(|(_, parse, _)| *parse)
+    FAMILIES.iter().find(|(tags, ..)| tags.contains(&tag)).map(|(_, parse, ..)| *parse)
 }
 
 /// The plain words for an answer, from the command whose answer it is.
 pub(crate) fn human(tag: &str, data: &Value) -> Option<String> {
-    FAMILIES.iter().find_map(|(_, _, words)| words(tag, data))
+    FAMILIES.iter().find_map(|(_, _, words, _)| words(tag, data))
+}
+
+/// Whether a wire name is a typed payload's, read from a line of its own and checked whole as it's read (step R2.5).
+pub fn is_typed(tag: &str) -> bool {
+    FAMILIES.iter().any(|(.., typed)| typed.contains(&Some(tag)))
 }
 
 /// **The table.** Each family's rows, and the rows of the commands not in a family yet and of what runs in `recto` itself, which has no command. `recto help` shows them by group in [`GROUP_ORDER`], each group once; within a group, in the order here. A new command needs no line here: its family's list places it.
