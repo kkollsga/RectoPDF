@@ -79,6 +79,13 @@ fn measure(tabs: usize) {
             adding: false,
         });
     });
+    // A file that's open already, opened again, as the Open panel, a drop or the Finder does: its tab comes to the front, with nothing read.
+    let (file_a, file_b) = (files[files.len() - 1].clone(), files[files.len().saturating_sub(2)].clone());
+    case(&app, "open its tab", tabs, nothing, |app, first| {
+        app.act(UiAction::Open {
+            path: if first { file_b.clone() } else { file_a.clone() },
+        });
+    });
     app.act(UiAction::Row { row: a.clone(), adding: false });
     app.settle();
     let contents = |page: u32| crate::SidebarRow {
@@ -119,6 +126,12 @@ fn measure(tabs: usize) {
     case(&app, "zoom", tabs, nothing, |app, first| {
         app.act(UiAction::Menu {
             id: (if first { "view.zoom_in" } else { "view.zoom_out" }).into(),
+        });
+    });
+    // The panel's Rotate, every page as one step, as outside edit mode.
+    case(&app, "rotate", tabs, nothing, |app, first| {
+        app.act(UiAction::Menu {
+            id: (if first { "rotate.right" } else { "rotate.left" }).into(),
         });
     });
     let rotate = |app: &HeadlessApp| {
