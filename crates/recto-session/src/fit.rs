@@ -133,8 +133,8 @@ impl<L: DocLoader> Session<L> {
 
 /// What's said of tabs' files, borrowed from the session for one look: [`Session::notices`].
 pub struct Notices<'a> {
-    tabs: &'a registry::Tabs,
-    lists: &'a lists::Lists,
+    pub(crate) tabs: &'a registry::Tabs,
+    pub(crate) lists: &'a lists::Lists,
 }
 
 impl Notices<'_> {
