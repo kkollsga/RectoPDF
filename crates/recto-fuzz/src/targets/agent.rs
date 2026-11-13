@@ -95,10 +95,12 @@ fn command_line(bytes: &[u8]) {
     let wire = invocation.wire();
     // What the CLI builds is what the socket reads, so what it built must be a line the socket reads as a command. A line past the socket's cap gets refused
     // there, in words, which is fine; and a typed payload refuses flags that can't go together as it's read, as usage, the same by either route (R2.5).
-    if !invocation.help && invocation.spec.route == Route::Session && wire.len() <= MAX_COMMAND_BYTES {
-        if let Err(refused) = invocation.command() {
-            assert_eq!(refused.code, "usage", "the CLI built a line the socket refuses: {wire}");
-        }
+    if !invocation.help
+        && invocation.spec.route == Route::Session
+        && wire.len() <= MAX_COMMAND_BYTES
+        && let Err(refused) = invocation.command()
+    {
+        assert_eq!(refused.code, "usage", "the CLI built a line the socket refuses: {wire}");
     }
 }
 
