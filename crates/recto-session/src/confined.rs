@@ -9,7 +9,8 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 /// The refusal's words, the one wording for every route: `recto-agent`'s refusal is made from these.
-pub const OUTSIDE_WORDS: &str = "A quiet run only uses files in its own folders: its state folder and the system's temp folders. That file isn't in them, so nothing was opened or written.";
+pub const OUTSIDE_WORDS: &str =
+    "A quiet run only uses files in its own folders, the system's temp folders. That file isn't in them, so nothing was opened or written.";
 
 /// The folders a session is confined to, once it is: [`Session::confinement`](super::Session::confinement).
 #[derive(Debug, Default)]
