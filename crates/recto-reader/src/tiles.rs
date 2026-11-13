@@ -8,12 +8,11 @@
 
 use crate::layout::{PageBox, PageLayout, Spread};
 use crate::paper::PaperKind;
-use crate::selection::Urgency;
 use recto_index::select::PagePoint;
 use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
-use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
-use recto_render_service::{CancelHandle, LowResWhy, TileKind, plan_regions};
+use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
+use recto_render_service::{LowResWhy, TileKind};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,11 +20,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod host;
+mod jobs;
 mod place;
+mod plan;
 mod pointer;
 mod zoom;
 
 use host::{HostQueue, Placement};
+pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
+use jobs::{MAX_KEYLESS, PlanKind, Work};
 use place::Place;
 use pointer::Pointer;
 
@@ -35,8 +38,6 @@ pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scrol
 pub const MAX_ATTACH_PER_TURN: usize = 8;
 /// How far from where it was sent the host can put the view, on its own pixels: half a point at 2x, a point at 1x. Within it, the view is still on the place.
 const HOST_ROUNDING: f64 = 1.0;
-/// Files remembered as needing a password the renderer has none for, until the app asks: no more than tabs that could be showing.
-const MAX_KEYLESS: usize = 8;
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
 const MAX_KEPT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_KEPT_SURFACES: usize = 1024;
@@ -326,125 +327,6 @@ pub struct WakeReport {
     pub blank_frames: u32,
 }
 
-/// One thing for the engine to do. The surface, if any, is the job's until it comes back.
-#[derive(Debug)]
-pub struct Job {
-    pub tab: u32,
-    pub position: u32,
-    pub file: PathBuf,
-    pub source_page: u32,
-    pub generation: u64,
-    pub kind: JobKind,
-}
-
-#[derive(Debug)]
-pub enum JobKind {
-    /// Ask a page's size.
-    Size,
-    /// Ask whether a page is heavy.
-    Traits,
-    Draw {
-        scale: f32,
-        rect: TileRect,
-        surface: PixelSurface,
-        what: DrawKind,
-        paper: PaperKind,
-    },
-    /// Read a page's text for selecting. `check` also draws it, for the hidden-text check.
-    Text { check: bool },
-    /// Read a page's links, from the file's structure, with no worker.
-    Links,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DrawKind {
-    Preview,
-    Tile,
-    /// One pass, cut on a grid of this many pixels.
-    Region,
-}
-
-/// A job, before its surface is made. The reader's lock is held for as long as it takes the UI thread's `set_viewport` to get a word in, so what can take a while is done after it's let go.
-#[derive(Debug)]
-pub struct JobPlan {
-    pub tab: u32,
-    pub position: u32,
-    pub file: PathBuf,
-    pub source_page: u32,
-    pub generation: u64,
-    kind: PlanKind,
-}
-
-#[derive(Debug)]
-enum PlanKind {
-    Size,
-    Traits,
-    Draw {
-        scale: f32,
-        rect: TileRect,
-        what: DrawKind,
-        paper: PaperKind,
-    },
-    Text {
-        check: bool,
-    },
-    Links,
-}
-
-impl JobPlan {
-    /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made, which leaves things as if there'd been nothing to do.
-    pub fn ready(self) -> Option<Job> {
-        let Self {
-            tab,
-            position,
-            file,
-            source_page,
-            generation,
-            kind,
-        } = self;
-        let kind = match kind {
-            PlanKind::Size => JobKind::Size,
-            PlanKind::Traits => JobKind::Traits,
-            PlanKind::Text { check } => JobKind::Text { check },
-            PlanKind::Links => JobKind::Links,
-            PlanKind::Draw { scale, mut rect, what, paper } => {
-                let surface = match what {
-                    DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
-                    DrawKind::Tile => Self::take_surface(TILE_EDGE, TILE_EDGE)?,
-                    DrawKind::Region => loop {
-                        let surface = Self::take_surface(rect.width, rect.height)?;
-                        // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
-                        if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
-                            break surface;
-                        }
-                        rect.height -= TILE_EDGE;
-                    },
-                };
-                JobKind::Draw {
-                    scale,
-                    rect,
-                    surface,
-                    what,
-                    paper,
-                }
-            }
-        };
-        Some(Job {
-            tab,
-            position,
-            file,
-            source_page,
-            generation,
-            kind,
-        })
-    }
-
-    /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
-    fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
-        PixelSurface::create(width, height).ok()
-    }
-}
-
 /// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
 #[allow(clippy::too_many_arguments)]
 fn shrink_into(source: &[u8], stride: usize, used_width: u32, used_height: u32, step: u32, at: (u32, u32), picture: &mut [u8], width: u32, height: u32) {
@@ -476,54 +358,6 @@ fn shrink_into(source: &[u8], stride: usize, used_width: u32, used_height: u32, 
             }
         }
     }
-}
-
-/// How a job came out.
-#[derive(Debug)]
-pub enum Outcome {
-    Size(PageBox),
-    Heavy(bool),
-    Drawn {
-        kind: TileKind,
-        low_res: Option<(TileRect, LowResWhy)>,
-    },
-    Cancelled,
-    /// The page can't be drawn now or ever, in these words.
-    PageFailed {
-        message: String,
-        may_pass: bool,
-    },
-    /// The file can't be drawn, in these words. `needs_key`: because it needs a password the renderer wasn't given.
-    DocumentFailed {
-        message: String,
-        needs_key: bool,
-    },
-    /// A page's text, for selecting. `checked` says a hidden-text check was asked for and has been tried, however it came out, and not stopped because nobody wanted it.
-    Text {
-        text: Arc<recto_index::select::PageText>,
-        checked: bool,
-    },
-    /// A page's text can't be read. That's the page's text, and nothing about drawing it.
-    TextFailed,
-    /// A page's links, or none if they couldn't be read.
-    Links(Option<Arc<recto_core::nav::PageLinks>>),
-}
-
-#[derive(Debug)]
-struct Running {
-    tab: u32,
-    position: u32,
-    rect: Option<TileRect>,
-    scale: f32,
-    /// A preview's scale isn't the tiles', and it's wanted as long as its page is.
-    preview: bool,
-    generation: u64,
-    cancel: Option<CancelHandle>,
-    cancel_asked: bool,
-    /// It's reading text. A selection or a copy can want a page that isn't in view, so where the view is says nothing about it.
-    text: bool,
-    /// It's drawing for a hidden-text check too, which can take seconds, and can go when there's something more wanted.
-    check: bool,
 }
 
 /// Counts for QA and the budgets.
@@ -558,27 +392,17 @@ pub struct Reader {
     attached: HashMap<u32, Vec<u64>>,
     host: HostQueue,
     clock: u64,
-    running: Option<Running>,
-    next_generation: u64,
+    work: Work,
     place: Place,
     counts: ReaderCounts,
-    wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
     pointer: Pointer,
-    /// The thread that draws has failed too many times to go on trying, and this says so.
-    gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     sleep_view: Option<(u32, SleepView)>,
-    /// Files whose renderers have the wrong version open, to be let go of and opened again.
-    reopen_files: Vec<PathBuf>,
-    /// Files the renderer couldn't open for want of a password, which the app has none for: a protected file moved to another volume, or replaced, while it was open. The app asks for it again. At most [`MAX_KEYLESS`].
-    keyless: Vec<PathBuf>,
     /// Pictures that came from sleep files, which a worker's word on the version goes over.
     from_sleep: HashSet<u64>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
     window_up: bool,
-    /// For QA: nothing's drawn, so a first frame stays to be looked at.
-    hold_drawing: bool,
     /// When the wake under way was asked for, and how it's gone.
     waking: Option<(Instant, WakeReport)>,
     last_wake: Option<WakeReport>,
@@ -615,20 +439,14 @@ impl Reader {
             attached: HashMap::new(),
             host: HostQueue::default(),
             clock: 0,
-            running: None,
-            next_generation: 1,
+            work: Work::new(),
             place: Place::new(),
             counts: ReaderCounts::default(),
-            wanted_files: Arc::new(Vec::new()),
             note: None,
             pointer: Pointer::default(),
-            gave_up: false,
             sleep_view: None,
-            reopen_files: Vec::new(),
-            keyless: Vec::new(),
             from_sleep: HashSet::new(),
             window_up: false,
-            hold_drawing: false,
             waking: None,
             last_wake: None,
             share: 1,
@@ -743,20 +561,10 @@ impl Reader {
         }
     }
 
-    /// Files whose renderers have to start again.
-    pub fn take_reopen_files(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.reopen_files)
-    }
-
-    /// Files the renderer found need a password it has none for, since this was last asked. Asking clears them.
-    pub fn take_keyless(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.keyless)
-    }
-
     /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
     pub fn key_given(&mut self, path: &std::path::Path) {
-        self.keyless.retain(|file| file != path);
-        self.reopen_files.push(path.to_path_buf());
+        self.work.keyless.retain(|file| file != path);
+        self.work.reopen_files.push(path.to_path_buf());
         for doc in self.docs.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
                 doc.problem = None;
@@ -764,11 +572,6 @@ impl Reader {
             }
         }
         self.refresh(MAX_ATTACH_PER_TURN);
-    }
-
-    /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
-    pub fn hold_drawing(&mut self, on: bool) {
-        self.hold_drawing = on;
     }
 
     /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
@@ -1107,11 +910,6 @@ impl Reader {
         self.hot
     }
 
-    /// Files the engine should keep a renderer for: hot and warm tabs'.
-    pub fn wanted_files(&self) -> Arc<Vec<PathBuf>> {
-        Arc::clone(&self.wanted_files)
-    }
-
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()
     }
@@ -1159,7 +957,7 @@ impl Reader {
             self.pointer.selecting.reset();
             self.pointer.linking.clear();
         }
-        let floor = self.next_generation;
+        let floor = self.work.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
             let mut layout = PageLayout::with_spread(pages, spread);
             layout.set_margins(self.margins.0, self.margins.1);
@@ -1227,7 +1025,7 @@ impl Reader {
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
             // Another version of its file: a worker that's running has the old one open, and goes on drawing that.
             if doc.map.own != map.own {
-                self.reopen_files.extend(map.files.first().cloned());
+                self.work.reopen_files.extend(map.files.first().cloned());
             }
             if carried {
                 // **A save leaves the view as it was** (owner: "perfect" state recovery): the pages keep their sizes as shown, so the fit, the zoom shown, the place and the layout don't move. Only what's drawn is of the new file, and is drawn again.
@@ -1243,7 +1041,7 @@ impl Reader {
             doc.problem = None;
             doc.seen.clear();
             doc.floor = floor;
-            if let Some(running) = &self.running
+            if let Some(running) = &self.work.running
                 && running.tab == tab
                 && let Some(cancel) = &running.cancel
             {
@@ -1334,20 +1132,6 @@ impl Reader {
         }
     }
 
-    fn recount_wanted_files(&mut self, warm: &[u32]) {
-        let mut files: Vec<PathBuf> = Vec::new();
-        for tab in warm.iter().copied().chain(self.hot) {
-            if let Some(doc) = self.docs.get(&tab) {
-                files.extend(doc.map.files.iter().cloned());
-            }
-        }
-        files.sort();
-        files.dedup();
-        if *self.wanted_files != files {
-            self.wanted_files = Arc::new(files);
-        }
-    }
-
     /// Everything of tabs that have gone cold goes, as a cold tab holds nothing.
     fn keep_only(&mut self, warm: &[u32], hot: u32) {
         let gone: Vec<u32> = self.docs.keys().copied().filter(|tab| *tab != hot && !warm.contains(tab)).collect();
@@ -1374,7 +1158,7 @@ impl Reader {
         }
         self.docs.clear();
         self.hot = None;
-        self.wanted_files = Arc::new(Vec::new());
+        self.work.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
         self.pointer.selecting.reset();
     }
@@ -1437,68 +1221,6 @@ impl Reader {
         self.cancel_if_unwanted();
         self.count_blanks();
         self.host.take_ops()
-    }
-
-    /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
-    pub fn running_is_wanted(&self) -> bool {
-        let Some(running) = &self.running else { return true };
-        if running.text {
-            // Only a check goes for what's more wanted: it can take seconds, where reading is quick, and it's what's asked for when there's nothing better to do.
-            return self.hot == Some(running.tab) && self.window_open && !(running.check && self.view_needs_something());
-        }
-        self.hot == Some(running.tab)
-            && self.window_open
-            && self.doc().is_some_and(|doc| {
-                self.visible_pages(doc).contains(&running.position)
-                    && (running.preview
-                        || running
-                            .rect
-                            .is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
-            })
-    }
-
-    /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
-    fn view_needs_something(&self) -> bool {
-        let Some(doc) = self.doc() else { return false };
-        let scale = doc.tile_scale;
-        if scale <= 0.0 {
-            return false;
-        }
-        let visible: Vec<u32> = self.visible_pages(doc).collect();
-        if self
-            .pointer
-            .selecting
-            .wanted(Urgency::Now, &visible, doc.layout.count(), |page| {
-                doc.heavy.get(&page).copied().unwrap_or(false)
-            })
-            .is_some()
-        {
-            return true;
-        }
-        visible.iter().any(|&page| {
-            if doc.issues.contains_key(&page) {
-                return false;
-            }
-            if !doc.layout.is_known(page) {
-                return true;
-            }
-            let Ok(cells) = self.visible_cells(doc, page, scale) else { return false };
-            cells.into_iter().any(|cell| !self.cover.contains_key(&self.key(doc, page, scale, cell)))
-        })
-    }
-
-    fn cancel_if_unwanted(&mut self) {
-        if self.running_is_wanted() {
-            return;
-        }
-        let Some(running) = &mut self.running else { return };
-        if !running.cancel_asked {
-            running.cancel_asked = true;
-            self.counts.cancels_asked += 1;
-            if let Some(cancel) = &running.cancel {
-                cancel.cancel_before(running.generation + 1);
-            }
-        }
     }
 
     fn visible_pages(&self, doc: &DocView) -> std::ops::RangeInclusive<u32> {
@@ -1777,7 +1499,7 @@ impl Reader {
             }
             None
         });
-        self.set_note(if self.gave_up { Some(CANT_DRAW.to_string()) } else { note });
+        self.set_note(if self.work.gave_up { Some(CANT_DRAW.to_string()) } else { note });
     }
 
     fn set_note(&mut self, note: Option<String>) {
@@ -2010,12 +1732,12 @@ impl Reader {
             self.forget_entry(id);
         }
         self.host.close();
-        if let Some(running) = &self.running
+        if let Some(running) = &self.work.running
             && let Some(cancel) = &running.cancel
         {
             cancel.cancel_before(running.generation + 1);
         }
-        self.wanted_files = Arc::new(Vec::new());
+        self.work.wanted_files = Arc::new(Vec::new());
         self.pointer.selecting.drop_texts();
     }
 
@@ -2036,214 +1758,6 @@ impl Reader {
             self.host.ops.push_back(Op::ScrollAcross { x: across });
         }
         self.refresh(MAX_ATTACH_PER_TURN);
-    }
-
-    /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase.
-    pub fn next_plan(&mut self) -> Option<JobPlan> {
-        if !self.window_open || self.hold_drawing {
-            return None;
-        }
-        let tab = self.hot?;
-        let doc = self.docs.get(&tab)?;
-        if doc.problem.is_some() || self.viewport.height <= 0.0 {
-            return None;
-        }
-        // Sizes first: nothing is shown or drawn before them. The first page known sets the fit, so where a reader lands is asked first, and then the pages around it.
-        let visible = self.visible_pages(doc);
-        let (first, last) = (*visible.start(), *visible.end());
-        if first > last {
-            return None;
-        }
-        let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
-        // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
-        let waiting_on_issue = |page: &u32| {
-            doc.issues
-                .get(page)
-                .is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at))
-        };
-        if let Some(page) = visible
-            .clone()
-            .chain(around)
-            .find(|page| !doc.layout.is_known(*page) && !waiting_on_issue(page))
-        {
-            let (file, source_page) = doc.map.source(page)?;
-            let generation = self.fresh_generation();
-            return Some(JobPlan {
-                tab,
-                position: page,
-                file,
-                source_page,
-                generation,
-                kind: PlanKind::Size,
-            });
-        }
-        let now = Instant::now();
-        let scale = doc.tile_scale;
-        if scale <= 0.0 {
-            return None;
-        }
-        // The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
-        if let Some(page) = self.pointer.linking.next_wanted()
-            && let Some(doc) = self.docs.get(&tab)
-            && page < doc.layout.count()
-            && let Some((file, source_page)) = doc.map.source(page)
-        {
-            let generation = self.fresh_generation();
-            return Some(JobPlan {
-                tab,
-                position: page,
-                file,
-                source_page,
-                generation,
-                kind: PlanKind::Links,
-            });
-        }
-        // A selection the reader is making comes before tiles: it answers their hand.
-        if let Some(plan) = self.text_plan(tab, Urgency::Now) {
-            return Some(plan);
-        }
-        let doc = self.docs.get(&tab)?;
-        let pages: Vec<u32> = self.visible_pages(doc).collect();
-        for page in pages {
-            let doc = self.docs.get(&tab)?;
-            if let Some(issue) = doc.issues.get(&page)
-                && !issue.try_again_at.is_some_and(|at| now >= at)
-            {
-                continue;
-            }
-            let Ok(cells) = self.visible_cells(doc, page, scale) else {
-                let size = doc.layout.raw_size(page);
-                self.note_issue(
-                    tab,
-                    page,
-                    format!(
-                        "Page {} is too large to draw at this zoom ({} by {} points).",
-                        page + 1,
-                        size.width,
-                        size.height
-                    ),
-                    false,
-                );
-                continue;
-            };
-            let missing: Vec<(u16, u16)> = cells
-                .iter()
-                .copied()
-                .filter(|cell| {
-                    let key = self.key(doc, page, scale, *cell);
-                    match self.cover.get(&key).and_then(|id| self.entries.get(id)) {
-                        None => true,
-                        Some(entry) => entry
-                            .low_res
-                            .as_ref()
-                            .is_some_and(|low| low.may_clear && now.duration_since(low.at) >= TRY_AGAIN_AFTER),
-                    }
-                })
-                .collect();
-            if missing.is_empty() {
-                continue;
-            }
-            let (file, source_page) = doc.map.source(page)?;
-            // Asked once, and it loads the page, which drawing would do anyway.
-            if !doc.heavy.contains_key(&page) {
-                let generation = self.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Traits,
-                });
-            }
-            let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
-            // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
-            let preview_wanted = !heavy && !self.cover.contains_key(&self.preview_key(doc, page));
-            if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
-                let paper = self.paper;
-                let generation = self.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Draw {
-                        scale: preview_scale,
-                        rect,
-                        what: DrawKind::Preview,
-                        paper,
-                    },
-                });
-            }
-            let size = doc.layout.raw_size(page);
-            let (width, height) = device_size(size.width, size.height, scale).ok()?;
-            if heavy && missing.len() > 1 {
-                let wanted: Vec<(u32, u32)> = missing.iter().map(|&(column, row)| (u32::from(column), u32::from(row))).collect();
-                let mut sorted = wanted;
-                sorted.sort_unstable();
-                let rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
-                let paper = self.paper;
-                let generation = self.fresh_generation();
-                return Some(JobPlan {
-                    tab,
-                    position: page,
-                    file,
-                    source_page,
-                    generation,
-                    kind: PlanKind::Draw {
-                        scale,
-                        rect,
-                        what: DrawKind::Region,
-                        paper,
-                    },
-                });
-            }
-            let (column, row) = missing[0];
-            let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
-            let rect = TileRect {
-                x,
-                y,
-                width: TILE_EDGE.min(width - x),
-                height: TILE_EDGE.min(height - y),
-            };
-            let paper = self.paper;
-            let generation = self.fresh_generation();
-            return Some(JobPlan {
-                tab,
-                position: page,
-                file,
-                source_page,
-                generation,
-                kind: PlanKind::Draw {
-                    scale,
-                    rect,
-                    what: DrawKind::Tile,
-                    paper,
-                },
-            });
-        }
-        self.text_plan(tab, Urgency::WhenIdle)
-    }
-
-    /// Reading text for a selection, a copy or the pointer, if any is wanted at this urgency.
-    fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
-        let doc = self.docs.get(&tab)?;
-        let visible: Vec<u32> = self.visible_pages(doc).collect();
-        let wanted = self
-            .pointer
-            .selecting
-            .wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
-        let (file, source_page) = doc.map.source(wanted.page)?;
-        let generation = self.fresh_generation();
-        Some(JobPlan {
-            tab,
-            position: wanted.page,
-            file,
-            source_page,
-            generation,
-            kind: PlanKind::Text { check: wanted.check },
-        })
     }
 
     /// Where a point in the document is on a page as it's shown. It stays with the page it's nearest, past the page's edges if it must, which is what a drag off the side needs.
@@ -2339,59 +1853,10 @@ impl Reader {
 
     /// The thread that draws panicked and is starting over, or, with `give_up`, isn't. What it was doing is gone, and everything it would come back to is asked for again.
     pub fn thread_restarted(&mut self, give_up: bool) {
-        self.running = None;
+        self.work.running = None;
         self.pointer.selecting.thread_restarted();
-        self.gave_up |= give_up;
+        self.work.gave_up |= give_up;
         self.refresh(MAX_ATTACH_PER_TURN);
-    }
-
-    fn preview_rect(&self, doc: &DocView, page: u32, scale: f32) -> Option<(f32, TileRect)> {
-        let size = doc.layout.raw_size(page);
-        let preview_scale = ((doc.layout.fit() * self.viewport.backing / PREVIEW_DIVISOR) as f32).clamp(MIN_SCALE, MAX_SCALE);
-        // A zoom already that low has nothing to gain from it.
-        if f64::from(preview_scale) * 1.5 >= f64::from(scale) {
-            return None;
-        }
-        let (width, height) = device_size(size.width, size.height, preview_scale).ok()?;
-        (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES)
-            .then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
-    }
-
-    fn fresh_generation(&mut self) -> u64 {
-        let generation = self.next_generation;
-        self.next_generation += 1;
-        generation
-    }
-
-    /// A job has started. Its cancel handle lets the UI thread stop it the moment it stops being wanted.
-    pub fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>) {
-        let (rect, scale, preview) = match &job.kind {
-            JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
-            _ => (None, 0.0, false),
-        };
-        let (text, check) = match job.kind {
-            JobKind::Text { check } => (true, check),
-            _ => (false, false),
-        };
-        self.running = Some(Running {
-            tab: job.tab,
-            position: job.position,
-            rect,
-            scale,
-            preview,
-            generation: job.generation,
-            cancel,
-            cancel_asked: false,
-            text,
-            check,
-        });
-    }
-
-    /// What can stop the job now running, once there's something that can.
-    pub fn set_cancel(&mut self, cancel: CancelHandle) {
-        if let Some(running) = &mut self.running {
-            running.cancel = Some(cancel);
-        }
     }
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
@@ -2408,7 +1873,7 @@ impl Reader {
 
     /// A job has ended, with whatever it found. Returns anything it hands back.
     pub fn finish(&mut self, job: Job, outcome: Outcome) {
-        self.running = None;
+        self.work.running = None;
         self.counts.jobs += 1;
         let mut kept = None;
         let Job {
@@ -2480,8 +1945,8 @@ impl Reader {
                 if let Some(doc) = self.docs.get_mut(&tab) {
                     doc.problem = Some(message);
                 }
-                if needs_key && !self.keyless.contains(&file) && self.keyless.len() < MAX_KEYLESS {
-                    self.keyless.push(file);
+                if needs_key && !self.work.keyless.contains(&file) && self.work.keyless.len() < MAX_KEYLESS {
+                    self.work.keyless.push(file);
                 }
             }
             _ => {
@@ -2586,10 +2051,10 @@ impl Reader {
 
     /// Whether everything visible is drawn and on its layers, or marked as it is.
     pub fn is_settled(&self) -> bool {
-        if self.gave_up {
+        if self.work.gave_up {
             return self.host.ops.is_empty() && !self.host.unapplied;
         }
-        if self.running.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.host.more_to_attach {
+        if self.work.running.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.host.more_to_attach {
             return false;
         }
         let Some(doc) = self.doc() else { return true };

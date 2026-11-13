@@ -3,7 +3,7 @@ ffi crates/recto-ffi/src 2313
 file crates/recto-core/src/save.rs 2271
 file crates/recto-ffi/src/lib.rs 1599
 file crates/recto-index/src/corpus.rs 1686
-file crates/recto-reader/src/tiles.rs 2704
+file crates/recto-reader/src/tiles.rs 2169
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-session/src/record.rs 1561
@@ -22,8 +22,8 @@ fn crates/recto-index/src/select.rs::PageText::find_edges 181
 fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162
 fn crates/recto-reader/src/engine.rs::run 179
 fn crates/recto-reader/src/tiles.rs::Reader::activate 151
-fn crates/recto-reader/src/tiles.rs::Reader::next_plan 186
 fn crates/recto-reader/src/tiles.rs::Reader::refresh 152
+fn crates/recto-reader/src/tiles/plan.rs::Reader::next_plan 186
 fn crates/recto-render/src/pdfium/contents.rs::Walk::image 217
 fn crates/recto-render/src/pdfium/contents.rs::Walk::send_pending 180
 fn crates/recto-update/src/zip.rs::read_directory 182
@@ -31,7 +31,7 @@ impl crates/recto-ffi/src/lib.rs::AppCore 131
 impl crates/recto-reader/src/engine.rs::Engine 81
 impl crates/recto-reader/src/layout.rs::PageLayout 49
 impl crates/recto-reader/src/selection.rs::Selecting 41
-impl crates/recto-reader/src/tiles.rs::Reader 91
+impl crates/recto-reader/src/tiles.rs::Reader 77
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
@@ -107,7 +107,7 @@ struct crates/recto-control/src/server.rs::Loop 21
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
 struct crates/recto-reader/src/tiles.rs::DocView 18
-struct crates/recto-reader/src/tiles.rs::Reader 29
+struct crates/recto-reader/src/tiles.rs::Reader 23
 struct crates/recto-render-service/src/budget.rs::BudgetReport 20
 struct crates/recto-render-service/src/host.rs::DocRenderer 26
 struct crates/recto-render-service/src/host.rs::Policy 16

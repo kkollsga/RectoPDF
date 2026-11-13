@@ -88,7 +88,7 @@ fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
     reader.note_started(&first, None);
     reader.set_viewport(view(40_000.0));
     assert!(reader.running_is_wanted(), "a read stays, as what's showing needs it");
-    reader.running = None;
+    reader.work.running = None;
     // Back where it was, with everything there, and the check runs.
     reader.set_viewport(view(0.0));
     let text = Arc::new(recto_index::select::PageText::default());
