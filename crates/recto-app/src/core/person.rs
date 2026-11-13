@@ -30,20 +30,34 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
 
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
-    let running = &inner.life.persons_running;
-    running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let inner_for_thread = Arc::clone(inner);
+    let counted = Running::start(Arc::clone(inner));
     let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
-        let inner = inner_for_thread;
+        let inner = Arc::clone(&counted.0);
         let mut events = Vec::new();
         sent(&inner, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
-        inner.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        drop(counted);
     });
-    if spawned.is_err() {
-        running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    // The thread that didn't start took its count with it, as the closure holding it was dropped.
+    drop(spawned);
+}
+
+/// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
+/// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
+struct Running(Arc<Inner>);
+
+impl Running {
+    fn start(inner: Arc<Inner>) -> Self {
+        inner.life.persons_running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(inner)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -213,6 +227,21 @@ pub fn submit_when_run(inner: &Arc<Inner>, command: Command, when_run: crate::qu
 #[cfg(test)]
 mod tests {
     use recto_agent::AgentError;
+
+    /// Failure (review of 2026-11-13): a person's command that panics on its thread is counted as running for good, so a hand-off waits on it to the end of
+    /// its patience. The count goes as the thread ends, a panic included.
+    #[test]
+    fn a_persons_command_that_panics_isnt_counted_running() {
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let inner = std::sync::Arc::clone(app.core());
+        let counted = super::Running::start(std::sync::Arc::clone(&inner));
+        let thread = std::thread::spawn(move || {
+            let _counted = counted;
+            panic!("a command that panics");
+        });
+        assert!(thread.join().is_err(), "it panicked");
+        assert_eq!(inner.life.persons_running.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
     use recto_session::SessionError;
 
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's
