@@ -10,6 +10,7 @@ impl<L: DocLoader> Session<L> {
         let mut rail_filled = 0;
         let mut place = String::new();
         let mut toc_open = false;
+        let notices = self.notices();
         for tab in self.tabs.all() {
             let is_active = self.tabs.active() == Some(tab.id);
             rows.push(SidebarRow {
@@ -19,7 +20,7 @@ impl<L: DocLoader> Session<L> {
                 page: None,
                 depth: 0,
                 current: is_active,
-                notice: self.notices().said(tab.id).map(|said| said.message),
+                notice: notices.said_of(tab).map(|said| said.message),
                 action: None,
                 entry: NONE,
                 expandable: false,

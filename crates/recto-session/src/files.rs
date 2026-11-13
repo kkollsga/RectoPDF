@@ -128,7 +128,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.tabs.named_path(tab.id)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.named_path_of(tab)?, tab.file.stamp)))
             .collect()
     }
 }

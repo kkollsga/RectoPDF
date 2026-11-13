@@ -66,6 +66,8 @@ use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 pub use registry::Tabs;
+#[cfg(debug_assertions)]
+pub use registry::searched;
 pub use saves::Saves;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
