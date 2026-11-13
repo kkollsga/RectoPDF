@@ -131,6 +131,10 @@ pub enum SaveError {
     FileChanged,
     /// The file, or a target being replaced, changed under the save while it ran; or, with no edits to speak of, it isn't what was opened (the caller's to say).
     ChangedSinceOpened,
+    /// A copy of the document as it is (a Save As with nothing changed in it) whose file changed on disk as it was being copied (the caller's to say).
+    ChangedWhileCopying,
+    /// The file couldn't be read during the save: a read error, or nothing there to open.
+    Unreadable,
     /// The edits claim pages the file doesn't have: a journal that's been tampered with, or one about another version.
     EditsDontMatch { file_pages: u32 },
     /// A PDF whose pages were added has changed, gone, or can't be told apart from another version of itself.
@@ -179,6 +183,8 @@ impl SaveError {
         match self {
             Self::FileChanged => "file_changed",
             Self::ChangedSinceOpened => "changed_since_opened",
+            Self::ChangedWhileCopying => "changed_while_copying",
+            Self::Unreadable => "file_unreadable",
             Self::EditsDontMatch { .. } => "edits_dont_match",
             Self::AddedFileChanged { .. } => "added_file_changed",
             Self::AddedFileProtected { .. } => "added_file_protected",
@@ -207,6 +213,8 @@ impl SaveError {
         match self {
             Self::FileChanged => "This file changed on disk after these edits were made, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept.".into(),
             Self::ChangedSinceOpened => "This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.".into(),
+            Self::ChangedWhileCopying => "This file changed on disk while it was being saved as a copy, so no copy was made. Nothing was written. Try again to copy it as it is now.".into(),
+            Self::Unreadable => "This file couldn't be read during the save, so nothing was written.".into(),
             Self::EditsDontMatch { file_pages } => format!("These edits don't fit the file as it is on disk, which has {file_pages} pages. Nothing was written."),
             Self::AddedFileChanged { name } => format!("“{name}”, whose pages were added, has changed or moved since, so its pages can't be saved from it. Nothing was written."),
             Self::AddedFileProtected { name } => format!("“{name}” is password-protected, and its pages can't be saved into another file yet. Nothing was written."),
@@ -260,8 +268,7 @@ fn from_append(error: AppendError) -> SaveError {
             _ => SaveError::PrepareFailed,
         },
         AppendError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
-        // The original read differently from what was opened, or ran short: it's been changed under the save.
-        AppendError::Source(_) | AppendError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::ChangedSinceOpened,
+        AppendError::Source(error) | AppendError::Reader(lopdf::IndexedReaderError::Source(error)) => from_source(&error),
         _ => SaveError::Failed,
     }
 }
@@ -291,14 +298,23 @@ fn from_rewrite(error: RewriteError) -> SaveError {
         },
         RewriteError::Destination(error) => from_append(error),
         RewriteError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
-        RewriteError::Source(_) | RewriteError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::ChangedSinceOpened,
+        RewriteError::Source(error) | RewriteError::Reader(lopdf::IndexedReaderError::Source(error)) => from_source(&error),
         _ => SaveError::Failed,
     }
 }
 
-/// Opens a file the way a save reads it: with the 1 MiB limit on an object.
+/// What a failed read of the file under a save was: the file read differently from what was opened, or ran short, so it's been changed under the save;
+/// anything else is a read that failed, which isn't said to be a change.
+fn from_source(error: &lopdf::SourceError) -> SaveError {
+    match error {
+        lopdf::SourceError::SourceChanged | lopdf::SourceError::UnexpectedEof { .. } | lopdf::SourceError::OutOfBounds { .. } => SaveError::ChangedSinceOpened,
+        _ => SaveError::Unreadable,
+    }
+}
+
+/// Opens a file the way a save reads it: with the 1 MiB limit on an object. One that can't be opened can't be read.
 pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
-    let source = FileSource::open(path).map_err(|_| SaveError::ChangedSinceOpened)?;
+    let source = FileSource::open(path).map_err(|_| SaveError::Unreadable)?;
     let options = IndexedReaderOptions {
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
@@ -2305,6 +2321,29 @@ mod tests {
         );
         assert_ne!(name_key(&[0xFE, 0xFF, 0xD8, 0x00]), name_key(b"x"), "an unpaired surrogate is kept as bytes");
     }
+    /// Failure: a save that couldn't read the file (a read error, or the file not there to open) was said to be the file changing on disk, and under edits
+    /// relabelled as their file having changed, with "put the earlier version back" as the way on. A read error is its own failure; only the file moving under
+    /// the save is a change.
+    #[test]
+    fn a_read_error_during_a_save_is_not_a_change() {
+        let io = || lopdf::SourceError::Io(std::io::Error::other("the disk went away"));
+        assert_eq!(from_append(AppendError::Source(io())).code(), "file_unreadable");
+        assert_eq!(from_rewrite(RewriteError::Source(io())).code(), "file_unreadable");
+        assert_eq!(
+            open_for_save(Path::new("/nonexistent/recto/never.pdf")).err().map(|error| error.code()),
+            Some("file_unreadable")
+        );
+        assert_eq!(
+            from_append(AppendError::Source(lopdf::SourceError::SourceChanged)).code(),
+            "changed_since_opened"
+        );
+        assert_eq!(
+            from_rewrite(RewriteError::Source(lopdf::SourceError::SourceChanged)).code(),
+            "changed_since_opened"
+        );
+        assert!(!SaveError::Unreadable.message().contains("changed"));
+    }
+
     /// Failure: someone calls one of lopdf's writers that take any `Write`, such as an eager save, and an original is truncated before it's written. `clippy.toml` refuses them by name: this checks the list is there and names each, so it can't be emptied quietly.
     #[test]
     fn the_writers_that_take_any_write_are_refused_by_name() {
