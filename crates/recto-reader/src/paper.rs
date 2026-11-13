@@ -1319,5 +1319,25 @@ mod tests {
             let _ = PageLook::decide(Some(&[[0, 0, 65_535, 65_535]]), &page, 2048, 512, 512);
         });
         time("dim page", &|pixels| dim_page(pixels, 512, 512, 2048));
+        // The decision for a letter page with lines of text and a photo over 53% of it, which on 2026-11-13 came to look at the page's paper outside the photo as well: at the size of the picture a look is drawn for, a 512 px tile's size, and the largest preview.
+        for (width, height) in [(396u32, 512u32), (512, 512), (884, 1144)] {
+            let photo = [4_915u16, 13_107, 60_620, 52_428];
+            let page: Vec<u8> = (0..(width * height) as usize)
+                .flat_map(|at| {
+                    let (x, y) = ((at % width as usize) as u32, (at / width as usize) as u32);
+                    let inside = x * 65_535 / width >= 4_915 && x * 65_535 / width < 60_620 && y * 65_535 / height >= 13_107 && y * 65_535 / height < 52_428;
+                    if inside {
+                        [40, (90 + x % 70) as u8, (70 + y % 120) as u8, 255]
+                    } else if y % 7 == 0 && x % 11 != 0 {
+                        [50, 50, 50, 255]
+                    } else {
+                        [255, 255, 255, 255]
+                    }
+                })
+                .collect();
+            time(&format!("decide a letter page with a 53% photo, {width} by {height}"), &|_| {
+                let _ = PageLook::decide(Some(&[photo]), &page, width as usize * 4, width, height);
+            });
+        }
     }
 }
