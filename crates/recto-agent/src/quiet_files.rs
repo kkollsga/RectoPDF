@@ -258,31 +258,103 @@ mod tests {
         assert_eq!(left, ["secret.pdf"], "something was written outside");
     }
 
-    /// Failure (review of the branch, S1's sweep beyond QA): a command's argument is text to the table but a file to the command, so no wall sees it, and a
-    /// confined session reads, writes or learns of a file outside its folders through it. Every session command in the table, from its first example,
-    /// with every value that isn't a file to the table, a number or a time set to an outside file (each file it does name kept in the run): the outside
-    /// file is left unread, unmoved and unwritten, nothing of it comes back, and every answer is the same with it gone.
-    #[test]
-    fn no_text_argument_reaches_a_file_outside_the_run() {
-        use std::os::unix::fs::MetadataExt;
-        let outside = outside();
-        let secret = outside.path().join("secret.pdf");
-        let gone = outside.path().join("aside.pdf");
-        let looks = |file: &Path| {
-            let meta = std::fs::metadata(file).expect("the outside file is still there");
+    /// A loader that notes every file a session asks it to read, then reads it as the real one does: the seam every open, wake and inserted PDF's facts go
+    /// through, so a read of an outside file this way is seen whatever the volume records.
+    #[derive(Clone, Default)]
+    struct Noting(Arc<Mutex<Vec<PathBuf>>>);
+
+    impl recto_session::DocLoader for Noting {
+        fn load(&self, path: &Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
+            self.0.lock().unwrap().push(path.to_path_buf());
+            recto_session::DocLoader::load(&crate::DrawableLoader, path)
+        }
+    }
+
+    /// **An outside file a walk watches:** a PDF in a folder of its own in `/private/var/tmp`, outside every temp folder a quiet run may use and not
+    /// hidden, so what refuses it is the run's rule; and what it is, without reading it.
+    struct Watched {
+        dir: FreshDir,
+        file: PathBuf,
+        aside: PathBuf,
+        before: (u64, u64, std::time::SystemTime, std::time::SystemTime),
+    }
+
+    impl Watched {
+        fn new() -> Self {
+            let dir = FreshDir::new_in(Path::new("/private/var/tmp"), "recto-quiet-sweep-", "").unwrap();
+            assert!(!RunFolders::quiet_run().admits(dir.path()), "{} is a quiet run's", dir.path().display());
+            let file = dir.path().join("secret.pdf");
+            std::fs::write(&file, pdf("the user's own words")).unwrap();
+            reads_are_recorded(dir.path());
+            set_unread(&file);
+            let aside = dir.path().join("aside.pdf");
+            let mut watched = Self {
+                dir,
+                file,
+                aside,
+                before: (0, 0, std::time::UNIX_EPOCH, std::time::UNIX_EPOCH),
+            };
+            watched.before = watched.looks();
+            watched
+        }
+
+        /// Its size, where it is on disk, and when it was last read and written: a read would move what's watched, so it's never read.
+        fn looks(&self) -> (u64, u64, std::time::SystemTime, std::time::SystemTime) {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&self.file).expect("the outside file is still there");
             (meta.len(), meta.ino(), meta.accessed().unwrap(), meta.modified().unwrap())
-        };
+        }
+
+        /// A path in its folder that isn't there.
+        fn absent(&self, name: &str) -> PathBuf {
+            self.dir.path().join(name)
+        }
+
+        /// Runs `step` with the file gone, asserts its path is still free after, and only then puts it back: by a link, which fails if something is
+        /// there, so a command that made a file in its place is caught and never written over.
+        fn while_gone<R>(&self, name: &str, step: impl FnOnce() -> R) -> R {
+            std::fs::rename(&self.file, &self.aside).unwrap_or_else(|_| panic!("{name} moved or removed the outside file"));
+            let result = step();
+            assert!(std::fs::symlink_metadata(&self.file).is_err(), "{name} made a file where the outside file was");
+            std::fs::hard_link(&self.aside, &self.file).unwrap();
+            std::fs::remove_file(&self.aside).unwrap();
+            result
+        }
+    }
+
+    /// Its last read set three days back, so a read moves it.
+    fn set_unread(file: &Path) {
         let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
-        std::fs::File::options()
-            .write(true)
-            .open(&secret)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_accessed(long_ago))
-            .unwrap();
-        let before = looks(&secret);
-        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
-        std::fs::write(run.join("mine.pdf"), pdf("the run's own")).unwrap();
-        // Numbers blanked, as a time taken differs run to run.
+        let times = std::fs::FileTimes::new().set_accessed(long_ago);
+        std::fs::File::options().write(true).open(file).unwrap().set_times(times).unwrap();
+    }
+
+    /// **A walk sees a read only where the volume records one:** a deliberate read of a file here must move its last-read time, or the walk fails, as on
+    /// a volume mounted `noatime` an unread file proves nothing.
+    fn reads_are_recorded(dir: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        let probe = dir.join("probe");
+        std::fs::write(&probe, b"probe").unwrap();
+        set_unread(&probe);
+        let before = std::fs::metadata(&probe).unwrap().accessed().unwrap();
+        std::fs::read(&probe).unwrap();
+        let after = std::fs::metadata(&probe).unwrap().accessed().unwrap();
+        std::fs::remove_file(&probe).unwrap();
+        let device = std::fs::metadata(dir).unwrap().dev();
+        let volume = dir
+            .ancestors()
+            .take_while(|up| std::fs::metadata(up).is_ok_and(|meta| meta.dev() == device))
+            .last()
+            .unwrap_or(dir);
+        assert!(
+            after > before,
+            "a read on the volume at {} doesn't move a file's last-read time (mounted noatime?), so this walk can't see a read and proves nothing",
+            volume.display()
+        );
+    }
+
+    /// Numbers blanked, as a time taken differs run to run, and the run's own folder named the same each run.
+    fn said(answer: Result<Value, AgentError>, run: &Path) -> String {
         fn blanked(value: &Value) -> Value {
             match value {
                 Value::Number(_) => json!(0),
@@ -291,60 +363,161 @@ mod tests {
                 other => other.clone(),
             }
         }
-        let said = |answer: Result<Value, AgentError>| match answer {
+        let words = match answer {
             Ok(value) => blanked(&value).to_string(),
             Err(error) => format!("{}: {}", error.code, error.message),
         };
-        let mut swept = 0;
+        words.replace(&run.to_string_lossy().into_owned(), "<run>")
+    }
+
+    /// **A session command's line as the sweep tries it:** its tab the open one, a file it reads the run's PDF and one it writes a new name in the run, a
+    /// page or range the first, a wait short, and the example's numbers and switches as it has them, so what a value needs beside it is there; every
+    /// other value is left out unless it's required, when it keeps the example's.
+    fn base_line(spec: &table::Spec, example: &Value, run: &Path) -> Value {
+        let mut line = json!({ "cmd": spec.tag });
+        for (key, value) in spec.fixed {
+            line[*key] = json!(value);
+        }
+        for arg in spec.args {
+            let given = example.get(arg.key);
+            let wanted = arg.required || given.is_some();
+            line[arg.key] = match arg.kind {
+                Kind::Tab => json!("active"),
+                _ if !wanted => continue,
+                Kind::Path if matches!(spec.tag, "open" | "page_insert") => json!(run.join("mine.pdf")),
+                Kind::Path => {
+                    let named = given
+                        .and_then(Value::as_str)
+                        .and_then(|path| Path::new(path).file_name().map(|name| name.to_owned()));
+                    json!(run.join(named.unwrap_or_else(|| format!("{}.out", arg.key).into())))
+                }
+                Kind::Page => json!(1),
+                Kind::Pages | Kind::PagesOpen => json!("1"),
+                Kind::Duration => json!(20),
+                Kind::Count(_) | Kind::Positive(_) | Kind::Switch | Kind::Scale | Kind::ScaleOrMax | Kind::Degrees => match given {
+                    Some(value) => value.clone(),
+                    None => continue,
+                },
+                _ if !arg.required => continue,
+                _ => match given {
+                    Some(value) => value.clone(),
+                    None => continue,
+                },
+            };
+        }
+        line
+    }
+
+    /// Where the run's own PDF goes in a [`forms`] value, as the run's folder is new each run.
+    const BESIDE: &str = "<the run's own>";
+
+    /// Each form a value can hold a file in, as the code parses one: the path, a `file://` URL, a JSON string, a list with commas after the run's own
+    /// PDF ([`BESIDE`]), `OUT.pdf|FIRST|LAST`.
+    fn forms(file: &Path) -> Vec<String> {
+        let file = file.to_string_lossy();
+        vec![
+            file.to_string(),
+            format!("file://{file}"),
+            json!(file).to_string(),
+            format!("{BESIDE},{file}"),
+            format!("{file}|1|1"),
+        ]
+    }
+
+    /// One run of a line, in a confined session of its own on a fresh copy of the run's PDF, at Full: what it said, and which files it asked the loader
+    /// for after the run's own open.
+    fn run_line(make: &dyn Fn(&Path) -> Value) -> (String, Vec<PathBuf>) {
+        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
+        let pages = [recto_testpdf::text_lines(&["the run's own"]), recto_testpdf::text_lines(&["page two"])];
+        std::fs::write(run.join("mine.pdf"), recto_testpdf::pages(&pages.map(recto_testpdf::Page::new))).unwrap();
+        let noting = Noting::default();
+        let mut session = Session::new(noting.clone());
+        session.confinement().confine(RunFolders::quiet_run());
+        session.open(&run.join("mine.pdf")).unwrap();
+        noting.0.lock().unwrap().clear();
+        let command = parse(&make(run.path()).to_string()).expect("a line that parsed once parses again");
+        let answer = execute(&Mutex::new(session), Actor::Agent(Level::Full), &command, &mut Vec::new());
+        let loaded = std::mem::take(&mut *noting.0.lock().unwrap());
+        (said(answer, run.path()), loaded)
+    }
+
+    /// Failure (review of the branch, S1's sweep beyond QA; and round 2, B1: the sweep set the tab to the outside file too, so nearly every command was
+    /// refused at its tab before its value was used, and it could fail for none of them): a command's argument is text to the table but a file to the
+    /// command, so no wall sees it, and a confined session reads, writes, makes or learns of a file outside its folders through it. Every session command
+    /// in the table runs on the run's open tab with its other optional arguments left out, and each of its values in turn holds an outside file, in each
+    /// form the code parses one in: the outside file is left unread (by the loader, exact, and by its last-read time for what reads it another way: text,
+    /// Find, a draw by the worker, a plain read), unmoved and unwritten, nothing of it comes back, every answer is the same with it gone, and nothing is
+    /// made in its place. Each file argument is refused with `outside_quiet_run`, the file there and not.
+    #[test]
+    fn no_text_argument_reaches_a_file_outside_the_run() {
+        let outside = Watched::new();
+        let (mut commands, mut past_the_tab, mut lines) = (0, 0, 0);
         for spec in table::TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.tag.starts_with("qa_")) {
-            let takes_text = spec.args.iter().any(|arg| matches!(arg.kind, Kind::Text | Kind::Tab | Kind::Rest));
+            let takes_values = spec.args.iter().any(|arg| !matches!(arg.kind, Kind::Switch));
             let Some(example) = spec.examples.first() else {
-                assert!(!takes_text, "{} takes text and has no example to try", spec.name);
+                assert!(!takes_values, "{} takes values and has no example to try", spec.name);
                 continue;
             };
             let words = crate::skill::shell_words(example);
-            let line = table::parse_cli(&words[1..]).unwrap_or_else(|error| panic!("{}: {}", spec.name, error.message));
-            let example: Value = serde_json::from_str(&line.wire()).unwrap();
-            // Every value that can hold text set to the outside file; and if the wire won't take a file for a choice, the text alone.
-            let with_file = |choices_too: bool| {
-                let mut wire = example.clone();
-                let mut set = false;
-                for arg in spec.args {
-                    match arg.kind {
-                        Kind::Path => wire[arg.key] = json!(run.join(format!("{}-{}.out", spec.tag, arg.key))),
-                        Kind::Text | Kind::Tab | Kind::Rest => {
-                            wire[arg.key] = json!(secret);
-                            set = true;
-                        }
-                        Kind::Choice(_) | Kind::List(_) if choices_too => {
-                            wire[arg.key] = json!(secret);
-                            set = true;
-                        }
-                        _ => {}
+            let invocation = table::parse_cli(&words[1..]).unwrap_or_else(|error| panic!("{}: {}", spec.name, error.message));
+            let example: Value = serde_json::from_str(&invocation.wire()).unwrap();
+            // Whether a value other than the tab was tried, and whether one of those got past the tab to be used.
+            let (mut tried, mut got_past_the_tab) = (false, false);
+            for arg in spec.args.iter().filter(|arg| arg.kind != Kind::Switch) {
+                if arg.kind == Kind::Path {
+                    for target in [outside.file.clone(), outside.absent("never.pdf")] {
+                        let make = |run: &Path| {
+                            let mut line = base_line(spec, &example, run);
+                            line[arg.key] = json!(target);
+                            line
+                        };
+                        let (refused, loaded) = run_line(&make);
+                        let what = format!("{} --{} {}", spec.name, arg.key, target.display());
+                        assert!(refused.starts_with("outside_quiet_run:"), "{what}: {refused}");
+                        assert!(loaded.is_empty(), "{what}: the loader read {loaded:?}");
+                        assert!(target == outside.file || std::fs::symlink_metadata(&target).is_err(), "{what}: made it");
                     }
+                    continue;
                 }
-                set.then(|| parse(&wire.to_string()).ok()).flatten()
-            };
-            let Some(command) = with_file(true).or_else(|| with_file(false)) else {
-                assert!(!takes_text, "{}: no line with a file in its text could be made", spec.name);
-                continue;
-            };
-            let run_it = || {
-                let mut session = Session::new(crate::DrawableLoader);
-                session.confinement().confine(RunFolders::quiet_run());
-                session.open(&run.join("mine.pdf")).unwrap();
-                said(execute(&Mutex::new(session), Actor::Agent(Level::Full), &command, &mut Vec::new()))
-            };
-            let there = run_it();
-            std::fs::rename(&secret, &gone).unwrap();
-            let missing = run_it();
-            std::fs::rename(&gone, &secret).unwrap();
-            assert_eq!(there, missing, "{}: the answer says whether the outside file is there", spec.name);
-            assert!(!there.contains("user's own"), "{}: the outside file was read", spec.name);
-            assert_eq!(looks(&secret), before, "{}: the outside file was read, moved or written", spec.name);
-            swept += 1;
+                for form in forms(&outside.file) {
+                    let make = |run: &Path| {
+                        let mut line = base_line(spec, &example, run);
+                        line[arg.key] = json!(form.replace(BESIDE, &run.join("mine.pdf").to_string_lossy()));
+                        line
+                    };
+                    if parse(&make(Path::new("/tmp")).to_string()).is_err() {
+                        continue;
+                    }
+                    let what = format!("{} --{} {form}", spec.name, arg.key);
+                    let (there, read_there) = run_line(&make);
+                    let (missing, read_missing) = outside.while_gone(&what, || run_line(&make));
+                    for loaded in read_there.iter().chain(&read_missing) {
+                        assert!(!loaded.starts_with(outside.dir.path()), "{what}: the loader read {}", loaded.display());
+                    }
+                    assert_eq!(there, missing, "{what}: the answer says whether the outside file is there");
+                    assert!(!there.contains("user's own"), "{what}: the outside file was read: {there}");
+                    assert_eq!(outside.looks(), outside.before, "{what}: the outside file was read, moved or written");
+                    if arg.kind != Kind::Tab {
+                        tried = true;
+                        got_past_the_tab |= !there.starts_with("no_such_tab:");
+                    }
+                    lines += 1;
+                }
+            }
+            // A command whose every value was refused at its tab was tried for nothing (round 2, B1).
+            assert!(
+                !tried || got_past_the_tab,
+                "{}: refused at its tab for every value, so nothing was tried",
+                spec.name
+            );
+            commands += 1;
+            past_the_tab += usize::from(got_past_the_tab);
         }
-        assert!(swept >= 15, "the sweep found the commands with text: {swept}");
+        eprintln!("the sweep: {commands} commands, {past_the_tab} with a value used past their tab, {lines} lines");
+        assert!(
+            past_the_tab >= 19,
+            "the commands with a value the sweep used past their tab: {past_the_tab} of {commands}"
+        );
     }
 
     /// Failure: the wall is on a session that isn't confined (the user's own app), so the user can't open their own documents; or it's a quiet run's
