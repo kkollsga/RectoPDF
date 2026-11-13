@@ -61,7 +61,14 @@ pub struct QaDrive {
     pub value: String,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// **The tab the caller means a window-wide verb for** (`qa menu`, `qa button`, `qa key-action`, `qa print-to-pdf`, which act on whatever tab the
+    /// window shows): refused, with nothing done, if the window shows another. Owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
 }
+
+/// The verbs that act on whatever tab the window shows, and so take `--tab` and say in their answer which tab they acted on.
+pub const ON_THE_SHOWN_TAB: &[&str] = &["menu", "button", "key_action", "print_to_pdf"];
 
 impl Cmd for QaDrive {
     const TAG: &'static str = "qa_drive";

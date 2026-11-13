@@ -5,7 +5,7 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// A tab's sleep file goes, as what's in it is done with: its tab's closed, or the file's been changed, and a redaction's what it would otherwise keep.
     pub(crate) fn retire_sleep_file(&mut self, id: TabId) {
-        if let (Some(stamp), Some(path)) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id)) {
+        if let (Some(stamp), Some(path)) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.named_path(id)) {
             self.journals.retire_name(record::sleep_file_name(stamp, &path).into());
         }
     }
@@ -32,7 +32,7 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn append_for(&mut self, id: TabId) -> Option<JournalAppend> {
         let name = self.journal_name_for(id);
-        let (tab, path, edits) = (self.tabs.tab(id)?, self.tabs.path_of(id)?, self.lists.get(id)?);
+        let (tab, path, edits) = (self.tabs.tab(id)?, self.tabs.named_path(id)?, self.lists.get(id)?);
         let (through, ops) = edits.journal_waiting()?;
         let mut header = JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0);
         header.saving = edits.saving().map(Into::into);
@@ -84,7 +84,7 @@ impl<L: DocLoader> Session<L> {
             return None;
         }
         let tab = self.tabs.tab(id)?;
-        let mut header = JournalHeader::new(id.0, &self.tabs.path_of(id)?, tab.file.stamp, tab.page_count, seq);
+        let mut header = JournalHeader::new(id.0, &self.tabs.named_path(id)?, tab.file.stamp, tab.page_count, seq);
         // A save may be about to land, and a checkpoint mustn't lose that it said so.
         header.saving = edits.saving().map(Into::into);
         header.keeping = edits.keeping().map(edit::AddedSource::to_record);
@@ -97,7 +97,7 @@ impl<L: DocLoader> Session<L> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let name = self.journal_name_for(id);
-            let (Some(tab), Some(path), Some(list)) = (self.tabs.tab(id), self.tabs.path_of(id), self.lists.edits_record(id)) else {
+            let (Some(tab), Some(path), Some(list)) = (self.tabs.tab(id), self.tabs.named_path(id), self.lists.edits_record(id)) else {
                 continue;
             };
             out.push((name, JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0), list));
@@ -127,7 +127,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(name) = self.journals.name_of(id) {
             return name.to_string();
         }
-        let (stamp, path) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.path_of(id).unwrap_or_default());
+        let (stamp, path) = (self.tabs.tab(id).and_then(|tab| tab.file.stamp), self.tabs.named_path(id).unwrap_or_default());
         let name = record::journal_file_name(stamp, &path, None);
         self.journals.set_name(id, &name);
         name

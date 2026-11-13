@@ -4,6 +4,7 @@ use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
 use std::cell::Cell;
 
 mod compare_tests;
+mod confined_tests;
 mod contents;
 mod editing;
 mod files;

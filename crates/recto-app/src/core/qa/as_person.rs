@@ -70,11 +70,11 @@ fn named_files(command: &Command) -> Vec<PathBuf> {
 }
 
 /// Whether a file a command names is a test's: one that's there is, by where it really is; one to be made is, by the folder it goes in.
-fn is_a_tests_path(path: &Path, state: Option<&Path>) -> bool {
+fn is_a_tests_path(path: &Path) -> bool {
     if std::fs::symlink_metadata(path).is_ok() {
-        return is_a_tests_file(path, state);
+        return is_a_tests_file(path);
     }
-    path.parent().is_some_and(|folder| is_a_tests_file(folder, state))
+    path.parent().is_some_and(is_a_tests_file)
 }
 
 /// **The QA verbs' file wall, stated once:** what acts as the person (`qa as-person`, its `owner-edit` alias, `qa save-as`, `qa password`) does so only
@@ -85,7 +85,6 @@ fn is_a_tests_path(path: &Path, state: Option<&Path>) -> bool {
 ///
 /// `usage`, saying so, when one isn't.
 pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), AgentError> {
-    let state = inner.serving.paths.as_ref().map(|paths| paths.root.clone());
     let open: Vec<PathBuf> = inner
         .host
         .session
@@ -94,7 +93,7 @@ pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), Ag
         .iter()
         .map(PathBuf::as_path)
         .chain(named.iter().copied())
-        .any(|path| !is_a_tests_path(path, state.as_deref()))
+        .any(|path| !is_a_tests_path(path))
     {
         return Err(bad(
             "This QA verb acts as the person only on a test's own file, in the quiet run's state folder or a temp folder, and one open or named isn't.",
@@ -134,6 +133,11 @@ pub(super) fn owner_edit_words(value: &str) -> Result<String, AgentError> {
 pub(super) fn run(inner: &Arc<Inner>, line: &str) -> Result<(), AgentError> {
     let command = pinned(inner, &command(line)?)?;
     let named = named_files(&command);
+    // A confined session's one rule first, so a file outside its folders is refused as every route refuses one; the person's command would meet it
+    // only later, on the session thread, with nobody to hear.
+    if let Some(folders) = inner.host.session.confinement() {
+        recto_agent::quiet_files::check_paths(&folders, &named)?;
+    }
     check_tests_files(inner, &named.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
     person::submit(inner, command);
     Ok(())
@@ -222,9 +226,12 @@ mod tests {
         };
         std::fs::copy(&own, &elsewhere).unwrap();
         let refused = run(app.core(), &format!("open \"{}\"", elsewhere.display())).expect_err("opening a file that isn't a test's");
-        assert_eq!(refused.code, "usage");
+        // Refused by the confined session's one rule first, as every route refuses a file outside a quiet run's folders.
+        assert_eq!(refused.code, "outside_quiet_run");
+        // A file that isn't a test's doesn't open in a quiet run at all (the session's wall, 2026-11-13), so the wall's "with one open" is a second line
+        // nothing reaches now; it stays, for a session that was never confined.
         app.open(&elsewhere);
-        assert!(run(app.core(), "undo").is_err(), "with a file open that isn't a test's");
+        assert_eq!(app.tabs().len(), 1, "a file that isn't a test's opened");
         let _ = std::fs::remove_file(&elsewhere);
     }
 

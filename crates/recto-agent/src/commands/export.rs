@@ -54,7 +54,7 @@ impl Cmd for Render {
         let Self { tab, page, scale, out, anyway } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         {
-            require_absolute(out)?;
+            crate::quiet_files::check_new_file(access, out)?;
             let (id, position, source) = locate(access, tab, *page)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let drawn = render::render(&source.path, source.page + 1, *scale, out);
@@ -128,7 +128,7 @@ impl Cmd for ExportSvg {
         } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         {
-            require_absolute(out)?;
+            crate::quiet_files::check_new_file(access, out)?;
             let (id, position, source) = locate(access, tab, *page)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs {
@@ -248,7 +248,7 @@ impl Cmd for Image {
         } = self;
         let access = cx.access;
         {
-            require_absolute(out)?;
+            crate::quiet_files::check_new_file(access, out)?;
             let (_, _, source) = locate(access, tab, *page)?;
             let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
             describe_source(&mut data, *page, &source);
@@ -334,7 +334,7 @@ impl Cmd for Snapshot {
         let access = cx.access;
         {
             if let Some(out) = out {
-                require_absolute(out)?;
+                crate::quiet_files::check_new_file(access, out)?;
             }
             let (_, _, source) = locate(access, tab, *page)?;
             let mut data = extract::snapshot_command(&extract::SnapshotAsked {
@@ -408,7 +408,7 @@ impl Cmd for Print {
         } = self;
         let access = cx.access;
         {
-            require_absolute(to_pdf)?;
+            crate::quiet_files::check_new_file(access, to_pdf)?;
             let list = print::print_pages(access, tab, pages.as_deref())?;
             print::print_to_file(&list, *dpi, to_pdf, *anyway)
         }

@@ -92,6 +92,15 @@ def run(recto, env, args, timeout=600):
     return proc.returncode, answer, seconds, own / 1048576, max(tree[0], largest) / 1048576, largest / 1048576, len(peaks) - 1
 
 
+def clone_into(path, folder):
+    """A copy of a file in the run's own folder, as a quiet run's session opens nothing outside the temp folders (2026-11-13): an APFS clone where the
+    volume allows, which costs nothing, and a plain copy across volumes."""
+    copy = os.path.join(folder, os.path.basename(path))
+    if subprocess.run(["cp", "-c", path, copy], capture_output=True).returncode != 0:
+        shutil.copyfile(path, copy)
+    return copy
+
+
 def main():
     folder, out_path = sys.argv[1], sys.argv[2]
     recto = sys.argv[sys.argv.index("--recto") + 1] if "--recto" in sys.argv else os.path.join(ROOT, "target/release/recto")
@@ -106,7 +115,7 @@ def main():
         pdfs = sorted(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
         with open(out_path, "w") as out:
             for n, name in enumerate(pdfs):
-                path = os.path.join(folder, name)
+                path = clone_into(os.path.join(folder, name), work)
                 row = {"file": name, "bytes": os.path.getsize(path), "steps": {}}
 
                 def step(key, *args, timeout=600):
@@ -154,6 +163,7 @@ def main():
                     for f in os.listdir(work):
                         if f.startswith(f"{n}-"):
                             os.remove(os.path.join(work, f))
+                os.remove(path)
                 out.write(json.dumps(row) + "\n")
                 out.flush()
                 bad = [k for k, v in row["steps"].items() if not v["ok"]]

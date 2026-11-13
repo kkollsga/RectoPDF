@@ -11,7 +11,8 @@ recto="${RECTO_BIN:-$here/target/debug/recto}"
 app="${RECTO_APP:-$here/app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF}"
 mkdir -p "$out"
 root="$(mktemp -d)"
-trap 'rm -rf "${root:?}"' EXIT
+trap 'quiet_files_out 2>/dev/null || true; rm -rf "${root:?}"' EXIT
+. "$(dirname "$0")/quiet-files.sh"
 # A quiet run this starts ends with this script, however it ends.
 export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
@@ -47,7 +48,7 @@ print(wide[2*len(wide)//3][0])"
 
 r qa start --app "$app" --time-limit 5m
 r qa scroller-style overlay
-r open "$pdf"
+r open "$(inside "$pdf")"
 settle
 # Fits the page in the window, so the whole of what's selected is in the picture.
 r qa resize 1440x1100

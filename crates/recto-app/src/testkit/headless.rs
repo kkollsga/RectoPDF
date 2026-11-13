@@ -39,7 +39,6 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 /// How often a bounded wait looks again.
 const LOOK_EVERY: Duration = Duration::from_millis(2);
 
-/// **A state folder and a folder for the test's files, kept between runs of the app,** as a disk is between launches. [`HeadlessApp::quit`] gives it back, to
 /// **A file's path outside every folder a quiet run's test may use** (its state and the system's temp folders), for a test of what's refused there: in the
 /// build's own `target` folder. `None` when the checkout itself is in a temp folder, where nothing near it is outside; the test then says it skipped that
 /// part rather than calling a test's own file someone else's.
@@ -52,6 +51,7 @@ pub fn outside_the_tests_folders(name: &str) -> Option<PathBuf> {
     Some(target.join(format!("{}-{name}", std::process::id())))
 }
 
+/// **A state folder and a folder for the test's files, kept between runs of the app,** as a disk is between launches. [`HeadlessApp::quit`] gives it back, to
 /// [`Disk::start`] again on.
 pub struct Disk {
     root: TempDir,

@@ -42,16 +42,19 @@ pub(super) fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
     Ok(PagePlace { page, x, y, clicks, shift })
 }
 
-/// Whether a file is one a quiet run's test made: in its state folder, or one of the temp folders a quiet run may use
-/// ([`recto_control::quiet::temp_folders`], never what `$TMPDIR` says). Compared by the folders the paths really are, so a link out of one
-/// doesn't count.
-pub(super) fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
-    let Ok(file) = path.canonicalize() else { return false };
-    state
-        .and_then(|state| state.canonicalize().ok())
-        .into_iter()
-        .chain(recto_control::quiet::temp_folders())
-        .any(|root| file.starts_with(root))
+/// Whether a file is one a quiet run's test made: one that's there, by the one rule every session on a test state folder goes by,
+/// [`recto_control::quiet::is_a_quiet_runs_file`] (the temp folders a quiet run may use, never what `$TMPDIR` says, and its state folder only where that
+/// is in them), so the QA verbs' wall and the session's can't disagree. Compared by the folders the paths really are, so a link out of one doesn't count.
+pub(super) fn is_a_tests_file(path: &std::path::Path) -> bool {
+    path.canonicalize().is_ok() && recto_control::quiet::is_a_quiet_runs_file(path)
+}
+
+/// **The file the host draws a shot into,** before it's published where it was asked for: in the system's own temp folder, from `confstr`, never
+/// `$TMPDIR`, which whoever started the app sets, so a quiet run's host writes nothing outside the run's folders even for a moment (2026-11-13).
+pub(super) fn shot_file(number: u64) -> std::path::PathBuf {
+    recto_platform::local::system_temp_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("recto-shot-{}-{number}.png", std::process::id()))
 }
 
 pub(super) fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
@@ -181,7 +184,7 @@ mod tests {
         assert!(child.status.success() && said.contains("1 passed"), "with TMPDIR at the home:\n{said}");
         let temp = recto_control::quiet::temp_folders();
         assert!(!temp.is_empty(), "no temp folder");
-        assert!(is_a_tests_file(&temp[0], None), "the system's temp folder is a test's");
+        assert!(is_a_tests_file(&temp[0]), "the system's temp folder is a test's");
     }
 
     /// Set when [`a_tests_file_isnt_what_tmpdir_says`] runs this binary again.
@@ -195,8 +198,13 @@ mod tests {
         }
         let home = recto_platform::local::real_home().expect("the home").canonicalize().expect("the home is there");
         assert_eq!(std::env::temp_dir().canonicalize().ok(), Some(home.clone()), "TMPDIR is the home here");
-        assert!(!is_a_tests_file(&home, None), "the home taken as a test's own because TMPDIR said so");
-        assert!(!is_a_tests_file(&home.join("Library"), None), "nor a folder in it");
+        assert!(!is_a_tests_file(&home), "the home taken as a test's own because TMPDIR said so");
+        assert!(!is_a_tests_file(&home.join("Library")), "nor a folder in it");
+        assert!(
+            recto_control::quiet::is_a_quiet_runs_file(&shot_file(1)),
+            "a shot is drawn where TMPDIR says, outside the run's folders: {}",
+            shot_file(1).display()
+        );
     }
 
     /// Failure: a shot lands in the real home, by a path or through a link to it, or takes a document's name. Holds the rule, with what counts as the home given.

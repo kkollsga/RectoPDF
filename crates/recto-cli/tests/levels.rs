@@ -27,6 +27,12 @@ fn wire_for(spec: &recto_agent::Spec) -> String {
     if let Some(field) = recto_agent::table::stdin_secret_field(spec) {
         value[field] = json!("from stdin");
     }
+    // A test state folder's session uses files only in the temp folders (2026-11-13), so a file an example names is put there, by its name.
+    for arg in spec.args.iter().filter(|arg| arg.kind == recto_agent::table::Kind::Path) {
+        if let Some(name) = value[arg.key].as_str().and_then(|path| std::path::Path::new(path).file_name()) {
+            value[arg.key] = json!(std::env::temp_dir().join("recto-levels-walk").join(name));
+        }
+    }
     if value.get("timeout_ms").is_some() {
         value["timeout_ms"] = json!(20);
     }

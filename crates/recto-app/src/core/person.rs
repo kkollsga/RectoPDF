@@ -121,6 +121,7 @@ pub fn session_words(error: &AgentError) -> Option<&'static str> {
         SessionError::RendererOnly,
         SessionError::EditsUnreadable,
         SessionError::Saving,
+        SessionError::OutsideQuietRun,
         SessionError::Edit(EditError::OutOfRange),
         SessionError::Edit(EditError::LastPage),
         SessionError::Edit(EditError::TooManyPages),

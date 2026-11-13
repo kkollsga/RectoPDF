@@ -24,6 +24,7 @@ pub mod index;
 pub mod linking;
 mod loader;
 pub mod print;
+pub mod quiet_files;
 mod reading;
 mod render;
 pub mod saving;
@@ -328,6 +329,7 @@ impl From<SessionError> for AgentError {
                 exit::NOT_FOUND
             }
             SessionError::Open(recto_core::OpenError::PasswordNeeded) => exit::PROTECTED,
+            SessionError::OutsideQuietRun => exit::PERMISSION,
             _ => exit::FAILED,
         };
         Self::new(error.code(), error.message(), exit)
@@ -463,6 +465,12 @@ pub trait SessionAccess {
     /// the session hasn't heard yet, so Back comes back to the place that was showing (R2.3, accident A1). Called without the session held, as it takes it
     /// itself. A session with no window has nothing to take in.
     fn take_places(&self) {}
+    /// **The folders this session is confined to, if it is** ([`quiet_files`]): set when the session was made and never changed, so a host that keeps
+    /// the session's [`recto_session::confined::Confinement::shared`] answers without the session's lock, and a free session's command pays only a branch for
+    /// it. Asked of the session here otherwise.
+    fn confinement(&self) -> Option<std::sync::Arc<recto_platform::run_folders::RunFolders>> {
+        self.with(|session| session.confinement().folders().cloned())
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -564,6 +572,8 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     if !actor.may(needed) {
         return Err(refusal(table::display_name(command.tag()), actor.level(), needed));
     }
+    // A quiet run's session uses only files in its own folders, whoever asks and at whatever level: every file this command names, before it runs.
+    quiet_files::check(access, command)?;
     // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
     if command.route() == Runs::Record {
         return execute_held(access, actor, command, events);
@@ -1853,6 +1863,7 @@ mod tests {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
+                tab: None,
             }),
             Command::from(commands::session::Stop {}),
             Command::from(crate::commands::record::SessionShow {}),
@@ -1991,6 +2002,7 @@ mod tests {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
+                tab: None,
             }),
         ] {
             let error = run(&mut s, Level::Full, &command).unwrap_err();

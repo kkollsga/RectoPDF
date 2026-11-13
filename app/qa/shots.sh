@@ -11,7 +11,8 @@ recto="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/recto"
 [ -n "${RECTO_BIN:-}" ] && recto="$RECTO_BIN"
 mkdir -p "$out"
 root="$(mktemp -d)"
-trap 'rm -rf "${root:?}"' EXIT
+trap 'quiet_files_out 2>/dev/null || true; rm -rf "${root:?}"' EXIT
+. "$(dirname "$0")/quiet-files.sh"
 # A quiet run this starts ends with this script, however it ends.
 export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
@@ -28,8 +29,8 @@ for look in light dark; do
     r qa appearance "$look"
     shot "home-$look"
 done
-r open "$reader"
-for extra in "$@"; do r open "$extra"; done
+r open "$(inside "$reader")"
+for extra in "$@"; do r open "$(inside "$extra")"; done
 r tap "#1"
 settle
 for look in light dark; do
@@ -82,7 +83,7 @@ sleep 1
 # The same with one tab, a shortened name revealed, and warm paper on a text page.
 export RECTO_STATE_DIR="$root/o"
 r qa start --time-limit 5m
-r open "$reader"
+r open "$(inside "$reader")"
 settle
 for look in light dark; do
     r qa appearance "$look"
@@ -106,7 +107,7 @@ sleep 1
 
 export RECTO_STATE_DIR="$root/h"
 r qa start --time-limit 5m
-r open "$heavy"
+r open "$(inside "$heavy")"
 for look in light dark; do
     r qa appearance "$look"
     settle
@@ -124,7 +125,7 @@ sleep 1
 export RECTO_STATE_DIR="$root/p"
 r qa start --time-limit 5m
 r qa scroller-style overlay
-r open "$reader"
+r open "$(inside "$reader")"
 settle
 for look in light dark; do
     r qa appearance "$look"
@@ -150,7 +151,7 @@ if [ -n "${DARK_PAGES:-}" ]; then
     r view --paper dark
     for spec in $DARK_PAGES; do
         name="${spec%%=*}"; rest="${spec#*=}"; file="${rest%:*}"; page="${rest##*:}"
-        r open "$file"
+        r open "$(inside "$file")"
         r goto "$page"
         settle
         shot "dark-$name"
@@ -162,7 +163,7 @@ fi
 # A limit under what this page needs, and the larger limit off, so it takes the path a page past 1 GiB takes.
 export RECTO_STATE_DIR="$root/l"
 r qa start --memory-limit-mib "${LOW_RES_LIMIT_MIB:-350}" --time-limit 5m
-r open "$heavy"
+r open "$(inside "$heavy")"
 for look in light dark; do
     r qa appearance "$look"
     settle

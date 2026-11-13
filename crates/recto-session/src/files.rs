@@ -10,6 +10,13 @@ impl<L: DocLoader> Session<L> {
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) {
+        // A confined tab whose path no longer leads into its folders (one swapped for a link after the open) is a missing file, whatever the look found
+        // where the path leads now: see [`confined`] and [`Self::path_of`].
+        let status = if self.tab(id).is_some() && self.path_of(id).is_none() {
+            FileStatus::Missing
+        } else {
+            status
+        };
         // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
             self.generated.forget(id);
@@ -33,14 +40,15 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Moved(path, now) => {
-                // Another tab having it means this one isn't a move of that file so much as a second look at it.
-                if self.tab_for_path(&path).is_some_and(|other| other != id) {
+                // Another tab having it means this one isn't a move of that file so much as a second look at it. And a quiet run's tab doesn't
+                // follow its file out of the run's folders: see [`confined`].
+                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.tabs.confinement().admits(&path) {
                     if let Some(tab) = self.tab_mut(id) {
                         tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }
                     return;
                 }
-                let from = self.path_of(id).map(|from| PathField::from_path(&from));
+                let from = self.tabs.named_path(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
                 if let Some(tab) = self.tab_mut(id) {
                     tab.file.stamp = Some(now);
@@ -74,7 +82,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.tabs.path_of(tab.id)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.named_path(tab.id)?, tab.file.stamp)))
             .collect()
     }
 }

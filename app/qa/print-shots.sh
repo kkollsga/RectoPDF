@@ -11,7 +11,8 @@ recto="${RECTO_BIN:-$here/target/debug/recto}"
 app="${RECTO_APP:-$here/app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF}"
 mkdir -p "$out"
 root="$(mktemp -d)"
-trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+trap 'quiet_files_out 2>/dev/null || true; "$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+. "$(dirname "$0")/quiet-files.sh"
 # A quiet run this starts ends with this script, however it ends.
 export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
@@ -20,7 +21,7 @@ settle() { r qa wait-settled --timeout 120s; }
 
 r qa start --app "$app" --time-limit 10m
 r qa scroller-style overlay
-r open "$pdf"
+r open "$(inside "$pdf")"
 settle
 r qa resize 1440x1000
 for look in light dark; do
@@ -36,7 +37,7 @@ for look in light dark; do
     settle
 done
 if [ -n "$restricted" ]; then
-    r open "$restricted"
+    r open "$(inside "$restricted")"
     settle
     for look in light dark; do
         r qa appearance "$look"

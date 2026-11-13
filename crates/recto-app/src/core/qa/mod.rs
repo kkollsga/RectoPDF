@@ -4,6 +4,9 @@ mod as_person;
 mod levers;
 mod values;
 
+#[cfg(test)]
+mod files_tests;
+
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use recto_agent::commands::Cmd;
@@ -365,7 +368,7 @@ impl QaBridge {
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
-            Qa::QaDrive(QaDrive { verb, value, timeout_ms }) => self.drive(verb, value, *timeout_ms),
+            Qa::QaDrive(QaDrive { verb, value, timeout_ms, tab }) => self.drive_on_the_shown_tab(verb, value, *timeout_ms, tab.as_deref()),
         }
     }
 
@@ -375,7 +378,7 @@ impl QaBridge {
         // A shot of a page mid-draw shows it blurred, and one of the contents mid-slide shows two rows over each other: it waits for settled, as `qa wait-settled` has it, every pane and the window's animations, for as long as a shot may, and says if it didn't (review).
         let started = Instant::now();
         let settled = self.settled(SHOT_SETTLE).is_ok();
-        let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
+        let temp = values::shot_file(self.next_id.fetch_add(1, Ordering::SeqCst));
         let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
             recto_agent::publish_picture(&temp, out)?;
@@ -386,6 +389,51 @@ impl QaBridge {
         });
         let _ = std::fs::remove_file(&temp);
         published
+    }
+
+    /// **The verbs that act on whatever tab the window shows** ([`recto_agent::commands::qa::ON_THE_SHOWN_TAB`]) say which tab that was, as
+    /// `acted_on_tab`, and with `--tab` are refused, with nothing done, if the window shows another (owner, 2026-11-13: "Shouldnt it be clear which tab the
+    /// action is sent to?"). Any other verb is refused `--tab`, as it isn't about the tab shown.
+    fn drive_on_the_shown_tab(&self, verb: &str, value: &str, timeout_ms: Option<u64>, expected: Option<&str>) -> Result<Value, AgentError> {
+        if !recto_agent::commands::qa::ON_THE_SHOWN_TAB.contains(&verb) {
+            if expected.is_some() {
+                return Err(bad(
+                    "`--tab` is only for `qa menu`, `qa button`, `qa key-action` and `qa print-to-pdf`, which act on the tab the window shows.",
+                ));
+            }
+            return self.drive(verb, value, timeout_ms);
+        }
+        let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+        let shown = lock(&inner.published).reader.shown_tab;
+        let meant = expected
+            .map(|expected| inner.host.session.with_session(|session| recto_agent::select_tab(session, expected)))
+            .transpose()?;
+        let acted_on = on_the_shown_tab(shown, meant.map(|id| id.0))?;
+        let mut answer = self.drive(verb, value, timeout_ms)?;
+        answer["acted_on_tab"] = acted_on;
+        Ok(answer)
+    }
+
+    /// **Where `qa print-to-pdf` writes**, held to the rules every export keeps (a file that's there isn't replaced) and to the quiet run's folders, as its
+    /// value, `OUT.pdf|FIRST|LAST`, is a file the table can't see as one.
+    fn check_print_target(&self, value: &str) -> Result<(), AgentError> {
+        let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
+        let out = Path::new(out);
+        // A file in a compound value the table can't see as one, so it's put through the session's one rule here (2026-11-13).
+        if let Some(folders) = self.inner().and_then(|inner| inner.host.session.confinement()) {
+            recto_agent::quiet_files::check_paths(&folders, &[out.to_path_buf()])?;
+        }
+        recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
+        if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
+            return Err(bad("A print goes to a new file, by its whole path."));
+        }
+        if let Some(range) = range {
+            let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
+            if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
+                return Err(bad("A range is two page numbers."));
+            }
+        }
+        Ok(())
     }
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
@@ -503,21 +551,8 @@ impl QaBridge {
                 return self.ask("state", "");
             }
             "mouse_up" | "notice_button" | "zoom_escape" | "page_escape" => {}
-            // Where the print goes is held to the rules every export keeps, and a file that's there isn't replaced.
-            "print_to_pdf" => {
-                let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
-                let out = Path::new(out);
-                recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
-                if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
-                    return Err(bad("A print goes to a new file, by its whole path."));
-                }
-                if let Some(range) = range {
-                    let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
-                    if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
-                        return Err(bad("A range is two page numbers."));
-                    }
-                }
-            }
+            // Where the print goes is checked by `check_print_target`.
+            "print_to_pdf" => self.check_print_target(value)?,
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -725,10 +760,10 @@ pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError>
     as_person::check_tests_files(inner, &[path.as_path()])
 }
 
-/// **What acts as the person is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its `owner-edit` alias and `qa
-/// save-as` are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
+/// **What acts as the person, or replaces a tab's file, is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its
+/// `owner-edit` alias, `qa save-as` and `qa save-from` (2026-11-13) are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
 fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
-    if release && matches!(verb, "as_person" | "owner_edit" | "save_as") {
+    if release && matches!(verb, "as_person" | "owner_edit" | "save_as" | "save_from") {
         return Err(AgentError::new(
             "qa_refused",
             "A release build doesn't act as the person for a test: this QA verb is only in a development build.",
@@ -741,6 +776,22 @@ fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
 fn stuck() -> AgentError {
     AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT)
         .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
+}
+
+/// **What a verb on the shown tab answers with** (`acted_on_tab`), or its refusal when the tab meant isn't the one the window shows (`shown`, 0 for
+/// none): nothing is done then.
+fn on_the_shown_tab(shown: u32, meant: Option<u32>) -> Result<Value, AgentError> {
+    match meant {
+        Some(meant) if meant != shown => {
+            let words = if shown == 0 {
+                "The window shows no tab, so nothing was done.".to_owned()
+            } else {
+                format!("The window shows tab #{shown}, not #{meant}, so nothing was done.")
+            };
+            Err(AgentError::new("not_the_shown_tab", words, exit::FAILED).then("`recto tap` that tab first, or leave out `--tab`."))
+        }
+        _ => Ok(if shown == 0 { Value::Null } else { json!(format!("#{shown}")) }),
+    }
 }
 
 #[cfg(test)]
@@ -767,6 +818,7 @@ mod tests {
             verb: verb.to_owned(),
             value: value.to_owned(),
             timeout_ms: None,
+            tab: None,
         }))
     }
 
@@ -786,11 +838,50 @@ mod tests {
         };
         let refused = drive(&qa, "save_as", &outside.to_string_lossy()).expect_err("a save to a path outside");
         assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        // A file that isn't a test's doesn't open in a quiet run at all (the session's wall, 2026-11-13), so "with one open" is a second line nothing
+        // reaches now.
         std::fs::copy(&own, &outside).unwrap();
         app.open(&outside);
-        let refused = drive(&qa, "save_as", &own.with_file_name("copy.pdf").to_string_lossy()).expect_err("with a file open that isn't a test's");
-        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        assert_eq!(app.tabs().len(), 1, "a file that isn't a test's opened");
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Failure (owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?"): `qa menu` (and `qa button`, `qa key-action`, `qa print-to-pdf`)
+    /// acts on whatever tab the window shows and its answer doesn't say which; or `--tab` naming another tab acts anyway. With `--tab` naming another
+    /// it's refused before anything is asked of the window, naming the one shown, and nothing changes; with the one shown, or none, the answer says which it
+    /// acted on; `--tab` on a verb that isn't about the shown tab is refused. (Acting itself needs the window, which this kit hasn't got: the answer's
+    /// `acted_on_tab` is [`on_the_shown_tab`]'s, held here, and the app test `text_selection_is_the_default_tool` sees it come back.)
+    #[test]
+    fn a_verb_on_the_shown_tab_says_which_and_takes_the_one_meant() {
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        app.open(&app.disk().pdf("a.pdf", 2));
+        app.open(&app.disk().pdf("b.pdf", 2));
+        let shown = crate::lock(&app.core().published).reader.shown_tab;
+        let other = if shown == 1 { 2 } else { 1 };
+        let with_tab = |verb: &str, value: &str, tab: &str| {
+            qa.run(&Qa::QaDrive(QaDrive {
+                verb: verb.to_owned(),
+                value: value.to_owned(),
+                timeout_ms: None,
+                tab: Some(tab.to_owned()),
+            }))
+        };
+        let before = app.session_json()["sidebar"].clone();
+        let refused = with_tab("menu", "view.sidebar", &format!("#{other}")).expect_err("the window shows another tab");
+        assert_eq!(refused.code, "not_the_shown_tab");
+        assert!(refused.message.contains(&format!("#{shown}")), "it names the tab shown: {}", refused.message);
+        app.settle();
+        assert_eq!(app.session_json()["sidebar"], before, "nothing was done");
+        assert_eq!(
+            with_tab("zoom", "1", &format!("#{shown}")).unwrap_err().code,
+            "usage",
+            "--tab on a verb that isn't about the tab shown"
+        );
+        assert_eq!(on_the_shown_tab(2, Some(2)).unwrap(), "#2", "the tab meant, shown");
+        assert_eq!(on_the_shown_tab(2, None).unwrap(), "#2", "no --tab: it says which");
+        assert!(on_the_shown_tab(0, None).unwrap().is_null(), "no tab shown");
+        assert_eq!(on_the_shown_tab(0, Some(1)).unwrap_err().code, "not_the_shown_tab");
     }
 
     /// Failure (review of R2.4, item 7): `qa password`, sent as a client sends it, types into the sheet for a file that isn't a test's: the check is a
@@ -803,10 +894,13 @@ mod tests {
             return;
         };
         std::fs::write(&outside, crate::core::headless::files::locked_with("open sesame", 1)).unwrap();
+        // It doesn't open in a quiet run at all (the session's wall, 2026-11-13), so there's no sheet for the verb to type into.
         app.open(&outside);
-        assert!(app.reader().password_prompt.is_some(), "the person's open asks");
-        let refused = drive(&qa, "password", "open sesame").expect_err("not a test's own file");
-        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        assert!(
+            app.reader().password_prompt.is_none() && app.tabs().is_empty(),
+            "a file that isn't a test's opened"
+        );
+        assert!(drive(&qa, "password", "open sesame").is_err(), "typed with no sheet of a test's");
         let _ = std::fs::remove_file(&outside);
     }
 
@@ -814,7 +908,7 @@ mod tests {
     /// there, and nothing else is.
     #[test]
     fn a_release_doesnt_act_as_the_person() {
-        for verb in ["as_person", "owner_edit", "save_as"] {
+        for verb in ["as_person", "owner_edit", "save_as", "save_from"] {
             assert_eq!(refused_in_a_release(true, verb).unwrap_err().code, "qa_refused", "{verb}");
             assert!(refused_in_a_release(false, verb).is_ok(), "{verb} in a development build");
         }

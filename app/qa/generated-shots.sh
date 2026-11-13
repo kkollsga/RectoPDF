@@ -10,7 +10,8 @@ recto="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/recto"
 [ -n "${RECTO_BIN:-}" ] && recto="$RECTO_BIN"
 mkdir -p "$out"
 root="$(mktemp -d)"
-trap '"$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+trap 'quiet_files_out 2>/dev/null || true; "$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
+. "$(dirname "$0")/quiet-files.sh"
 # A quiet run this starts ends with this script, however it ends.
 export RECTO_QA_OWNER_PID=$$
 export RECTO_STATE_DIR="$root/s"
@@ -22,8 +23,8 @@ made() { until "$recto" wait contents-generated --timeout 300s >/dev/null; do [ 
 
 r qa start --time-limit 10m
 r qa scroller-style overlay
-r open "$bad"
-r open "$missing"
+r open "$(inside "$bad")"
+r open "$(inside "$missing")"
 settle
 both offer-missing
 r qa click-row note
