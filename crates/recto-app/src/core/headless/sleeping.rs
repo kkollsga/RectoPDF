@@ -422,6 +422,51 @@ fn a_tab_woken_while_its_worker_outlived_its_sleep_has_its_next_sleep_file_decid
     drop(app.quit());
 }
 
+/// Failure (the sleep branch's second review, 2026-11-13): a worker says its file's length once, and it marked it said on a job for any tab, telling only the
+/// tab whose own file it is. So a job on `a.pdf` for b, a document with a's pages added, used up the saying (on a first open as much as after a re-ask), and
+/// a, woken from its sleep file, stayed unchecked for good: never given a new sleep file. On the app's own core: a put to sleep, b sent to one of a's pages
+/// (b's job on `a.pdf` comes first), a woken and drawn; its next sleep is decided.
+#[test]
+fn another_tabs_job_on_a_file_leaves_its_length_to_be_said_to_the_tab_that_owns_it() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 2));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    for doc in [&a, &b] {
+        app.open(doc);
+        view = window_view();
+        drop(engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    full(&app, &["page", "insert", a.to_str().expect("a path"), "--at", "3"]);
+    host_turns(&app, &mut view, true);
+    let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
+    let decided = || {
+        let sleep = app.record_json()["sleep"].clone();
+        sleep["writes_put_off"].as_u64().expect("put off") + sleep["sleep_files_written"].as_u64().expect("written")
+    };
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    // b at a page of a's: its job on a.pdf is the first since a went.
+    full(&app, &["goto", "10", "--tab", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    full(&app, &["tap", &format!("#{b}")]);
+    host_turns(&app, &mut view, true);
+    let before = decided();
+    full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    assert_eq!(
+        decided(),
+        before + 1,
+        "a's sleep reached no decision: its file's length went to b's job and was never said to a: {}",
+        app.record_json()["sleep"]
+    );
+    drop(app.quit());
+}
+
 /// Failure (a quiet run of 2026-11-13, `dark-paper-sheet-woken-dark.png`: of pages 2, 4, 7, 8 and 9 each left, slept and woken in turn, the first woke from its
 /// sleep picture and the later ones to an empty pane, `sleep_pictures=1 sleep_in_view=0`): a tab whose sleep file was written under a minute before (the write
 /// gap, for the drive's sake) had its next write put off, so the file kept its picture of the page the tab was left on before, which a wake at the page it's

@@ -152,13 +152,14 @@ fn run(shared: &Shared) {
                     if let Some(version) = open.doc.known_version() {
                         lock(&shared.reader).note_version(&job.file, version);
                     }
+                    // Said only to the tab whose own file it is, and marked said only then: a job for a tab with this file's pages added would otherwise use
+                    // up the saying, and the owner, woken from its sleep file, stay unchecked for good.
                     if !open.length_told
                         && let (Some(pages), Some(version)) = (open.doc.known_page_count(), open.doc.known_version())
+                        && lock(&shared.reader).docs.is_own_file(job.tab, &job.file)
                     {
                         open.length_told = true;
-                        if lock(&shared.reader).docs.is_own_file(job.tab, &job.file) {
-                            shared.events.file_length(job.tab, pages, version);
-                        }
+                        shared.events.file_length(job.tab, pages, version);
                     }
                     outcome
                 }
