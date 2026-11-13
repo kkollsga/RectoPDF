@@ -1104,9 +1104,11 @@ fn text_then(content: &[u8]) -> TempPdf {
 #[test]
 fn a_worker_waiting_to_retire_is_not_replaced_to_draw_a_place_left() {
     let (first, second) = (document(40), document(1));
+    // The rest a big worker gets, a heavy worker's idle rule, short: what's held is that it goes at rest, not after how long.
     let policy = recto_render_service::Policy {
         retire_bytes: 1,
         idle_exit: Duration::from_secs(600),
+        heavy_idle_exit: Duration::from_millis(100),
         ..recto_render_service::Policy::default()
     };
     let engine = engine_with(&first, 40, policy, &recto_render_service::HeavySlot::new());
