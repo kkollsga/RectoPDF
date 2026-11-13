@@ -324,7 +324,8 @@ impl Inner {
     }
 
     /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]).
-    fn write_holding_lock(&self, facts: SleepFacts, material: SleepMaterial, by: By) {
+    fn write_holding_lock(&self, mut facts: SleepFacts, material: SleepMaterial, by: By) {
+        let material = crate::sleep_writer::allowed_material(&mut facts, material);
         let SleepFacts {
             id,
             path,
@@ -455,8 +456,12 @@ impl Inner {
     /// them, held to the same checks as a sleep file's (this version of its file, these pages).
     pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>) {
         let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
-        // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before.
-        let back = back.map(|(facts, material)| with_material(facts.sleep, material));
+        // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before. Held to
+        // the check a sleep file's pictures are.
+        let back = back.map(|(mut facts, material)| {
+            let material = crate::sleep_writer::allowed_material(&mut facts, material);
+            with_material(facts.sleep, material)
+        });
         let sleep = back.or(read).or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)

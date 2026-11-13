@@ -134,7 +134,9 @@ impl LeavingQueue {
     /// **Queues a tab's sleep file,** to be written no sooner than `due` by the clock, by the rules above. Says whether a writer has to be started: only when
     /// there isn't one.
     #[must_use]
-    pub fn push_due(&mut self, facts: SleepFacts, material: SleepMaterial, due: u64) -> bool {
+    pub fn push_due(&mut self, mut facts: SleepFacts, material: SleepMaterial, due: u64) -> bool {
+        // Nothing held that its sleep file couldn't carry.
+        let material = crate::sleep_writer::allowed_material(&mut facts, material);
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
             self.remove(at);
             self.counts.replaced += 1;
@@ -866,6 +868,20 @@ mod tests {
         assert_eq!(report["writers_running"], 0);
         assert_eq!(report["queued"], 0);
         assert_eq!(report["queued_bytes"], 0);
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13, S1): a document with a page from a protected file never has pictures in its sleep file, yet a pushed-out
+    /// tab's pictures were held in the queue through its cool-down (up to the whole 16 MiB) and handed back to its page view if it was shown again. Queued, it
+    /// holds no pictures and no bytes, and what's handed back has none.
+    #[test]
+    fn a_tab_not_allowed_pictures_has_none_held_or_handed_back() {
+        let mut queue = LeavingQueue::default();
+        let mut protected = facts(1);
+        protected.pictures_allowed = false;
+        let _ = queue.push_due(protected, material(MIB, 0), 1_000);
+        assert_eq!(queue.bytes, 0, "held for nothing");
+        let (_, back) = queue.take_back(TabId(1)).expect("handed back");
+        assert!(back.pictures.is_empty(), "pictures handed back that no sleep file of it may carry");
     }
 
     /// A clock a test moves, in milliseconds.

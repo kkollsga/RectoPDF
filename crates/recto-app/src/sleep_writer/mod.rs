@@ -37,6 +37,18 @@ pub fn with_older_pictures(mut sleep: SleepFile, there: Option<SleepFile>, in_vi
     sleep
 }
 
+/// **What of a tab's material may carry pictures, anywhere a sleep file's pictures go:** into a file written, into the queue waiting for one, and back onto the
+/// page view of a tab shown inside its cool-down. A document with a page from a protected file has none (`SleepFacts::pictures_allowed`), so they're dropped
+/// here, and nothing is held or shown that its sleep file couldn't carry. The one check, so "held to the same checks" is one implementation.
+#[must_use]
+pub fn allowed_material(facts: &mut recto_session::SleepFacts, mut material: recto_reader::SleepMaterial) -> recto_reader::SleepMaterial {
+    if !facts.pictures_allowed {
+        material.pictures = Vec::new();
+        facts.sleep.pictures = Vec::new();
+    }
+    material
+}
+
 /// **Whether the sleep file there holds pictures only for another paper than the new ones** (found 2026-11-13 in a quiet run: a tab slept again inside its gap
 /// after the look went from light to dark kept a file of light-paper pictures, which no page of dark paper shows, so its wake was bare). `new_dark` is the
 /// paper of the pictures on hand, `None` with none. With none on hand, or none there, there's nothing a write would put right.
