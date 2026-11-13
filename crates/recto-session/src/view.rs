@@ -74,11 +74,6 @@ impl<L: DocLoader> Session<L> {
         self.set_selection(showing, selection);
     }
 
-    /// What's selected in a tab.
-    pub fn selection_of(&self, id: TabId) -> Option<Selection> {
-        self.tab(id)?.reading.selection.as_deref().copied()
-    }
-
     /// Exactly where a tab's reader is, as the page view says. Marked to be written only if it's moved.
     pub fn note_place(&mut self, id: TabId, place: PlaceRecord) {
         if let Some(tab) = self.tab_mut(id)
