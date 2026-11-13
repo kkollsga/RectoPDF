@@ -84,9 +84,11 @@ struct Shared {
 /// A tick of the order in which things are asked of a page view, taken before its lock is waited for, so "newer" is when something was asked and not who got
 /// the lock. Its own count: the place clock ([`crate::tiles::place_stamp`]) ticks when a place is sent, and nothing asked here sends one yet.
 fn asked() -> u64 {
-    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     ASKED.fetch_add(1, Ordering::SeqCst) + 1
 }
+
+/// The count [`asked`] moves on.
+static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What's waiting for a page view that was busy when the UI thread asked. Only the latest of each counts.
 #[derive(Default)]
@@ -364,20 +366,16 @@ impl Engine {
         self.after(reader);
     }
 
+    /// A jump to a page's top, the margin above the first page included: [`Self::jump_within`] with nothing down the page.
     pub fn jump_to(&self, page: u32) {
-        let when = asked();
-        let mut reader = lock(&self.shared.reader);
-        // Newer than any place synced scroll left for this view before this was asked, which would otherwise land after it.
-        drop_follows_asked_before(&self.shared, when);
-        reader.jump_to(page, 0.0);
-        self.after(reader);
+        jump_after(self, page, 0.0);
     }
 
     /// A jump to a place in a page, as a link or Back goes: the page's top, margin above the first page included, or that far down it. Says where the
     /// place clock had come to once it was sent, taken with the lock still held, so every read of this view's places after it carries that stamp or a later
     /// one and every read before it an earlier one; `None` if it wasn't sent, with no tab showing.
     pub fn jump_within(&self, page: u32, within: f64) -> Option<u64> {
-        jump_after(self, asked(), page, within)
+        jump_after(self, page, within)
     }
 
     pub fn set_paper(&self, paper: PaperKind) {
@@ -530,8 +528,10 @@ fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
     !shared.held_busy() && apply_pending(shared, reader)
 }
 
-/// A jump to a place in a page, with the tick of when it was asked taken before the lock was waited for: drops only a follow asked before it.
-fn jump_after(engine: &Engine, when: u64, page: u32, within: f64) -> Option<u64> {
+/// A jump to a place in a page, the one way [`Engine::jump_to`] and [`Engine::jump_within`] go, with the tick of when it was asked taken before the lock
+/// is waited for: drops only a follow asked before it.
+fn jump_after(engine: &Engine, page: u32, within: f64) -> Option<u64> {
+    let when = asked();
     let mut reader = lock(&engine.shared.reader);
     drop_follows_asked_before(&engine.shared, when);
     let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
@@ -838,31 +838,45 @@ mod tests {
         assert_eq!(reader.docs.shown().map(|doc| doc.magnification()), Some(value));
     }
 
-    /// Failure: a jump drops a follow the person asked for after it. The jump blocks on the lock while the person's scroll in another pane leaves a newer
-    /// follow pending, and then clears it: "newer" went by who got the lock. A follow is dropped only if it was asked before the jump was.
+    /// Waits, bounded, until something on another thread has taken a tick of [`asked`] past `was`. The count is the process's, so this holds under
+    /// nextest, which runs each test in a process of its own.
+    fn wait_for_an_ask_past(was: u64) {
+        let began = Instant::now();
+        while ASKED.load(Ordering::SeqCst) <= was {
+            assert!(began.elapsed() < Duration::from_secs(10), "the other thread never asked");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Failure: a jump drops a follow the person asked for after it, because the jump took its turn when it got the lock and not when it was asked: the jump
+    /// waits on the lock while the person's scroll in another pane leaves a newer follow, and then clears it. And the same through either way a jump is
+    /// sent: [`Engine::jump_to`] (a page's top) was a second copy of [`Engine::jump_within`], so one could take its tick after the lock and the other not.
+    /// Forced: the jump has asked and waits on the lock the test holds when the follow is asked.
     #[test]
-    fn a_jump_drops_only_a_follow_asked_before_it() {
-        for follow_first in [true, false] {
+    fn a_jump_takes_its_turn_when_it_was_asked_by_either_way_it_is_sent() {
+        for by_page in [true, false] {
             let engine = without_its_thread();
             let held = engine.shared.reader.lock().unwrap();
-            let jump_asked = if follow_first {
-                assert!(!engine.follow_soon(60, 0.5));
-                asked()
-            } else {
-                let jump_asked = asked();
-                assert!(!engine.follow_soon(60, 0.5));
-                jump_asked
-            };
-            drop(held);
-            jump_after(&engine, jump_asked, 12, 0.0);
+            let was = ASKED.load(Ordering::SeqCst);
+            std::thread::scope(|scope| {
+                let jumping = scope.spawn(|| {
+                    if by_page {
+                        engine.jump_to(12);
+                    } else {
+                        assert!(engine.jump_within(12, 0.0).is_some());
+                    }
+                });
+                wait_for_an_ask_past(was);
+                assert!(!engine.follow_soon(60, 0.5), "the view's held: the follow is left");
+                drop(held);
+                jumping.join().unwrap();
+            });
             let mut reader = lock(&engine.shared.reader);
             take_pending_follow(&engine.shared, &mut reader);
-            let want = if follow_first { (12, 0.0) } else { (60, 0.5) };
             assert_eq!(
                 reader.docs.shown().map(|doc| doc.reading_anchor()),
-                Some(want),
-                "the follow was asked {} the jump was",
-                if follow_first { "before" } else { "after" }
+                Some((60, 0.5)),
+                "the follow was asked after the jump (by the page alone: {by_page})"
             );
         }
     }
