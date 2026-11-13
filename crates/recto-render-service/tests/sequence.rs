@@ -80,6 +80,15 @@ fn fake_worker() {
                 }
                 .encode()
             }
+            // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
+            Kind::ImagesRequest => {
+                let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                proto::PageImages {
+                    job_id,
+                    boxes: vec![[0, 0, 32_768, 32_768]],
+                }
+                .encode()
+            }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
                 TextReply {
@@ -315,6 +324,25 @@ fn step_3_a_lower_resolution_version_is_drawn_and_reported() {
     done(doc.render_tile(&request(0), &surface()));
     assert_eq!(doc.stats().memory_kills, 2, "it ran the failed steps again");
     assert_eq!(doc.stats().spawns, spawns);
+}
+
+/// Failure: a page that's gone to a lower resolution, as one does after a memory-limit kill or once a document's heavy pages are used up, isn't asked where its images are, so dark paper judges it whole where a sharp draw of it was judged by its images, and the same page comes out two ways by whether a draw went low first (review of 2026-11-13: the USGS sheet turned over, then went light grey once a zoomed tile hit the limit after a wake). Asking walks the page's objects and decodes nothing, in the normal worker that draws its lower resolution, so it's asked as any page is.
+#[test]
+fn a_lower_resolution_page_is_still_asked_where_its_images_are() {
+    let (mut low, _file) = doc("fits_low_res");
+    done(low.render_tile(&request(0), &surface()));
+    assert_eq!(low.page_draw_state(0), PageDrawState::LowResOnly);
+    assert_eq!(low.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    // One that failed at a high zoom even at its lower resolution, and draws at fit: the same.
+    let (mut zoomed, _zoomed_file) = doc("heavy_below_3x");
+    assert!(zoomed.render_tile(&TileRequest { scale: 16.0, ..request(0) }, &surface()).is_err());
+    assert!(matches!(zoomed.page_draw_state(0), PageDrawState::Failed(_)), "{:?}", zoomed.page_draw_state(0));
+    assert_eq!(zoomed.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    assert_eq!(
+        done(zoomed.render_tile(&TileRequest { scale: 1.0, ..request(0) }, &surface())).low_res,
+        None,
+        "sharp at fit"
+    );
 }
 
 /// Failure: the lower-resolution rectangle runs off the page's smaller size at its edge, and the worker refuses the very tile that should have been saved.

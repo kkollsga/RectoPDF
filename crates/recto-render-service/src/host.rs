@@ -1073,9 +1073,9 @@ impl DocRenderer {
         if self.control.is_stale(generation) {
             return Ok(None);
         }
-        // Only a page that can't be drawn as it is goes unasked. One that needed the larger limit is an ordinary page of a certain size, a page of text with a large figure say.
+        // Only a page that fails at every zoom goes unasked. Asking walks its objects and decodes nothing, so one needing the larger limit, or drawn lower, or failed at a high zoom, is asked as any page, and its look doesn't hang on which draw went first.
         let state = self.page_draw_state(page);
-        let boxes = if matches!(state, PageDrawState::LowResOnly | PageDrawState::Failed(_)) || self.stopped() {
+        let boxes = if matches!(self.page_draw_state_at(page, 0.0), PageDrawState::Failed(_)) || self.stopped() {
             None
         } else {
             // The worker that's there, which has just drawn it. With none, one that can hold the page.
