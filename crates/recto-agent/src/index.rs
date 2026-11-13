@@ -194,7 +194,7 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
             path,
             expected: s.lists().get(id).and_then(|_| s.tabs().own_stamp(id)),
             added: false,
-            pages_used: s.pages_in(id),
+            pages_used: s.pages().count(id),
         }];
         if let Some(edits) = s.lists().get(id) {
             files[0].pages_used = 0;

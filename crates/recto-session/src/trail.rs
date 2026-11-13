@@ -140,7 +140,7 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// Moves a tab to a zero-based page, clamped to the document. A jump its page view was sent is about the page it's left.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
-        let pages = self.pages_in(id);
+        let pages = self.pages().count(id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
         if tab.page != page {
@@ -185,7 +185,7 @@ impl<L: DocLoader> Session<L> {
     /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
-        let to = trail::Stop::new(page.min(self.pages_in(id).saturating_sub(1)), within);
+        let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)
@@ -203,7 +203,7 @@ impl<L: DocLoader> Session<L> {
         };
         // Pages may have gone since it was marked.
         let to = trail::Stop {
-            page: to.page.min(self.pages_in(id).saturating_sub(1)),
+            page: to.page.min(self.pages().count(id).saturating_sub(1)),
             ..to
         };
         self.land(id, to)?;

@@ -62,7 +62,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                     .path_of(id)
                     .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?,
                 name: record.name.to_string(),
-                pages: s.pages_in(id),
+                pages: s.pages().count(id),
                 edited: s.lists().is_edited(id),
                 renderer_only: record.renderer_only,
                 positions,

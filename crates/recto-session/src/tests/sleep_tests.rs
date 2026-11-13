@@ -45,7 +45,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     assert!(s.lists().is_asleep(a));
     assert!(s.lists().get(a).is_none(), "out of memory");
     // A look at it, with nothing read.
-    assert_eq!(s.pages_in(a), 4);
+    assert_eq!(s.pages().count(a), 4);
     assert!(s.lists().is_edited(a));
     assert!(s.lists().holds_owner_edits());
     assert_eq!(s.to_record().tabs[0].edits.unwrap().pages, 4);
@@ -101,7 +101,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
         assert!(!s.lists().is_asleep(a), "{route}");
         assert_eq!(s.lists().edits_record(a), twin.lists().edits_record(a), "{route}");
         assert_eq!(s.lists().is_edited(a), twin.lists().is_edited(a), "{route}");
-        assert_eq!(s.pages_in(a), twin.pages_in(a), "{route}");
+        assert_eq!(s.pages().count(a), twin.pages().count(a), "{route}");
     }
     // And what it goes on to write follows on from the journal, so a crash after that replays exactly.
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -245,7 +245,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     };
     s.wake_from_sleep(a, &forged(100));
     s.tap(a).unwrap();
-    assert_eq!(s.pages_in(a), 100, "believed for now");
+    assert_eq!(s.pages().count(a), 100, "believed for now");
     assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
     assert!(s.file_length_is(a, 3, 5), "it says to read the file");
     assert!(!s.warm.contains(a));
@@ -267,7 +267,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
         Some(stamp),
     );
     s.wake_active();
-    assert_eq!(s.pages_in(a), 3);
+    assert_eq!(s.pages().count(a), 3);
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(50, 1, 1)),
         Err(SessionError::Edit(EditError::OutOfRange)),
@@ -414,7 +414,7 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     s.warm.clear_contents();
     s.tap(a).unwrap();
     assert!(s.lists().get(a).is_none(), "it's gone");
-    assert_eq!(s.pages_in(a), 5);
+    assert_eq!(s.pages().count(a), 5);
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
         Some("edits_unreadable")

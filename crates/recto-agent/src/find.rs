@@ -56,7 +56,7 @@ pub struct Basis {
 pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
     Basis {
         tab: id.0,
-        pages: session.pages_in(id),
+        pages: session.pages().count(id),
         stamp: session.tabs().own_stamp(id),
         changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
     }

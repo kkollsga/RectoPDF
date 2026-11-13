@@ -6,6 +6,15 @@ use super::*;
 use crate::record::FindRecord;
 
 impl<L: DocLoader> Session<L> {
+    /// What a tab's pages are called and how many it has now, counting unsaved edits: a look over the tabs, the lists and the warm tabs' labels.
+    pub fn pages(&self) -> pages::Pages<'_> {
+        pages::Pages {
+            tabs: &self.tabs,
+            lists: &self.lists,
+            warm: &self.warm,
+        }
+    }
+
     /// Files opened lately, for File > Open Recent and ⌘K.
     pub fn recent(&self) -> &recent::Recent {
         &self.recent
@@ -164,6 +173,11 @@ impl<L: DocLoader> Session<L> {
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `dormancy_mut().hold`.
     pub fn hold(&mut self, id: TabId) {
         self.dormancy.hold(id);
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `pages().count`.
+    pub fn pages_in(&self, id: TabId) -> u32 {
+        self.pages().count(id)
     }
 }
 

@@ -224,7 +224,7 @@ pub fn page_now<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
 
 /// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
 pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = (!session.tabs().withheld_from_agents(id)).then(|| session.pages_in(id));
+    let pages = (!session.tabs().withheld_from_agents(id)).then(|| session.pages().count(id));
     Event::EditsChanged {
         tab: id,
         pages,

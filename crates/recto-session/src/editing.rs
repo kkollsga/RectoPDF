@@ -73,7 +73,7 @@ impl<L: DocLoader> Session<L> {
         let Before { place, stops } = before;
         // The trail's stops go where their pages went, and a stop whose page went with the edit goes too.
         if let Some(stops) = stops {
-            let pages = self.pages_in(id);
+            let pages = self.pages().count(id);
             let now: HashMap<u32, Option<u32>> = stops
                 .into_iter()
                 .map(|(was, source)| {
@@ -94,7 +94,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.mail.forget_draws(id);
         self.drop_list_if_idle(id);
-        let pages = self.pages_in(id);
+        let pages = self.pages().count(id);
         let found = place.and_then(|(source, page, near)| match self.lists.get(id) {
             Some(edits) => edits.nearest_position(source, page, near),
             None => (source == 0 && page < pages).then_some(page),

@@ -546,7 +546,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
             if session.tabs().withheld_from_agents(tab.id) {
                 return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": place.map(|place| place.zoom), "within_page": null, "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice });
             }
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages().count(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.viewing().find();
@@ -711,7 +711,7 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     let panes: Vec<Value> = session
         .comparison()
-        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tabs().tab(*id).map(|tab| if session.tabs().withheld_from_agents(*id) { json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) } else { json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages_in(*id), "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) })).collect())
+        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tabs().tab(*id).map(|tab| if session.tabs().withheld_from_agents(*id) { json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) } else { json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages().count(*id), "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) })).collect())
         .unwrap_or_default();
     let comparison = session.comparison();
     json!({
@@ -756,7 +756,7 @@ fn read_soon<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loa
 fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f64, by: Author) -> Result<(), AgentError> {
     let position = page
         .checked_sub(1)
-        .filter(|position| *position < session.pages_in(id))
+        .filter(|position| *position < session.pages().count(id))
         .ok_or_else(no_such_page)?;
     // An agent's mark gives way to the person's in the trail. How far down is clamped to the page there, as a link's is.
     session.jump_as(id, position, within, by)?;
@@ -922,7 +922,7 @@ fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let user_edits_undone = session.lists().has_undone_owner_steps(id);
     json!({
         "tab": id.0,
-        "pages": session.pages_in(id),
+        "pages": session.pages().count(id),
         "file_pages": session.tabs().tab(id).map(|t| t.page_count),
         "page": session.tabs().tab(id).map(|t| t.page + 1),
         "edited": edited,
@@ -1148,7 +1148,7 @@ fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
                     .as_u64()
                     .and_then(|page| u32::try_from(page).ok())
                     .and_then(|page| page.checked_sub(1))
-                    .and_then(|position| s.page_label_differs(id, position));
+                    .and_then(|position| s.pages().label_differs(id, position));
                 if let Some(label) = label {
                     hit["untrusted"]["label"] = json!(label);
                 }
@@ -1168,8 +1168,8 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "tab": id.0,
         "sel": format!("#{}", id.0),
         "page": tab.page + 1,
-        "has_label": session.page_label_differs(id, tab.page).is_some(),
-        "pages": session.pages_in(id),
+        "has_label": session.pages().label_differs(id, tab.page).is_some(),
+        "pages": session.pages().count(id),
         "file_pages": tab.page_count,
         "can_go_back": session.tabs().can_go_back_and_forward(id).0,
         "can_go_forward": session.tabs().can_go_back_and_forward(id).1,
@@ -1180,7 +1180,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "problem": tab.problem.map(recto_core::OpenError::message),
         "note": if edited { Some(UNSAVED_NOTE) } else { session.lists().has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
         "file_notice": session.tabs().tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
-        "untrusted": { "name": &*tab.name, "label": session.page_label_differs(id, tab.page) },
+        "untrusted": { "name": &*tab.name, "label": session.pages().label_differs(id, tab.page) },
     })
 }
 
@@ -2288,7 +2288,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(s.pages_in(id), 9);
+        assert_eq!(s.pages().count(id), 9);
         run(
             &mut s,
             Level::Control,
@@ -2299,7 +2299,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(s.pages_in(id), 19);
+        assert_eq!(s.pages().count(id), 19);
         let shown = run(
             &mut s,
             Level::ReadOnly,
@@ -2309,7 +2309,7 @@ mod tests {
         assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["added"], true);
         assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["untrusted"]["added_file"], "b.pdf");
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: "active".into() })).unwrap();
-        assert_eq!(s.pages_in(id), 9);
+        assert_eq!(s.pages().count(id), 9);
         let redone = run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: "active".into() })).unwrap();
         assert_eq!((&redone["pages"], &redone["can_redo"]), (&json!(19), &json!(false)));
     }
@@ -2471,7 +2471,7 @@ mod tests {
             "nothing_to_redo"
         );
         assert!(!s.lists().is_edited(id));
-        assert_eq!(s.pages_in(id), 10);
+        assert_eq!(s.pages().count(id), 10);
     }
 
     /// Failure: a save that can't write pretends it did, so someone believes their edits are on disk; and a save is open to a level that can't edit. Here the file isn't there, so it fails, says nothing was written, and the edits stay. And closing must not lose them without saying.

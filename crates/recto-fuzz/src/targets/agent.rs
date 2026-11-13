@@ -73,7 +73,7 @@ fn run_on_a_session(level: Level, command: &Command) {
     // What a tab is after any command is still something the session can say.
     let _ = session.sidebar();
     if let Some(id) = last.filter(|id| session.tabs().tab(*id).is_some()) {
-        assert!(session.pages_in(id) >= 1, "a tab with no pages");
+        assert!(session.pages().count(id) >= 1, "a tab with no pages");
     }
 }
 

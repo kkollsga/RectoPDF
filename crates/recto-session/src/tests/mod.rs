@@ -166,3 +166,37 @@ impl DocLoader for Labelled {
         })
     }
 }
+
+/// A tab's record with nothing known of it but its number and page count, for a test of a component built without a session.
+fn bare_tab(id: u32, page_count: u32) -> TabRecord {
+    TabRecord {
+        from_sleep: None,
+        touched: 0,
+        id: TabId(id),
+        name: "bare".into(),
+        page: 0,
+        page_count,
+        toc_open: true,
+        problem: None,
+        renderer_only: false,
+        view_rotation: 0,
+        spread: record::Spread::Single,
+        place_dirty: false,
+        contents_verdict: ContentsVerdict::Fine,
+        generated_contents: false,
+        folds: None,
+        file: TabFile {
+            dir: 0,
+            file_name: OsStr::new("bare.pdf").into(),
+            stamp: None,
+            notice: None,
+            encrypted: false,
+            password: false,
+        },
+        reading: TabPlace {
+            place: None,
+            selection: None,
+            trail: None,
+        },
+    }
+}

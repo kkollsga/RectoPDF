@@ -312,13 +312,13 @@ impl<L: DocLoader> Session<L> {
     pub fn sync_targets(&self, leader: TabId, page: u32) -> Vec<(TabId, u32)> {
         self.comparison
             .as_ref()
-            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id)))
+            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages().count(id)))
             .unwrap_or_default()
     }
 
     /// What's said about the panes' lengths, if anything.
     pub fn compare_note(&self) -> Option<String> {
-        self.comparison.as_ref()?.length_note(|id| self.pages_in(id))
+        self.comparison.as_ref()?.length_note(|id| self.pages().count(id))
     }
 }
 

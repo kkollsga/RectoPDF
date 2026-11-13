@@ -168,7 +168,7 @@ fn sequence(data: &[u8]) {
     let mut cost = 0;
     while !take.is_empty() && cost < MAX_COST {
         let by = if take.u8() & 1 == 0 { Author::Owner } else { Author::Agent };
-        let op = read_op(&mut take, session.pages_in(model.id));
+        let op = read_op(&mut take, session.pages().count(model.id));
         // A step can be said once and run many times, so a short input can reach the caps.
         let times = if take.u8() >= 240 { 1 + usize::from(take.u8()) * 4 } else { 1 };
         for _ in 0..times {
@@ -411,9 +411,9 @@ fn identity(pages: u32) -> Vec<PageSlot> {
 
 fn assert_state_holds(session: &Session<NamedLoader>, model: &Model) {
     let Some(tab) = session.tabs().tab(model.id) else { return };
-    assert_eq!(session.pages_in(model.id) as usize, model.slots.len(), "the page count isn't the model's");
+    assert_eq!(session.pages().count(model.id) as usize, model.slots.len(), "the page count isn't the model's");
     assert!(
-        tab.page < session.pages_in(model.id).max(1),
+        tab.page < session.pages().count(model.id).max(1),
         "the reader's place is off the end of the document"
     );
     let edits = session.lists().get(model.id);

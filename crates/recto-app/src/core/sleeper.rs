@@ -406,7 +406,10 @@ impl Inner {
         {
             return;
         }
-        let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.lists().list_mark(id)));
+        let (pages, mark) = self
+            .host
+            .session
+            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }

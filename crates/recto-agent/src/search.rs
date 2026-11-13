@@ -151,7 +151,7 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
     range: Option<(u32, u32)>,
 ) -> Result<Plan, AgentError> {
     {
-        let total = s.pages_in(id);
+        let total = s.pages().count(id);
         let (start, len) = range.unwrap_or((0, total));
         // `5-` runs to the end, which is what a search's `next_page` is for.
         let open_ended = pages.is_some_and(|pages| pages.ends_with('-'));

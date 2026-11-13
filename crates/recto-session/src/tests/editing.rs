@@ -154,7 +154,7 @@ impl DocLoader for RendererOnlyLoader {
 fn a_renderer_only_file_can_be_opened_but_not_edited_or_added() {
     let mut s = Session::new(RendererOnlyLoader);
     let id = s.open(Path::new("/d/damaged.pdf")).unwrap();
-    assert_eq!(s.pages_in(id), 4);
+    assert_eq!(s.pages().count(id), 4);
     assert!(s.tabs().tab(id).unwrap().renderer_only);
     assert_eq!(s.edit_pages(id, |e| e.rotate(0, 1, 1)), Err(SessionError::RendererOnly));
     assert!(!s.lists().is_edited(id));
@@ -196,7 +196,7 @@ fn a_dropped_pdf_that_cant_be_read_changes_nothing() {
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
     assert_eq!(s.insert_pdf(id, 0, Path::new("/d/missing.pdf")), Err(SessionError::Open(OpenError::NotFound)));
     assert!(!s.lists().is_edited(id));
-    assert_eq!(s.pages_in(id), 5);
+    assert_eq!(s.pages().count(id), 5);
 }
 
 /// Failure: the panel's Rotate outside edit mode turns one page, or takes a step a page, so one undo doesn't take it back; or in edit mode it turns every page. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".

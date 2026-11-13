@@ -528,7 +528,7 @@ fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot
         protected: session.tabs().withheld_from_agents(shown.id),
         can_go_back,
         can_go_forward,
-        page_text: session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string()),
+        page_text: session.pages().label(shown.id, page).unwrap_or_else(|| (page + 1).to_string()),
     }
 }
 
@@ -558,7 +558,7 @@ pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
         .collect();
     let comparison = session.comparison().cloned();
     let compare_synced = comparison.as_ref().is_some_and(|comparison| comparison.synced);
-    let pane_pages = panes.iter().map(|id| session.pages_in(*id)).collect();
+    let pane_pages = panes.iter().map(|id| session.pages().count(*id)).collect();
     let model = session.sidebar();
     let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
     let sidebar = sidebar_parts(&model, compared, held);
@@ -890,7 +890,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
     let view_turns = tab.view_rotation % 4;
     if view_turns != 0 {
-        let pages = session.pages_in(id) as usize;
+        let pages = session.pages().count(id) as usize;
         let turns: Arc<[u8]> = (0..pages)
             .map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4)
             .collect();
@@ -918,7 +918,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     let pages = if session.lists().is_asleep(id) {
         tab.page_count
     } else {
-        session.pages_in(id)
+        session.pages().count(id)
     };
     Some(PaneSnapshot {
         id,

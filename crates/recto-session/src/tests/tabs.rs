@@ -160,7 +160,7 @@ fn a_pdf_can_only_be_opened_once() {
     let stamp = file_stamp(&moved).ok();
     let facts = FakeLoader { pages: 5, loads: Cell::new(0) }.load(&moved).unwrap();
     s.insert_pdf_with_facts(other, Author::Owner, 0, &moved, &facts, stamp).unwrap();
-    assert_eq!(s.pages_in(other), 10);
+    assert_eq!(s.pages().count(other), 10);
     assert_eq!(s.tabs().len(), 2);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -182,7 +182,7 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
     assert_ne!(opened, tab, "it's another PDF");
     assert_eq!(s.tabs().path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
     assert!(s.lists().is_edited(tab));
-    assert_eq!(s.pages_in(opened), 6, "nothing of the edits on it");
+    assert_eq!(s.pages().count(opened), 6, "nothing of the edits on it");
     assert!(!s.lists().is_edited(opened));
     // Changed in place under its own name, by a link: that's still the tab.
     let (own, link) = (dir.join("own.pdf"), dir.join("link.pdf"));

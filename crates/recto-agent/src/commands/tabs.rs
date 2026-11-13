@@ -311,7 +311,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         if page.is_some() && !actor.sees_protected() && s.tabs().withheld_from_agents(id) {
             return Some(Err(protected_refusal()));
         }
-        let pages = s.pages_in(id);
+        let pages = s.pages().count(id);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }

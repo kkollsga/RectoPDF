@@ -28,7 +28,7 @@ impl<L: DocLoader> Session<L> {
                 continue;
             }
             toc_open = tab.toc_open;
-            place = self.place_words(tab.id, tab.page);
+            place = self.pages().place_words(tab.id, tab.page);
             if tab.toc_open
                 && let Some(toc) = self.warm.toc(tab.id)
             {

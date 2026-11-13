@@ -136,7 +136,7 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
     assert_eq!(s.saved(a, target, 4, None, Some(keeping)), 0, "nothing had to go");
     assert!(!s.lists().is_edited(a), "it reads as saved");
     assert!(!s.sidebar().edited);
-    assert_eq!(s.pages_in(a), 4);
+    assert_eq!(s.pages().count(a), 4);
     assert_eq!(s.tabs().own_stamp(a), Some(target));
     assert_eq!(s.tabs().tab(a).unwrap().page_count, 4);
     assert_eq!(before, [1, 2, 3, 4], "those were pages of the old file");
@@ -155,7 +155,7 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         "the turn's in the file now, and undoing it is a turn back"
     );
     assert!(s.undo_edit(a));
-    assert_eq!(s.pages_in(a), 5);
+    assert_eq!(s.pages().count(a), 5);
     let back = s.page_source(a, 0).unwrap();
     assert_eq!(
         (back.path.as_path(), back.page, back.added),
@@ -238,7 +238,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     assert_eq!(s.lists().get(a).unwrap().summary().undo, 1);
     assert!(s.undo_edit(a), "the newer step still works");
     assert!(!s.undo_edit(a), "and undo stops rather than undoing wrongly");
-    assert_eq!(s.pages_in(a), 5);
+    assert_eq!(s.pages().count(a), 5);
     assert_eq!(s.page_source(a, 1).unwrap().quarter_turns, 3);
     assert!(s.redo_edit(a));
     assert!(!s.lists().is_edited(a));
@@ -337,7 +337,7 @@ fn a_save_of_something_else_ends_the_history() {
     };
     assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
     assert!(s.lists().get(a).is_none());
-    assert_eq!(s.pages_in(a), 3);
+    assert_eq!(s.pages().count(a), 3);
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
         Some("history_rolled_off")
@@ -406,7 +406,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     );
     assert!(s.clear_history(a, ClearReason::UserAsked));
     assert!(s.lists().is_edited(a), "unsaved work stays");
-    assert_eq!(s.pages_in(a), 4);
+    assert_eq!(s.pages().count(a), 4);
     assert!(!s.lists().get(a).unwrap().can_undo() && !s.lists().get(a).unwrap().can_redo());
     assert_eq!(s.lists().get(a).unwrap().added_sources().len(), 0, "the added file was only history");
     write_journal(&mut s, &mut files);
