@@ -298,12 +298,12 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["settings", "--auto-update", "off"]);
     run.ok(&["qa", "settings", "open"]);
     run.ok(&["qa", "full-screen", "on"]);
-    run.ok(&["qa", "find", "open"]);
-    run.ok(&["qa", "find-query", "ran this"]);
+    run.ok(&["qa", "as-person", "find --open"]);
+    run.ok(&["qa", "as-person", "find \"ran this\""]);
     run.ok(&["qa", "find-draft", "typed but not run"]);
     run.ok(&["qa", "focus", "find"]);
     run.ok(&["qa", "frontmost", "off"]);
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["edit", "mode", "on"]);
     run.ok(&["qa", "view-rotation", "1"]);
     run.settled();
 }
@@ -449,11 +449,11 @@ fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let file = long_document("findable", 30);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "find-type", "findable page 1"]);
     run.settled();
     for _ in 0..3 {
-        run.ok(&["qa", "find-key", "return"]);
+        run.ok(&["qa", "as-person", "find --next --jump"]);
     }
     run.settled();
     let before = run.report();
@@ -485,7 +485,7 @@ fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
         "the hit's still selected"
     );
     // And it goes on from there.
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     assert_eq!(run.report()["app"]["find"]["current_row"], 7);
     run.quit();
@@ -1641,7 +1641,7 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
     let run = Run::on(&state).unwrap();
     run.settled();
     // By the app's own route: a drop, the menu, a launch argument.
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     run.settled();
     let list = run.report()["session"]["edits_full"]
         .as_object()
@@ -1707,7 +1707,7 @@ fn a_pdf_can_only_be_opened_once_by_any_route() {
     assert_eq!(again["tab"], first["tab"]);
     assert_eq!(again["already_open"], true, "{again}");
     // The app's own route: a drop, the menu, a launch argument.
-    run.ok(&["qa", "open-file", link.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", link.to_str().unwrap())]);
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 1);
     let other = run.ok(&["open", copy.to_str().unwrap()]);
@@ -1809,11 +1809,11 @@ fn history_is_only_taken_up_after_a_good_read() {
         std::thread::sleep(Duration::from_millis(20));
     }
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.to_str().unwrap())]);
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 0, "it couldn't be read");
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.to_str().unwrap())]);
     run.settled();
     run.ok(&["qa", "as-person", "page delete 3"]);
     let list = run.report()["session"]["edits_full"]
@@ -1904,7 +1904,7 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
     assert_eq!(run.ok(&["session", "check"])["safe"], true);
     // A file being opened by the app's own route, held back here.
     run.ok(&["qa", "hold-reads", "on"]);
-    run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", other.0.to_str().unwrap())]);
     let began = Instant::now();
     let check = loop {
         let check = run.ok(&["session", "check"]);
@@ -2477,7 +2477,7 @@ fn protected_tab_asks_again(second_launch: &[(&str, &std::ffi::OsStr)]) {
     let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
     std::fs::write(&locked, common::locked_with("open sesame", 1)).unwrap();
-    run.ok(&["qa", "open-file", locked.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.to_str().unwrap())]);
     let until = |run: &Run, holds: &dyn Fn(&Value) -> bool| {
         for _ in 0..500 {
             let state = run.report();

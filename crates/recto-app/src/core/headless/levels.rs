@@ -18,10 +18,7 @@ fn levels_and_ownership_hold_after_a_restart() {
     app.open(&b);
     app.agent(Level::Control, r#"{"cmd":"page_rotate","pages":"1","degrees":90}"#)
         .expect("the agent's rotation");
-    app.core()
-        .qa_session_verb("find_query", "something private")
-        .expect("a QA verb")
-        .expect("Find's query");
+    app.person(r#"{"cmd":"find","query":"something private"}"#);
     app.settle();
     let (_, disk) = app.quit();
     let app = disk.start();

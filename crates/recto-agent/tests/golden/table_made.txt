@@ -562,135 +562,119 @@ row 140 qa sidebar-width: 4f4501ea9aa7aa2e 458 bytes
 help qa sidebar-width: 6229aa251b205f00 217 bytes
 usage qa sidebar-width: 842752d4d3c9dce6 30 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 141 qa find: 392496820e7fc5d6 578 bytes
-help qa find: 28a0f49c9b7b46d1 324 bytes
-usage qa find: b4e7c1f3e0abe3c0 21 bytes
-by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 142 qa find-query: eb6f00f66609d0d2 558 bytes
-help qa find-query: fe8da7f8e8b8ad89 320 bytes
-usage qa find-query: bea77fb88aae278d 27 bytes
-by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 143 qa find-draft: 68174e64a7f6ca8a 495 bytes
+row 141 qa find-draft: 68174e64a7f6ca8a 495 bytes
 help qa find-draft: e7dc97a86d1b9d7e 257 bytes
 usage qa find-draft: 71294e718e16c4be 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 144 qa find-type: 7f030746c55eb0f9 563 bytes
+row 142 qa find-type: 7f030746c55eb0f9 563 bytes
 help qa find-type: 7ea8f27338711b9a 326 bytes
 usage qa find-type: d0e07bbe30090301 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 145 qa find-key: 2ddcc475c607df14 585 bytes
-help qa find-key: 1646fbfbc0883f53 309 bytes
+row 143 qa find-key: 24d9853e5bc05c3c 606 bytes
+help qa find-key: 6198d901e3feb31a 356 bytes
 usage qa find-key: dcf1c1329e41d2fa 25 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 146 qa find-click: 0005505c90537ff3 542 bytes
+row 144 qa find-click: 0005505c90537ff3 542 bytes
 help qa find-click: ee7f35a34d39135a 304 bytes
 usage qa find-click: e280c7de8afa2b31 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 147 qa palette-type: 2edec0503921220f 560 bytes
+row 145 qa palette-type: 2edec0503921220f 560 bytes
 help qa palette-type: 50ed7541e97e055e 320 bytes
 usage qa palette-type: b2af8b02f2126489 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 148 qa palette-key: 079e51a9b7c0edb4 592 bytes
+row 146 qa palette-key: 079e51a9b7c0edb4 592 bytes
 help qa palette-key: b5d2abc1bc6ba13d 315 bytes
 usage qa palette-key: 8f290537a4a01642 28 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 149 qa edit-mode: cd29a47ae3e6503b 532 bytes
-help qa edit-mode: 37470c003e3f7367 278 bytes
-usage qa edit-mode: 503fda1e2bad1faf 26 bytes
-by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 150 qa view-rotation: 8d16c331a50720c0 581 bytes
+row 147 qa view-rotation: 8d16c331a50720c0 581 bytes
 help qa view-rotation: 426f17972cdce002 316 bytes
 usage qa view-rotation: 1293e4a9ed5e1131 30 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 151 qa sheet-answer: bca7c8a9bde2bb31 831 bytes
+row 148 qa sheet-answer: bca7c8a9bde2bb31 831 bytes
 help qa sheet-answer: db02016c88e69803 548 bytes
 usage qa sheet-answer: fee1e148abcf73d3 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 152 qa save-as: 079109a67285b405 539 bytes
-help qa save-as: be7d56d04df5cef1 303 bytes
+row 149 qa save-as: 5b9979316779f73d 664 bytes
+help qa save-as: 2fb4a4a7fd8bc6f7 428 bytes
 usage qa save-as: a6137bf88a546c1b 24 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 153 qa save-from: 9fec7421095fe860 780 bytes
+row 150 qa save-from: 9fec7421095fe860 780 bytes
 help qa save-from: 35413c4b4dff2e56 542 bytes
 usage qa save-from: 42b27784451f5ebb 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 154 qa as-person: e74cb8199eab7b0f 968 bytes
+row 151 qa as-person: e74cb8199eab7b0f 968 bytes
 help qa as-person: bcdadc071b570220 724 bytes
 usage qa as-person: 84bb2b7b927ad70d 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 155 qa owner-edit: d61f77cb32cdb5aa 655 bytes
+row 152 qa owner-edit: d61f77cb32cdb5aa 655 bytes
 help qa owner-edit: ff827931065d1f4f 417 bytes
 usage qa owner-edit: b266e81b75088795 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 156 qa note-input: c46c4f0fa71a7fce 470 bytes
+row 153 qa note-input: c46c4f0fa71a7fce 470 bytes
 help qa note-input: 6c28a2caa6082b03 221 bytes
 usage qa note-input: 6e47f04e7d4a96a2 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 157 qa open-file: 298ca908fa06a4ba 501 bytes
-help qa open-file: 0bb692ea3432a2e4 264 bytes
-usage qa open-file: 870286d3c8129136 26 bytes
-by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 158 qa hold-reads: 11aae1d51357cceb 552 bytes
+row 154 qa hold-reads: 11aae1d51357cceb 552 bytes
 help qa hold-reads: a7521f26311a07c0 297 bytes
 usage qa hold-reads: 48b237a8f64b7bbe 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 159 qa hand-off-quit: b75a4d5532e85cc5 516 bytes
+row 155 qa hand-off-quit: b75a4d5532e85cc5 516 bytes
 help qa hand-off-quit: f68854695ba0ce0d 265 bytes
 usage qa hand-off-quit: 342db983c123a414 30 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 160 qa sheet: 969b7413b3a05bda 493 bytes
+row 156 qa sheet: 969b7413b3a05bda 493 bytes
 help qa sheet: fd4dc30ce8a520d7 238 bytes
 usage qa sheet: 68d910c4f7867ea8 22 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 161 qa update-tick: a67d46774f8e820a 496 bytes
+row 157 qa update-tick: a67d46774f8e820a 496 bytes
 help qa update-tick: ddeeea596792d895 246 bytes
 usage qa update-tick: 6de28859e3b8b9aa 28 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 162 qa update-clock: 9b50f619ed27a967 588 bytes
+row 158 qa update-clock: 9b50f619ed27a967 588 bytes
 help qa update-clock: ea02070cd8cf9988 348 bytes
 usage qa update-clock: 9b35cd92a52c3e4d 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 163 qa settings: 52c24c73b5f5efbf 809 bytes
+row 159 qa settings: 52c24c73b5f5efbf 809 bytes
 help qa settings: 1d981a46eae0c43f 572 bytes
 usage qa settings: 3e99eca2fa4bda2a 25 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 164 qa shot-settings: f5f5cb3219a1fc24 534 bytes
+row 160 qa shot-settings: f5f5cb3219a1fc24 534 bytes
 help qa shot-settings: 6bbc56611c1f1300 292 bytes
 usage qa shot-settings: 441fe3b27319bd84 34 bytes
 by tag qa_read: 0f4d042b7914a736 8 bytes
-row 165 qa shot-menus: 87e0c7227942e248 601 bytes
+row 161 qa shot-menus: 87e0c7227942e248 601 bytes
 help qa shot-menus: b0c68f95d43ea58f 362 bytes
 usage qa shot-menus: 5f1291b1b0874f67 31 bytes
 by tag qa_read: 0f4d042b7914a736 8 bytes
-row 166 qa shot-menu: 3964f7973126470a 629 bytes
+row 162 qa shot-menu: 3964f7973126470a 629 bytes
 help qa shot-menu: e501bfa9cc79d1d6 391 bytes
 usage qa shot-menu: b689d1daa2d23dfa 30 bytes
 by tag qa_read: 0f4d042b7914a736 8 bytes
-row 167 qa quit: cc0acb6e592b3b72 475 bytes
+row 163 qa quit: cc0acb6e592b3b72 475 bytes
 help qa quit: 144eda74684587bd 232 bytes
 usage qa quit: 72855d59303e9bb4 21 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 168 qa handoff: deefff2896dd1d3b 503 bytes
+row 164 qa handoff: deefff2896dd1d3b 503 bytes
 help qa handoff: 08876feb866aec33 257 bytes
 usage qa handoff: 1aa1ee9b570b45f5 24 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 169 qa dormant-after: dd4c873fa5d042f4 478 bytes
+row 165 qa dormant-after: dd4c873fa5d042f4 478 bytes
 help qa dormant-after: ab834dfc2e16c9ee 236 bytes
 usage qa dormant-after: b63a367b6088f15d 30 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 170 qa hold-drawing: 0d9aeb34714020da 510 bytes
+row 166 qa hold-drawing: 0d9aeb34714020da 510 bytes
 help qa hold-drawing: eeef21d28fc17e8e 269 bytes
 usage qa hold-drawing: 00ad4658f65e29fd 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 171 qa sleep-write-gap: 21edbb69e525d989 546 bytes
+row 167 qa sleep-write-gap: 21edbb69e525d989 546 bytes
 help qa sleep-write-gap: 4a47cd6c5d0d0d93 302 bytes
 usage qa sleep-write-gap: bbaf8b21fcb3f1b3 32 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 172 qa live-budget: 7af4e63c8341ce1a 455 bytes
+row 168 qa live-budget: 7af4e63c8341ce1a 455 bytes
 help qa live-budget: 1162ecfc9f49c678 215 bytes
 usage qa live-budget: 0614fd0f488de24b 28 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 173 qa memory-pressure: c725b34844c67810 754 bytes
+row 169 qa memory-pressure: c725b34844c67810 754 bytes
 help qa memory-pressure: 08d7de5e4406aa79 510 bytes
 usage qa memory-pressure: 913aa01052b3dabe 32 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
@@ -752,7 +736,7 @@ family update: 62ff714e1bcf66d6 626 bytes
 family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
-family qa: e6a1e80966684851 13031 bytes
-help --json: 7b6940dd14079d90 128306 bytes
+family qa: b77b6ff269bfbc6a 12682 bytes
+help --json: 7dcd5caf013f7f06 126908 bytes
 SKILL.md: a300f313582dd513 24057 bytes
 REFERENCE.md: 9f01a56c3d959cf3 77953 bytes

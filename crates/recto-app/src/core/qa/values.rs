@@ -111,7 +111,7 @@ pub(super) fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentErro
         "palette_type" => value.chars().count() <= 256,
         "palette_key" => one_of(&["up", "down", "return", "escape"]),
         "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
-        "find_key" => one_of(&["return", "shift_return", "escape"]),
+        "find_key" => one_of(&["escape"]),
         "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| {
             pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
                 && crate::menus::context_menu(None, Some(false))

@@ -4,7 +4,8 @@
 //! [`tests::swift_answers_exactly_the_tables_verbs`] reads the Swift switches and fails on any verb they answer that isn't here, or here that they
 //! don't, or in two areas.
 //!
-//! The guide's §2.9: a test verb is for what only the host has. A verb that does what a command does is a stand-in, and goes.
+//! The guide's §2.9: a test verb is for what only the host has. A verb that would do what a command does has no kind here: a test sends the command,
+//! as an agent at its level, or as the person through `as_person`.
 
 use crate::table::Spec;
 
@@ -17,8 +18,6 @@ pub enum QaKind {
     HostInput,
     /// A test's lever on the machine around the app: the system's settings, a stall, a slow seam, a clock, what a record holds that no action makes.
     Condition,
-    /// Does what a command does, by another path. The guide's §2.9 says the command is what a test sends; each of these is on its way out.
-    StandIn,
     /// A `recto` command run as the person at the window, for what only a person may do: the owner's edits, the window's Find, an action that doesn't
     /// wait for its read. One verb, `as_person`, at Full, on a test's own files.
     Person,

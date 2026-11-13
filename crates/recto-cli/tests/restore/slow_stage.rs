@@ -55,11 +55,11 @@ pub(crate) fn make_rich_lean(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["qa", "sidebar-width", "318"]);
     run.ok(&["qa", "panel", "toggle"]);
     run.ok(&["qa", "full-screen", "on"]);
-    run.ok(&["qa", "find", "open"]);
-    run.ok(&["qa", "find-query", "ran this"]);
+    run.ok(&["qa", "as-person", "find --open"]);
+    run.ok(&["qa", "as-person", "find \"ran this\""]);
     run.ok(&["qa", "find-draft", "typed but not run"]);
     run.ok(&["qa", "focus", "find"]);
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["edit", "mode", "on"]);
     run.ok(&["qa", "view-rotation", "1"]);
     run.settled();
 }

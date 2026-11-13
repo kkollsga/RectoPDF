@@ -3,10 +3,8 @@
 //! here and never by the host.
 
 use crate::core::{Inner, save_from_signature_check, saving};
-use crate::lock;
 use crate::queue::CoreCall;
 use recto_agent::AgentError;
-use recto_session::TabId;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -17,36 +15,12 @@ impl Inner {
         let usage = |words: String| AgentError::new("usage", words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {
-            // What ⌘F and Escape do.
-            "find" => {
-                let (open, close) = (value == "open", value != "open");
-                let find = recto_agent::commands::finding::Find {
-                    open,
-                    close,
-                    ..Default::default()
-                };
-                self.core.push(CoreCall::Run(crate::queue::PersonCommand::input(find.into())));
-                self.core.flush(Duration::from_secs(5));
-                Ok(())
-            }
-            "find_query" => session.with_session(|session| {
-                let find = session.find().clone();
-                session.set_find(find.open, value, &find.draft);
-                Ok(())
-            }),
+            // What a record brings back that no one action makes: text in Find's field that wasn't found for.
             "find_draft" => session.with_session(|session| {
                 let find = session.find().clone();
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            // What going in does, and what Done does: the person's `edit mode on|off`.
-            "edit_mode" => {
-                if let Some(inner) = self.saver.inner() {
-                    inner.edit_mode_for_person(value == "on");
-                }
-                self.core.flush(Duration::from_secs(5));
-                Ok(())
-            }
             "view_rotation" => match value.parse::<u8>() {
                 Ok(turns) if turns < 4 => session.with_session(|session| {
                     if let Some(id) = session.active() {
@@ -57,17 +31,6 @@ impl Inner {
                 _ => Err(usage("It's a number of quarter turns, from 0 to 3.".to_string())),
             },
             "save_from" => self.qa_save_from(value),
-            // What Save As's sheet does when it's answered with this path: the same call.
-            "save_as" => match self.saver.inner() {
-                Some(inner) if value.starts_with('/') => match lock(&inner.published).reader.shown_tab {
-                    0 => Err(AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND)),
-                    tab => {
-                        saving::start_save(&inner, TabId(tab), Some(PathBuf::from(value)), false);
-                        Ok(())
-                    }
-                },
-                _ => Err(usage("It's the whole path of a new file.".to_string())),
-            },
             "dormant_after" => match value.parse::<u32>() {
                 Ok(seconds) => {
                     self.sleeper.set_after(seconds);

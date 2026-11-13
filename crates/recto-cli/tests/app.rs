@@ -2530,7 +2530,7 @@ fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
     // A tab opened with the person's password: theirs to see in ⌘K, and nothing of it for an agent.
     run.state.set_level(Level::Full);
     let locked = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", locked.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| {
@@ -2603,7 +2603,7 @@ fn files_holding(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
 fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     let asked = sheet_of(&run, "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("locked.pdf"), "{asked}");
     type_password(&run, "not it");
@@ -2678,7 +2678,7 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
 fn a_protected_file_moved_while_open_keeps_its_password() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
@@ -2704,23 +2704,14 @@ fn a_protected_file_moved_while_open_keeps_its_password() {
     std::fs::rename(&moved, &file.0).ok();
 }
 
-/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it.
+/// Failure: `qa password` takes the password on the command line, where other processes see it. (That it types only into a test's own sheet, review O6, is
+/// `recto-app`'s `qa_password_types_only_into_a_tests_own_sheet`, in process: a person's open of a file outside the test's folders, which `qa as-person`
+/// won't do.)
 #[test]
 fn qa_password_is_only_for_a_tests_own_file() {
     let Some(run) = Run::start() else { return };
-    let outside = recto_testpdf::TempDir::new_in(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), "not-a-test-folder-");
-    std::fs::create_dir_all(&outside).unwrap();
-    let file = outside.join("locked.pdf");
-    std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
-    sheet_of(&run, "password");
-    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], "open sesame");
-    assert_ne!(code, 0, "{reply}");
-    assert!(reply["error"]["message"].as_str().unwrap().contains("test's own file"), "{reply}");
-    assert_eq!(run.report()["session"]["tabs"].as_array().map_or(0, Vec::len), 0, "nothing opened");
     let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
     assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
-    std::fs::remove_dir_all(&outside).ok();
 }
 
 /// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
@@ -2800,7 +2791,7 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
         "the tabs and the bottom bar stay: {}",
         found["app"]["contents"]
     );
-    let stepped = run.ok(&["qa", "find-key", "return"]);
+    let stepped = run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let stepped = run.report().get("app").cloned().unwrap_or(stepped);
     assert_eq!(
@@ -2861,7 +2852,7 @@ fn find_goes_by_the_pane_being_read() {
     assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
     run.ok(&["qa", "find-type", "apple"]);
     run.settled();
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let state = run.report();
     assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
@@ -2883,7 +2874,7 @@ fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
         "every page drawn a quarter turn: {turns:?}"
     );
     assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["edit", "mode", "on"]);
     run.settled();
     let panel = run.report()["app"]["panel"].clone();
     assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
@@ -2909,7 +2900,7 @@ fn find_never_types_over_what_is_being_typed() {
     let file = numbered(300);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "focus", "find"]);
     for typed in ["w", "wo", "wor", "word"] {
         let state = run.ok(&["qa", "find-type", typed]);
@@ -2936,7 +2927,7 @@ fn find_shows_the_sessions_draft_until_typing_starts() {
     let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "focus", "find"]);
     run.ok(&["qa", "find-draft", "set while focused"]);
     let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
@@ -3622,7 +3613,7 @@ fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
         "⌘G only steps, so the way forward stays: {}",
         stepped["app"]["place"]
     );
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let returned = run.report();
     assert_eq!(
@@ -3660,7 +3651,7 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
 fn find_in_a_protected_document_works_for_the_person_and_never_for_an_agent() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");

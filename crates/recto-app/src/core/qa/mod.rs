@@ -412,6 +412,20 @@ impl QaBridge {
             "quit" => return self.ask(verb, value),
             "handoff" => return self.handoff(),
             // A person's command, as the window sends it, for what only a person may do. Checked there: its level is its row's, Full.
+            // What Save As's sheet sends when it's answered with this path, the window's own answer: the system's sheet can't be typed into.
+            "save_as" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                if !value.starts_with('/') {
+                    return Err(bad("It's the whole path of a new file."));
+                }
+                let tab = lock(&inner.published).reader.shown_tab;
+                if tab == 0 {
+                    return Err(AgentError::new("no_active_tab", "No tab is open.", exit::NOT_FOUND));
+                }
+                inner.act(crate::core::controls::UiAction::SaveAs { tab, path: value.to_owned() });
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
+            }
             "as_person" | "owner_edit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
                 let words = if verb == "owner_edit" {
@@ -451,10 +465,6 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "open_file" => {
-                // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
-                return self.ask(verb, value);
-            }
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
             | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
             | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise"
@@ -469,15 +479,7 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.tools.prompts.passwords)
-                    .showing()
-                    .map(|ask| ask.path.clone())
-                    .ok_or_else(|| bad("No password sheet is open."))?;
-                if !is_a_tests_file(&path, inner.serving.paths.as_ref().map(|paths| paths.root.as_path())) {
-                    return Err(bad(
-                        "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
-                    ));
-                }
+                password_sheet_is_a_tests(&inner)?;
             }
             "entry_points" | "services" => return self.ask(verb, value),
             // A paste of one type from another app, as the system asks for it: a promised type is made now, and what's on the clipboard comes back as `qa copied` says it.
@@ -709,6 +711,21 @@ impl QaBridge {
             "page": after["page"],
         }))
     }
+}
+
+/// **`qa password` types only into a test's own sheet:** the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so
+/// it can't type into one for the person's own (review O6).
+pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError> {
+    let path = lock(&inner.tools.prompts.passwords)
+        .showing()
+        .map(|ask| ask.path.clone())
+        .ok_or_else(|| bad("No password sheet is open."))?;
+    if !is_a_tests_file(&path, inner.serving.paths.as_ref().map(|paths| paths.root.as_path())) {
+        return Err(bad(
+            "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
+        ));
+    }
+    Ok(())
 }
 
 fn stuck() -> AgentError {

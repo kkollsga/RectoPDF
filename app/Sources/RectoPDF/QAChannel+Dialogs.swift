@@ -17,9 +17,6 @@ extension QAChannel {
             guard let controller, !controller.copyNotice.isHidden, !controller.copyNotice.button.isHidden else { return fail(id, "No notice with a button is showing.") }
             controller.copyNotice.button.performClick(nil)
             return true
-        case "open_file":
-            _ = delegate.core.act(action: .open(path: value))
-            return true
         case "sheet":
             delegate.core.sheetChanged(open: value == "open")
             return true
