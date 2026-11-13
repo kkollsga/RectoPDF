@@ -53,6 +53,11 @@ pub fn page_effects_bytes(bytes: std::sync::Arc<[u8]>, page: u32) -> Option<Page
 }
 
 fn effects_in(reader: &IndexedReader, page: u32) -> Option<PageEffects> {
+    effects_within(reader, page, MAX_DRAWING_BYTES)
+}
+
+/// [`effects_in`] with the limit on drawing read given, so a test can reach it with a small one.
+fn effects_within(reader: &IndexedReader, page: u32, drawing_bytes: u64) -> Option<PageEffects> {
     let map = reader.page_map().ok()?;
     let entry = map.get(page as usize)?;
     let owner = entry.inherited().resources().unwrap_or(entry.id());
@@ -85,7 +90,7 @@ fn effects_in(reader: &IndexedReader, page: u32) -> Option<PageEffects> {
             walk.resources(next)?;
         }
     }
-    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(reader, &drawings);
+    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(reader, &drawings, drawing_bytes);
     Some(walk.effects)
 }
 
@@ -105,9 +110,9 @@ fn page_contents(reader: &IndexedReader, page: ObjectId) -> Vec<ObjectId> {
 }
 
 /// Whether any of these streams has a filter named DCT, which is what an image written in place has to have. A string saying the same only costs a page's JPEGs their bytes. One that can't be read through counts.
-fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId]) -> bool {
+fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId], drawing_bytes: u64) -> bool {
     let deadline = Instant::now() + MAX_DRAWING_TIME;
-    let mut budget = MAX_DRAWING_BYTES;
+    let mut budget = drawing_bytes;
     streams.iter().any(|id| mentions_dct(reader, *id, deadline, &mut budget).unwrap_or(true))
 }
 
@@ -749,20 +754,21 @@ mod tests {
         );
     }
 
-    /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts.
+    /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts as writing a JPEG. Shown at a limit of 1 MiB with 2 MiB of drawing, which reads in a few milliseconds, so it's the limit that ends it and not the time.
     #[test]
     fn a_bomb_of_drawing_ends_the_look() {
+        const LIMIT: u64 = 1024 * 1024;
         let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-        let zeros = vec![b' '; 1024 * 1024];
-        for _ in 0..(MAX_DRAWING_BYTES / (1024 * 1024) + 2) {
-            std::io::Write::write_all(&mut packed, &zeros).unwrap();
-        }
+        std::io::Write::write_all(&mut packed, &vec![b' '; 2 * LIMIT as usize]).unwrap();
         let form = first_extra_object(1);
         let bomb = Object::Stream {
             dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(),
             data: packed.finish().unwrap(),
         };
-        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![bomb]).jpeg_read_differently);
+        let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/XObject << /F {form} 0 R >>"), vec![bomb]));
+        let reader = open_reader(&file.0).unwrap();
+        assert!(effects_within(&reader, 0, LIMIT).unwrap().jpeg_read_differently, "past the limit");
+        assert!(!effects_within(&reader, 0, 4 * LIMIT).unwrap().jpeg_read_differently, "the same drawing within a limit is read through");
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.
