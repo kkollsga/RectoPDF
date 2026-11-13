@@ -42,7 +42,7 @@ pub use place::place_stamp;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
-pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepView, WakeReport, WakeStock};
+pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepSource, SleepView, WakeReport, WakeStock};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 

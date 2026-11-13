@@ -606,6 +606,7 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         1,
         SleepView {
             version: Some(7),
+            handed_back: false,
             usual: Some(letter()),
             sizes: Vec::new(),
             pictures: vec![shot],

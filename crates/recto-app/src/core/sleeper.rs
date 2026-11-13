@@ -499,6 +499,7 @@ impl Inner {
             let material = crate::sleep_writer::allowed_material(&mut facts, material);
             with_material(facts.sleep, material)
         });
+        let handed_back = back.is_some();
         let sleep = back.or(read).or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)
@@ -539,6 +540,7 @@ impl Inner {
                 usual: sleep.usual.map(page_box),
                 sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(),
                 pictures,
+                handed_back,
             },
         );
     }

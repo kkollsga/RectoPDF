@@ -852,7 +852,9 @@ SleepShot.pub page: u32
 SleepShot.pub paper: PaperKind
 SleepShot.pub scale: f32
 SleepShot.pub surface: PixelSurface
+SleepSource (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 SleepView (pub struct, derives Debug, Default)
+SleepView.pub handed_back: bool
 SleepView.pub pictures: Vec<SleepShot>
 SleepView.pub sizes: Vec<(u32, PageBox)>
 SleepView.pub usual: Option<PageBox>
@@ -890,7 +892,7 @@ WakeReport (pub struct, derives Clone, Copy, Debug, Default)
 WakeReport.pub bare_with_picture: u16
 WakeReport.pub blank_frames: u32
 WakeReport.pub first_frame_us: Option<u64>
-WakeReport.pub from_sleep: bool
+WakeReport.pub from_sleep: Option<SleepSource>
 WakeReport.pub had: WakeStock
 WakeReport.pub sharp_us: Option<u64>
 WakeReport.pub sleep_in_view: u16

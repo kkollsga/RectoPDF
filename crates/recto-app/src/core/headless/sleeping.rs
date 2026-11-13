@@ -280,6 +280,11 @@ fn a_tab_asleep_whose_pages_change_wakes_with_no_picture_from_before() {
     drop(app.quit());
 }
 
+/// Whether a wake's first frame came from pictures it was given: a sleep file read from disk, or what the tab left with, handed back inside its cool-down.
+fn from_a_picture(wake: &serde_json::Value) -> bool {
+    wake["had"] == "sleep_file" || wake["had"] == "handed_back"
+}
+
 /// Shows `tab` from asleep with drawing held, as the first frame has it, and says how that wake went; then lets it draw and settle.
 fn woken_at_once(app: &crate::testkit::headless::HeadlessApp, tab: u64, view: &mut recto_reader::Viewport) -> serde_json::Value {
     let engine = &app.core().engine;
@@ -455,7 +460,7 @@ fn a_tab_left_again_at_another_page_within_a_minute_wakes_with_a_picture_of_that
         }
         let wake = woken_at_once(&app, a, &mut view);
         assert_eq!(wake["tab"], a, "page {page}: {wake}");
-        assert_eq!(wake["had"], "sleep_file", "page {page}: woken bare, its sleep file of another page: {wake}");
+        assert!(from_a_picture(&wake), "page {page}: woken bare, its sleep file of another page: {wake}");
         assert!(wake["sleep_in_view"].as_u64().unwrap() >= 1, "page {page}: {wake}");
         assert!(
             wake["first_frame_us"].is_u64(),
@@ -656,6 +661,50 @@ fn a_quit_writes_the_tab_on_screens_sleep_file_before_what_waits() {
     drop(app.quit());
 }
 
+/// Failure (the cool-down's review, 2026-11-13: the commonest close now, untested): a tab closed while its sleep file waits in its cool-down had its file
+/// written at the wait, after the close, or its pictures held for nothing till then. Closed inside the wait: nothing of it is held, and past the wait no file of
+/// it is on disk and nothing was handed back.
+#[test]
+fn a_tab_closed_while_it_waits_in_its_cool_down_leaves_nothing() {
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let (app, a, mut view) = a_pushed_out_and_waiting(Disk::new(), wait);
+    let name = sleep_file_of(&app, a);
+    full(&app, &["close", "--tab", &format!("#{a}")]);
+    host_turns(&app, &mut view, true);
+    // The close's retirement, carried out by the saver's next write.
+    app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
+    let leaving = app.record_json()["sleep"]["leaving"].clone();
+    assert_eq!(leaving["queued"], 0, "{leaving}");
+    assert_eq!(leaving["queued_bytes"], 0, "held for a closed tab: {leaving}");
+    assert_eq!(leaving["retired"], 1, "{leaving}");
+    app.advance(wait + 1);
+    app.wait_until("the writer gone", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    assert!(!sleep_files_on_disk(&app).contains(&name), "a closed tab's sleep file was written at its wait");
+    assert_eq!(app.record_json()["sleep"]["leaving"]["handed_back"], 0);
+    drop(app.quit());
+}
+
+/// Failure (the cool-down's review, 2026-11-13): going to the background and memory pressure are meant to hurry what waits, as no one may come back for it,
+/// and nothing tested either: deleting the hurry from either left the files waiting their whole cool-down. With a tab waiting and the clock standing still:
+/// going to the background has its file written; and, for a second app, memory pressure does.
+#[test]
+fn going_to_the_background_and_memory_pressure_write_what_waits_now() {
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let (app, a, _view) = a_pushed_out_and_waiting(Disk::new(), wait);
+    app.core().frontmost_changed(true, true);
+    app.core().frontmost_changed(false, false);
+    app.wait_until("written on going to the background, the clock standing still", || {
+        sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
+    });
+    drop(app.quit());
+    let (app, a, _view) = a_pushed_out_and_waiting(Disk::new(), wait);
+    app.core().qa_session_verb("memory_pressure", "warning").expect("a QA verb").expect("pressure");
+    app.wait_until("written on memory pressure, the clock standing still", || {
+        sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
+    });
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
@@ -796,7 +845,7 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
         let wake = woken_at_once(&app, id, &mut view);
         if wake == before || wake["tab"] != id {
             warm += 1;
-        } else if wake["had"] == "sleep_file" {
+        } else if from_a_picture(&wake) {
             picture += 1;
         } else {
             bare += 1;
@@ -904,7 +953,7 @@ fn a_tab_shown_again_inside_its_cool_down_wakes_from_memory_and_nothing_is_writt
     app.settle();
     let wake = woken_at_once(&app, a, &mut view);
     assert_eq!(wake["tab"], a, "{wake}");
-    assert_eq!(wake["had"], "sleep_file", "from what it was copied with: {wake}");
+    assert_eq!(wake["had"], "handed_back", "from what it was copied with, said as a wake from memory: {wake}");
     assert!(wake["first_frame_us"].is_u64(), "the first frame, drawing held, isn't covered: {wake}");
     let sleep = app.record_json()["sleep"].clone();
     assert_eq!(sleep["leaving"]["handed_back"], 1, "{sleep}");
@@ -947,7 +996,7 @@ fn a_tab_whose_file_changed_inside_its_cool_down_is_never_shown_the_old_picture(
     std::fs::copy(&other, &path).expect("written over");
     let wake = woken_at_once(&app, a, &mut view);
     assert_eq!(wake["tab"], a, "{wake}");
-    assert_ne!(wake["had"], "sleep_file", "the old version's picture: {wake}");
+    assert!(!from_a_picture(&wake), "the old version's picture: {wake}");
     drop(app.quit());
 }
 
@@ -1068,7 +1117,7 @@ fn a_tab_shown_inside_its_cool_down_wakes_from_what_it_left_with_not_an_older_fi
     app.advance(wait / 2);
     let wake = woken_at_once(&app, a, &mut view);
     assert_eq!(wake["tab"], a, "{wake}");
-    assert_eq!(wake["had"], "sleep_file", "{wake}");
+    assert_eq!(wake["had"], "handed_back", "{wake}");
     assert!(
         wake["sleep_in_view"].as_u64().unwrap() >= 1,
         "a picture of where it was the time before: {wake}"
