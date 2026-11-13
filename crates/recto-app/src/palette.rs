@@ -265,6 +265,7 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             agent_icon: agent_icon.map(str::to_string),
             zoom: zoom.map(str::to_string),
             layout: layout.map(str::to_string),
+            tab: None,
         })
     };
     Some(match id {

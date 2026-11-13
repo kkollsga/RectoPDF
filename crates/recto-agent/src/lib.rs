@@ -1804,6 +1804,7 @@ mod tests {
                 agent_icon: None,
                 zoom: None,
                 layout: None,
+                tab: None,
             }),
             Command::from(crate::commands::qa::QaRead {
                 verb: "state".into(),
@@ -1906,7 +1907,8 @@ mod tests {
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::ReadOnly)
@@ -1917,7 +1919,8 @@ mod tests {
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::Control)
@@ -1928,7 +1931,8 @@ mod tests {
                 sidebar: Some("off".into()),
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::Control)

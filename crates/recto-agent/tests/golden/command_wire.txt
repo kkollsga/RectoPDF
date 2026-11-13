@@ -211,35 +211,35 @@
 {"cmd":"Budget"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view"}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","paper":"warm","sidebar":"off","agent_icon":"off","zoom":"fit","layout":"two_up"}
-    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up") }
+    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up"), tab: None }
 {"cmd":"view","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","paper":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","paper":null}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","sidebar":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","sidebar":null}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","agent_icon":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","agent_icon":null}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","zoom":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","zoom":null}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","layout":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","layout":null}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 ["view"]
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 ["view","warm","off","off","fit","two_up"]
-    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up") }
+    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up"), tab: None }
 {"cmd":"View"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"palette"}
@@ -1485,9 +1485,9 @@ null
 {"cmd":"goto"}
     ok goto Goto { tab: "active", page: None, label: None }
 {"cmd":"view","zoom":"fit"}
-    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: Some("fit"), layout: None }
+    ok view View { paper: None, sidebar: None, agent_icon: None, zoom: Some("fit"), layout: None, tab: None }
 {"cmd":"view","paper":"warm"}
-    ok view View { paper: Some("warm"), sidebar: None, agent_icon: None, zoom: None, layout: None }
+    ok view View { paper: Some("warm"), sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"snapshot","page":1,"rect":[0,0,1,1],"as":"text"}
     ok snapshot Snapshot { tab: "active", page: 1, rect: [0.0, 0.0, 1.0, 1.0], format: "text", out: None, scale: 2.0, anyway: false }
 {"cmd":"snapshot","page":1,"rect":[0,0,1,1],"as":"svg"}
