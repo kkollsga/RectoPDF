@@ -347,7 +347,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Seconds of this session so far.
     pub fn seconds_now(&self) -> u32 {
-        u32::try_from(self.started.elapsed().as_secs()).unwrap_or(u32::MAX)
+        self.dormancy.seconds_now()
     }
 
     /// Somebody's using this tab, so it's not to go dormant for a while. Agents' commands say so too.
@@ -368,18 +368,16 @@ impl<L: DocLoader> Session<L> {
         self.warm
             .ids()
             .chain(self.edits.keys().copied())
-            .filter(move |id| !self.on_screen(*id) && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
+            .filter(move |id| !self.on_screen(*id) && !self.dormancy.is_held(*id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
     }
 
     /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`Self::let_go`].
     pub fn hold(&mut self, id: TabId) {
-        self.held.push(id);
+        self.dormancy.hold(id);
     }
 
     pub fn let_go(&mut self, id: TabId) {
-        if let Some(at) = self.held.iter().position(|held| *held == id) {
-            self.held.swap_remove(at);
-        }
+        self.dormancy.let_go(id);
         self.touch(id);
     }
 
@@ -412,7 +410,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab may go dormant, whatever's asking: not the one on screen, one being worked on, or one being saved.
     pub fn can_go_dormant(&self, id: TabId) -> bool {
-        !self.on_screen(id) && !self.held.contains(&id) && self.edits.get(&id).is_none_or(|list| list.saving().is_none())
+        !self.on_screen(id) && !self.dormancy.is_held(id) && self.edits.get(&id).is_none_or(|list| list.saving().is_none())
     }
 
     /// What a dormant tab's journal has to say for its list to go to disk: the whole list, to compact to and compare with. `None` if there's no list, if it's not all in the file, or if nobody keeps journals here.
@@ -551,7 +549,7 @@ impl<L: DocLoader> Session<L> {
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.
     pub fn sleep_to_read_awake(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
         let tab = self.tab(id)?;
-        if !self.sleep_files || tab.encrypted {
+        if !self.dormancy.sleep_files() || tab.encrypted {
             return None;
         }
         Some((tab.stamp?, self.path_of(id)?))
@@ -571,12 +569,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`Self::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].
     pub fn set_sleep_files(&mut self, on: bool) {
-        self.sleep_files = on;
+        self.dormancy.set_sleep_files(on);
     }
 
     /// **Wakes a cold tab from its sleep file, if it has one about its file as last known.** Says whether it did. Every route to a cold tab's through here, or through a read of its PDF if not.
     pub fn wake_from_sleep_file(&mut self, id: TabId) -> bool {
-        if !self.sleep_files {
+        if !self.dormancy.sleep_files() {
             return false;
         }
         let Some((stamp, path)) = self.sleep_to_read(id) else { return false };
@@ -584,19 +582,18 @@ impl<L: DocLoader> Session<L> {
             return false;
         };
         self.wake_from_sleep(id, &sleep);
-        self.just_read = Some((id, sleep));
-        self.woken_from_file.push(id);
+        self.dormancy.woke_from_file(id, sleep);
         true
     }
 
     /// The tabs woken from sleep files, whose files nobody's looked at yet.
     pub fn take_woken_from_file(&mut self) -> Vec<TabId> {
-        std::mem::take(&mut self.woken_from_file)
+        self.dormancy.take_woken_from_file()
     }
 
     /// The sleep file a tab was just woken from, for its first frame.
     pub fn take_sleep_read(&mut self, id: TabId) -> Option<sleep::SleepFile> {
-        self.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
+        self.dormancy.take_sleep_read(id)
     }
 
     pub(crate) fn wake_from_sleep(&mut self, id: TabId, sleep: &sleep::SleepFile) {

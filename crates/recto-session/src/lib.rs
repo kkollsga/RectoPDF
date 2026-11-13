@@ -14,6 +14,7 @@ pub mod trail;
 
 mod contents;
 mod dirs;
+mod dormancy;
 mod editing;
 mod files;
 mod generated;
@@ -788,15 +789,8 @@ pub struct Session<L = DiskLoader> {
     wake_failed: Vec<TabId>,
     /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`Self::wake_list`] from their journal.
     asleep: HashMap<TabId, EditsSummary>,
-    /// What tabs' `touched` count from.
-    started: std::time::Instant,
-    /// Tabs being worked on now, once for each thing working on it. Next to none.
-    held: Vec<TabId>,
-    /// Cold tabs wake from their sleep files here.
-    sleep_files: bool,
-    just_read: Option<(TabId, sleep::SleepFile)>,
-    woken_from_file: Vec<TabId>,
-    left_warm: Vec<(TabId, Arc<Toc>)>,
+    /// The session's clock, holds on tabs, and what's on its way to and from the sleep files.
+    dormancy: dormancy::Dormancy,
     /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
     mail: mail::PageViewMail,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.

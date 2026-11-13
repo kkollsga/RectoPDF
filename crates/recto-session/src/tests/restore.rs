@@ -277,8 +277,7 @@ fn a_restored_tab_takes_no_sleep_file_of_the_tab_it_replaced() {
         sizes: Vec::new(),
         pictures: Vec::new(),
     };
-    s.just_read = Some((a, sleep));
-    s.woken_from_file.push(a);
+    s.dormancy.woke_from_file(a, sleep);
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
     assert!(s.take_sleep_read(a).is_none());
 }
@@ -288,7 +287,7 @@ fn a_restored_tab_takes_no_sleep_file_of_the_tab_it_replaced() {
 fn a_restored_tab_isnt_down_as_woken_from_a_sleep_file() {
     let mut s = session(10);
     let a = s.open(Path::new("/d/old.pdf")).unwrap();
-    s.woken_from_file.push(a);
+    s.dormancy.note_woken_from_file(a);
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
     assert!(s.take_woken_from_file().is_empty());
 }

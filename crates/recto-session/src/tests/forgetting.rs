@@ -12,10 +12,6 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("edits", s.edits.contains_key(&id)),
         ("asleep", s.asleep.contains_key(&id)),
         ("wake_failed", s.wake_failed.contains(&id)),
-        ("held", s.held.contains(&id)),
-        ("just_read", s.just_read.as_ref().is_some_and(|(tab, _)| *tab == id)),
-        ("woken_from_file", s.woken_from_file.contains(&id)),
-        ("left_warm", s.left_warm.iter().any(|(tab, _)| *tab == id)),
         ("draws", s.mail.holds_draw_of(id)),
         ("journals", s.journals.contains_key(&id)),
         ("fresh_journals", s.fresh_journals.iter().any(|(tab, _, _)| *tab == id)),
@@ -27,7 +23,12 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("saved_over", s.saves.remembers(id)),
         ("jumps", s.mail.holds_jump_of(id)),
     ];
-    parts.into_iter().filter(|(_, holds)| *holds).map(|(name, _)| name).collect()
+    parts
+        .into_iter()
+        .chain(s.dormancy.holding(id))
+        .filter(|(_, holds)| *holds)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 fn stamp(n: u64) -> FileStamp {
