@@ -50,7 +50,7 @@ pub struct Basis {
     pub pages: u32,
     pub stamp: Option<recto_platform::FileStamp>,
     pub changes: u64,
-    /// Whether its unsaved edits fit its file: where they don't, nothing says which page of it a match is on, and Find says so ([`changed_under_edits`]).
+    /// Whether its unsaved edits fit its file: where they don't, nothing says which page of it a match is on, and Find says so ([`crate::unfit::refusal`]).
     pub fit: recto_session::EditsFit,
 }
 
@@ -63,18 +63,6 @@ pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
         changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
         fit: session.notices().fit(id),
     }
-}
-
-/// **Find's refusal on a tab whose file changed on disk after its unsaved edits were made.** An edit names its page by its number in the version it was made on,
-/// so a match in the file as it is now can't be put on a page of the document as edited until the edits fit it (the page matcher's work, owner 2026-11-13).
-/// The same words for the person and an agent, with the next step the agent's told for its save.
-pub fn changed_under_edits() -> AgentError {
-    AgentError::new(
-        "file_changed",
-        "Find can't search this file: it changed on disk after its unsaved edits were made.",
-        exit::FAILED,
-    )
-    .then(crate::saving::CHANGED_UNDER_EDITS_NEXT)
 }
 
 /// What one query's pages are: an opaque list of which file and page each position is.
@@ -100,8 +88,9 @@ impl FindPlan {
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
     let basis = basis(session, id);
-    if !basis.fit.fits() {
-        return Err(changed_under_edits());
+    // The same words for the person's Find and an agent's.
+    if let Some(refused) = crate::unfit::refusal(basis.fit, crate::unfit::Asked::Find) {
+        return Err(refused);
     }
     search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis })
 }

@@ -78,16 +78,13 @@ impl<A: SessionAccess> Drop for Ending<'_, A> {
     }
 }
 
-/// What an agent's told to do about edits made on a version of the file that's no longer there: for its save, and for its Find (`find::changed_under_edits`).
-pub(crate) const CHANGED_UNDER_EDITS_NEXT: &str = "Tell the user: the file changed on disk after these edits were made, so they can't be saved, here or as a copy. The edits are kept. The user can put the earlier version back, or discard them.";
-
 fn from_save(error: &SaveError) -> AgentError {
     let exit = match error {
         SaveError::Protected | SaveError::AddedFileProtected { .. } => exit::PROTECTED,
         _ => exit::FAILED,
     };
     let next = match error {
-        SaveError::FileChanged => CHANGED_UNDER_EDITS_NEXT,
+        SaveError::FileChanged => crate::unfit::CHANGED_UNDER_EDITS_NEXT,
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
         SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
             "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."
@@ -194,10 +191,10 @@ pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(),
 /// land on its pages. What's known decides ([`recto_session::Notices::fit`]); a change since the last look is the save's own to find.
 fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &str) -> Result<recto_session::TabId, AgentError> {
     let id = select(s, tab)?;
-    if !s.notices().fit(id).fits() {
-        return Err(from_save(&SaveError::FileChanged));
+    match crate::unfit::refusal(s.notices().fit(id), crate::unfit::Asked::Save) {
+        Some(refused) => Err(refused),
+        None => Ok(id),
     }
-    Ok(id)
 }
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.

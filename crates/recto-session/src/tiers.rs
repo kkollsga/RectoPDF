@@ -172,16 +172,19 @@ impl<L: DocLoader> Session<L> {
         // and its read, an edit landed between a change being noticed and the read, or a journal says what isn't so.
         let other_length = own == Some(read) && list_pages != pages;
         if !edited {
-            // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. One of another length is let go, as before.
-            if other_version {
+            // Only history, about another version than what was read or another length: its steps don't apply to this, whichever way it's noticed, and it
+            // goes. Nothing unsaved was there, so nothing says any was kept: the file changed, if a look says so, or else undo can't go back as far.
+            if other_version || other_length {
+                let replaced = other_version
+                    || self
+                        .tabs
+                        .path_of(id)
+                        .and_then(|path| file_stamp(&path).ok())
+                        .is_some_and(|now| !now.same_contents(read));
                 self.clear_history(id, ClearReason::FileChanged);
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.file.set_notice(Some(FileNotice::Changed));
-                }
-            } else if other_length {
-                self.let_go_of_list(id);
-                if let Some(tab) = self.tab_mut(id) {
-                    tab.file.set_notice(Some(FileNotice::EditsUnreadable));
+                    tab.file
+                        .set_notice(Some(if replaced { FileNotice::Changed } else { FileNotice::HistoryRolledOff }));
                 }
             }
             return;

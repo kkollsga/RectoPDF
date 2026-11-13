@@ -302,9 +302,12 @@ fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_fil
 }
 
 /// Failure (F7): a list with only undo history (nothing unsaved) went through the block for edits that don't fit: the tab then said "Your unsaved edits are
-/// kept" when there were none, and history about another version stayed, so redo could bring back edits numbered by the version that's gone.
+/// kept" when there were none, and history about another version stayed, so redo could bring back edits numbered by the version that's gone. On `main` before
+/// that, such a list was let go with "What couldn't has been kept in the state folder", which nothing had kept. The history goes, and the tab says what's so:
+/// the file changed, where a look shows it was replaced, or else only that undo can't go back as far.
 #[test]
-fn only_history_on_a_file_replaced_mid_read_isnt_kept_as_edits() {
+fn only_history_about_another_length_goes_and_the_tab_says_whats_so() {
+    // Replaced mid-read: the file did change.
     let (mut bed, a, b) = Bed::new(10);
     bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
     assert!(bed.s.undo_edit(a));
@@ -313,9 +316,117 @@ fn only_history_on_a_file_replaced_mid_read_isnt_kept_as_edits() {
     bed.pages.set(5);
     *bed.replace_with.borrow_mut() = Some(b"a shorter version, saved by another app".to_vec());
     bed.s.tap(a).unwrap();
+    assert_only_history_gone(&bed, a, "file_changed");
+    // A journal of only history naming another length than the file has, which didn't change.
+    let (mut bed, a, b) = Bed::new(5);
+    let mut list = PageEdits::new(12);
+    list.journal_from_now();
+    list.rotate(11, 1, 1).unwrap();
+    assert!(list.undo());
+    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    assert!(
+        !bed.s.lists().is_edited(a) && bed.s.lists().undo_and_redo(a).1,
+        "only history, with a step to redo"
+    );
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_only_history_gone(&bed, a, "history_rolled_off");
+}
+
+/// Nothing of a history about another version is left to redo, nothing says unsaved edits were kept, and the tab is the file it read.
+fn assert_only_history_gone(bed: &Bed, a: TabId, said: &str) {
     assert_eq!(bed.s.notices().fit(a), EditsFit::Fit, "nothing unsaved to fit");
-    assert!(!bed.s.lists().undo_and_redo(a).1, "nothing of the other version can be redone");
-    let said = bed.s.notices().said(a).map(|said| said.message).unwrap_or_default();
-    assert!(!said.contains("unsaved edits are kept"), "{said}");
+    assert!(bed.s.lists().get(a).is_none(), "the history's gone");
+    assert_eq!(bed.s.lists().undo_and_redo(a), (false, false), "nothing of it can be redone");
+    let words = bed.s.notices().said(a).unwrap();
+    assert_eq!(words.code, said, "{words:?}");
+    assert!(
+        !words.message.contains("unsaved edits") && !words.message.contains("kept in the state folder"),
+        "{words:?}"
+    );
     assert_eq!(bed.s.pages().count(a), 5, "the tab is the file it read");
+}
+
+/// Failure (review round 1): what's allowed on a tab whose edits don't fit its file was decided by its notice, which every other notice overwrites, so a file
+/// gone and back, history rolling off or a password asked for again let its pages be read as this file's, a sleep file be made of it, or a save be tried onto it.
+/// Whatever the notice says over it, nothing that reads the fact changes: what Find, `search` and the agent's save read too, through the same `fit`.
+#[test]
+fn no_notice_over_edits_that_dont_fit_changes_what_is_allowed() {
+    let kept = || {
+        let (mut bed, a, b) = Bed::new(10);
+        bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+        replace_file(&bed.path(), b"another version, saved by another app");
+        bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a)));
+        (bed, a, b)
+    };
+    let notices = [
+        None,
+        Some(FileNotice::Moved {
+            from: PathField::Text("/d/before.pdf".into()),
+        }),
+        Some(FileNotice::Changed),
+        Some(FileNotice::Missing),
+        Some(FileNotice::NeedsPassword),
+        Some(FileNotice::EditsUnreadable),
+        Some(FileNotice::EditsNotMerged),
+        Some(FileNotice::HistoryRolledOff),
+    ];
+    for (what, (mut bed, a, _b)) in [("kept stamp", kept()), ("no stamp", dropped_stamp())] {
+        let fit = bed.s.notices().fit(a);
+        assert!(!fit.fits(), "{what}");
+        for notice in notices.clone() {
+            bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(notice.clone());
+            assert_eq!(bed.s.notices().fit(a), fit, "{what}, under {notice:?}");
+            assert!(!bed.s.page_source(a, 2).unwrap().is_current(), "{what}, under {notice:?}");
+            assert!(bed.s.sleep_facts(a).is_none(), "{what}, under {notice:?}");
+            assert_eq!(bed.s.begin_save(a, false).unwrap().unwrap().stamp, None, "{what}, under {notice:?}");
+            bed.s.end_save(a);
+        }
+    }
+}
+
+/// Failure (review round 1): a reader decided what's allowed by comparing a notice's code string (`notice == Some("file_changed")`,
+/// `notice.code() == "file_changed"`), which another notice overwrites. No code outside tests compares a tab's notice to a code: what's allowed is
+/// [`Notices::fit`]'s, and what's said is [`Notices::said`]'s.
+#[test]
+fn nothing_decides_by_a_notice_code_string() {
+    let codes = [
+        "\"file_changed\"",
+        "\"file_missing\"",
+        "\"file_moved\"",
+        "\"password_again\"",
+        "\"edits_unreadable\"",
+        "\"edits_not_merged\"",
+        "\"history_rolled_off\"",
+        "\"edits_dont_fit\"",
+    ];
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut found = Vec::new();
+    let mut folders: Vec<PathBuf> = ["recto-session", "recto-agent", "recto-app", "recto-ffi", "recto-control"]
+        .iter()
+        .map(|name| crates.join(name).join("src"))
+        .collect();
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !matches!(name.as_str(), "tests" | "headless" | "testkit") {
+                    folders.push(path);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name == "tests.rs" {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let production = source.split("#[cfg(test)]").next().unwrap_or_default();
+            for (at, line) in production.lines().enumerate() {
+                if line.contains("notice") && codes.iter().any(|code| line.contains(code)) {
+                    found.push(format!("{}:{}: {}", path.display(), at + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "decided by a notice's code: {found:#?}");
 }

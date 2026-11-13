@@ -34,6 +34,7 @@ mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
+pub mod unfit;
 pub use commands::updates::update_needs_app;
 pub use route::{Runs, qa_needs_app};
 #[cfg(test)]

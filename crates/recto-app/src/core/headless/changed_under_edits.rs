@@ -145,7 +145,7 @@ fn dropped_stamp() -> (HeadlessApp, PathBuf, Vec<u8>, String) {
 /// Failure (S1, review round 1): with the stamp dropped, the tab's pages were still taken to be current, so `text`, `render`, `select`, `export` and print to PDF
 /// read the five-page file by the ten-page list's numbers, and print to PDF wrote the edited composition over the other version's pages into a new file (what
 /// Save As is refused for), with no refusal; `search` returned hits on the other version's pages. Each is refused, nothing is written, and no word of the other
-/// version comes back as the edited document's.
+/// version comes back as the edited document's. And (F4a) the agent was told the user could put the earlier version back, which nothing names here.
 #[test]
 fn with_no_stamp_nothing_reads_the_other_version_as_the_edited_document() {
     let (app, file, theirs, tab) = dropped_stamp();
@@ -170,9 +170,19 @@ fn with_no_stamp_nothing_reads_the_other_version_as_the_edited_document() {
     for written in [&png, &svg, &printed] {
         assert!(!written.exists(), "nothing written: {written:?}");
     }
-    let searched = app.recto(Level::Full, &["search", "Theirs", "--tab", &tab]);
-    if let Ok(found) = &searched {
-        assert_eq!(found["hits"].as_array().map(Vec::len), Some(0), "no hit on the other version: {found}");
+    // Search, Find and Save are refused as the file changed under the edits, with nothing to put back: no version is known to be theirs (F4a).
+    for words in [vec!["search", "Theirs"], vec!["find", "Theirs"], vec!["save"]] {
+        // `find` is of the tab being read, which this one is.
+        let refused = match words[0] {
+            "find" => app.recto(Level::Full, &words).expect_err("find refused"),
+            _ => refused(&words),
+        };
+        assert_eq!(refused.code, "file_changed", "{words:?}: {refused:?}");
+        assert!(refused.message.contains("changed on disk"), "{words:?}: the reason is said: {refused:?}");
+        assert!(
+            !refused.next.contains("earlier version back") && refused.next.contains("discard"),
+            "{words:?}: no version to put back: {refused:?}"
+        );
     }
     assert_eq!(std::fs::read(&file).expect("the file"), theirs, "and the file is as the other program left it");
 }
@@ -186,7 +196,8 @@ fn find_shown(app: &HeadlessApp) -> (u32, String, bool) {
 /// Failure (B5): Find's hits are about a version of the file, but on an edited tab what they were about was the edits' stamp, which never moves, so hits found
 /// on the earlier version stayed listed over the new one, never found again. Find can't say which page of this file a match is on until the edits fit it (the
 /// page matcher's work), so it says so, plainly, for the person and an agent alike: the hits go when the change is taken in, the field says why, and an
-/// agent's `find` is refused in the same words with the same next step as its save.
+/// agent's `find` is refused in the same words with the same next step as its save. And (F5) an agent's `search` was let through, returning hits on the other
+/// version's pages: it's refused for the same reason.
 #[test]
 fn find_on_an_edited_tab_whose_file_changed_says_it_cant_search() {
     let (app, file, original, modified) = edited();
@@ -195,13 +206,17 @@ fn find_on_an_edited_tab_whose_file_changed_says_it_cant_search() {
     assert!(find_shown(&app).0 > 0, "hits on the version the edits were made on: {:?}", find_shown(&app));
     replace(&file, &pdf_bytes("Theirs", 5));
     look(&app);
-    let (rows, status, running) = find_shown(&app);
-    assert_eq!((rows, running), (0, false), "the earlier version's hits are gone: {status}");
-    let words = "Find can't search this file: it changed on disk after its unsaved edits were made.";
-    assert_eq!(status, words);
+    let (rows, words, running) = find_shown(&app);
+    assert_eq!((rows, running), (0, false), "the earlier version's hits are gone: {words}");
     let refused = app.recto(Level::Full, &["find", "Theirs"]).expect_err("refused");
-    assert_eq!((refused.code, refused.message.as_str()), ("file_changed", words), "{refused:?}");
+    assert_eq!(refused.code, "file_changed", "{refused:?}");
+    assert!(refused.message.contains("changed on disk"), "the reason is said: {refused:?}");
+    assert_eq!(words, refused.message, "the person's Find says what an agent's is told");
     assert!(refused.next.contains("earlier version back"), "{refused:?}");
+    // F5: an agent's search is refused for the same reason, with the same way on, rather than searching the other version's pages.
+    let searched = app.recto(Level::Full, &["search", "Theirs"]).expect_err("search refused too");
+    assert_eq!((searched.code, &searched.next), (refused.code, &refused.next), "{searched:?}");
+    assert!(searched.message.contains("changed on disk"), "{searched:?}");
     // Looking again isn't news, and Find goes on saying the same.
     look(&app);
     assert_eq!(find_shown(&app).1, words);
