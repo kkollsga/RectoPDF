@@ -531,6 +531,39 @@ fn the_real_black_cover_is_never_turned_over() {
     }
 }
 
+/// Failure: the owner's own example of a vector drawing (`today-shots.sh darkimg`, page 4: a light sky in bands, green ground, a red house and a sun, across 56% of a white page with text, drawn in vectors with no image), which the owner wanted left turning over, is taken for a dark page and dimmed whole, as a dark figure in vectors over half a white page is: its ground and house are dark, about 0.19 of the page. Decided through the real worker from the look picture, as a page with no images is when nothing drawn covers it, it turns over as a page of text does.
+#[test]
+fn the_owners_vector_drawing_turns_over() {
+    let mut drawing =
+        String::from("BT /F1 18 Tf 72 740 Td (Page 4: a vector drawing, 56% of the page, with text) Tj ET\n0.30 0.55 0.90 rg 72 400 468 300 re f\n");
+    for band in 0..12 {
+        drawing.push_str(&format!(
+            "{:.2} {:.2} {:.2} rg 72 {} 468 25 re f\n",
+            0.35 + f64::from(band) * 0.04,
+            0.6 + f64::from(band) * 0.025,
+            0.92 - f64::from(band) * 0.02,
+            400 + band * 25
+        ));
+    }
+    drawing.push_str("0.15 0.50 0.20 rg 72 220 468 180 re f\n0.75 0.15 0.15 rg 200 250 120 110 re f\n0.25 0.15 0.08 rg 245 250 30 60 re f\n0.98 0.85 0.25 rg 420 600 m 460 600 l 460 640 l 420 640 l f\n0 g\n");
+    drawing.push_str("BT /F1 14 Tf 72 195 Td (Figure 4. Drawn in vectors, no image.) Tj ET\n");
+    for line in 0..6 {
+        drawing.push_str(&format!(
+            "BT /F1 11 Tf 72 {} Td (Line {}: the quick brown fox jumps over the lazy dog, and the dog sleeps.) Tj ET\n",
+            170 - line * 15,
+            line + 1
+        ));
+    }
+    let file = TempPdf::new("drawing.pdf", &pages_with(&[Page::new(drawing.into_bytes())], "", Vec::new()));
+    let mut doc = renderer(&file.0);
+    assert_eq!(doc.image_boxes(0, 1).unwrap().map(|boxes| boxes.len()), Some(0), "no images");
+    assert_eq!(
+        look_of(&mut doc, 0, 512.0, false),
+        (false, Vec::new(), Vec::new()),
+        "it turns over as a page of text"
+    );
+}
+
 /// A document of `count` pages of text, no pictures.
 fn text_document(count: usize) -> TempPdf {
     let lines: Vec<String> = (0..48)
