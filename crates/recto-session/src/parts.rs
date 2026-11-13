@@ -34,6 +34,25 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// **The journal desk:** what goes to the journals and what comes of it, for one call, borrowing the journals and the lists to change and the tabs to
+    /// read. Built inside whatever holds the session, so it's the same lock held the same time. See [`JournalDesk`](journal::JournalDesk).
+    pub fn journal_desk(&mut self) -> journal::JournalDesk<'_> {
+        journal::JournalDesk {
+            journals: &mut self.journals,
+            lists: &mut self.lists,
+            tabs: &self.tabs,
+        }
+    }
+
+    /// What the journals have to say, changing nothing: a look over the journals, the lists and the tabs.
+    pub fn journal_look(&self) -> journal::JournalLook<'_> {
+        journal::JournalLook {
+            journals: &self.journals,
+            lists: &self.lists,
+            tabs: &self.tabs,
+        }
+    }
+
     /// Files opened lately, for File > Open Recent and ⌘K.
     pub fn recent(&self) -> &recent::Recent {
         &self.recent

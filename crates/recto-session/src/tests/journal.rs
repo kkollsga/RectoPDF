@@ -98,12 +98,12 @@ fn a_journal_goes_when_its_edits_do() {
     assert_eq!(files.len(), 1, "kept for the PDF's next opening");
     let reopened = s.open(Path::new("/d/a.pdf")).unwrap();
     let (name, restored) = back_from(&files).into_iter().next().unwrap();
-    s.take_up_history(reopened, &name, restored.edits, restored.seq);
+    s.journal_desk().take_up_history(reopened, &name, restored.edits, restored.seq);
     assert!(s.lists().get(reopened).unwrap().can_redo(), "picked up");
     // A journal has one owner: another tab asking for it gets nothing.
     let other = s.open(Path::new("/d/b.pdf")).unwrap();
     let (name, restored) = back_from(&files).into_iter().next().unwrap();
-    s.take_up_history(other, &name, restored.edits, restored.seq);
+    s.journal_desk().take_up_history(other, &name, restored.edits, restored.seq);
     assert!(s.lists().get(other).is_none());
     assert!(s.redo_edit(reopened));
 }
@@ -118,20 +118,20 @@ fn closing_keeps_what_hasnt_gone_out() {
     write_journal(&mut s, &mut files);
     assert!(s.undo_edit(a));
     s.close(a).unwrap();
-    assert!(s.has_journal_work());
-    let work = s.journal_work();
+    assert!(s.journal_look().has_work());
+    let work = s.journal_desk().work();
     assert_eq!(work.appends.len(), 1);
     assert!(work.appends[0].closing);
     assert_eq!(work.appends[0].ops, vec![JournalOp::Undo]);
     // The disk refused: it's asked for again.
-    s.journal_outcome(JournalOutcome::default());
-    let again = s.journal_work();
+    s.journal_desk().outcome(JournalOutcome::default());
+    let again = s.journal_desk().work();
     assert_eq!(again.appends.len(), 1, "not lost");
-    s.journal_outcome(JournalOutcome {
+    s.journal_desk().outcome(JournalOutcome {
         written: vec![(a, again.appends[0].through, again.appends[0].name.clone())],
         ..JournalOutcome::default()
     });
-    assert!(!s.has_journal_work());
+    assert!(!s.journal_look().has_work());
 }
 
 /// Failure (review B6): one journal failing makes the others go out again, as nothing says they got there. Each goes by what happened to it.
@@ -142,13 +142,13 @@ fn a_journal_failing_doesnt_send_the_others_again() {
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.edit_pages(b, |e| e.rotate(0, 1, 1)).unwrap();
-    let work = s.journal_work();
+    let work = s.journal_desk().work();
     let done = work.appends.iter().find(|append| append.tab == a).unwrap();
-    s.journal_outcome(JournalOutcome {
+    s.journal_desk().outcome(JournalOutcome {
         written: vec![(a, done.through, done.name.clone())],
         not_retired: Vec::new(),
     });
-    let next = s.journal_work();
+    let next = s.journal_desk().work();
     assert_eq!(next.appends.len(), 1);
     assert_eq!(next.appends[0].tab, b);
 }
@@ -169,7 +169,7 @@ fn a_checkpoint_keeps_a_save_in_progress() {
     s.save_prepared(a, target, Some(&keeping));
     let mut files = HashMap::new();
     write_journal(&mut s, &mut files);
-    let (header, base) = s.checkpoint_if_caught_up(a).unwrap();
+    let (header, base) = s.journal_look().checkpoint_if_caught_up(a).unwrap();
     assert_eq!(header.saving, Some(target.into()));
     assert_eq!(header.keeping, Some(keeping.to_record()), "nor what it kept");
     let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
@@ -186,7 +186,7 @@ fn a_step_through_the_edit_handle_is_its_authors_and_journaled() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.edit_pages_as(a, Author::Agent, |e| e.move_pages(0, 1, 2)).unwrap();
     s.edit_pages_as(a, Author::Agent, |e| e.delete(e.len() - 1, 1)).unwrap();
-    let ops: Vec<JournalOp> = s.journal_work().appends.into_iter().flat_map(|append| append.ops).collect();
+    let ops: Vec<JournalOp> = s.journal_desk().work().appends.into_iter().flat_map(|append| append.ops).collect();
     assert_eq!(
         ops,
         vec![

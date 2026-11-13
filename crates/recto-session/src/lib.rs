@@ -51,6 +51,7 @@ use edit::{EditError, PageEdits};
 pub use fit::{EditsFit, NoticeSaid, Notices};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
 pub use generated::Generated;
+pub use journal::{JournalDesk, JournalLook};
 pub use journals::Journals;
 pub use lists::Lists;
 pub use mail::PageViewMail;

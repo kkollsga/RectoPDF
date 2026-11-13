@@ -382,7 +382,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (retired, journal_work) = inner
         .host
         .session
-        .with_session(|session| (session.journals().has_pending(), session.has_journal_work()));
+        .with_session(|session| (session.journals().has_pending(), session.journal_look().has_work()));
     if retired {
         inner.saver.write_soon();
     } else {
