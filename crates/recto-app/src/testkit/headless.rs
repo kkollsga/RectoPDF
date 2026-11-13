@@ -222,8 +222,9 @@ impl Builder {
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
             inner.saver.store.holds_the_record(),
-            "the headless app didn't get the record's lock in {}",
-            disk.paths.root.display()
+            "the headless app didn't get the record's lock in {}: {}",
+            disk.paths.root.display(),
+            inner.saver.store.why_not_keeping().unwrap_or_else(|| "no reason was kept".to_owned())
         );
         if self.update.is_some() {
             // What the host says at launch, before the state's read: this copy's version and bundle, from its own Info.plist.
