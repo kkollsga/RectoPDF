@@ -29,10 +29,7 @@ impl Dormant<'_> {
 
     /// The tabs that could go dormant, as they hold something: not the one on screen, and not one a save's under way on. Next to none however many tabs there are: the warm ones, and those with a list in memory.
     pub(crate) fn candidates(&self) -> impl Iterator<Item = TabId> + '_ {
-        self.warm
-            .ids()
-            .chain(self.lists.ids())
-            .filter(move |id| !self.on_screen(*id) && !self.dormancy.is_held(*id) && self.lists.get(*id).is_none_or(|list| list.saving().is_none()))
+        self.warm.ids().chain(self.lists.ids()).filter(move |id| self.may_go(*id))
     }
 
     /// When the next tab comes due to go dormant, in seconds of the session, this long after it was last touched. One deadline for all of them, kept by whoever's waiting anyway. There's no timer per tab.
