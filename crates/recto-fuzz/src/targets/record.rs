@@ -177,12 +177,12 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
                 let _ = session.undo_edit(id);
             }
         }
-        let work = session.journal_work();
+        let work = session.journal_desk().work();
         let (outcome, _) = store.write_journals(&work, false);
-        session.journal_outcome(outcome);
+        session.journal_desk().outcome(outcome);
         let saved = session.to_record();
         if store.write_record(&saved, &PlaceDelta::default(), false).is_ok() {
-            let lists = session.lists_by_journal();
+            let lists = session.journal_look().lists_by_journal();
             store.next_write_whole();
             let _ = store.write_record(&saved, &PlaceDelta::default(), false);
             assert_eq!(store.verify(&saved, &lists), Ok(()), "what's written reads back");

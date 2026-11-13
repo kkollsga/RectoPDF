@@ -348,7 +348,7 @@ fn journal_of_another_length() -> (Bed, TabId, TabId) {
     let mut list = PageEdits::new(12);
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
-    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    bed.s.journal_desk().take_up_history(a, "journal-00000000000000ab.log", list, 1);
     bed.make_cold(a, b);
     bed.s.tap(a).unwrap();
     (bed, a, b)
@@ -450,7 +450,7 @@ fn only_history_about_another_length_goes_and_the_tab_says_whats_so() {
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
     assert!(list.undo());
-    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    bed.s.journal_desk().take_up_history(a, "journal-00000000000000ab.log", list, 1);
     assert!(
         !bed.s.lists().is_edited(a) && bed.s.lists().undo_and_redo(a).1,
         "only history, with a step to redo"

@@ -57,11 +57,11 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     assert!(session.undo_edit(tab), "so the added PDF is only ever in the history");
 
     let journal = |name: &str| std::fs::read(state.join("session").join("journals").join(name)).unwrap();
-    let work = session.journal_work();
+    let work = session.journal_desk().work();
     let name = work.appends[0].name.clone();
     let (outcome, failed) = store.write_journals(&work, false);
     assert!(failed.is_none());
-    session.journal_outcome(outcome);
+    session.journal_desk().outcome(outcome);
     assert!(found(&journal(&name), UNDONE_FILE_NAME), "the mark is in the history");
     assert!(
         std::fs::read(&file).is_ok_and(|bytes| found(&bytes, DELETED_TEXT)),
@@ -110,10 +110,10 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     assert_eq!(outcome.writer, Writer::Rewrite);
     assert_eq!(session.saved(tab, outcome.stamp.unwrap(), outcome.pages, None, Some(kept.clone())), 0);
     session.end_save(tab);
-    let work = session.journal_work();
+    let work = session.journal_desk().work();
     let (outcome, failed) = store.write_journals(&work, false);
     assert!(failed.is_none());
-    session.journal_outcome(outcome);
+    session.journal_desk().outcome(outcome);
 
     let saved = std::fs::read(&file).unwrap();
     for mark in [

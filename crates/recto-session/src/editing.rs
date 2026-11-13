@@ -122,7 +122,7 @@ impl<L: DocLoader> Session<L> {
             let elsewhere = self.tabs.tab(id).and_then(|tab| tab.file.elsewhere());
             let seen = elsewhere.and_then(|elsewhere| elsewhere.seen).or(now);
             if replaced && seen != own {
-                self.retire_sleep_file(id);
+                self.journal_desk().retire_sleep_file(id);
             }
             match elsewhere.and_then(|elsewhere| elsewhere.seen_pages) {
                 Some(pages) => {

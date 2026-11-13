@@ -158,7 +158,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     s.discard_edits(a);
     assert!(!s.lists().is_asleep(a) && !s.lists().is_edited(a));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
-    assert!(s.journal_work().retired.contains(&name));
+    assert!(s.journal_desk().work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
     let mut s = session(5);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
@@ -247,7 +247,11 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     assert!(s.file_length_is(a, 3, 5), "it says to read the file");
     assert!(!s.warm.contains(a));
     assert!(
-        s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)),
+        s.journal_desk()
+            .work()
+            .retired
+            .iter()
+            .any(|name| *name == record::sleep_file_name(stamp, &path)),
         "and the file's gone"
     );
     s.give_woken(
@@ -410,7 +414,7 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     let mut list = PageEdits::new(12);
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
-    s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
+    s.journal_desk().take_up_history(a, "journal-00000000000000aa.log", list, 1);
     s.warm.clear_contents();
     s.tap(a).unwrap();
     assert_eq!(s.lists().get(a).map(PageEdits::file_pages), Some(12), "it's kept");

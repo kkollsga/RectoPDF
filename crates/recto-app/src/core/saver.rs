@@ -229,7 +229,7 @@ impl Saver {
 
     /// Takes what's waiting and writes it, and tells the session what got there. What didn't stays waiting, and only that goes next time. Says the first thing that went wrong.
     fn write_journals(&self, inner: &Inner, force: bool) -> Option<StoreError> {
-        let work = inner.host.session.with_session(recto_session::Session::journal_work);
+        let work = inner.host.session.with_session(|session| session.journal_desk().work());
         self.write_work(inner, &work, force)
     }
 
@@ -245,10 +245,10 @@ impl Saver {
         }
         let (outcome, failed) = self.store.write_journals(work, force);
         let written: Vec<(recto_session::TabId, String)> = outcome.written.iter().map(|(id, _, name)| (*id, name.clone())).collect();
-        inner.host.session.with_session(|session| session.journal_outcome(outcome));
+        inner.host.session.with_session(|session| session.journal_desk().outcome(outcome));
         for (id, name) in written {
             if self.store.should_compact(&name) {
-                let checkpoint = inner.host.session.with_session(|session| session.checkpoint_if_caught_up(id));
+                let checkpoint = inner.host.session.with_session(|session| session.journal_look().checkpoint_if_caught_up(id));
                 if let Some((header, base)) = checkpoint {
                     let _ = self.store.compact(&name, &header, &base);
                 }
@@ -307,7 +307,7 @@ impl Saver {
         let verified = Instant::now();
         // Only if a name had to change is it asked again, as an edit since would differ from what was just written, and a hand-off has stopped those anyway.
         let lists = if renamed {
-            inner.host.session.with_session(|session| session.lists_by_journal())
+            inner.host.session.with_session(|session| session.journal_look().lists_by_journal())
         } else {
             lists
         };
@@ -364,9 +364,9 @@ impl Inner {
     fn gather_for_flush(&self) -> (JournalWork, SessionRecord, PlaceDelta, HashMap<String, EditsRecord>) {
         self.take_places();
         let (work, mut record, delta, lists) = self.host.session.with_session(|session| {
-            let work = session.journal_work();
+            let work = session.journal_desk().work();
             let delta = session.take_place_delta(0);
-            (work, session.to_record(), delta, session.lists_by_journal())
+            (work, session.to_record(), delta, session.journal_look().lists_by_journal())
         });
         record.app = self.app_record();
         (work, record, delta, lists)
