@@ -94,7 +94,8 @@ impl Inner {
                 return Acted::DONE;
             }
             UiAction::OpenRecent { key } => {
-                super::opening::open_recent(&self.published, &self.life, &self.core, &key);
+                let recent = Arc::clone(&lock(&self.published).recent);
+                super::opening::open_recent(&recent, &self.life, &self.core, &key);
                 return Acted::DONE;
             }
             UiAction::FindTyped { text } => Some(super::find::typed(text)),

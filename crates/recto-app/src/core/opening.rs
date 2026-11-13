@@ -77,11 +77,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
     use menu_rows::Row;
     match (asked.action.as_ref()?, asked.id) {
         (menus::Action::OpenRecent(key), _) => {
-            let path = lock(&inner.published)
-                .recent
-                .iter()
-                .find(|file| file.key == *key)
-                .map(|file| PathBuf::from(&file.path));
+            let path = recent_path(&lock(&inner.published).recent, key);
             Some(path.map_or(Row::Nothing, |path| {
                 Row::own_way(
                     Open {
@@ -177,12 +173,16 @@ pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
 }
 
 /// **Opens a file from the files opened lately by its key,** as File > Open Recent and the palette's row do: the very file that was offered, however the
-/// list has moved since, and nothing if it's left the list. From what the session thread last published: it never waits.
-pub fn open_recent(published: &Mutex<Published>, life: &Lifecycle, core: &CoreQueue, key: &str) {
-    let path = lock(published).recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path));
-    if let Some(path) = path {
+/// list has moved since, and nothing if it's left the list. `recent` is the list the session thread last published: it never waits.
+pub fn open_recent(recent: &[RecentFile], life: &Lifecycle, core: &CoreQueue, key: &str) {
+    if let Some(path) = recent_path(recent, key) {
         open_for_person(life, core, path);
     }
+}
+
+/// The file opened lately that a menu row or palette row offered, by its key: `None` once it's left the list.
+fn recent_path(recent: &[RecentFile], key: &str) -> Option<PathBuf> {
+    recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path))
 }
 
 /// **What a row of the sidebar comes to, tapped** (`adding` for a ⌘- or ⌃-click): a tab's is `tap`, or with `adding` `compare --toggle`; a contents row's
@@ -223,10 +223,9 @@ mod tests {
             path: "/files/recent.pdf".into(),
             open: false,
         }]);
-        let published = Mutex::new(published);
         open_for_person(&life, &core, PathBuf::from("/files/panel.pdf"));
-        open_recent(&published, &life, &core, "k1");
-        open_recent(&published, &life, &core, "a key that's left the list");
+        open_recent(&published.recent, &life, &core, "k1");
+        open_recent(&published.recent, &life, &core, "a key that's left the list");
         let asked = super::updates::Hooks::new(Arc::new(super::updates::RealInstaller)).documents_asked_for();
         assert_eq!(asked, [PathBuf::from("/files/panel.pdf"), PathBuf::from("/files/recent.pdf")]);
         let mut opened = Vec::new();
