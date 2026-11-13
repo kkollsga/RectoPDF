@@ -39,3 +39,4 @@ mod twins;
 mod update;
 mod update_menu;
 mod view;
+mod window_script;

@@ -277,7 +277,7 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Did {
 }
 
 /// A Listener call's kind, with nothing it carried: what the golden holds of the host being told.
-fn heard_kind(heard: &crate::testkit::Heard) -> &'static str {
+pub(super) fn heard_kind(heard: &crate::testkit::Heard) -> &'static str {
     use crate::testkit::Heard;
     match heard {
         Heard::ModelChanged => "model_changed",

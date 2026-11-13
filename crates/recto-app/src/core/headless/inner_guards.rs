@@ -51,7 +51,7 @@ const BUDGETS: [(&str, usize); 7] = [
 /// the commit that means it, so each widening and narrowing is in a diff.
 #[test]
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
-    let types = ["Inner", "Lifecycle", "Serving", "WindowParts", "Tools", "Published", "AppState"];
+    let types = ["Inner", "Lifecycle", "Serving", "WindowParts", "Tools", "Printing", "Published", "AppState"];
     let files = recto_testpdf::surface::rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core"));
     let now = recto_testpdf::surface::listing(
         &files,
@@ -65,7 +65,7 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
     }
 }
 
-/// What the app's state and its parts let other code reach, sorted. Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
+/// What the app's state and its parts let other code reach, sorted, with printing's (R3.7, S2: its two `pub` fields the bridge reaches become methods). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r"
 AppState (pub struct, derives Clone, Debug)
 AppState.pub app_hidden: bool
@@ -197,6 +197,18 @@ Lifecycle::pub(crate) fn remade(&self) -> bool
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
 Lifecycle::pub(crate) fn takes_input(&self) -> bool
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
+Printing (pub struct, derives Default)
+Printing.pub generation: AtomicU64
+Printing.pub qa_target: Mutex<Option<(PathBuf, PathBuf)>>
+Printing::pub fn busy(&self) -> bool
+Printing::pub fn cancel(&self)
+Printing::pub fn dismiss_notice(&self)
+Printing::pub fn finished(&self, path: &str)
+Printing::pub fn has_ready(&self) -> bool
+Printing::pub fn notice(&self) -> Option<String>
+Printing::pub fn quitting(&self)
+Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
+Printing::pub fn take_ready(&self) -> Option<PathBuf>
 Published (pub struct)
 Published.pub contents: Arc<Vec<ContentsEntry>>
 Published.pub pane_tocs: Vec<Option<Arc<recto_core::Toc>>>

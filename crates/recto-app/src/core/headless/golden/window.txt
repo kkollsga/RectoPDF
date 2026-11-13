@@ -1,0 +1,30 @@
+launched | dark=false decided.hidden=false decided.minimised=false decided.window=true record.app_hidden=false record.appearance="system" record.contents_scroll.following=true record.contents_scroll.y=0.0 record.focus.app_frontmost=true record.focus.view="page" record.focus.window_key=true record.notice=null record.panel_open=false record.settings_window=null record.sidebar_width=272.0 record.window=null record.window_closed=false
+full screen with no frame | heard nothing | changed record.window.frame.height=900.0 record.window.frame.width=1440.0 record.window.frame.x=0.0 record.window.frame.y=0.0 record.window.full_screen=true record.window.minimised=false record.window.screen=null record.window gone
+moved | heard nothing | changed record.window.frame.height=600.0 record.window.frame.width=800.0 record.window.frame.x=10.0 record.window.frame.y=20.0 record.window.full_screen=false record.window.screen.frame.height=1440.0 record.window.screen.frame.width=2560.0 record.window.screen.frame.x=0.0 record.window.screen.frame.y=0.0 record.window.screen.id=7 record.window.screen.name="Studio Display" record.window.screen gone
+a frame of three numbers | heard nothing | changed nothing
+into the Dock | heard nothing | changed record.window.minimised=true
+placed at a launch | heard nothing | answer false | changed decided.minimised=true record.window.minimised=false
+into the Dock again | heard nothing | changed record.window.minimised=true
+closed | heard nothing | changed record.window.minimised=false record.window_closed=true
+should open | heard nothing | answer true | changed nothing
+opened | heard ops_ready | changed record.window_closed=false
+out of the Dock with no window | heard nothing | changed nothing
+hidden | heard nothing | changed record.app_hidden=true
+comes back hidden | heard nothing | answer false | changed decided.hidden=true record.app_hidden=false
+shown | heard nothing | changed nothing
+sidebar too narrow | heard model_changed | changed record.sidebar_width=200.0
+sidebar wide | heard model_changed | changed record.sidebar_width=300.0
+contents nowhere | heard nothing | changed nothing
+contents scrolled | heard nothing | changed record.contents_scroll.y=120.5
+focus on the sidebar | heard nothing | answer sidebar | changed record.focus.view="sidebar"
+focus on nothing known | heard nothing | answer sidebar | changed nothing
+dark chosen | heard nothing | answer dark | changed record.appearance="dark"
+light chosen | heard nothing | answer light | changed record.appearance="light"
+nothing known chosen | heard nothing | answer system | changed record.appearance="system"
+the system went dark | heard model_changed | changed dark=true
+to the background | heard nothing | answer false | changed record.focus.app_frontmost=false record.focus.window_key=false
+to the front | heard nothing | answer false | changed record.focus.app_frontmost=true record.focus.window_key=true
+contents scrolled by the person | heard nothing | answer false | changed record.contents_scroll.following=false
+settings opened | heard nothing | answer Some(SettingsWindow { x: 40.0, y: 50.0 }) | changed record.settings_window.x=40.0 record.settings_window.y=50.0 record.settings_window gone
+settings closed | heard nothing | answer None | changed record.settings_window=null record.settings_window.x gone record.settings_window.y gone
+made again | heard ops_ready | changed nothing
