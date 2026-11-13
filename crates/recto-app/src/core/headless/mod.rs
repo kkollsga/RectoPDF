@@ -13,6 +13,7 @@ mod exits;
 pub(crate) mod files;
 mod find;
 mod finding;
+mod inner_guards;
 mod input_to_frame;
 mod launch;
 mod levels;

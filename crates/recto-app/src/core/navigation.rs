@@ -35,8 +35,8 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_r
     }
 }
 
-/// Back, or Forward, in the tab being read.
-fn step(back: bool) -> Command {
+/// Back, or Forward, in the tab being read: ⌘[ and ⌘], a swipe, or a link that says so.
+pub fn step(back: bool) -> Command {
     let tab = recto_agent::TabRef::Active;
     if back { Back { tab }.into() } else { Forward { tab }.into() }
 }
@@ -51,29 +51,40 @@ fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64
     .into()
 }
 
+/// A contents row tapped: `goto` its page, on its tab.
+pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, tab: TabId, page: u32) -> Command {
+    let showing = (0..panes.count()).any(|pane| panes.tab_of(pane) == Some(tab));
+    let shown = if showing {
+        panes.engine_for_tab(engine, tab).points().page_count()
+    } else {
+        0
+    };
+    goto(tab, Some(contents_page(page, shown)), None, None)
+}
+
+/// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.
+/// `position` counts from 0, with edits counted.
+pub fn link_to_page(tab: TabId, position: u32, within: Option<f32>) -> Command {
+    goto(tab, Some(position + 1), None, within.map(f64::from))
+}
+
+/// Return in the go-to field: `goto label`, a label the file uses or a page number, on the pane being read's tab. `None` if it's nothing to look up.
+pub fn page_typed(text: &str, frozen: &AtomicBool, panes: &panes::Panes) -> Option<Command> {
+    let typed = text.trim();
+    if typed.is_empty() || typed.len() > linking::MAX_TYPED_PAGE || frozen.load(Ordering::SeqCst) {
+        return None;
+    }
+    let reading = panes.reading();
+    let tab = panes.tab_of(reading)?;
+    Some(goto(tab, None, Some(typed.to_string()), None))
+}
+
+/// A swipe on the page, as the system reports it: Back or Forward, as in Safari.
+pub fn swiped(delta_x: f64) -> Option<Command> {
+    linking::swipe_goes_back(delta_x).map(step)
+}
+
 impl Inner {
-    /// A contents row tapped: `goto` its page, on its tab.
-    pub fn contents_tapped(self: &Arc<Self>, tab: TabId, page: u32) {
-        let showing = (0..self.panes.count()).any(|pane| self.panes.tab_of(pane) == Some(tab));
-        let shown = if showing {
-            self.panes.engine_for_tab(&self.engine, tab).points().page_count()
-        } else {
-            0
-        };
-        person::submit(self, goto(tab, Some(contents_page(page, shown)), None, None));
-    }
-
-    /// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.
-    /// `position` counts from 0, with edits counted.
-    pub fn link_to_page(self: &Arc<Self>, tab: TabId, position: u32, within: Option<f32>) {
-        person::submit(self, goto(tab, Some(position + 1), None, within.map(f64::from)));
-    }
-
-    /// Back or Forward in the tab showing: ⌘[ and ⌘], a swipe, or a link that says so.
-    pub fn step_for_person(self: &Arc<Self>, back: bool) {
-        person::submit(self, step(back));
-    }
-
     /// The sheet asking about a web or email address was answered, by its id: with Open, the address, exactly as the sheet showed it; with Cancel, nothing.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
         let mut asked = lock(&self.tools.prompts.link);
@@ -85,25 +96,6 @@ impl Inner {
         drop(asked);
         self.core.push(CoreCall::Reconcile);
         prompt.filter(|_| open).map(|prompt| prompt.address)
-    }
-
-    /// Return in the go-to field: `goto label`, a label the file uses or a page number, on the pane being read's tab. Says whether it was something to look up.
-    pub fn page_typed(self: &Arc<Self>, text: &str) -> bool {
-        let typed = text.trim();
-        if typed.is_empty() || typed.len() > linking::MAX_TYPED_PAGE || self.core.frozen.load(Ordering::SeqCst) {
-            return false;
-        }
-        let reading = self.panes.reading();
-        let Some(tab) = self.panes.tab_of(reading) else { return false };
-        person::submit(self, goto(tab, None, Some(typed.to_string()), None));
-        true
-    }
-
-    /// A swipe on the page, as the system reports it: Back or Forward, as in Safari.
-    pub fn swiped(self: &Arc<Self>, delta_x: f64) {
-        if let Some(back) = linking::swipe_goes_back(delta_x) {
-            self.step_for_person(back);
-        }
     }
 }
 

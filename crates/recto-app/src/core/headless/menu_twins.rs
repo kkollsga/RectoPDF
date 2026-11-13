@@ -83,7 +83,9 @@ const STAMPED: &[&str] = &["journal"];
 pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
     if showing.protected() {
         let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 5));
-        app.core().open_file(file);
+        app.act(crate::core::controls::UiAction::Open {
+            path: file.display().to_string(),
+        });
         app.settle();
         let id = app.reader().password_prompt.expect("it asks for its password").id;
         app.core().password_answered(id, Some("right".into()));
@@ -478,7 +480,9 @@ fn title_of(app: &HeadlessApp, id: &str) -> String {
 fn a_rows_refusal_is_its_commands() {
     let app = HeadlessApp::start();
     let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 6));
-    app.core().open_file(file);
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));

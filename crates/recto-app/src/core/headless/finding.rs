@@ -226,7 +226,9 @@ fn a_query_too_long_is_said_and_not_searched() {
 fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
     let app = HeadlessApp::start();
     let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 3));
-    app.core().open_file(file);
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));

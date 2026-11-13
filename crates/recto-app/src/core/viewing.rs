@@ -2,8 +2,9 @@
 //! an agent sends, run for the person on the session thread ([`super::person::submit`]); the zoom is [`super::zoom`]'s, on the thread that asked.
 
 use super::menu_rows::{Agents, Asked, Row};
-use super::{HostAction, Inner, person};
+use super::{HostAction, Inner};
 use crate::menus::Action;
+use recto_agent::Command;
 use recto_agent::commands::view::{PaperChoice, Shown, View};
 use std::sync::Arc;
 
@@ -37,26 +38,21 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
     Some(Row::command(view))
 }
 
-impl Inner {
-    /// `view` with what the person changed, for them.
-    fn view_for_person(self: &Arc<Self>, asked: View) {
-        person::submit(self, asked.into());
+/// The sidebar's button, beside the window's controls: `view --sidebar toggle`, shown if it's hidden and hidden if not, as it is when it runs, so a quick
+/// second press before the first is shown is a second toggle (accident A3).
+pub fn toggle_sidebar() -> Command {
+    View {
+        sidebar: Some(Shown::Toggle),
+        ..View::default()
     }
+    .into()
+}
 
-    /// The sidebar's button, beside the window's controls: `view --sidebar toggle`, shown if it's hidden and hidden if not, as it is when it runs, so a quick
-    /// second press before the first is shown is a second toggle (accident A3).
-    pub fn toggle_sidebar(self: &Arc<Self>) {
-        self.view_for_person(View {
-            sidebar: Some(Shown::Toggle),
-            ..View::default()
-        });
+/// The sidebar shown, as ⌘K's palette, which is in it, needs: `view --sidebar on`.
+pub fn show_sidebar() -> Command {
+    View {
+        sidebar: Some(Shown::On),
+        ..View::default()
     }
-
-    /// The sidebar shown, as ⌘K's palette, which is in it, needs: `view --sidebar on`.
-    pub fn show_sidebar(self: &Arc<Self>) {
-        self.view_for_person(View {
-            sidebar: Some(Shown::On),
-            ..View::default()
-        });
-    }
+    .into()
 }

@@ -62,22 +62,21 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         command,
         "the zoom is the page views', so the person's is run on the thread that asked, taking no lock and queuing nothing",
         move || {
-            inner.zoom_for_person(zoom);
+            for_person(&inner.host, &inner.serving, zoom);
             HostAction::None
         },
     ))
 }
 
-impl Inner {
-    /// **The person's zoom:** `view --zoom`, run for them here and now by the same handler as an agent's. Says whether there was a page to zoom.
-    pub fn zoom_for_person(&self, zoom: Zoom) -> bool {
-        let asked = View {
-            zoom: Some(word(zoom)),
-            ..View::default()
-        };
-        super::person::sent(self, &asked.clone().into());
-        run(&self.host, &asked).is_ok()
-    }
+/// **The person's zoom:** `view --zoom`, run for them here and now, on the thread that asked, by the same handler as an agent's, and said to be sent as
+/// every person's command is. Says whether there was a page to zoom.
+pub fn for_person(host: &AppHost, serving: &Serving, zoom: Zoom) -> bool {
+    let asked = View {
+        zoom: Some(word(zoom)),
+        ..View::default()
+    };
+    super::person::sent(serving, &asked.clone().into());
+    run(host, &asked).is_ok()
 }
 
 #[cfg(test)]

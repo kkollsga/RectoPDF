@@ -129,7 +129,9 @@ fn a_quit_during_a_stuck_read_still_writes() {
     let (file, other) = (app.disk().pdf("stuck.pdf", 20), app.disk().pdf("other.pdf", 2));
     app.open(&file);
     app.core().qa_session_verb("hold_reads", "on").expect("a QA verb").expect("reads held");
-    app.core().open_file(other);
+    app.act(crate::core::controls::UiAction::Open {
+        path: other.display().to_string(),
+    });
     app.wait_until("the other file's read to be under way", || {
         app.core().life.reads_running.load(Ordering::SeqCst) > 0
     });

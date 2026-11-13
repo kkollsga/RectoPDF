@@ -36,6 +36,13 @@ FFI_DIR = "crates/recto-ffi/src"
 APPTEST_DIR = "crates/recto-cli/tests"
 APPTEST_BINARIES = ("app", "restore", "compare", "evidence", "long_session")
 TEST_ATTR = re.compile(r'^\s*#\[\s*test\s*\]', re.M)
+# The hub types whose size is more than their methods: every function in their crate's src/ that takes the whole thing is counted too, as a method moved
+# out to a free function that still takes all of it is the same hub by another name (R3.7: `Inner`'s 113 methods and about 84 such functions). Only down.
+# What it sees: a function (free, or a method of any impl) with the type's name in a parameter, by any path, behind any reference or `Arc`. What it
+# doesn't: the name only in a generic bound or a `where` clause, a type alias for it, `self` of a trait impl on it, a closure that captures it, and a
+# method of a struct that holds it; those are not counted here.
+WHOLE = {"crates/recto-app/src": "Inner"}
+FN_HEAD = re.compile(r'\bfn\s+\w+')
 
 # ---- Rust masking -------------------------------------------------------------------------------------------------------------------------
 MASK = re.compile(
@@ -218,6 +225,45 @@ def scan_items(t, lineof):
         res.append(('impl', k, v))
     return res
 
+def in_test_folder(rel, test_mods):
+    """Whether a file is under the folder of a module declared `#[cfg(test)]`: `core/headless/x.rs` under `mod headless;`."""
+    d = os.path.dirname(rel)
+    while d and d != os.path.dirname(d):
+        if os.path.join(d, 'mod.rs') in test_mods or d + '.rs' in test_mods:
+            return True
+        d = os.path.dirname(d)
+    return False
+
+def whole_fns(t, name):
+    """How many functions in masked, test-stripped text take `name` in a parameter: `fn f(inner: &Inner)`, `fn g<'a>(_: &'a Arc<super::Inner>)`,
+    `fn h<F: Fn() -> u8>(inner: &Inner, f: F)` (a `->` in the generics closes no bracket). Not the name in generics or a `where` clause: see WHOLE."""
+    word = re.compile(r'\b' + re.escape(name) + r'\b')
+    n = 0
+    for m in FN_HEAD.finditer(t):
+        i, depth = m.end(), 0
+        while i < len(t) and (depth or t[i] != '('):      # past the generics, to the parameters
+            if t[i] == '<':
+                depth += 1
+            elif t[i] == '>' and t[i - 1] != '-':      # `->` of a closure's bound closes nothing
+                depth -= 1
+            elif t[i] in '{;':
+                break
+            i += 1
+        if i >= len(t) or t[i] != '(':
+            continue
+        j, depth = i, 0
+        while j < len(t):
+            if t[j] == '(':
+                depth += 1
+            elif t[j] == ')':
+                depth -= 1
+                if not depth:
+                    break
+            j += 1
+        if word.search(t[i:j]):
+            n += 1
+    return n
+
 # a struct, enum or union defined, of any visibility and shape (braced, tuple or unit), in masked (no comments or strings), test-stripped text
 TYPE_DEF = re.compile(r'\b(?:struct|enum|union)\s+([A-Za-z_]\w*)')
 
@@ -239,7 +285,7 @@ def rust_files(root):
             yield from walk(root, os.path.join('crates', c, sub), ('.rs',))
 
 def measure(root):
-    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, type, sleep, ffi, apptest."""
+    """dict: (kind, key) -> number. Kinds file, fn, struct, enum, impl, type, sleep, ffi, apptest, whole."""
     m = {}
     TYPE_FILES.clear()
     apptests = 0
@@ -283,6 +329,11 @@ def measure(root):
         m[('file', rel)] = lines
         if rel.startswith(FFI_DIR + '/'):
             ffi_total += lines
+        for crate, name in WHOLE.items():
+            # A test module's folder holds tests only, whatever its files say (`#[cfg(test)] mod headless;` and every file under headless/).
+            if rel.startswith(crate + '/') and not in_test_folder(rel, test_mods):
+                k = ('whole', crate + '::' + name)
+                m[k] = m.get(k, 0) + whole_fns(t, name)
         crate = '/'.join(rel.split('/')[:3])
         for d in TYPE_DEF.finditer(t):
             defined.add(crate + '::' + d.group(1))
@@ -359,6 +410,16 @@ def compare(cur, base, bootstrap_ffi=False):
             elif n < base[('ffi', key)]:
                 shrunk.append(('ffi', key, base[('ffi', key)], n))
             continue
+        if kind == 'whole':
+            if (kind, key) not in base:
+                if not bootstrap_ffi:
+                    fails.append('whole %s: no baseline entry (add "whole %s %d" by hand)' % (key, key, n))
+            elif n > base[(kind, key)]:
+                fails.append('functions that take the whole %s grew: %d in %s, baseline %d. Pass a function the parts it reads, or make it the method of '
+                             'the part whose state it is, not a free function over all of it (guide 2.8, R3.7).' % (key.split('::')[-1], n, key, base[(kind, key)]))
+            elif n < base[(kind, key)]:
+                shrunk.append((kind, key, base[(kind, key)], n))
+            continue
         if kind == 'apptest':
             if (kind, key) not in base:
                 if not bootstrap_ffi:
@@ -401,7 +462,7 @@ def wanted(cur, base=None):
     at 0 when its methods all went to facades and it has no inherent impl left; only a type that no longer exists drops out)."""
     out = {}
     for (kind, key), n in cur.items():
-        if kind in ('ffi', 'sleep', 'apptest') or n > BUDGET[kind] or (kind == 'type' and base and (kind, key) in base):
+        if kind in ('ffi', 'sleep', 'apptest', 'whole') or n > BUDGET[kind] or (kind == 'type' and base and (kind, key) in base):
             out[(kind, key)] = n
     return out
 
@@ -427,7 +488,7 @@ def moved(root, bpath, old, new, kind=None):
     cur = measure(root)
     item = '::' in old or '::' in new
     under = (lambda key: key == old) if item else (lambda key: key == old or key.startswith(old + '::'))
-    picked = sorted((k, key) for (k, key) in base if k not in ('ffi', 'apptest', 'type') and under(key) and kind in (None, k))
+    picked = sorted((k, key) for (k, key) in base if k not in ('ffi', 'apptest', 'type', 'whole') and under(key) and kind in (None, k))
     if not picked:
         print('ratchet --moved: refused: the baseline has no %sentry for %s' % (kind + ' ' if kind else '', old))
         return 1

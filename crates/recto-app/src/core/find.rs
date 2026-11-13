@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// What Find reaches of the app, for one call.
-fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
+pub(super) fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
     step(&FindHandle {
         session: &inner.host.session,
         field: &inner.tools.find_field,
@@ -75,45 +75,39 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
     use super::menu_rows::Row;
     Some(match asked.action.as_ref()? {
         crate::menus::Action::FindOpen => Row::Command {
-            command: Find::from(FindAsk::Open).into(),
+            command: opened(),
             when_run: None,
             host: super::HostAction::FocusFind,
         },
-        crate::menus::Action::FindStep(forward) => Row::command(Find::from(FindAsk::Step {
-            forward: *forward,
-            jump: false,
-        })),
+        crate::menus::Action::FindStep(forward) => Row::command(step(*forward, false)),
         _ => return None,
     })
 }
 
-impl Inner {
-    /// What's in the Find field now, as it's typed: `find <query>`.
-    pub fn find_typed_for_person(self: &Arc<Self>, text: String) {
-        person::submit(self, Find::from(FindAsk::Query(text)).into());
-    }
+/// What's in the Find field now, as it's typed: `find <query>`.
+pub fn typed(text: String) -> Command {
+    Find::from(FindAsk::Query(text)).into()
+}
 
-    /// ⌘F, or the field's own button: `find --open`, which shows the sidebar Find is in.
-    pub fn find_open_for_person(self: &Arc<Self>) {
-        person::submit(self, Find::from(FindAsk::Open).into());
-    }
+/// ⌘F, or the field's own button: `find --open`, which shows the sidebar Find is in.
+pub fn opened() -> Command {
+    Find::from(FindAsk::Open).into()
+}
 
-    /// Escape in the field, or its close button: `find --close`.
-    pub fn find_close_for_person(self: &Arc<Self>) {
-        person::submit(self, Find::from(FindAsk::Close).into());
-    }
+/// Escape in the field, or its close button: `find --close`.
+pub fn closed() -> Command {
+    Find::from(FindAsk::Close).into()
+}
 
-    /// ⌘G and ⇧⌘G, a step, or Return and ⇧Return in the field, a jump, so Back comes here again: `find --next|--previous [--jump]`.
-    pub fn find_step_for_person(self: &Arc<Self>, forward: bool, jump: bool) {
-        person::submit(self, Find::from(FindAsk::Step { forward, jump }).into());
-    }
+/// ⌘G and ⇧⌘G, a step, or Return and ⇧Return in the field, a jump, so Back comes here again: `find --next|--previous [--jump]`.
+pub fn step(forward: bool, jump: bool) -> Command {
+    Find::from(FindAsk::Step { forward, jump }).into()
+}
 
-    /// A click on a row of Find's list: `find --hit N`, the hit that row is. A page's row is no hit, and does nothing.
-    pub fn find_choose_for_person(self: &Arc<Self>, row: u32) {
-        if let Some(index) = handle(self, |find| find.hit_of_row(row)).and_then(|index| u32::try_from(index).ok()) {
-            person::submit(self, Find::from(FindAsk::Hit(index)).into());
-        }
-    }
+/// A click on a row of Find's list: `find --hit N`, the hit that row is. A page's row is no hit, and does nothing.
+pub fn chosen(find: &FindHandle<'_, dyn crate::Listener>, row: u32) -> Option<Command> {
+    let index = find.hit_of_row(row).and_then(|index| u32::try_from(index).ok())?;
+    Some(Find::from(FindAsk::Hit(index)).into())
 }
 
 pub fn is_open(inner: &Inner) -> bool {
