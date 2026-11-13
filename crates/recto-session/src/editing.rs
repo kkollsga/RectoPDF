@@ -46,11 +46,6 @@ impl<L: DocLoader> Session<L> {
         by: Author,
         change: impl FnOnce(&mut crate::parts::PartMut<'_, PageEdits>) -> Result<(), EditError>,
     ) -> Result<(), SessionError> {
-        self.edit_list_as(id, by, |edits| change(&mut crate::parts::PartMut(edits)))
-    }
-
-    /// [`Self::edit_pages_as`] with the list itself, for the session's own edits that a caller's can't make: adding another PDF's pages.
-    fn edit_list_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
         if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
@@ -76,7 +71,7 @@ impl<L: DocLoader> Session<L> {
         }
         edits.act_as(by);
         edits.let_owner_steps_go(may_push_owner);
-        let result = change(edits);
+        let result = change(&mut crate::parts::PartMut(edits));
         edits.act_as(Author::Owner);
         edits.let_owner_steps_go(false);
         if result.is_ok() {
@@ -244,7 +239,7 @@ impl<L: DocLoader> Session<L> {
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_list_as(id, by, |edits| edits.insert_pdf_noting(at, path, facts.page_count, stamp, facts.encrypted))
+        self.edit_pages_as(id, by, |edits| edits.0.insert_pdf_noting(at, path, facts.page_count, stamp, facts.encrypted))
     }
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
