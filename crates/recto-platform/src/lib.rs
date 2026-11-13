@@ -199,6 +199,9 @@ pub mod registry;
 #[cfg_attr(not(target_os = "macos"), path = "thread_stub.rs")]
 pub mod thread;
 
+/// Leaving a process at once from a thread, with no exit handler waiting.
+pub mod leave;
+
 /// A folder of a run's own in a temp folder, never one already there, removed when it's dropped.
 pub mod fresh;
 
