@@ -454,18 +454,15 @@ fn a_rows_refusal_is_its_commands() {
             "{id} by the palette, as its command"
         );
     }
+    // Leave Edit Mode by the palette at Control is `edit mode off`, which edit mode on a protected tab doesn't stop: it goes off. (Below Control the
+    // palette's own level refuses any run before a row is looked at, so a check there couldn't tell this row from another.)
     let title = title_of(&app, "edit_mode.done");
-    let below = Err("permission_denied".to_string());
     assert_eq!(
-        refusal(&app, Level::ReadOnly, r#"{"cmd":"edit_mode","set":"off"}"#),
-        below,
-        "edit mode off below Control"
+        refusal(&app, Level::Control, &palette_run(&title)),
+        Ok(()),
+        "Leave Edit Mode by the palette at Control"
     );
-    assert_eq!(
-        refusal(&app, Level::ReadOnly, &palette_run(&title)),
-        below,
-        "Leave Edit Mode by the palette below Control"
-    );
+    assert!(!app.reader().edit_mode, "edit mode went off");
     // What's shown, asked with no tab, says the paper and the sidebar, and nothing of the protected tab's layout.
     let shown = app.agent(Level::Full, r#"{"cmd":"view"}"#).expect("asking how things are shown");
     assert!(shown.get("layout").is_none_or(serde_json::Value::is_null), "{shown}");
