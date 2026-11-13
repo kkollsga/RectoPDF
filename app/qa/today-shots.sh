@@ -246,7 +246,7 @@ fi
 
 
 if want darkimg; then
-    note "== 4b dark paper on real embedded images: p1 photo 39% of the page with text, p2 photo 53%, p3 a JPEG photo 45%, p4 a vector drawing 56% with text, p5 small photo, p6 white-backed scan, p7 photo 75% with a caption, p8 a full-bleed photo, p9 a photo 39% on a coloured background; then p2, p4, p7, p8 and p9 again from the sleep picture as the tab wakes, and settled"
+    note "== 4b dark paper on real embedded images: p1 photo 39% of the page with text, p2 photo 53%, p3 a JPEG photo 45%, p4 a vector drawing 56% with text, p5 small photo, p6 white-backed scan, p7 photo 75% with a caption, p8 a full-bleed photo, p9 a photo 39% on a coloured background, which is under half a picture and so turns over with its page whatever its background, p10 a photo 60% on a coloured background, which is dimmed whole; then p2, p4, p7, p8 and p9 again from the sleep picture as the tab wakes, and settled"
     /usr/bin/python3 -I - "$root/in/photo.bmp" <<'BMP'
 import sys, struct
 w, h = 360, 300
@@ -313,6 +313,7 @@ contents = [
     t(760, "Page 7: a photo, 75% of the page, with a caption", 18) + b"q 540 0 0 672 36 72 cm /Big Do Q\n" + t(50, "Figure 7. The landscape over three quarters of the page."),
     b"q 612 0 0 792 0 0 cm /Big Do Q\n",
     b"0.13 0.23 0.42 rg 0 0 612 792 re f\n0.95 g\n" + t(740, "Page 9: a photo, 39% of the page, on a coloured background", 18) + b"q 468 0 0 400 72 280 cm /Big Do Q\n" + t(255, "Figure 9. A landscape on a blue page.") + lines(230, 8),
+    b"0.13 0.23 0.42 rg 0 0 612 792 re f\n0.95 g\n" + t(740, "Page 10: a photo, 60% of the page, on a coloured background", 18) + b"q 504 0 0 570 54 130 cm /Big Do Q\n" + t(105, "Figure 10. A larger landscape on a blue page."),
 ]
 kids = []
 for c in contents:
@@ -332,7 +333,7 @@ PY2
     r open "$root/in/imgs.pdf"
     for look in light dark; do
         r qa appearance "$look"; r view --paper dark; settle
-        for p in 1 2 3 4 5 6 7 8 9; do r goto "$p"; settle; shot "04b-img-p$p"; pst "img-p$p $look"; done
+        for p in 1 2 3 4 5 6 7 8 9 10; do r goto "$p"; settle; shot "04b-img-p$p"; pst "img-p$p $look"; done
     done
     # The picture a tab sleeps as is made with the page's one look: each page left, the tab slept, and shown again, first from its sleep picture with drawing held, then settled.
     r open "$bashp"
@@ -352,7 +353,7 @@ PY2
     r tap "#1"
     # The same pages on white paper, for what they are.
     look=light; r qa appearance light; r view --paper white; settle
-    for p in 2 4 7 8 9; do r goto "$p"; settle; shot "04b-img-p$p-white-paper"; done
+    for p in 2 4 7 8 9 10; do r goto "$p"; settle; shot "04b-img-p$p-white-paper"; done
 fi
 
 if want findwrap; then
