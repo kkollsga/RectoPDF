@@ -178,7 +178,7 @@ pub fn start_serving(inner: &Arc<Inner>) {
         return;
     }
     let waiting = lock(&inner.serving.waiting_server).take();
-    let ending = Arc::clone(&inner.listener);
+    let (ending, life) = (Arc::clone(&inner.listener), Arc::clone(&inner.life));
     let served = Arc::clone(&inner.host);
     let inner = Arc::clone(inner);
     // Blocked in `poll` with nothing happening, as `recto serve` is.
@@ -198,7 +198,10 @@ pub fn start_serving(inner: &Arc<Inner>) {
         drop(inner);
         recto_platform::slow::pause(recto_platform::slow::Seam::Socket);
         let _ = server.run(served, Limits::default());
-        ending.session_ended();
+        // Told once, by the machine, however the server was stopped.
+        if life.step(crate::lifecycle::Event::SocketEnded) == Some(crate::lifecycle::Out::SessionEnded) {
+            ending.session_ended();
+        }
     });
 }
 

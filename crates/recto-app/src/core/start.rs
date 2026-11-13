@@ -134,7 +134,7 @@ impl Inner {
             sleeper: sleeper::Sleeper::new(Arc::clone(&clock)),
             qa,
             keys,
-            life: Lifecycle::new(clock),
+            life: Arc::new(Lifecycle::new(clock)),
             serving: Serving {
                 paths: Some(paths),
                 socket,

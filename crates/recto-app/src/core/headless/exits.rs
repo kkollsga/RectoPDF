@@ -126,14 +126,17 @@ fn every_edit_survives_a_kill() {
 
 /// Failure (SPEC decision 24: an update "while the user is using it"): an edit is lost across an update's hand-off. Handed off as `qa handoff now` does it, the
 /// state written, forced and read back, the app gone, and each kind comes back in the app that takes over. (Replaces the app test
-/// `every_edit_survives_a_hand_off`.)
+/// `every_edit_survives_a_hand_off`.) And the host is told to quit once, as a QA run asks twice (`handoff`'s own thread, then `hand_off_quit`), each answered yes.
 #[test]
 fn every_edit_survives_a_hand_off() {
     let app = HeadlessApp::start();
     let (docs, extra) = one_of_each(&app);
     let before = edits(&app);
+    assert!(!app.core().hand_off_quit_now(), "not before it's handed off");
     app.core().hand_off(crate::testkit::headless::WAIT_LIMIT).expect("handed off");
     assert!(app.core().hand_off_quit_now(), "told to quit");
+    assert!(app.core().hand_off_quit_now(), "asked again, still quitting");
+    assert_eq!(app.listener().count(&crate::testkit::Heard::HandOffQuit), 1, "told once");
     let app = again(app.kill());
     assert_eq!(edits(&app), before, "after a hand-off");
     untouched(&docs, &extra);

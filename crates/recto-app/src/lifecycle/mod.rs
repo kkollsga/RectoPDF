@@ -1,5 +1,7 @@
 //! **Where the app is in its life, as a state machine on the clock** (step R1.4): the state's coming in at launch, the window's patience for it, the window going up
-//! with or without it, whether the window takes input, a hand-off's freeze, and a quit the host asked for: its freeze, its write and its answer. One small value, [`Life`], and one pure function, [`Life::step`], of the state, an
+//! with or without it, whether the window takes input, a hand-off's freeze and the quit it comes to, a quit the host asked for (its freeze, its write and its
+//! answer), and the control socket's end. The host is told to quit for a hand-off, and that the session has ended, each by an output only one transition makes,
+//! from a state it leaves: so at most once a hand-off and once in all, by construction, whoever asks how often. One small value, [`Life`], and one pure function, [`Life::step`], of the state, an
 //! event and `now` in milliseconds of the app's [`crate::clock::Clock`]: no lock, no thread, no listener, no I/O. What it comes to is an [`Out`] for the caller to
 //! carry out. So every order the arrivals can come in (the state read before the patience, at it, after it, with an update's 20 s or without) is tested here in
 //! microseconds, on numbers, and not by launching the app on a loaded machine (`tests`).
@@ -34,6 +36,8 @@ pub enum HandOff {
     Writing,
     /// Written, forced to the drive and read back. Quitting now is what's left.
     Done,
+    /// The host's been told to quit for it ([`Out::HandOffQuit`]): told once, as only [`HandOff::Done`] tells, and this is where telling leaves it.
+    Quitting,
 }
 
 /// Where a quit the host asked for has got to.
@@ -63,6 +67,8 @@ pub struct Life {
     quit: Quit,
     /// The window went up without the state and was made again from it when it came in: what a test of a late state asks, so it can't pass on the on-time path.
     remade: bool,
+    /// The host's been told the control socket's session has ended ([`Out::SessionEnded`]): once in the app's life, as only this being false tells it.
+    ended: bool,
 }
 
 /// What happens to the app's life.
@@ -80,6 +86,10 @@ pub enum Event {
     HandOffWritten,
     /// It isn't going ahead: something came in, the state couldn't be written, or the updater gave up.
     HandOffUndone,
+    /// The updater (or QA) asks for the quit a hand-off that's written comes to.
+    HandOffQuit,
+    /// The control socket's server has returned, however it was stopped.
+    SocketEnded,
     /// The host asks to quit, by the menu or the system (a SIGTERM is one).
     QuitAsked,
     /// The quit's write is over: the state `written` (or this copy isn't the one keeping it), or not, by the flush's end or the quit's patience; and how many
@@ -105,6 +115,10 @@ pub enum Out {
     QuitAnswer { go: bool, unsaved_tabs: usize, unfreeze: bool },
     /// The quit stayed: the run's watched again, as one that hasn't ended.
     QuitStayed,
+    /// The host's told to quit now, with no prompt, for a hand-off that's written ([`crate::Listener::hand_off_quit`]). At most once a hand-off.
+    HandOffQuit,
+    /// The host's told the control socket's session has ended ([`crate::Listener::session_ended`]). At most once.
+    SessionEnded,
 }
 
 impl Life {
@@ -153,9 +167,23 @@ impl Life {
                 self.hand_off = HandOff::Writing;
                 Some(Out::Freeze(true))
             }
+            // Only a hand-off that's writing has written: one that was undone, or has told the host to quit already, isn't written again by a late word.
             Event::HandOffWritten => {
-                self.hand_off = HandOff::Done;
+                if self.hand_off == HandOff::Writing {
+                    self.hand_off = HandOff::Done;
+                }
                 None
+            }
+            // The one way to [`Out::HandOffQuit`]: from written to quitting, so asking again, from any thread, tells the host nothing more.
+            Event::HandOffQuit if self.hand_off == HandOff::Done => {
+                self.hand_off = HandOff::Quitting;
+                Some(Out::HandOffQuit)
+            }
+            Event::HandOffQuit => None,
+            Event::SocketEnded => {
+                let first = !self.ended;
+                self.ended = true;
+                first.then_some(Out::SessionEnded)
             }
             // Taken again, unless a quit that's writing or going holds it.
             Event::HandOffUndone => {
@@ -218,6 +246,12 @@ impl Life {
     #[must_use]
     pub fn hand_off(&self) -> HandOff {
         self.hand_off
+    }
+
+    /// Whether the host's been told the control socket's session has ended.
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        self.ended
     }
 
     #[must_use]
