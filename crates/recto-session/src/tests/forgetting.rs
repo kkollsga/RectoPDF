@@ -254,7 +254,11 @@ fn a_tab_whose_file_changed_holds_nothing_read_of_the_version_before() {
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     assert!(holding(&s, a).contains(&"warm"), "{:?}", holding(&s, a));
     s.apply_file_status(a, record::FileStatus::Changed(stamp(2)));
-    assert!(!holding(&s, a).contains(&"warm"), "what was read of the version before is held: {:?}", holding(&s, a));
+    assert!(
+        !holding(&s, a).contains(&"warm"),
+        "what was read of the version before is held: {:?}",
+        holding(&s, a)
+    );
     let loads = s.loader().loads.get();
     s.activate(a);
     assert_eq!(s.loader().loads.get(), loads + 1, "shown, it's read again");
