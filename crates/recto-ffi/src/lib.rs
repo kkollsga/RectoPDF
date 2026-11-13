@@ -33,7 +33,6 @@ use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
-use recto_control::StatePaths;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
@@ -545,15 +544,6 @@ pub fn launch_answers_at_once(args: Vec<String>) -> Option<String> {
     (args == ["--build-kind"]).then(|| json!({ "release_build": recto_update::RELEASE_BUILD, "takes_test_hooks": !recto_update::RELEASE_BUILD }).to_string())
 }
 
-/// What a QA run must be: on a state folder that was set on purpose, never the real one. `recto qa start` writes the level there, since nothing else can.
-fn state_for(qa: bool) -> Result<StatePaths, String> {
-    let paths = StatePaths::from_env().map_err(|error| error.message)?;
-    if qa && !paths.overridden {
-        return Err("A QA run needs RECTO_STATE_DIR set to a temp folder. It won't touch the real state.".into());
-    }
-    Ok(paths)
-}
-
 #[uniffi::export]
 impl AppCore {
     /// Joins the session and the socket. Checks the arguments and binds, which is quick. A socket another session holds doesn't stop a normal run: the reader works, and `recto` keeps talking to that session.
@@ -561,9 +551,7 @@ impl AppCore {
     pub fn start(args: Vec<String>, listener: Arc<dyn AppListener>) -> Result<Arc<Self>, StartError> {
         let refused = |message: String| StartError::Refused { message };
         let listener: Arc<dyn recto_app::Listener> = Arc::new(records::HostListener(listener));
-        let args = recto_app::launch::parse(&args).map_err(refused)?;
-        recto_platform::slow::arm(args.qa).map_err(refused)?;
-        let paths = state_for(args.qa).map_err(refused)?;
+        let (args, paths) = recto_app::launch::start(&args).map_err(refused)?;
         let (qa_mode, open) = (args.qa, args.open.clone());
         let inner = Inner::start(Start {
             listener,

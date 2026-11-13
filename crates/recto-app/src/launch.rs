@@ -1,6 +1,7 @@
 //! **What a launch of the app was asked for:** the one parser of its arguments, so whether a launch is quiet, decided before the toolkit does anything, and what the rest
 //! of the launch does can't disagree.
 
+use recto_control::StatePaths;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -62,6 +63,35 @@ pub fn parse(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
+/// **What a launch starts with, from its words:** what it was asked for, a test's slow mode armed for a quiet run, and where it keeps its state
+/// ([`state_with`]). One call, so the bridge has nothing to get wrong between them.
+///
+/// # Errors
+///
+/// Why, in words: arguments it won't take, a slow mode it can't arm, or state a quiet run may not use.
+pub fn start(words: &[String]) -> Result<(LaunchArgs, StatePaths), String> {
+    let (args, paths) = start_with(words, StatePaths::from_env().map_err(|error| error.message)?)?;
+    recto_platform::slow::arm(args.qa)?;
+    Ok((args, paths))
+}
+
+/// [`start`], with the folders named already chosen and nothing armed: what it decides.
+fn start_with(words: &[String], named: StatePaths) -> Result<(LaunchArgs, StatePaths), String> {
+    let args = parse(words)?;
+    let paths = state_with(&args, named)?;
+    Ok((args, paths))
+}
+
+/// **Where a launch keeps its state:** the folders named, or the user's own, and for a quiet run only a new folder in a temp folder
+/// ([`StatePaths::for_a_quiet_run`]): a quiet run's level starts at Full.
+fn state_with(args: &LaunchArgs, named: StatePaths) -> Result<StatePaths, String> {
+    if args.qa {
+        named.for_a_quiet_run().map_err(|error| error.message)
+    } else {
+        Ok(named)
+    }
+}
+
 /// A word of the arguments, made safe to say back: no control characters, and bounded.
 fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
@@ -90,5 +120,51 @@ mod tests {
         assert!(parse(&words(&["--nope"])).is_err());
         assert!(parse(&words(&["--qa-memory-limit-mib"])).is_err());
         assert_eq!(parse(&words(&["-psn_0_12345"])).unwrap(), LaunchArgs::default(), "what macOS adds");
+    }
+
+    /// Failure: the app starts a quiet run, whose level starts at Full, on state that isn't throwaway: with no state folder named (the user's own), or with
+    /// one outside the temp folders, and says nothing of what to set. A launch that isn't quiet keeps whatever it's given.
+    #[test]
+    fn a_quiet_launch_takes_only_temp_state() {
+        let quiet = LaunchArgs {
+            qa: true,
+            ..LaunchArgs::default()
+        };
+        let refused = state_with(&quiet, StatePaths::users_own().unwrap()).expect_err("none named");
+        assert!(refused.contains(recto_control::state::STATE_ENV), "it says what to set: {refused}");
+        if let Some(outside) = crate::testkit::headless::outside_the_tests_folders("state")
+            && let Ok(named) = StatePaths::overridden(&outside)
+        {
+            assert!(state_with(&quiet, named).is_err(), "a folder outside the temp folders");
+        }
+        assert!(
+            state_with(&LaunchArgs::default(), StatePaths::users_own().unwrap()).is_ok(),
+            "a launch that isn't quiet"
+        );
+        let temp = recto_control::quiet::temp_folders()[0].join(format!("recto-launch-{}", std::process::id()));
+        assert!(
+            state_with(&quiet, StatePaths::overridden(&temp).unwrap()).is_ok(),
+            "a new folder in the temp folder"
+        );
+    }
+
+    /// Failure (review of R2.4, item 7): what the bridge starts the app with is parsed and given its state by two calls it has to make in order and can
+    /// get wrong: a quiet launch on the user's own state, or one whose arguments don't parse, starts. One call, held here.
+    #[test]
+    fn a_launch_is_parsed_and_given_its_state_at_once() {
+        let words = |list: &[&str]| list.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        assert!(
+            start_with(&words(&["--qa"]), StatePaths::users_own().unwrap()).is_err(),
+            "a quiet launch on the user's own state"
+        );
+        assert!(
+            start_with(&words(&["--qa-owner-pid", "5"]), StatePaths::users_own().unwrap()).is_err(),
+            "arguments it won't take"
+        );
+        let (args, paths) = start_with(&words(&["/d/a.pdf"]), StatePaths::users_own().unwrap()).expect("a plain launch");
+        assert!(!args.qa && !paths.overridden && args.open == [PathBuf::from("/d/a.pdf")]);
+        let temp = recto_control::quiet::temp_folders()[0].join(format!("recto-start-{}", std::process::id()));
+        let (args, paths) = start_with(&words(&["--qa"]), StatePaths::overridden(&temp).unwrap()).expect("a quiet launch on a temp folder");
+        assert!(args.qa && paths.overridden);
     }
 }

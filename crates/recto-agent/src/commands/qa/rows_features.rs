@@ -1,47 +1,10 @@
 //! The QA verbs' rows, part of [`super::ROWS_QA`]: The features, driven as a person would: Find, the palette, editing and saving, updates, quitting and handing off, and sleep.
 
+use super::verbs::{Area::*, QaKind::*, QaVerb, verb};
 use crate::Level;
 use crate::table::*;
 
 pub(crate) const ROWS: &[Spec] = &[
-    Spec {
-        name: "qa find",
-        tag: "qa_drive",
-        group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Opens or closes Find in the sidebar, by what ⌘F and Escape do. Opening finds what was last typed again; closing lets its hits go and keeps what was typed.",
-        args: &[Arg {
-            key: "value",
-            flag: None,
-            kind: Kind::Choice(&["open", "closed"]),
-            required: true,
-            help: "`open` or `closed`.",
-        }],
-        fixed: &[("verb", "find")],
-        data: "`qa state`'s `app`, with `find`.",
-        examples: &["recto qa find open"],
-        client_wait_s: 35,
-        ..BASE
-    },
-    Spec {
-        name: "qa find-query",
-        tag: "qa_drive",
-        group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Sets what Find has found for, leaving what's in the field as it is, as a record from before a restart does. Its hits are found again for the document being read.",
-        args: &[Arg {
-            key: "value",
-            flag: None,
-            kind: Kind::Text,
-            required: true,
-            help: "The text.",
-        }],
-        fixed: &[("verb", "find_query")],
-        data: "`qa state`'s `app`.",
-        examples: &["recto qa find-query budget"],
-        client_wait_s: 35,
-        ..BASE
-    },
     Spec {
         name: "qa find-draft",
         tag: "qa_drive",
@@ -85,17 +48,17 @@ pub(crate) const ROWS: &[Spec] = &[
         tag: "qa_drive",
         group: GROUP_QA,
         access: Access::At(Level::Control),
-        summary: "Presses a key in Find's field, by what the field calls for it: Return goes to the next hit, ⇧Return to the one before, Escape closes Find.",
+        summary: "Presses Escape in Find's field, by what the field calls for it, which closes Find. Return and ⇧Return are the person's `find --next --jump` and `find --previous --jump`: `qa as-person`.",
         args: &[Arg {
             key: "value",
             flag: None,
-            kind: Kind::Choice(&["return", "shift_return", "escape"]),
+            kind: Kind::Choice(&["escape"]),
             required: true,
             help: "Which key.",
         }],
         fixed: &[("verb", "find_key")],
         data: "`qa state`'s `app`, with `find`.",
-        examples: &["recto qa find-key return"],
+        examples: &["recto qa find-key escape"],
         client_wait_s: 35,
         ..BASE
     },
@@ -157,25 +120,6 @@ pub(crate) const ROWS: &[Spec] = &[
         ..BASE
     },
     Spec {
-        name: "qa edit-mode",
-        tag: "qa_drive",
-        group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Goes into edit mode or out. The sidebar's panel opens on its tools, with Done, and its Rotate turns the page being read.",
-        args: &[Arg {
-            key: "value",
-            flag: None,
-            kind: Kind::Choice(&["on", "off"]),
-            required: true,
-            help: "`on` or `off`.",
-        }],
-        fixed: &[("verb", "edit_mode")],
-        data: "`qa state`'s `app`.",
-        examples: &["recto qa edit-mode on"],
-        client_wait_s: 35,
-        ..BASE
-    },
-    Spec {
         name: "qa view-rotation",
         tag: "qa_drive",
         group: GROUP_QA,
@@ -216,8 +160,8 @@ pub(crate) const ROWS: &[Spec] = &[
         name: "qa save-as",
         tag: "qa_drive",
         group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "What Save As's sheet does when it's answered with a new file's path: the window's save, off its thread, the tab going over to the new file.",
+        access: Access::At(Level::Full),
+        summary: "Answers Save As's sheet with a new file's path, by what the sheet's ending sends (the window's own Save As answer, which the system's sheet can't be typed into for): the window's save, off its thread, its notes said by the page, the tab going over to the new file. As the person, so only at Full, in a development build, and on a test's own files, as `qa as-person`.",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -249,11 +193,30 @@ pub(crate) const ROWS: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa as-person",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Full),
+        summary: "Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait. It exists so a test can do what a person does, in a quiet run on a test's own files, and nowhere else: only what a person's control sends, only while every file open and every file named is in the run's state folder or a temp folder, and only in a development build.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Text,
+            required: true,
+            help: "The command's words, as one: `page rotate 2 --by 90`, or `save-as --out \"/tmp/a b.pdf\"`.",
+        }],
+        fixed: &[("verb", "as_person")],
+        data: "`qa state`'s `app`, once the command has gone to the session.",
+        examples: &["recto qa as-person \"page rotate 2 --by 90\"", "recto qa as-person \"find --next --jump\""],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa owner-edit",
         tag: "qa_drive",
         group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.",
+        access: Access::At(Level::Full),
+        summary: "Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules. Kept only until `long_session.rs` moves to `qa as-person`.",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -283,25 +246,6 @@ pub(crate) const ROWS: &[Spec] = &[
         fixed: &[("verb", "note_input")],
         data: "`qa state`'s `app`.",
         examples: &["recto qa note-input now"],
-        client_wait_s: 35,
-        ..BASE
-    },
-    Spec {
-        name: "qa open-file",
-        tag: "qa_drive",
-        group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Opens a file by the route a drop or the menu takes, which reads it off the session thread.",
-        args: &[Arg {
-            key: "value",
-            flag: None,
-            kind: Kind::Text,
-            required: true,
-            help: "The file's whole path.",
-        }],
-        fixed: &[("verb", "open_file")],
-        data: "`qa state`'s `app`.",
-        examples: &["recto qa open-file /tmp/a.pdf"],
         client_wait_s: 35,
         ..BASE
     },
@@ -601,4 +545,43 @@ pub(crate) const ROWS: &[Spec] = &[
         examples: &["recto qa memory-pressure warning"],
         ..BASE
     },
+];
+
+/// These rows' verbs in the table ([`super::verbs`]): what kind each is, and the host's area that answers it.
+pub(super) const VERBS: &[QaVerb] = &[
+    // What a record brings back that no one action makes: text in the field that wasn't found for.
+    verb("find_draft", Condition, None),
+    verb("find_type", HostInput, Some(Find)),
+    verb("find_key", HostInput, Some(Find)),
+    verb("find_click", HostInput, Some(Find)),
+    verb("palette_type", HostInput, Some(Sidebar)),
+    verb("palette_key", HostInput, Some(Sidebar)),
+    // What an older record brings back: no action turns a tab's view any more.
+    verb("view_rotation", Condition, None),
+    verb("sheet_answer", HostInput, Some(Dialogs)),
+    // The system's Save As sheet answered: it can't be typed into.
+    verb("save_as", Person, None),
+    // A save with the writing done by the test.
+    verb("save_from", Condition, None),
+    verb("as_person", Person, None),
+    // An alias on `as_person`, kept only until the worker in `recto-cli/tests/long_session.rs` has merged (2026-11-13).
+    verb("owner_edit", Person, None),
+    verb("note_input", Condition, None),
+    verb("hold_reads", Condition, None),
+    verb("hand_off_quit", Condition, None),
+    verb("sheet", Condition, Some(Dialogs)),
+    verb("update_tick", Condition, None),
+    verb("update_clock", Condition, None),
+    verb("settings", HostInput, Some(Dialogs)),
+    verb("shot_settings", Look, Some(Shots)),
+    verb("shot_menus", Look, Some(Shots)),
+    verb("shot_menu", Look, Some(Shots)),
+    verb("quit", HostInput, Some(Window)),
+    // An update's hand-off, measured, with nothing installed.
+    verb("handoff", Condition, None),
+    verb("dormant_after", Condition, None),
+    verb("hold_drawing", Condition, None),
+    verb("sleep_write_gap", Condition, None),
+    verb("live_budget", Condition, None),
+    verb("memory_pressure", Condition, None),
 ];

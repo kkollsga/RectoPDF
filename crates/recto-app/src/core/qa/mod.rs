@@ -1,9 +1,14 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
+mod as_person;
+mod levers;
+mod values;
+
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
+use recto_agent::commands::Cmd;
 use recto_agent::commands::Qa;
-use recto_agent::commands::qa::{QaDrive, QaRead};
+use recto_agent::commands::qa::{QaDrive, QaRead, verbs};
 use recto_agent::{AgentError, exit};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
@@ -13,6 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
+use values::{bad, check_drive_value, cleaned, parse_page_place, refuse_shot_path};
 
 /// How long a quiet run lasts at most, if it isn't told.
 pub const QUIET_RUN_LIMIT: Duration = Duration::from_secs(600);
@@ -310,6 +316,10 @@ impl QaBridge {
 
     /// Asks the UI thread and waits for it. No answer in time means the UI thread is stuck, which is its own kind of failure.
     fn ask(&self, verb: &str, value: &str) -> Result<Value, AgentError> {
+        // Only what the table says the host answers goes to it: a verb it doesn't would come back as no QA command from the host, after a wait.
+        if !verbs::host_answers(verb) {
+            return Err(bad("That isn't a QA command the window answers."));
+        }
         // What acts on the window waits for it to take input, as a person's click would have to: a window up without the state is made again from it, and what was done to it would go (CI, 2026-11-11). Looking doesn't wait.
         if !matches!(verb, "state" | "animations" | "copied") {
             let began = Instant::now();
@@ -379,6 +389,11 @@ impl QaBridge {
     }
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
+        // The table says what a client may drive: a verb with a `qa_drive` row. Nothing else gets further, here or at the host.
+        if verbs::row_of(verb).is_none_or(|row| row.tag != QaDrive::TAG) {
+            return Err(bad("That isn't a QA command."));
+        }
+        refused_in_a_release(recto_platform::RELEASE_BUILD, verb)?;
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
             value
                 .parse::<f64>()
@@ -396,20 +411,33 @@ impl QaBridge {
         match verb {
             // What ends the app answers first, as nothing can after.
             "quit" => return self.ask(verb, value),
-            "handoff" => {
+            "handoff" => return self.handoff(),
+            // A person's command, as the window sends it, for what only a person may do. Checked there: its level is its row's, Full.
+            // What Save As's sheet sends when it's answered with this path, the window's own answer: the system's sheet can't be typed into.
+            "save_as" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let report = inner
-                    .hand_off(ANSWER_AFTER_CLICK)
-                    .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
-                // The answer gets out first. An updater has no one to answer, and doesn't wait.
-                let quitting = Arc::clone(&inner);
-                let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
-                    std::thread::sleep(HANDOFF_ANSWER_WAIT);
-                    quitting.hand_off_quit_now();
-                });
-                return Ok(
-                    json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }),
-                );
+                if !value.starts_with('/') {
+                    return Err(bad("It's the whole path of a new file."));
+                }
+                let tab = lock(&inner.published).reader.shown_tab;
+                if tab == 0 {
+                    return Err(AgentError::new("no_active_tab", "No tab is open.", exit::NOT_FOUND));
+                }
+                as_person::check_tests_files(&inner, &[Path::new(value)])?;
+                inner.act(crate::core::controls::UiAction::SaveAs { tab, path: value.to_owned() });
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
+            }
+            "as_person" | "owner_edit" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                let words = if verb == "owner_edit" {
+                    as_person::owner_edit_words(value)?
+                } else {
+                    value.to_owned()
+                };
+                as_person::run(&inner, &words)?;
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
             }
             "hand_off_quit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
@@ -439,10 +467,6 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "open_file" => {
-                // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
-                return self.ask(verb, value);
-            }
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
             | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
             | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise"
@@ -457,15 +481,7 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.tools.prompts.passwords)
-                    .showing()
-                    .map(|ask| ask.path.clone())
-                    .ok_or_else(|| bad("No password sheet is open."))?;
-                if !is_a_tests_file(&path, inner.serving.paths.as_ref().map(|paths| paths.root.as_path())) {
-                    return Err(bad(
-                        "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
-                    ));
-                }
+                password_sheet_is_a_tests(&inner)?;
             }
             "entry_points" | "services" => return self.ask(verb, value),
             // A paste of one type from another app, as the system asks for it: a promised type is made now, and what's on the clipboard comes back as `qa copied` says it.
@@ -518,6 +534,23 @@ impl QaBridge {
         // A click goes to the session thread and comes back as a model. The answer is what's true once that's happened, so nobody has to sleep and hope.
         self.core.flush(ANSWER_AFTER_CLICK);
         self.ask("state", "")
+    }
+
+    /// `qa handoff`: what an update does with the state before it quits, measured, then the quit, after the answer has had time to get out.
+    fn handoff(&self) -> Result<Value, AgentError> {
+        let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+        let report = inner
+            .hand_off(ANSWER_AFTER_CLICK)
+            .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
+        // The answer gets out first. An updater has no one to answer, and doesn't wait.
+        let quitting = Arc::clone(&inner);
+        let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
+            std::thread::sleep(HANDOFF_ANSWER_WAIT);
+            quitting.hand_off_quit_now();
+        });
+        Ok(
+            json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }),
+        )
     }
 
     fn state(&self) -> Result<Value, AgentError> {
@@ -682,175 +715,112 @@ impl QaBridge {
     }
 }
 
+/// **`qa password` types only into a test's own sheet:** the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so
+/// it can't type into one for the person's own (review O6).
+pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError> {
+    let path = lock(&inner.tools.prompts.passwords)
+        .showing()
+        .map(|ask| ask.path.clone())
+        .ok_or_else(|| bad("No password sheet is open."))?;
+    as_person::check_tests_files(inner, &[path.as_path()])
+}
+
+/// **What acts as the person is a test's alone, never a release's** (decided in R2.4's review, D1): `qa as-person`, its `owner-edit` alias and `qa
+/// save-as` are refused in a release build, as a test's update clock is, by the build's own flag. `app/release-zip.sh` checks it on the signed app.
+fn refused_in_a_release(release: bool, verb: &str) -> Result<(), AgentError> {
+    if release && matches!(verb, "as_person" | "owner_edit" | "save_as") {
+        return Err(AgentError::new(
+            "qa_refused",
+            "A release build doesn't act as the person for a test: this QA verb is only in a development build.",
+            exit::FAILED,
+        ));
+    }
+    Ok(())
+}
+
 fn stuck() -> AgentError {
     AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT)
         .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
-/// Where a QA mouse verb goes: `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press. The page is as `recto` counts them.
-#[derive(Debug, PartialEq)]
-struct PagePlace {
-    page: u32,
-    x: f64,
-    y: f64,
-    clicks: u32,
-    shift: bool,
-}
-
-fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
-    let wrong = || {
-        bad(format!(
-            "`{}` isn't a place. It's `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press, such as `3:120,88:2`.",
-            cleaned(value)
-        ))
-    };
-    let mut parts = value.split(':');
-    let page = parts
-        .next()
-        .and_then(|word| word.parse::<u32>().ok())
-        .and_then(|page| page.checked_sub(1))
-        .ok_or_else(wrong)?;
-    let (x, y) = parts.next().and_then(|word| word.split_once(',')).ok_or_else(wrong)?;
-    let (x, y) = (x.parse::<f64>().map_err(|_| wrong())?, y.parse::<f64>().map_err(|_| wrong())?);
-    if !x.is_finite() || !y.is_finite() {
-        return Err(wrong());
-    }
-    let (mut clicks, mut shift) = (1, false);
-    for part in parts {
-        match part {
-            "shift" => shift = true,
-            count => clicks = count.parse::<u32>().ok().filter(|count| (1..=4).contains(count)).ok_or_else(wrong)?,
-        }
-    }
-    Ok(PagePlace { page, x, y, clicks, shift })
-}
-
-/// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
-/// Whether a file is one a quiet run's test made: in its state folder, or a temp folder. Compared by the folders the paths really are, so a link out of one doesn't count.
-fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
-    let Ok(file) = path.canonicalize() else { return false };
-    let roots = [
-        state.map(std::path::Path::to_path_buf),
-        Some(std::env::temp_dir()),
-        Some(std::path::PathBuf::from("/private/tmp")),
-    ];
-    roots
-        .into_iter()
-        .flatten()
-        .filter_map(|root| root.canonicalize().ok())
-        .any(|root| file.starts_with(root))
-}
-
-fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
-    let one_of = |words: &[&str]| words.contains(&value);
-    let row = || value.parse::<u32>().is_ok();
-    let fits = match verb {
-        "appearance" => one_of(&["light", "dark"]),
-        "window" => one_of(&["open", "close"]),
-        "contents_pointer" => one_of(&["in", "out"]),
-        "corner_pointer" => one_of(&[
-            "top-left:in",
-            "top-left:out",
-            "top-right:in",
-            "top-right:out",
-            "lower-right:in",
-            "lower-right:out",
-        ]),
-        "reduce_motion" => one_of(&["on", "off"]),
-        "accessibility" => crate::sidebar_access::is_qa_value(value),
-        "scroller_style" => one_of(&["legacy", "overlay"]),
-        "full_screen" | "minimise" | "hide_app" | "frontmost" => one_of(&["on", "off"]),
-        "focus" => one_of(&["page", "sidebar", "find"]),
-        "sheet" => one_of(&["open", "closed"]),
-        "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
-        // What shows a window is left out: a quiet run shows none.
-        // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
-        "menu" => {
-            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || super::snapshot_tool::is_menu_id(value))
-        }
-        "panel" => {
-            value == "toggle"
-                || value == "edit_mode.done"
-                || value.starts_with("paper.")
-                || value.starts_with("view.")
-                || value.starts_with("rotate.")
-                || value.starts_with("tools.")
-        }
-        "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
-        "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
-        "key_action" => one_of(&["undo", "redo"]),
-        "context_menu" => crate::menus::context_menu(None, Some(false))
-            .iter()
-            .any(|item| !item.id.is_empty() && item.id == value),
-        // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
-        "zoom_type" => value.chars().count() <= 32,
-        // A test's password, typed as a person would: the app takes it once and keeps it only for the open tab.
-        "password" => !value.is_empty() && value.len() <= recto_core::MAX_PASSWORD_BYTES,
-        "page_type" => value.len() <= crate::linking::MAX_TYPED_PAGE,
-        "swipe" => value.parse::<f64>().is_ok_and(|delta| delta.is_finite() && delta.abs() <= 100.0),
-        "hover" | "reveal" => value == "none" || row(),
-        "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
-        "contents_scroll" | "compare_click" | "find_click" => row(),
-        "palette_type" => value.chars().count() <= 256,
-        "palette_key" => one_of(&["up", "down", "return", "escape"]),
-        "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
-        "find_key" => one_of(&["return", "shift_return", "escape"]),
-        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| {
-            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
-                && crate::menus::context_menu(None, Some(false))
-                    .iter()
-                    .any(|entry| !entry.id.is_empty() && entry.id == item)
-        }),
-        "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
-        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| {
-            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
-                && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)
-        }),
-        "resize" => value
-            .split_once('x')
-            .and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?)))
-            .is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
-        _ => false,
-    };
-    if fits {
-        return Ok(());
-    }
-    Err(bad(format!("`{}` isn't something `{}` takes.", cleaned(value), verb.replace('_', "-"))))
-}
-
-/// What a `qa shot` may write: a new `.png`, outside the real home.
-fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool) -> Result<(), AgentError> {
-    if !out.is_absolute() {
-        return Err(bad("That path isn't whole. A session has no folder of its own to start from."));
-    }
-    if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) {
-        return Err(bad("A shot is a new `.png` file."));
-    }
-    if in_real_home(out) {
-        return Err(AgentError::new(
-            "path_refused",
-            "A shot goes outside your home folder, somewhere temporary.",
-            exit::FAILED,
-        ));
-    }
-    // `symlink_metadata`, so a link is something being there, wherever it points or if it points nowhere.
-    if std::fs::symlink_metadata(out).is_ok() {
-        return Err(recto_agent::output_exists());
-    }
-    Ok(())
-}
-
-fn bad(words: impl Into<String>) -> AgentError {
-    AgentError::new("usage", words.into(), exit::USAGE)
-}
-
-fn cleaned(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).take(64).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::headless::{HeadlessApp, outside_the_tests_folders};
+
+    /// A QA bridge on a headless app, for what's refused before the host is asked: no host answers it, so a verb that got as far as the host would wait
+    /// out [`UI_ANSWER_WAIT`] and fail as stuck.
+    fn bridge(app: &HeadlessApp) -> QaBridge {
+        let inner = app.core();
+        let bridge = QaBridge::new(
+            Arc::new(crate::testkit::FakeListener::default()),
+            inner.engine.clone(),
+            Watchdog::new(),
+            Arc::clone(&inner.core),
+        );
+        bridge.attach(Arc::downgrade(inner));
+        bridge
+    }
+
+    fn drive(bridge: &QaBridge, verb: &str, value: &str) -> Result<Value, AgentError> {
+        bridge.run(&Qa::QaDrive(QaDrive {
+            verb: verb.to_owned(),
+            value: value.to_owned(),
+            timeout_ms: None,
+        }))
+    }
+
+    /// Failure (review of R2.4, S2): `qa save-as` acts as the person, at Control and with no file wall, where the same through `qa as-person` needs Full
+    /// and the wall: a save to a path outside the test's folders, or with a file that isn't a test's open, goes through. Through the verb, as a client
+    /// sends it.
+    #[test]
+    fn save_as_is_at_full_behind_the_wall() {
+        let line = r#"{"cmd":"qa_drive","verb":"save_as","value":"/tmp/x.pdf"}"#;
+        assert_eq!(recto_agent::parse(line).unwrap().access(), recto_agent::Access::At(recto_agent::Level::Full));
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        let own = app.disk().pdf("own.pdf", 2);
+        app.open(&own);
+        let Some(outside) = outside_the_tests_folders("recto-save-as.pdf") else {
+            return;
+        };
+        let refused = drive(&qa, "save_as", &outside.to_string_lossy()).expect_err("a save to a path outside");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        std::fs::copy(&own, &outside).unwrap();
+        app.open(&outside);
+        let refused = drive(&qa, "save_as", &own.with_file_name("copy.pdf").to_string_lossy()).expect_err("with a file open that isn't a test's");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Failure (review of R2.4, item 7): `qa password`, sent as a client sends it, types into the sheet for a file that isn't a test's: the check is a
+    /// helper that the verb's own path doesn't call.
+    #[test]
+    fn qa_password_through_the_verb_types_only_into_a_tests_sheet() {
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        let Some(outside) = outside_the_tests_folders("recto-password.pdf") else {
+            return;
+        };
+        std::fs::write(&outside, crate::core::headless::files::locked_with("open sesame", 1)).unwrap();
+        app.open(&outside);
+        assert!(app.reader().password_prompt.is_some(), "the person's open asks");
+        let refused = drive(&qa, "password", "open sesame").expect_err("not a test's own file");
+        assert!(refused.message.contains("a test's own file"), "{refused:?}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Failure (review of R2.4, D1): a release build acts as the person for whoever starts it with `--qa`. `as_person`, `owner_edit` and `save_as` are refused
+    /// there, and nothing else is.
+    #[test]
+    fn a_release_doesnt_act_as_the_person() {
+        for verb in ["as_person", "owner_edit", "save_as"] {
+            assert_eq!(refused_in_a_release(true, verb).unwrap_err().code, "qa_refused", "{verb}");
+            assert!(refused_in_a_release(false, verb).is_ok(), "{verb} in a development build");
+        }
+        assert!(refused_in_a_release(true, "state").is_ok());
+        assert!(refused_in_a_release(true, "zoom").is_ok());
+    }
 
     /// Failure: a release build takes a test's hook from its environment: `RECTO_QA_POLICY_NUDGE_MS` turned a release's quiet run `accessory` every
     /// few milliseconds, where the slow mode beside it is off in a release whatever the environment says. Not read at all there, and only in a quiet run.
@@ -928,65 +898,5 @@ mod tests {
         assert!(found["largest_step_points"].as_f64().unwrap() <= 10.0 + 0.001, "{found}");
         assert!(found["peak_points_per_s"]["highest"].as_f64().unwrap() >= 900.0, "{found}");
         assert_eq!(contents_moves(&[(0.0, 5.0), (1.0, 5.0)])["moves"], 0, "still");
-    }
-
-    /// Failure: a shot lands in the real home, by a path or through a link to it, or takes a document's name. Holds the rule, with what counts as the home given.
-    #[test]
-    fn a_shot_goes_only_where_it_may() {
-        let nowhere = |_: &Path| false;
-        let dir = std::env::temp_dir();
-        assert_eq!(refuse_shot_path(Path::new("a.png"), nowhere).unwrap_err().code, "usage", "not whole");
-        assert_eq!(refuse_shot_path(&dir.join("a.pdf"), nowhere).unwrap_err().code, "usage", "a document's name");
-        assert_eq!(refuse_shot_path(&dir.join("a"), nowhere).unwrap_err().code, "usage");
-        assert_eq!(refuse_shot_path(&dir.join("a.png"), |_| true).unwrap_err().code, "path_refused");
-        assert!(refuse_shot_path(&dir.join("recto-no-such-shot.PNG"), nowhere).is_ok());
-    }
-
-    /// Failure: a QA click lands somewhere other than what it says, or a page counted from 0 slips through, or a NaN reaches the host.
-    #[test]
-    fn a_mouse_verb_says_a_place_or_is_refused() {
-        assert_eq!(
-            parse_page_place("3:120.5,88").unwrap(),
-            PagePlace {
-                page: 2,
-                x: 120.5,
-                y: 88.0,
-                clicks: 1,
-                shift: false
-            }
-        );
-        assert_eq!(
-            parse_page_place("1:0,0:2:shift").unwrap(),
-            PagePlace {
-                page: 0,
-                x: 0.0,
-                y: 0.0,
-                clicks: 2,
-                shift: true
-            }
-        );
-        for wrong in ["", "3", "0:1,1", "3:1", "3:x,1", "3:NaN,1", "3:1,inf", "3:1,1:0", "3:1,1:9", "3:1,1:zzz"] {
-            assert_eq!(parse_page_place(wrong).unwrap_err().code, "usage", "{wrong}");
-        }
-    }
-
-    /// Failure: a word the host can't do reports success: `qa appearance zzz` said it was done and went light, since the rule was the host's. They're checked here and every one is refused.
-    #[test]
-    fn a_verb_only_takes_what_it_can_do() {
-        for (verb, good, wrong) in [
-            ("appearance", "dark", "zzz"),
-            ("window", "close", "zzz"),
-            ("contents_pointer", "in", "zzz"),
-            ("reduce_motion", "on", "yes"),
-            ("hover", "none", "-1"),
-            ("reveal", "3", "x"),
-            ("click_row", "0", "none"),
-            ("contents_scroll", "9", "1.5"),
-            ("resize", "800x600", "10x10"),
-        ] {
-            assert!(check_drive_value(verb, good).is_ok(), "{verb} {good}");
-            assert_eq!(check_drive_value(verb, wrong).unwrap_err().code, "usage", "{verb} {wrong}");
-        }
-        assert!(check_drive_value("resize", "800").is_err());
     }
 }
