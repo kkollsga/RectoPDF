@@ -319,7 +319,9 @@ impl RecordStore {
             version,
         };
         match prepared {
-            Ok(()) => store.ask_for_lock(),
+            Ok(()) => {
+                let _ = store.ask_for_lock();
+            }
             Err(error) => {
                 *store.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("the state folder was refused: {}", error.message))
             }
@@ -1757,7 +1759,8 @@ mod tests {
         assert!(second.why_not_keeping().is_some_and(|why| why.contains("still keeps it")));
         drop(first);
         assert!(second.try_to_keep(), "{:?}", second.why_not_keeping());
-        assert!(second.try_to_keep(), "and keeps it");
+        assert!(!second.try_to_keep(), "a lock already held isn't the next try's to take");
+        assert!(second.holds_the_record(), "and stays kept");
         second.let_go();
         assert!(!second.try_to_keep(), "an ended store doesn't take it back");
         std::fs::remove_dir_all(&root).unwrap();

@@ -128,7 +128,7 @@ impl RecordStore {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
-            self.ask_for_lock();
+            let _ = self.ask_for_lock();
         }
     }
 
@@ -142,24 +142,39 @@ impl RecordStore {
         *self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some("given back by a late try, to try again".to_owned());
     }
 
-    /// **One try at the lock, never waiting:** a `try_lock`, and whether this store keeps the record now. For a launch that didn't get it at the start and tries
-    /// again on its own deadline (`recto-app`'s `lifecycle::keeping`). A store that has let go doesn't get it back.
+    /// **One try at the lock, never waiting:** a `try_lock`, and whether this try took it. For a launch that didn't get it at the start and tries again on its own
+    /// deadline (`recto-app`'s `lifecycle::keeping`). A lock this store already holds isn't this try's (a `session restore` took it meanwhile), so it says no,
+    /// and the machine keeps the record by that route; a store that has let go doesn't get it back.
     pub fn try_to_keep(&self) -> bool {
-        if !self.holds_the_record() {
-            self.ask_for_lock();
-        }
-        self.holds_the_record()
+        !self.holds_the_record() && self.ask_for_lock()
     }
 
-    /// One try at the lock, keeping it or why not.
-    pub(super) fn ask_for_lock(&self) {
+    /// One try at the lock, keeping it or why not: whether it took it. The open, which a sleeping disk can make slow, is outside the store's lock; whether it has
+    /// let go is looked at again under it, with the lock taken, so a [`Self::let_go`] that came while the file was opened can't be followed by a lock kept: the
+    /// one taken is let go at once (the third read's 4c, 2026-11-13).
+    pub(super) fn ask_for_lock(&self) -> bool {
         if self.gone.load(Ordering::SeqCst) {
-            return;
+            return false;
         }
         match take_lock(&self.lock_path, self.number) {
-            Ok(file) => *self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file),
-            Err(why) => *self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why),
+            Ok(file) => self.keep_taken(file),
+            Err(why) => {
+                *self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
+                false
+            }
         }
+    }
+
+    /// A lock just taken, kept unless this store has let go meanwhile, under the store's lock that [`Self::let_go`] takes after saying so.
+    fn keep_taken(&self, file: File) -> bool {
+        let mut held = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.gone.load(Ordering::SeqCst) {
+            drop(held);
+            release(&self.lock_path, self.number, file);
+            return false;
+        }
+        *held = Some(file);
+        true
     }
 }
 
@@ -167,5 +182,31 @@ impl Drop for RecordStore {
     /// A store that's gone has let go, as [`RecordStore::let_go`] does.
     fn drop(&mut self) {
         self.let_go();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record_store::Flavor;
+
+    /// Failure (third read, 2026-11-13, 4c): a try at the lock looks whether its store has let go, a `let_go` comes while it opens the lock file, and the try
+    /// then keeps the lock it took: a store that has let go for good holds the record, and the updater, asking, hears this copy keeps it. The let-go landing
+    /// between the open and the keeping: nothing's held, and another store can take the record at once.
+    #[test]
+    fn a_let_go_while_a_try_opens_the_lock_file_leaves_nothing_held() {
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "lk");
+        let paths = crate::state::StatePaths::overridden(&root).unwrap();
+        paths.prepare().unwrap();
+        let first = RecordStore::open(&paths, Flavor::App);
+        first.give_back();
+        assert!(!first.holds_the_record());
+        assert!(!first.gone.load(Ordering::SeqCst), "the try sees it hasn't let go");
+        let taken = take_lock(&first.lock_path, first.number).expect("the open and the lock");
+        first.let_go();
+        assert!(!first.keep_taken(taken), "not kept");
+        assert!(!first.holds_the_record());
+        let second = RecordStore::open(&paths, Flavor::App);
+        assert!(second.holds_the_record(), "the record free for another: {:?}", second.why_not_keeping());
     }
 }
