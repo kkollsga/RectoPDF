@@ -125,6 +125,15 @@ impl SaveError {
     }
 }
 
+/// Why a save couldn't open a file: one that needs a password (the save is given none) says so, as its words must; anything else is damage the writer
+/// won't build on. A file that opens with no password and is encrypted all the same is refused after opening, as anyone may open it.
+pub(crate) fn refused_on_open(error: lopdf::IndexedReaderError) -> SaveError {
+    match error {
+        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => SaveError::Protected { password: true },
+        _ => SaveError::Damaged,
+    }
+}
+
 pub(crate) fn from_append(error: AppendError) -> SaveError {
     match error {
         AppendError::RecoveredIndex

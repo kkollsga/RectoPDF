@@ -26,7 +26,7 @@
 
 use crate::OpenError;
 pub use crate::save_error::SaveError;
-use crate::save_error::{from_append, from_rewrite};
+use crate::save_error::{from_append, from_rewrite, refused_on_open};
 use lopdf::{
     AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, EncodedStreamReader, FileSource, IndexedReader, IndexedReaderOptions,
     IndexedSignatureKind, Object, ObjectId, PageMapEntry, RewriteChanges, RewriteError, RewriteOptions, RewritePolicy,
@@ -128,15 +128,6 @@ impl SignatureFacts {
 
 fn file_label(path: &Path) -> String {
     crate::clean_line(&path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
-}
-
-/// Why a save couldn't open a file: one that needs a password (the save is given none) says so, as its words must; anything else is damage the writer
-/// won't build on. A file that opens with no password and is encrypted all the same is refused after opening, as anyone may open it.
-fn refused_on_open(error: lopdf::IndexedReaderError) -> SaveError {
-    match error {
-        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => SaveError::Protected { password: true },
-        _ => SaveError::Damaged,
-    }
 }
 
 /// Opens a file the way a save reads it: with the 1 MiB limit on an object. One that can't be opened can't be read.
