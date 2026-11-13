@@ -85,6 +85,12 @@ impl Journals {
         self.retired_journals.push(name);
     }
 
+    /// Everything waiting to be removed, as it is: for a test's log of what a step retired.
+    #[cfg(test)]
+    pub(crate) fn retired(&self) -> &[Box<str>] {
+        &self.retired_journals
+    }
+
     /// Everything to remove, taken.
     pub(crate) fn take_retired(&mut self) -> Vec<Box<str>> {
         std::mem::take(&mut self.retired_journals)

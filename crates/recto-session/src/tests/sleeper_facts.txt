@@ -3,6 +3,7 @@ tab 1: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 1 <dir>/a.pdf file <a.pdf> file_pages 5 pages 5 list_seq 5892226188571872533 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<a.pdf>, "<dir>/a.pdf"))
 asleep by journal []
+retired []
 left warm: tab 1 <dir>/a.pdf file <a.pdf> file_pages 5 pages 5 list_seq 5892226188571872533 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
 == a pushed out of the warm ones
 tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory true notice None
@@ -18,6 +19,7 @@ tab 4: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 4 <dir>/d.pdf file <d.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
+retired []
 list to sleep Some(("<journal of a.pdf>", JournalHeader { format: "recto-journal", version: 1, tab: 1, path: Text("<dir>/a.pdf"), file: Some(<a.pdf>), file_pages: 5, base_seq: 1, saving: None, keeping: None }, EditsRecord { file_pages: 5, pages: [SlotRun(0, 0, 1, 1), SlotRun(0, 1, 4, 0)], added: [], undo: [EntryRecord { by: Owner, step: Rotate { start: 0, len: 1, quarter_turns: 3 } }], redo: [], history_dropped: false, owner_step_dropped: false }))
 a goes dormant: true
 == a dormant
@@ -34,6 +36,7 @@ tab 4: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 4 <dir>/d.pdf file <d.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal [("<journal of a.pdf>", EditsSummary { pages: 5, edited: true, holds_owner_edits: true, owner_steps_undone: false, undo: 1, redo: 0, rewrites: false })]
+retired []
 wake for tap None
 == a woken from its sleep file
 tab 1: Cold page_count 5 from_sleep Some(0) read_held true dormancy ["just_read", "woken_from_file"] asleep true in_memory false notice None
@@ -49,6 +52,7 @@ tab 4: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 4 <dir>/d.pdf file <d.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal [("<journal of a.pdf>", EditsSummary { pages: 5, edited: true, holds_owner_edits: true, owner_steps_undone: false, undo: 1, redo: 0, rewrites: false })]
+retired []
 sleep read Some((5, 5892226188571872533, None)), woken from files [TabId(1)]
 left warm: tab 2 <dir>/b.pdf file <b.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
 == a shown
@@ -65,6 +69,7 @@ tab 4: Warm page_count 5 from_sleep None read_held false dormancy [] asleep fals
   facts tab 4 <dir>/d.pdf file <d.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
+retired []
 file length is 5, version 0: false
 == a's file as its sleep file said
 tab 1: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory true notice None
@@ -80,6 +85,7 @@ tab 4: Warm page_count 5 from_sleep None read_held false dormancy [] asleep fals
   facts tab 4 <dir>/d.pdf file <d.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
+retired []
 due with c held [TabId(4)]
 gone 1
 due once let go [TabId(3)]
@@ -97,6 +103,7 @@ tab 4: Cold page_count 5 from_sleep None read_held false dormancy [] asleep fals
   facts none
   to read Some((<d.pdf>, "<dir>/d.pdf"))  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
+retired []
 wake for tap None
 file length is 4, version 3: true
 == b woken and found another length
@@ -113,6 +120,7 @@ tab 4: Cold page_count 5 from_sleep None read_held false dormancy [] asleep fals
   facts none
   to read Some((<d.pdf>, "<dir>/d.pdf"))  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
+retired ["sleep file of tab 2"]
 oldest first [TabId(1), TabId(3)], gone 2
 == the budget
 tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep true in_memory false notice None
@@ -128,6 +136,7 @@ tab 4: Cold page_count 5 from_sleep None read_held false dormancy [] asleep fals
   facts none
   to read Some((<d.pdf>, "<dir>/d.pdf"))  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal [("<journal of a.pdf>", EditsSummary { pages: 5, edited: true, holds_owner_edits: true, owner_steps_undone: false, undo: 1, redo: 0, rewrites: false })]
+retired []
 == b's read forgotten, e opened, d's read given
 tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep true in_memory false notice None
   facts none
@@ -145,6 +154,7 @@ tab 5: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 5 <dir>/e.pdf file <e.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<e.pdf>, "<dir>/e.pdf"))
 asleep by journal [("<journal of a.pdf>", EditsSummary { pages: 5, edited: true, holds_owner_edits: true, owner_steps_undone: false, undo: 1, redo: 0, rewrites: false })]
+retired []
 == a woken by an edit
 tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory true notice None
   facts none
@@ -162,6 +172,7 @@ tab 5: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 5 <dir>/e.pdf file <e.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<e.pdf>, "<dir>/e.pdf"))
 asleep by journal []
+retired []
 gone 1
 a's list wakes with its journal gone: false
 == a's journal unreadable
@@ -181,3 +192,23 @@ tab 5: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   facts tab 5 <dir>/e.pdf file <e.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
   to read None  awake Some((<e.pdf>, "<dir>/e.pdf"))
 asleep by journal [("<journal of a.pdf>", EditsSummary { pages: 5, edited: true, holds_owner_edits: true, owner_steps_undone: false, undo: 2, redo: 0, rewrites: false })]
+retired []
+a's history cleared, as a discard: true
+== a's unreadable list given up on
+tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory false notice None
+  facts none
+  to read Some((<a.pdf>, "<dir>/a.pdf"))  awake Some((<a.pdf>, "<dir>/a.pdf"))
+tab 2: Cold page_count 5 from_sleep None read_held false dormancy ["just_read", "woken_from_file"] asleep false in_memory false notice None
+  facts none
+  to read Some((<b.pdf>, "<dir>/b.pdf"))  awake Some((<b.pdf>, "<dir>/b.pdf"))
+tab 3: Cold page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory false notice None
+  facts none
+  to read Some((<c.pdf>, "<dir>/c.pdf"))  awake Some((<c.pdf>, "<dir>/c.pdf"))
+tab 4: Cold page_count 5 from_sleep None read_held true dormancy [] asleep false in_memory false notice None
+  facts none
+  to read Some((<d.pdf>, "<dir>/d.pdf"))  awake Some((<d.pdf>, "<dir>/d.pdf"))
+tab 5: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false in_memory false notice None
+  facts tab 5 <dir>/e.pdf file <e.pdf> file_pages 5 pages 5 list_seq 0 renderer_only false version None toc ["Contents"] usual None sizes [] pictures 0 pictures_allowed true
+  to read None  awake Some((<e.pdf>, "<dir>/e.pdf"))
+asleep by journal []
+retired ["\"<journal of a.pdf>\""]

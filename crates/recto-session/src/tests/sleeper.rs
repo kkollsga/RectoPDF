@@ -398,6 +398,24 @@ fn sleeper_run() -> String {
         let mut asleep: Vec<(String, EditsSummary)> = s.dormant().asleep_by_journal().into_iter().collect();
         asleep.sort_by(|x, y| x.0.cmp(&y.0));
         writeln!(out, "asleep by journal {}", names.say(&asleep)).unwrap();
+        // What's waiting to be removed, by whose it is: a retirement dropped (a sleep file left of another version, a journal given up on kept) shows here.
+        let whose = |name: &str| {
+            tabs(s)
+                .into_iter()
+                .find_map(|id| {
+                    let path = s.tabs().path_of(id)?;
+                    if s.tabs().own_stamp(id).is_some_and(|stamp| record::sleep_file_name(stamp, &path) == name) {
+                        Some(format!("sleep file of tab {}", id.0))
+                    } else if s.journals().name_of(id) == Some(name) {
+                        Some(format!("journal of tab {}", id.0))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| names.say(name))
+        };
+        let retired: Vec<String> = s.journals.retired().iter().map(|name| whose(name)).collect();
+        writeln!(out, "retired {retired:?}").unwrap();
     };
     let take_left = |s: &mut Session<Titled>, out: &mut String| {
         for facts in s.sleeper().take_left_warm() {
@@ -464,6 +482,8 @@ fn sleeper_run() -> String {
     writeln!(out, "a's list wakes with its journal gone: {}", s.sleeper().wake_list(a)).unwrap();
     s.sleeper().touch(e);
     step(&s, &mut out, "a's journal unreadable");
+    writeln!(out, "a's history cleared, as a discard: {}", s.clear_history(a, ClearReason::Discard)).unwrap();
+    step(&s, &mut out, "a's unreadable list given up on");
     out
 }
 
