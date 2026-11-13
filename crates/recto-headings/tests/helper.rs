@@ -212,7 +212,11 @@ fn start_and_wait(extra: Value, close_stdin: bool, bound: Duration) -> Went {
 #[test]
 fn it_goes_at_once_when_its_stdin_closes_whatever_it_is_doing() {
     let went = start_and_wait(json!({ "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 }), true, GONE_WITHIN);
-    assert!(went.status.is_some_and(|status| status.success()) && went.said.is_empty(), "closing its stdin didn't stop it: it {}", went.describe());
+    assert!(
+        went.status.is_some_and(|status| status.success()) && went.said.is_empty(),
+        "closing its stdin didn't stop it: it {}",
+        went.describe()
+    );
 }
 
 /// Failure: a helper past its memory limit stays, because its way out waits on something, so a hostile file keeps a gigabyte until the session's own watch notices. It has to go with the over-the-limit code (3) and no report.
@@ -220,7 +224,11 @@ fn it_goes_at_once_when_its_stdin_closes_whatever_it_is_doing() {
 fn it_goes_at_once_when_it_passes_its_memory_limit() {
     let extra = json!({ "memory_limit": 100u64 << 20, "test_hold_mib": 300, "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 });
     let went = start_and_wait(extra, false, GONE_WITHIN);
-    assert!(went.status.is_some_and(|status| status.code() == Some(3)) && went.said.is_empty(), "past its memory limit it didn't stop: it {}", went.describe());
+    assert!(
+        went.status.is_some_and(|status| status.code() == Some(3)) && went.said.is_empty(),
+        "past its memory limit it didn't stop: it {}",
+        went.describe()
+    );
 }
 
 /// Failure: a helper that couldn't start its watchers (a thread that wouldn't spawn) runs the job without them, so nothing makes it go when its parent has, or when it grows. It has to refuse the job with a plain code and do none of it.
@@ -228,6 +236,10 @@ fn it_goes_at_once_when_it_passes_its_memory_limit() {
 fn it_refuses_the_job_when_it_cant_start_its_watchers() {
     let went = start_and_wait(json!({ "memory_limit": 512u64 << 20, "test_spawn_fails": true }), false, GONE_WITHIN);
     let report: Value = serde_json::from_str(went.said.lines().next().unwrap_or("null")).unwrap_or(Value::Null);
-    assert!(went.status.is_some() && report["state"] == "failed" && report["code"] == "no_watch", "it did the job without its watchers: it {}", went.describe());
+    assert!(
+        went.status.is_some() && report["state"] == "failed" && report["code"] == "no_watch",
+        "it did the job without its watchers: it {}",
+        went.describe()
+    );
     assert_eq!(went.said.lines().count(), 1, "{}", went.describe());
 }
