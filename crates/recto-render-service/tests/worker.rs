@@ -5,7 +5,7 @@ mod common;
 use common::{kill_process, real_config, renderer, tile_surface, wait_until};
 use recto_platform::isolate::process_memory;
 use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, TileKind, TileRect, TileRequest, TileResult};
-use recto_render_service::{HeavySlot, Surface, Workers};
+use recto_render_service::{HeavySlot, Surface, Workers, under_page_deadline_for_test};
 use recto_testpdf::{Page, TempPdf, busy_page, form_bomb, pages, slow_page, text_lines};
 use std::time::Duration;
 
@@ -927,36 +927,13 @@ fn a_job_that_may_start_no_worker_starts_none_and_leaves_the_next_one_free_to() 
     doc.kill_worker();
     drawn_after(&mut doc, 3, "a panic");
 
-    // Past its deadline. The deadline is short so the slow page passes it, and it holds for the job after as well, so what's asked of that one is that it started a worker and wasn't refused one, which says nothing of how fast a runner is. A draw that comes out is drawn, and one that itself ran out of the short time is not a refusal.
-    let policy = Policy {
-        page_deadline: Duration::from_millis(200),
-        start_timeout: Duration::from_secs(60),
-        ..Policy::default()
-    };
-    let mut doc = renderer(&file.0, policy);
-    // A worker there to hold the job, from an open that a busy runner may need more than once to get in the time.
-    for _ in 0..20 {
-        if doc.worker_pid().is_some() {
-            break;
-        }
-        let _ = doc.page_size(0);
-    }
-    assert!(doc.worker_pid().is_some(), "a worker to hold the job");
-    let result = only_there(&mut doc, 0, 1, &surface);
+    // Past its deadline: only this job's deadline is short, so the slow page passes it, and the job after runs under the policy's own (120 s), so it must come out drawn without a clock to race. What it must also show is that it started the worker it needed and wasn't refused one.
+    let (pid, spawns) = (doc.worker_pid(), doc.stats().spawns);
+    assert!(pid.is_some(), "a worker there to hold the job");
+    let result = under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(200), |doc| only_there(doc, 0, 3, &surface));
     assert!(result.is_err(), "{result:?}");
-    let spawns = doc.stats().spawns;
-    let result = doc.render_tile(&tile_request(1, 1), &tile_surface());
-    assert!(
-        matches!(
-            result,
-            Ok(TileResult::Done(_))
-                | Err(RenderFailure::PageFailed {
-                    reason: KillReason::Deadline,
-                    ..
-                })
-        ),
-        "the next ordinary job, after one past its deadline, isn't refused a worker: {result:?}"
-    );
+    assert_eq!(doc.stats().spawns, spawns, "none started for it");
+    drawn_after(&mut doc, 3, "one past its deadline");
     assert_eq!(doc.stats().spawns, spawns + 1, "it started the worker it needed");
 }
 
