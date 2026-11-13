@@ -23,8 +23,9 @@ common=$(git rev-parse --git-common-dir)
 results="$common/recto-ci-main"
 known="$common/recto-ci-known"
 # How long CI's check job may take, in seconds, and where each green run's time is kept. Owner, 2026-11-12: "Add a rule so the ci doesnt regress in the
-# future." The one place to edit the budget, and it only goes down: lower it when a merge makes CI faster (25 min on 2026-11-12, when runs took 18 to 33).
-CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1500}
+# future." The one place to edit the budget, and it only goes down: lower it when a merge makes CI faster (25 min on 2026-11-12, when runs took 18 to 33;
+# 21 min on 2026-11-13, when five green runs in a row took 15 min 56 s to 19 min 35 s).
+CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1260}
 times="$common/recto-ci-times"
 
 # Runs gh with a bound. Its output on stdout; 124 if it took too long, 127 if there's no gh.
