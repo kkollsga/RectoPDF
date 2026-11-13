@@ -87,7 +87,7 @@ fn nothing_changes_a_tab_while_it_is_saved() {
     assert!(!s.clear_history(id, ClearReason::Discard), "a discard waits too");
     assert_eq!(s.close(id), Err(SessionError::Saving));
     assert_eq!(s.begin_save(id, true).err(), Some(SessionError::Saving), "one save at a time");
-    assert!(s.saves().any() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
+    assert!(s.saves().any() && !s.dormant().may_go(id), "and it's held, so it can't go dormant");
     s.save_prepared(
         id,
         FileStamp {

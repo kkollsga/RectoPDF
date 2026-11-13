@@ -15,6 +15,7 @@ pub mod trail;
 mod contents;
 mod dirs;
 mod dormancy;
+mod dormant;
 mod editing;
 mod files;
 mod follow;
@@ -38,6 +39,7 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
+pub use dormant::Dormant;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};

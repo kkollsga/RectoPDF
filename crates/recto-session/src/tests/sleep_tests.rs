@@ -198,7 +198,7 @@ fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
     s.dormancy_mut().hold(a);
-    assert!(!s.can_go_dormant(a));
+    assert!(!s.dormant().may_go(a));
     assert!(!s.go_dormant(a));
     assert!(s.lists().get(a).is_some() && !s.lists().is_asleep(a));
     assert!(s.warm.contains(a), "its contents stay too");
@@ -297,18 +297,18 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, b) = with_a_list(&files);
     s.tabs_mut().touch_at(a, 100);
-    assert_eq!(s.next_dormant_at(AFTER), Some(400));
-    assert!(s.due_dormant(399, AFTER).is_empty());
-    assert_eq!(s.due_dormant(400, AFTER), [a]);
-    assert!(!s.due_dormant(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
+    assert_eq!(s.dormant().next_at(AFTER), Some(400));
+    assert!(s.dormant().due(399, AFTER).is_empty());
+    assert_eq!(s.dormant().due(400, AFTER), [a]);
+    assert!(!s.dormant().due(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
     s.tabs_mut().touch_at(a, 200);
-    assert_eq!(s.next_dormant_at(AFTER), Some(500), "being used puts it off");
+    assert_eq!(s.dormant().next_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
     s.dormancy_mut().hold(a);
-    assert!(s.due_dormant(10_000, AFTER).is_empty());
-    assert!(s.dormant_oldest_first().is_empty(), "whatever's asking");
+    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().oldest_first().is_empty(), "whatever's asking");
     s.let_go(a);
-    assert_eq!(s.due_dormant(10_000, AFTER), [a]);
+    assert_eq!(s.dormant().due(10_000, AFTER), [a]);
     // A save under way.
     s.save_prepared(
         a,
@@ -320,14 +320,14 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
         },
         None,
     );
-    assert!(s.due_dormant(10_000, AFTER).is_empty());
+    assert!(s.dormant().due(10_000, AFTER).is_empty());
     // Cold tabs aren't candidates, however many there are.
     let mut s = session(5);
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
-    assert!(s.dormant_candidates().count() <= MAX_WARM + 1);
+    assert!(s.dormant().candidates().count() <= MAX_WARM + 1);
     s.go_dormant(ids[998]);
     assert!(!s.warm.contains(ids[998]), "its contents go");
-    assert!(s.dormant_oldest_first().len() < MAX_WARM);
+    assert!(s.dormant().oldest_first().len() < MAX_WARM);
 }
 
 /// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow way.
@@ -421,4 +421,50 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     );
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Failure: which tabs go dormant, and when, depends on something other than the tabs, the warm ones, the lists, the holds and what's on screen, so the
+/// look needs the whole session (R3.5): built here from those alone. The tab on screen and a held one never go; a warm one goes once it's been left
+/// long enough, oldest touched first.
+#[test]
+fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
+    let mut tabs = registry::Tabs::default();
+    for (id, touched) in [(1, 0), (2, 50), (3, 10), (4, 0)] {
+        tabs.push(bare_tab(id, 5));
+        tabs.tab_mut(TabId(id)).unwrap().touched = touched;
+    }
+    tabs.set_active(Some(TabId(1)));
+    let mut warm = warm::Warm::default();
+    for id in [1, 2, 3] {
+        warm.push(TabId(id), Arc::new(Toc::default()), |_| {});
+    }
+    let lists = lists::Lists::default();
+    let mut dormancy = dormancy::Dormancy::default();
+    dormancy.hold(TabId(3));
+    let look = Dormant {
+        tabs: &tabs,
+        warm: &warm,
+        lists: &lists,
+        dormancy: &dormancy,
+        comparison: None,
+    };
+    assert!(!look.may_go(TabId(1)), "on screen");
+    assert!(!look.may_go(TabId(3)), "held");
+    assert!(look.may_go(TabId(2)));
+    assert_eq!(
+        look.next_at(30),
+        Some(80),
+        "the warm tab left, 30 after it was touched; tab 4 holds nothing to let go"
+    );
+    assert_eq!(look.due(79, 30), Vec::<TabId>::new());
+    assert_eq!(look.due(80, 30), vec![TabId(2)]);
+    dormancy.let_go(TabId(3));
+    let look = Dormant {
+        tabs: &tabs,
+        warm: &warm,
+        lists: &lists,
+        dormancy: &dormancy,
+        comparison: None,
+    };
+    assert_eq!(look.oldest_first(), vec![TabId(3), TabId(2)]);
 }

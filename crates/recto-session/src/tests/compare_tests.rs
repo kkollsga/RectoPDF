@@ -46,9 +46,9 @@ fn panes_on_screen_dont_go_dormant() {
         .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
         .collect();
     s.compare(&[ids[0], ids[1]], Some(ids[0])).unwrap();
-    assert!(!s.can_go_dormant(ids[1]), "a pane not being read is still on screen");
-    assert!(!s.dormant_oldest_first().contains(&ids[1]));
-    assert!(s.dormant_oldest_first().contains(&ids[2]), "the tab off screen can");
+    assert!(!s.dormant().may_go(ids[1]), "a pane not being read is still on screen");
+    assert!(!s.dormant().oldest_first().contains(&ids[1]));
+    assert!(s.dormant().oldest_first().contains(&ids[2]), "the tab off screen can");
     assert!(!s.go_dormant(ids[1]));
 }
 

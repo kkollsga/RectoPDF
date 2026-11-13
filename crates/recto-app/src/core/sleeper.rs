@@ -199,7 +199,7 @@ impl Inner {
         let in_seconds = self
             .host
             .session
-            .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
+            .with_session(|session| session.dormant().next_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
         let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
@@ -212,7 +212,7 @@ impl Inner {
         Some(
             self.host
                 .session
-                .with_session(|session| session.due_dormant(session.dormancy().seconds_now(), after)),
+                .with_session(|session| session.dormant().due(session.dormancy().seconds_now(), after)),
         )
     }
 
@@ -221,7 +221,7 @@ impl Inner {
         let tabs: Vec<(TabId, bool)> = self
             .host
             .session
-            .with_session(|session| tabs.iter().map(|id| (*id, session.can_go_dormant(*id))).collect());
+            .with_session(|session| tabs.iter().map(|id| (*id, session.dormant().may_go(*id))).collect());
         let frozen = self.core.frozen.load(Ordering::SeqCst);
         let Some(Out::GoDormant { tabs, in_place }) = self.sleeper.step(Event::GoDormant { why, tabs, frozen }) else {
             return 0;
@@ -441,7 +441,7 @@ impl Inner {
         let (warm, active) = self
             .host
             .session
-            .with_session(|session| (session.dormant_oldest_first(), session.tabs().active()));
+            .with_session(|session| (session.dormant().oldest_first(), session.tabs().active()));
         // A change of tab is when a document comes to be off screen, so that's looked at straight away.
         if self
             .sleeper
@@ -484,7 +484,7 @@ impl Inner {
         let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
             return;
         };
-        let tabs = self.host.session.with_session(|session| session.dormant_oldest_first());
+        let tabs = self.host.session.with_session(|session| session.dormant().oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
         for engine in self.panes.engines(&self.engine) {
             engine.memory_pressure(critical);

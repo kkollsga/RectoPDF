@@ -186,7 +186,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab is on screen: active, or a pane of a comparison. Such a tab doesn't go dormant, whatever's asking.
     pub fn on_screen(&self, id: TabId) -> bool {
-        self.tabs.active() == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
+        dormant::on_screen(&self.tabs, self.comparison.as_ref(), id)
     }
 
     /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.

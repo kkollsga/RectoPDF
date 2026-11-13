@@ -240,9 +240,9 @@ fn a_restored_tab_isnt_held_for_the_tab_it_replaced() {
     let mut record = another_session_with(2);
     record.active = Some(record.tabs[1].id);
     s.restore(&record, HashMap::new()).unwrap();
-    assert!(s.can_go_dormant(a), "nothing holds the restored tab");
+    assert!(s.dormant().may_go(a), "nothing holds the restored tab");
     s.let_go(a);
-    assert!(s.can_go_dormant(a));
+    assert!(s.dormant().may_go(a));
 }
 
 /// Failure: a save remembered of a tab a restore replaced is believed of the restored tab with its number, so the page view carries another file's layout over as if it had just been saved.

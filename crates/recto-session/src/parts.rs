@@ -6,6 +6,17 @@ use super::*;
 use crate::record::FindRecord;
 
 impl<L: DocLoader> Session<L> {
+    /// Which tabs may go dormant, and when: a look over the tabs, the warm ones, the lists, the holds and the comparison.
+    pub fn dormant(&self) -> dormant::Dormant<'_> {
+        dormant::Dormant {
+            tabs: &self.tabs,
+            warm: &self.warm,
+            lists: &self.lists,
+            dormancy: &self.dormancy,
+            comparison: self.comparison.as_ref(),
+        }
+    }
+
     /// What a tab's pages are called and how many it has now, counting unsaved edits: a look over the tabs, the lists and the warm tabs' labels.
     pub fn pages(&self) -> pages::Pages<'_> {
         pages::Pages {
