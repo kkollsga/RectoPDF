@@ -5,6 +5,8 @@ use crate::generating::Generator;
 use crate::indexing::{Indexer, Notifier};
 use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
 use crate::state::StatePaths;
+use recto_agent::commands::Record;
+use recto_agent::commands::record::SessionSleep;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
 use recto_agent::{
@@ -251,10 +253,10 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         }
         let Some(store) = &self.record else { return Some(Err(no_record())) };
         Some(match command {
-            Command::SessionShow {} => Ok(self.with_session(|session| recto_agent::session_show_json(session, level, kept_json(store, None)))),
-            Command::SessionCheck {} => Ok(json!({ "safe": true, "busy": [], "seconds_since_input": null })),
-            Command::SessionSleep { tab } => self.sleep_here(tab),
-            Command::SessionSave {} => self.save_to(store),
+            Command::Record(Record::SessionShow(_)) => Ok(self.with_session(|session| recto_agent::session_show_json(session, level, kept_json(store, None)))),
+            Command::Record(Record::SessionCheck(_)) => Ok(json!({ "safe": true, "busy": [], "seconds_since_input": null })),
+            Command::Record(Record::SessionSleep(SessionSleep { tab })) => self.sleep_here(tab),
+            Command::Record(Record::SessionSave(_)) => self.save_to(store),
             _ => self.restore_from(store, level),
         })
     }

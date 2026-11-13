@@ -27,26 +27,9 @@ impl Command {
             Self::Waits(command) => command.route(),
             Self::Rights(command) => command.route(),
             Self::Session(command) => command.route(),
-            Self::SessionSleep { .. } | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Runs::Record,
-            Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::Palette { .. }
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. }
-            | Self::View { zoom: Some(_), .. } => Runs::App,
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { zoom: None, .. }
-            | Self::Find { .. }
-            | Self::Compare { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::Save { .. } => Runs::Session,
+            Self::Qa(command) => command.route(),
+            Self::Record(command) => command.route(),
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => Runs::App,
         }
     }
 }

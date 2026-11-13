@@ -5,15 +5,21 @@
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
 
 pub mod access;
+pub mod compare;
 pub mod editing;
 pub mod export;
+pub mod finding;
 pub mod linking;
 pub mod measure;
+pub mod qa;
 pub mod reading;
+pub mod record;
+pub mod saving;
 pub mod session;
 pub mod sync;
 pub mod tabs;
 pub mod text;
+pub mod view;
 
 use crate::table::{self, Access, Spec};
 use crate::{AgentError, Command, Event, Level, Runs, SessionAccess};
@@ -215,6 +221,7 @@ family! {
 family! {
     /// Opening and moving around.
     pub enum Move {
+        Open(tabs::Open),
         Goto(linking::Goto),
         Back(linking::Back),
         Forward(linking::Forward),
@@ -222,17 +229,27 @@ family! {
         Recent(tabs::Recent),
         RecentClear(tabs::RecentClear),
         Close(tabs::Close),
+        Tap(tabs::Tap),
+        Compare(compare::Compare),
+        View(view::View),
+        Palette(view::Palette),
+        Find(finding::Find),
     }
 }
 
 family! {
-    /// Changing pages: `page move`, `page delete`, `page insert`, `edits` and `discard`. Rotate, undo, redo, clear-history and save join when the app's own code stops naming them.
+    /// Changing pages and saving them: rotate, move, delete, insert, the edits, discard, undo, redo, clear-history and save.
     pub enum Edit {
+        PageRotate(editing::PageRotate),
         PageMove(editing::PageMove),
         PageDelete(editing::PageDelete),
         PageInsert(editing::PageInsert),
         Edits(editing::Edits),
         Discard(editing::Discard),
+        Undo(editing::Undo),
+        Redo(editing::Redo),
+        ClearHistory(editing::ClearHistory),
+        Save(saving::Save),
     }
 }
 
@@ -242,6 +259,25 @@ family! {
         Budget(measure::Budget),
         BudgetRender(measure::BudgetRender),
         BudgetViewport(measure::BudgetViewport),
+    }
+}
+
+family! {
+    /// The state record, which each host keeps: what it holds, a tab put to sleep, writing it, reading it back, and whether it's a safe moment to hand off.
+    pub enum Record {
+        SessionShow(record::SessionShow),
+        SessionSleep(record::SessionSleep),
+        SessionSave(record::SessionSave),
+        SessionRestore(record::SessionRestore),
+        SessionCheck(record::SessionCheck),
+    }
+}
+
+family! {
+    /// Testing the app: what an app started in QA mode shows, and making it do what the UI does. Their rows are [`qa::ROWS_QA`].
+    pub enum Qa {
+        QaRead(qa::QaRead),
+        QaDrive(qa::QaDrive),
     }
 }
 
@@ -321,6 +357,8 @@ const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Waits::TAGS, Waits::parse, Waits::human),
     (Rights::TAGS, Rights::parse, Rights::human),
     (Session::TAGS, Session::parse, Session::human),
+    (Qa::TAGS, Qa::parse, Qa::human),
+    (Record::TAGS, Record::parse, Record::human),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
@@ -338,24 +376,14 @@ const PARTS: &[&[&[Spec]]] = &[
     Start::ROWS,
     &[table::CLI_HELP],
     Read::ROWS,
-    &[table::ROWS_OPEN],
     Move::ROWS,
-    &[table::ROWS_TAP, table::ROWS_COMPARE, table::ROWS_VIEW, table::ROWS_PALETTE, table::ROWS_FIND],
-    &[table::ROWS_PAGE_ROTATE],
     Edit::ROWS,
-    &[table::ROWS_UNDO, table::ROWS_REDO, table::ROWS_CLEAR_HISTORY, table::ROWS_SAVE],
     Waits::ROWS,
     Rights::ROWS,
     &[table::CLI_PERMISSION_SET, table::CLI_SERVE],
     Session::ROWS,
     &[table::CLI_LOCAL],
-    &[
-        table::ROWS_SESSION_SHOW,
-        table::ROWS_SESSION_SLEEP,
-        table::ROWS_SESSION_SAVE,
-        table::ROWS_SESSION_RESTORE,
-        table::ROWS_SESSION_CHECK,
-    ],
+    Record::ROWS,
     &[
         table::ROWS_UPDATE_STATUS,
         table::ROWS_UPDATE_CHECK,
@@ -365,7 +393,7 @@ const PARTS: &[&[&[Spec]]] = &[
     ],
     Measure::ROWS,
     &[table::CLI_BUDGET_TABS],
-    &[table::QA_1, table::QA_2],
+    qa::ROWS_QA,
 ];
 
 const fn rows_in(parts: &[&[&[Spec]]]) -> usize {

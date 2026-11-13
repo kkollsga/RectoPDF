@@ -2,7 +2,9 @@
 
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
-use recto_agent::{AgentError, Command, exit};
+use recto_agent::commands::Qa;
+use recto_agent::commands::qa::{QaDrive, QaRead};
+use recto_agent::{AgentError, exit};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
 use serde_json::{Value, json};
@@ -332,17 +334,16 @@ impl QaBridge {
         }
     }
 
-    pub fn run(&self, command: &Command) -> Result<Value, AgentError> {
+    pub fn run(&self, command: &Qa) -> Result<Value, AgentError> {
         match command {
-            Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
+            Qa::QaRead(QaRead { verb, out, timeout_ms }) => match verb.as_str() {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
                 "shot" | "shot_settings" | "shot_menu" | "shot_menus" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
-            Command::QaDrive { verb, value, timeout_ms } => self.drive(verb, value, *timeout_ms),
-            _ => Err(bad("That isn't a QA command.")),
+            Qa::QaDrive(QaDrive { verb, value, timeout_ms }) => self.drive(verb, value, *timeout_ms),
         }
     }
 

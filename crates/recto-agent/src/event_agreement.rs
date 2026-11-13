@@ -42,16 +42,16 @@ fn opened_and_activated_carry_the_name_on_both_paths() {
     let mut session = Session::new(Fake);
     let events = events_of(
         &mut session,
-        Command::Open {
+        Command::from(crate::commands::tabs::Open {
             path: "/d/alpha.pdf".into(),
             page: None,
-        },
+        }),
     );
     let a = session.tabs()[0].id;
     assert_eq!(events, [event::tab_opened(&session, a)]);
     assert_eq!(events[0].to_json()["untrusted"]["name"], "alpha");
     let b = session.open(Path::new("/d/beta.pdf")).unwrap();
-    let events = events_of(&mut session, Command::Tap { tab: format!("#{}", a.0) });
+    let events = events_of(&mut session, Command::from(crate::commands::tabs::Tap { tab: format!("#{}", a.0) }));
     assert_eq!(events, [event::tab_activated(&session, a)]);
     assert_eq!(events[0].to_json()["untrusted"]["name"], "alpha");
     // The app's tap: the session says what it switched to, and the same function makes the event.
@@ -72,11 +72,11 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     let both = format!("#{},#{}", a.0, b.0);
     let events = events_of(
         &mut session,
-        Command::Compare {
+        Command::from(crate::commands::compare::Compare {
             tabs: Some(both.clone()),
             sync: None,
             off: false,
-        },
+        }),
     );
     assert_eq!(
         events,
@@ -91,22 +91,22 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     assert!(
         events_of(
             &mut session,
-            Command::Compare {
+            Command::from(crate::commands::compare::Compare {
                 tabs: Some(both),
                 sync: None,
                 off: false
-            }
+            })
         )
         .is_empty()
     );
     assert!(
         events_of(
             &mut session,
-            Command::Compare {
+            Command::from(crate::commands::compare::Compare {
                 tabs: None,
                 sync: Some("off".into()),
                 off: false
-            }
+            })
         )
         .is_empty()
     );
@@ -114,11 +114,11 @@ fn comparison_events_say_the_tabs_and_the_sync_and_only_when_they_change() {
     // On: said, with the tabs; and the app's toggle says it from the same function.
     let events = events_of(
         &mut session,
-        Command::Compare {
+        Command::from(crate::commands::compare::Compare {
             tabs: None,
             sync: Some("on".into()),
             off: false,
-        },
+        }),
     );
     assert_eq!(
         events,

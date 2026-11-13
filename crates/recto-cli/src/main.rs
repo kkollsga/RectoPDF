@@ -5,8 +5,9 @@ mod handover;
 mod qa;
 
 use recto_agent::commands::access::{Log, PermissionRequest};
+use recto_agent::commands::qa::{QaDrive, QaRead};
 use recto_agent::commands::sync::{Wait, Watch};
-use recto_agent::commands::{Rights, Waits};
+use recto_agent::commands::{Edit, Qa, Rights, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -155,7 +156,7 @@ fn through_session(invocation: &Invocation) -> i32 {
                     Err(recto_agent::refusal("log", level, command.access()))
                 }
             }
-            (Command::Save { .. } | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
+            (Command::Edit(Edit::Save(_)) | Command::Rights(Rights::Sign(_)), Err(error)) if error.exit == exit::NOT_RUNNING => {
                 // These always refuse. Saying why is more use than saying nothing's running.
                 let mut session = Session::new(DrawableLoader);
                 local::run_here(&mut session, &paths, &mut ActivityLog::new(&paths), &command).map(Answer::Here)
@@ -190,7 +191,7 @@ fn client_wait(base_s: u64, command: &Command) -> Duration {
         Command::Waits(Waits::Watch(Watch { timeout_ms, .. })) => timeout_ms.unwrap_or(recto_agent::DEFAULT_WATCH_MS),
         Command::Rights(Rights::PermissionRequest(PermissionRequest { timeout_ms, .. })) => timeout_ms.unwrap_or(0),
         // `qa wait-settled --timeout 2m` waits that long in the app, so the client waits that long too, past its own time to answer.
-        Command::QaRead { timeout_ms, .. } | Command::QaDrive { timeout_ms, .. } => timeout_ms.unwrap_or(0),
+        Command::Qa(Qa::QaRead(QaRead { timeout_ms, .. }) | Qa::QaDrive(QaDrive { timeout_ms, .. })) => timeout_ms.unwrap_or(0),
         _ => 0,
     };
     Duration::from_secs(base_s) + Duration::from_millis(waited)
@@ -452,7 +453,12 @@ fn run_local(invocation: &Invocation) -> i32 {
         let mut log = ActivityLog::new(&paths);
         let command = inner.command()?;
         let mut session = Session::new(DrawableLoader);
-        local::run_here(&mut session, &paths, &mut log, &Command::Open { path: file, page: None })?;
+        local::run_here(
+            &mut session,
+            &paths,
+            &mut log,
+            &Command::from(recto_agent::commands::tabs::Open { path: file, page: None }),
+        )?;
         local::run_here(&mut session, &paths, &mut log, &command)
     })();
     finish(tag, json_wanted, &result)
@@ -553,10 +559,10 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         recto_agent::run(
             &mut session,
             Level::Full,
-            &Command::Open {
+            &Command::from(recto_agent::commands::tabs::Open {
                 path: file.clone(),
                 page: None,
-            },
+            }),
         )?;
         let mut searches = Vec::new();
         for query in queries.split(',').filter(|query| !query.trim().is_empty()) {
@@ -621,7 +627,12 @@ fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -
     let mut samples = Vec::new();
     for index in 0..count {
         let link = make_link(file, dir, index)?;
-        local::run_here(&mut session, paths, &mut log, &Command::Open { path: link, page: None })?;
+        local::run_here(
+            &mut session,
+            paths,
+            &mut log,
+            &Command::from(recto_agent::commands::tabs::Open { path: link, page: None }),
+        )?;
         if index + 1 == 2 || index + 1 == count {
             samples.push(json!({ "tabs": index + 1, "footprint_bytes": recto_platform::footprint_bytes() }));
         }
@@ -731,17 +742,17 @@ mod tests {
     /// Failure: `recto qa wait-settled --timeout 2m` gives up after the client's own 35 s and says the session didn't answer, while the app is still waiting as it was asked to: found printing 300 pages, whose pages take longer than that to prepare.
     #[test]
     fn a_qa_command_with_a_timeout_is_waited_for_that_long() {
-        let settle = Command::QaRead {
+        let settle = Command::from(recto_agent::commands::qa::QaRead {
             verb: "settled".into(),
             out: None,
             timeout_ms: Some(120_000),
-        };
+        });
         assert_eq!(client_wait(35, &settle), Duration::from_secs(155));
-        let plain = Command::QaRead {
+        let plain = Command::from(recto_agent::commands::qa::QaRead {
             verb: "state".into(),
             out: None,
             timeout_ms: None,
-        };
+        });
         assert_eq!(client_wait(35, &plain), Duration::from_secs(35));
     }
 }
