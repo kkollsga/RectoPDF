@@ -26,9 +26,10 @@ fn opened(tabs: usize) -> Session<FakeLoader> {
     s
 }
 
-/// Failure: the sidebar, the record or the list of files to look at after a restore looks a tab up by its number for each tab it walks, so building either at 1,000 tabs searches about a million
-/// records (what 5cb4acb3 did, through each tab's notice and, in the record, each tab's path too). What's left is at most one search over the tabs, for the
-/// tab being read: the counts are pinned at what they are, as a multiple of the tabs open, so any search per tab, even one that finds its tab at once, fails.
+/// Failure: the sidebar, the record or the list of files to look at after a restore looks a tab up by its number for each tab it walks, so building any
+/// of them at 1,000 tabs searches about a million records (what 5cb4acb3 did, through each tab's notice, and in the record and the list through each tab's
+/// path). What's left is at most one search over the tabs, for the tab being read: pinned at one search, so any search per tab, even one that finds its tab
+/// at once, fails.
 #[test]
 fn the_walks_over_every_tab_search_the_tabs_at_most_once() {
     for tabs in [100_u64, 1000] {

@@ -30,7 +30,6 @@ const SEARCHED_PER_TAB: u64 = 55;
 /// the tabs open: at 1,000 tabs about a million records more for every action. Held two ways: no action
 /// searches more than [`SEARCHED_PER_TAB`] records a tab a look, and none searches more a tab at 1,000 tabs than at 100, give or take a few lookups.
 #[test]
-#[cfg(debug_assertions)]
 fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
     let mut per_tab_at_100 = Vec::new();
     for tabs in [100_u64, 1000] {
