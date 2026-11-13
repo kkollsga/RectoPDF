@@ -1,12 +1,14 @@
 //! **Keeping the record when its lock comes late** (owner, 2026-11-13: "A window that doesn't get the record's lock at its start tries again quietly for about
 //! ten seconds and starts remembering once it has it; another RectoPDF really keeping the state is said as it is today").
 //!
-//! A launch asks for the record's lock as it reads the state, and waits up to the store's patience for it (600 ms, `record_store::LOCK_PATIENCE`). One that still
-//! hasn't got it says nothing yet, and tries again: one `try_lock` every [`TRY_EVERY_MS`] from the moment the state was taken in, the last at [`KEEP_TRYING_MS`],
-//! so [`TRIES`] tries in all, each on the session thread's own deadline ([`Keeping::due`]): no thread of its own, no timer, and nothing at all once it's settled.
+//! A launch asks for the record's lock once, as it reads the state, and waits up to the store's patience for it (600 ms, `record_store::LOCK_PATIENCE`). One
+//! that still hasn't got it says nothing yet, and tries again: one `try_lock` every [`TRY_EVERY_MS`] from the moment the state was taken in, the last at
+//! [`KEEP_TRYING_MS`], so [`TRIES`] tries in all, each due on the session thread's own deadline ([`Keeping::due`]) and made on a short thread of its own, one at
+//! a time ([`Event::Asking`], [`Event::Tried`]): no timer, and nothing at all once it's settled.
 //! Then one of four:
 //! - **The lock comes, and the person has done nothing in the window:** this copy keeps the record from here, as if it had got it at the start ([`Out::Restore`]):
-//!   the saved session is read off the session thread and taken in as a launch's is ([`Keeping::Restoring`]), and once it's in ([`Event::Read`] with the lock)
+//!   the saved session is read off the session thread and taken in as a launch's is ([`Keeping::Restoring`], for [`RESTORING_PATIENCE_MS`] at most, then given
+//!   up: [`Event::ReadFailed`]), and once it's in ([`Event::Read`] with the lock)
 //!   the window is made again from it, once ([`Out::Kept`]). The notice never shows. The common case: the copy before it was still quitting, or an update's
 //!   hand-off was letting go.
 //! - **The person opens or changes something first:** trying stops at once, and the window is one that won't be remembered, said at once ([`Out::SayNotKept`]):

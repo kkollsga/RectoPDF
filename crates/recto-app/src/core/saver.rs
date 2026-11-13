@@ -32,8 +32,8 @@ pub struct Saver {
     /// In milliseconds of `clock`, plus one, and zero for none.
     first_edit: AtomicU64,
     last_edit: AtomicU64,
-    /// One pass at the disk at a time: held by every writer of the record from gathering what it writes to writing it, and by a late try at the record's lock
-    /// (`keeping`), so a writer either gathered before the try and is refused, or gathers what the try restores.
+    /// One pass at the disk at a time: held by every writer of the record from gathering what it writes to writing it, and taken only by one that may write
+    /// (`keeping::may_write`, looked at before and again under it), so a writer either writes nothing or gathers the session this copy keeps.
     pub(super) gate: Mutex<()>,
     last_error: Mutex<Option<StoreError>>,
 }

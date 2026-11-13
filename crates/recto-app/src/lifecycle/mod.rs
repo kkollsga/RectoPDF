@@ -12,7 +12,7 @@
 use crate::core::updates::{Patience, restore_patience, takes_input};
 use std::time::Duration;
 
-/// Keeping the record when its lock comes late: tried again quietly for ten seconds.
+/// Keeping the record when its lock comes late: tried again quietly for ten seconds, or a minute after an update.
 pub mod keeping;
 #[cfg(test)]
 mod tests;
