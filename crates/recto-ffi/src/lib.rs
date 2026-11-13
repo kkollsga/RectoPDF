@@ -34,7 +34,7 @@ pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
-use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, place_window};
+use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, SettingsWindow, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
@@ -1278,40 +1278,7 @@ impl AppCore {
 
     /// The window moved, resized or went full screen. Off a window's delegate, so at most as often as those.
     pub fn window_changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool) {
-        let mut app = lock(&self.inner.window.app);
-        let saved = app.window.get_or_insert(WindowRecord {
-            frame: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            },
-            screen: None,
-            full_screen: false,
-            minimised: false,
-        });
-        // Its frame in full screen isn't where leaving full screen takes it.
-        if let Some([x, y, width, height]) = frame.as_deref() {
-            saved.frame = Rect {
-                x: *x,
-                y: *y,
-                width: *width,
-                height: *height,
-            };
-            saved.screen = screen.map(|screen| ScreenRecord {
-                id: screen.id,
-                name: recto_core::clean_line(&screen.name),
-                frame: Rect {
-                    x: screen.x,
-                    y: screen.y,
-                    width: screen.width,
-                    height: screen.height,
-                },
-            });
-        }
-        saved.full_screen = full_screen;
-        drop(app);
-        self.inner.saver.view_changed();
+        self.inner.window.changed(frame, screen, full_screen, &self.inner.saver);
     }
 
     /// The sidebar's edge was dragged, or QA said so. Rust holds it to its limits.

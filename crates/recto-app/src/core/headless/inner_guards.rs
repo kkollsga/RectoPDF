@@ -243,6 +243,7 @@ Window.pub(crate) action_notice: Mutex<Option<String>>
 Window.pub(crate) notice_tab: AtomicU32
 Window.pub(crate) open_failure: Mutex<Option<String>>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
+Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
 Window::pub fn comes_back_hidden(&self, reopened: bool) -> bool
 Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
 Window::pub fn hidden_changed(&self, hidden: bool, saver: &Saver)

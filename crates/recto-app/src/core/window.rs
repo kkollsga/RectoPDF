@@ -6,8 +6,9 @@ use super::saver::Saver;
 use super::updates;
 use crate::lock;
 use crate::queue::{CoreCall, CoreQueue};
+use crate::records::ScreenInfo;
 use crate::watchdog::Watchdog;
-use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, SettingsWindow, WindowRecord};
+use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, Rect, ScreenRecord, SettingsWindow, WindowRecord};
 use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -143,6 +144,45 @@ impl Window {
     /// Whether this launch, `reopened` by an update or not, comes up behind what the user's doing: an update arriving to an app that wasn't in front.
     pub fn opens_in_background(&self, reopened: bool) -> bool {
         updates::opens_in_background(reopened, lock(&self.app).focus.app_frontmost)
+    }
+
+    /// The window moved, resized or went full screen, on this `screen`. Off a window's delegate, so at most as often as those. A window not told of yet is made
+    /// at the default frame; a `frame` that isn't four numbers leaves the frame and screen as they were.
+    pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver) {
+        let mut app = lock(&self.app);
+        let saved = app.window.get_or_insert(WindowRecord {
+            frame: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            },
+            screen: None,
+            full_screen: false,
+            minimised: false,
+        });
+        // Its frame in full screen isn't where leaving full screen takes it.
+        if let Some([x, y, width, height]) = frame.as_deref() {
+            saved.frame = Rect {
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            };
+            saved.screen = screen.map(|screen| ScreenRecord {
+                id: screen.id,
+                name: recto_core::clean_line(&screen.name),
+                frame: Rect {
+                    x: screen.x,
+                    y: screen.y,
+                    width: screen.width,
+                    height: screen.height,
+                },
+            });
+        }
+        saved.full_screen = full_screen;
+        drop(app);
+        saver.view_changed();
     }
 
     /// Where the Settings window was, if it was open.

@@ -139,3 +139,77 @@ fn opening_behind_is_decided_as_the_bridge_decided_it() {
         assert_eq!(rig.window.opens_in_background(reopened), answer, "frontmost {frontmost}, reopened {reopened}");
     }
 }
+
+/// A screen with a name that needs cleaning, as a display's can.
+fn screen() -> ScreenInfo {
+    ScreenInfo {
+        id: 7,
+        name: "Studio\u{7}  Display\n".into(),
+        x: 0.0,
+        y: 0.0,
+        width: 2560.0,
+        height: 1440.0,
+        visible_x: 0.0,
+        visible_y: 25.0,
+        visible_width: 2560.0,
+        visible_height: 1415.0,
+    }
+}
+
+/// Failure: a move or resize is kept otherwise than the bridge kept it: a window not told of yet isn't made at the default frame, a frame that isn't four
+/// numbers is taken anyway, a screen's name goes into the record with what a name can't hold, full screen isn't kept with no frame, or it isn't written:
+/// the bridge's `window_changed`.
+#[test]
+fn a_move_is_kept_as_the_bridge_kept_it() {
+    let rect = |x, y, width, height| record::Rect { x, y, width, height };
+    // (a window told of already, the frame, a screen, full screen) → (its frame, its screen's name, full screen)
+    let table: [(bool, Option<Vec<f64>>, bool, bool, record::Rect, Option<&str>, bool); 6] = [
+        (false, None, false, true, rect(0.0, 0.0, 1440.0, 900.0), None, true),
+        (false, None, true, false, rect(0.0, 0.0, 1440.0, 900.0), None, false),
+        (
+            false,
+            Some(vec![10.0, 20.0, 800.0, 600.0]),
+            true,
+            false,
+            rect(10.0, 20.0, 800.0, 600.0),
+            Some("Studio Display"),
+            false,
+        ),
+        (
+            true,
+            Some(vec![10.0, 20.0, 800.0, 600.0]),
+            false,
+            true,
+            rect(10.0, 20.0, 800.0, 600.0),
+            None,
+            true,
+        ),
+        (true, Some(vec![10.0, 20.0, 800.0]), true, false, rect(1.0, 2.0, 900.0, 700.0), None, false),
+        (
+            true,
+            Some(vec![10.0, 20.0, 800.0, 600.0, 5.0]),
+            true,
+            true,
+            rect(1.0, 2.0, 900.0, 700.0),
+            None,
+            true,
+        ),
+    ];
+    for (told, frame, on_screen, full_screen, kept_frame, kept_screen, kept_full) in table {
+        let rig = if told { Rig::new().with_a_window() } else { Rig::new() };
+        let asked = format!("told {told}, frame {frame:?}, screen {on_screen}, full screen {full_screen}");
+        rig.window.changed(frame, on_screen.then(screen), full_screen, &rig.saver);
+        let window = rig.app().window.expect("a window kept");
+        assert_eq!(window.frame, kept_frame, "{asked}");
+        assert_eq!(window.screen.as_ref().map(|screen| screen.name.as_str()), kept_screen, "{asked}");
+        assert_eq!((window.full_screen, window.minimised), (kept_full, false), "{asked}");
+        if let Some(screen) = window.screen {
+            assert_eq!(
+                (screen.id, screen.frame),
+                (7, rect(0.0, 0.0, 2560.0, 1440.0)),
+                "the screen's whole frame, not its visible part"
+            );
+        }
+        assert_eq!(rig.kept(), Kept::InItsTime, "{asked}");
+    }
+}

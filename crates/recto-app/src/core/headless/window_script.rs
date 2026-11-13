@@ -16,8 +16,7 @@ use crate::testkit::headless::{Disk, HeadlessApp};
 mod bridge {
     use crate::core::{Inner, updates};
     use crate::lock;
-    use crate::records::ScreenInfo;
-    use recto_session::record::{self, Appearance, FocusView, Rect, ScreenRecord, WindowRecord};
+    use recto_session::record::{self, Appearance, FocusView};
 
     /// The part of `window_placement` that decides what's kept: whether the window comes back in the Dock, and that it's been decided.
     pub fn window_placement_decides(inner: &Inner) -> bool {
@@ -31,42 +30,6 @@ mod bridge {
             app.clone()
         };
         app.window.as_ref().is_some_and(|window| window.minimised)
-    }
-
-    pub fn window_changed(inner: &Inner, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool) {
-        let mut app = lock(&inner.window.app);
-        let saved = app.window.get_or_insert(WindowRecord {
-            frame: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            },
-            screen: None,
-            full_screen: false,
-            minimised: false,
-        });
-        if let Some([x, y, width, height]) = frame.as_deref() {
-            saved.frame = Rect {
-                x: *x,
-                y: *y,
-                width: *width,
-                height: *height,
-            };
-            saved.screen = screen.map(|screen| ScreenRecord {
-                id: screen.id,
-                name: recto_core::clean_line(&screen.name),
-                frame: Rect {
-                    x: screen.x,
-                    y: screen.y,
-                    width: screen.width,
-                    height: screen.height,
-                },
-            });
-        }
-        saved.full_screen = full_screen;
-        drop(app);
-        inner.saver.view_changed();
     }
 
     pub fn set_sidebar_width(inner: &Inner, width: f64) {
@@ -156,12 +119,12 @@ fn said(answer: bool) -> Option<String> {
 #[allow(clippy::unit_arg)]
 const STEPS: &[(&str, Step)] = &[
     // No window's been told yet: the first change makes one, at the default frame.
-    ("full screen with no frame", |inner| done(bridge::window_changed(inner, None, None, true))),
+    ("full screen with no frame", |inner| done(inner.window.changed(None, None, true, &inner.saver))),
     ("moved", |inner| {
-        done(bridge::window_changed(inner, Some(vec![10.0, 20.0, 800.0, 600.0]), Some(screen()), false))
+        done(inner.window.changed(Some(vec![10.0, 20.0, 800.0, 600.0]), Some(screen()), false, &inner.saver))
     }),
     ("a frame of three numbers", |inner| {
-        done(bridge::window_changed(inner, Some(vec![1.0, 2.0, 3.0]), Some(screen()), false))
+        done(inner.window.changed(Some(vec![1.0, 2.0, 3.0]), Some(screen()), false, &inner.saver))
     }),
     ("into the Dock", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
     ("placed at a launch", |inner| said(bridge::window_placement_decides(inner))),
