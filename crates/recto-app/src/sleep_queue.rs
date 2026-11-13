@@ -31,9 +31,18 @@ struct Leaving {
 /// The one the writer's taken, till its write's done.
 struct InFlight {
     id: TabId,
+    /// The name of the file it's for, as a retirement says it.
+    name: String,
     bytes: u64,
     /// Something newer's been written for it since it was taken: it isn't written.
     stale: bool,
+    /// Its file was retired since it was taken (the tab closed, saved, or its file changed): it isn't written, and if it was being written, what landed goes.
+    retired: bool,
+}
+
+/// The name of the sleep file a tab's facts are for.
+fn file_name(facts: &SleepFacts) -> String {
+    recto_session::record::sleep_file_name(facts.sleep.file, &facts.path)
 }
 
 fn bytes_of(facts: &SleepFacts, material: &SleepMaterial) -> u64 {
@@ -65,6 +74,8 @@ pub struct LeavingQueue {
     dropped: u64,
     /// Taken for writing, and not written, as something newer was.
     stale_skipped: u64,
+    /// Queued, and gone as their files were retired.
+    retired: u64,
     writer_panics: u64,
 }
 
@@ -116,17 +127,25 @@ impl LeavingQueue {
         };
         self.in_flight = Some(InFlight {
             id: leaving.facts.id,
+            name: file_name(&leaving.facts),
             bytes: leaving.bytes,
             stale: false,
+            retired: false,
         });
         Some((leaving.facts, leaving.material))
     }
 
     /// Whether the one in flight is still to be written: asked with the one-at-a-time lock held, so a newer write either came before, and this isn't written, or comes after it.
     pub fn still_wanted(&mut self) -> bool {
-        let stale = self.in_flight.as_ref().is_some_and(|flight| flight.stale);
+        let stale = self.in_flight.as_ref().is_some_and(|flight| flight.stale || flight.retired);
         self.stale_skipped += u64::from(stale);
         !stale
+    }
+
+    /// Whether the one in flight's file was retired while it was being written: what landed goes, as the retirement may have been carried out before it did.
+    #[must_use]
+    pub fn retired_in_flight(&self) -> bool {
+        self.in_flight.as_ref().is_some_and(|flight| flight.retired)
     }
 
     /// The one in flight is written, or skipped: what it held goes.
@@ -148,6 +167,22 @@ impl LeavingQueue {
         }
         if let Some(flight) = self.in_flight.as_mut().filter(|flight| flight.id == id) {
             flight.stale = true;
+        }
+    }
+
+    /// **These sleep files are retired** (a tab closed, saved, redacted, or its file found to be another version), about to be removed by the saver: what's
+    /// queued for them goes, and the one in flight, if it's one, isn't written, or what it wrote goes ([`Self::retired_in_flight`]). Asked before the files are
+    /// removed, so a write either comes after this and isn't made, or came before and is removed with the rest. Names that aren't sleep files are passed by.
+    pub fn retire(&mut self, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+        while let Some(at) = self.queue.iter().position(|leaving| names.contains(&file_name(&leaving.facts))) {
+            self.remove(at);
+            self.retired += 1;
+        }
+        if let Some(flight) = self.in_flight.as_mut().filter(|flight| names.contains(&flight.name)) {
+            flight.retired = true;
         }
     }
 
@@ -174,6 +209,7 @@ impl LeavingQueue {
             "pictures_dropped": self.pictures_dropped,
             "dropped": self.dropped,
             "stale_skipped": self.stale_skipped,
+            "retired": self.retired,
             "writer_panics": self.writer_panics,
         })
     }
@@ -347,6 +383,30 @@ mod tests {
         assert_eq!(queue.queue.len(), 1);
         assert_eq!(queue.bytes, MIB as u64);
         assert_eq!(queue.take_next().unwrap().0.id, TabId(2));
+    }
+
+    /// Failure (the sleeper's review, 2026-11-13): a tab's sleep file retired (closed, saved, its file changed) was still written from what the queue held, after
+    /// the retirement was carried out, so a closed document's picture and contents stayed on disk. And the other way: a retirement that drops other tabs' files
+    /// costs them their quick way back for nothing. What's queued for a retired name goes, and its bytes; the one in flight for it isn't written, and says it was
+    /// retired so what it wrote goes; other tabs' and names that aren't sleep files are left alone.
+    #[test]
+    fn a_retired_sleep_file_is_not_written_from_the_queue_and_others_stay() {
+        let mut queue = LeavingQueue::default();
+        let _ = queue.push(facts(1), material(MIB, 0));
+        let _ = queue.push(facts(2), material(MIB, 0));
+        let _ = queue.push(facts(3), material(MIB, 0));
+        assert_eq!(queue.take_next().unwrap().0.id, TabId(1));
+        queue.retire(&["journal-0.log".to_string()]);
+        assert!(queue.still_wanted() && !queue.retired_in_flight(), "not a name of its");
+        queue.retire(&[file_name(&facts(1)), file_name(&facts(3))]);
+        assert!(queue.retired_in_flight(), "what the one in flight wrote goes");
+        assert!(!queue.still_wanted(), "not written if it hasn't been");
+        queue.done();
+        assert_eq!(queue.bytes, MIB as u64, "only tab 2's held");
+        assert_eq!(queue.take_next().unwrap().0.id, TabId(2));
+        assert!(queue.still_wanted() && !queue.retired_in_flight());
+        assert!(queue.take_next().is_none());
+        assert_eq!(queue.report()["retired"], 1);
     }
 
     /// Failure (review 1): the file being written isn't counted once it's taken from the queue, so what's held is the cap and one more tab's pictures, and the peak says less than there is. It counts till its write's done, and what's queued after it gives way.

@@ -128,6 +128,11 @@ impl Sleeper {
         lock(&self.machine).after_seconds()
     }
 
+    /// These sleep files are about to be removed, as retired: nothing queued for them is written after ([`crate::sleep_queue::LeavingQueue::retire`]).
+    pub fn retire(&self, names: &[String]) {
+        lock(&self.leaving).retire(names);
+    }
+
     /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further (counted as skipped past it),
     /// and said to the machine meanwhile so the queue's writer lets it go first. A flush's thread or being asked's, never the UI's.
     /// `until` is real time, not the clock: a wait on another thread's disk.
@@ -314,7 +319,10 @@ impl Inner {
     }
 
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
-    pub fn queue_those_leaving(&self) {
+    /// `shown` is the tab being shown: what's queued for it was copied as it left, and the page view holds it again, so writing that would be a write for
+    /// nothing; it goes, and the tab is queued again when it next leaves.
+    pub fn queue_those_leaving(&self, shown: TabId) {
+        lock(&self.sleeper.leaving).forget(shown);
         let left = self.host.session.with_session(|session| session.sleeper().take_left_warm());
         let mut start = false;
         for facts in left {
@@ -373,7 +381,12 @@ impl Inner {
             self.sleeper.let_others_go_first();
             let one_at_a_time = lock(&self.sleeper.writing);
             if lock(queue).still_wanted() {
+                let (stamp, path) = (facts.sleep.file, facts.path.clone());
                 self.write_holding_lock(facts, material, By::Queue);
+                // Retired as it was written: the saver may have removed the file before this landed, so it goes now.
+                if lock(queue).retired_in_flight() {
+                    self.saver.store.remove_sleep(stamp, &path);
+                }
             }
             drop(one_at_a_time);
             lock(queue).done();

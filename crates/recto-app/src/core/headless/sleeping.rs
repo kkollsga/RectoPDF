@@ -414,3 +414,92 @@ fn a_tab_left_again_at_another_page_within_a_minute_wakes_with_a_picture_of_that
     );
     drop(app.quit());
 }
+
+/// The sleep files in the state folder, by name, wherever under it they are.
+fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
+    fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if let Some(name) = path.file_name().and_then(|name| name.to_str()).filter(|name| name.starts_with("sleep-")) {
+                found.push(name.to_string());
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(&app.disk().paths().root, &mut found);
+    found
+}
+
+/// Failure (the sleeper's review, 2026-11-13): a tab pushed out of the warm ones has its facts and pictures copied into the app's queue for the one writer, and
+/// close retired its sleep file in the session only: the queue still held it, so its file was written after the close's retirement had been carried out, and
+/// a picture and the contents of a closed document stayed in the app's folder. With every sleep file's write held at its seam: five tabs opened, so x is pushed
+/// out and held mid-write and a is queued behind it; both closed, the close's retirement written; let through, no sleep file is left of either, and none of
+/// the three still open (never pushed out) has one either.
+#[test]
+fn a_tab_closed_while_its_sleep_file_is_queued_or_being_written_leaves_none() {
+    let disk = Disk::new();
+    let docs: Vec<_> = ["x", "a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.builder().hold(&[Seam::SleepWrite]).start();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    app.wait_until("x's sleep file held mid-write", || app.waiting(Seam::SleepWrite) > 0);
+    let leaving = app.record_json()["sleep"]["leaving"].clone();
+    assert_eq!(leaving["queued"], 1, "a queued behind x: {leaving}");
+    for name in ["x.pdf", "a.pdf"] {
+        full(&app, &["close", "--tab", &format!("#{}", tab_named(&app, name))]);
+    }
+    app.settle();
+    // The close's retirement carried out, while x's write is still held: a short limit, as the tab on screen's file would wait behind it.
+    app.core().saver.flush(false, std::time::Duration::from_millis(50)).expect("the state written");
+    recto_platform::slow::gate::open(Seam::SleepWrite);
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
+    // The tab on screen's own, written by the flush, is the one that's there.
+    let core = app.core();
+    let on_screen = core
+        .host
+        .session
+        .with_session(|session| session.tabs().active().and_then(|id| session.dormant().sleep_facts(id)))
+        .map(|facts| recto_session::record::sleep_file_name(facts.sleep.file, &facts.path))
+        .expect("the tab on screen's sleep file name");
+    let left: Vec<String> = sleep_files_on_disk(&app).into_iter().filter(|name| *name != on_screen).collect();
+    assert!(left.is_empty(), "a closed tab's sleep file outlived it: {left:?}");
+    drop(app.quit());
+}
+
+/// Failure (the sleeper's review, 2026-11-13): a tab pushed out of the warm ones and shown again before the one writer got to it still had its sleep file
+/// written from what it was copied with as it left: a write for nothing, against the owner's rule on the drive's wear, as the page view holds it again and it's
+/// queued afresh when it next leaves. With every sleep file's write held at its seam: five tabs opened, so x is held mid-write and a queued behind it; a shown
+/// again; let through, x's file is written and a's isn't.
+#[test]
+fn a_tab_shown_again_before_its_queued_sleep_file_is_written_has_none_written() {
+    let disk = Disk::new();
+    let docs: Vec<_> = ["x", "a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.builder().hold(&[Seam::SleepWrite]).start();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    app.wait_until("x's sleep file held mid-write", || app.waiting(Seam::SleepWrite) > 0);
+    let a = tab_named(&app, "a.pdf");
+    full(&app, &["tap", &format!("#{a}")]);
+    app.settle();
+    recto_platform::slow::gate::open(Seam::SleepWrite);
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    let name_of = |id: u64| {
+        app.core()
+            .host
+            .session
+            .with_session(|session| session.dormant().sleep_facts(recto_session::TabId(u32::try_from(id).expect("a tab id"))))
+            .map(|facts| recto_session::record::sleep_file_name(facts.sleep.file, &facts.path))
+            .expect("a sleep file name")
+    };
+    let on_disk = sleep_files_on_disk(&app);
+    assert!(!on_disk.contains(&name_of(a)), "written for a tab shown again: {on_disk:?}");
+    assert!(!on_disk.is_empty(), "x's is written: {on_disk:?}");
+    drop(app.quit());
+}

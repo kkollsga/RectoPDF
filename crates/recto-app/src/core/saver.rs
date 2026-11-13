@@ -235,6 +235,8 @@ impl Saver {
         if work.retired.is_empty() && work.appends.is_empty() {
             return None;
         }
+        // Sleep files about to be removed: nothing queued for them is written after.
+        inner.sleeper.retire(&work.retired);
         let (outcome, failed) = self.store.write_journals(work, force);
         let written: Vec<(recto_session::TabId, String)> = outcome.written.iter().map(|(id, _, name)| (*id, name.clone())).collect();
         inner.host.session.with_session(|session| session.journal_desk().outcome(outcome));
