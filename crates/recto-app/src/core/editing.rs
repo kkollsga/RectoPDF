@@ -6,6 +6,7 @@ use recto_agent::Actor;
 use recto_agent::commands::Edit;
 use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::editing::{ClearHistory, PageRotate, Redo, Undo};
+use recto_agent::commands::words::OnOff;
 
 /// The panel's Rotate, a quarter turn each way: every page, or in edit mode the page being read, by the session as it is when it runs, so an edit mode
 /// turned on just before is the one it goes by. Its tab is the one being read.
@@ -28,7 +29,7 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Act
     if !actor.sees_protected() && session.tabs().withheld_from_agents(id) {
         return Err(recto_agent::protected_refusal());
     }
-    asked.tab = format!("#{}", id.0);
+    asked.tab = recto_agent::TabRef::Id(id);
     if session.viewing().edit_mode()
         && let Some(tab) = session.tabs().tab(id)
     {
@@ -58,7 +59,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
 /// when it runs; Undo, Redo and Clear History are `undo`, `redo` and `clear-history` on the tab being read; the panel's Done is `edit mode off`.
 pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
-    let active = || "active".to_string();
+    let active = || recto_agent::TabRef::Active;
     Some(match asked.action.as_ref()? {
         menus::Action::Rotate(turns) => Row::Command {
             command: rotate(*turns),
@@ -68,7 +69,7 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
         menus::Action::Undo => Row::command(Undo { tab: active() }),
         menus::Action::Redo => Row::command(Redo { tab: active() }),
         menus::Action::ClearEditHistory => Row::command(ClearHistory { tab: active() }),
-        menus::Action::LeaveEditMode => Row::command(EditMode { set: "off".into() }),
+        menus::Action::LeaveEditMode => Row::command(EditMode { set: OnOff::Off }),
         _ => return None,
     })
 }
@@ -76,12 +77,6 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
 impl Inner {
     /// Into edit mode or out of it: `edit mode on|off`.
     pub fn edit_mode_for_person(self: &Arc<Self>, on: bool) {
-        person::submit(
-            self,
-            EditMode {
-                set: if on { "on" } else { "off" }.into(),
-            }
-            .into(),
-        );
+        person::submit(self, EditMode { set: OnOff::from_bool(on) }.into());
     }
 }

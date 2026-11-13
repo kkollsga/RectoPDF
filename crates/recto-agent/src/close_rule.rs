@@ -9,6 +9,7 @@
 //! - **What a close would lose can't all be known** when the tab's list is asleep and its journal couldn't be read back: an agent is refused, at every
 //!   level, and the person, who sees the tab say so, decides. Unknown is "would lose", not "nothing to lose" (coordinator, 2026-11-13).
 
+use crate::Code;
 use crate::{ASK_FULL, Actor, AgentError, Level, exit};
 use recto_session::edit::PageEdits;
 use recto_session::{DocLoader, Session, TabId};
@@ -67,7 +68,7 @@ impl WouldLose {
         if self.unreadable && actor != Actor::Person {
             return Some(
                 AgentError::new(
-                    "edits_unreadable",
+                    Code::EDITS_UNREADABLE,
                     "This tab wasn't closed: its edits couldn't be read back just now, so what closing it would lose can't all be known.",
                     exit::FAILED,
                 )
@@ -114,9 +115,9 @@ impl WouldLose {
         let message = format!("This tab wasn't closed: closing it would lose its {what}.{whose}");
         // The user's undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level, and `discard` is the way on.
         let mut error = if owners_undone {
-            AgentError::new("would_clear_redo", message, exit::PERMISSION)
+            AgentError::new(Code::WOULD_CLEAR_REDO, message, exit::PERMISSION)
         } else {
-            AgentError::new("unsaved_changes", message, exit::FAILED)
+            AgentError::new(Code::UNSAVED_CHANGES, message, exit::FAILED)
         };
         if owners_anywhere {
             error.ask = Some(ASK_FULL.into());
@@ -134,7 +135,7 @@ mod tests {
     /// let close over unsaved edits at any level or over the owner's undone steps below Full, or one at Full stopped by the owner's undone steps alone.
     #[test]
     fn each_actor_does_what_the_rule_says_with_what_a_close_would_lose() {
-        let code = |lose: WouldLose, actor: Actor| lose.refusal(actor).map(|error| error.code);
+        let code = |lose: WouldLose, actor: Actor| lose.refusal(actor).map(|error| error.code.as_str());
         let unsaved = WouldLose {
             unsaved: true,
             ..WouldLose::default()

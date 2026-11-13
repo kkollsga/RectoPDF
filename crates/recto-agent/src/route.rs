@@ -1,5 +1,6 @@
 //! Where each command is answered: the session, the server, the host's record or only the app. One exhaustive list, which the server, the hosts and the app route by.
 
+use crate::Code;
 use crate::commands::{Move, OnlyAsks};
 use crate::{AgentError, Command, exit};
 
@@ -49,8 +50,12 @@ impl Command {
 
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 pub fn qa_needs_app() -> AgentError {
-    AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED)
-        .then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
+    AgentError::new(
+        Code::QA_NEEDS_APP,
+        "QA commands only work on an app started with `recto qa start`.",
+        exit::FAILED,
+    )
+    .then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }
 
 #[cfg(test)]

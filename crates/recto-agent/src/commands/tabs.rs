@@ -2,6 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -27,7 +28,7 @@ impl Cmd for Open {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -51,8 +52,8 @@ impl Cmd for Open {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tap {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Tap {
@@ -62,7 +63,7 @@ impl Cmd for Tap {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -103,7 +104,7 @@ impl Cmd for Recent {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -148,7 +149,7 @@ impl Cmd for RecentClear {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -180,8 +181,8 @@ impl Cmd for RecentClear {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Close {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Close {
@@ -191,7 +192,7 @@ impl Cmd for Close {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -281,7 +282,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     require_absolute(path)?;
     let wrong_page = |pages: u32| {
         AgentError::new(
-            "no_such_page",
+            Code::NO_SUCH_PAGE,
             format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)),
             exit::NOT_FOUND,
         )

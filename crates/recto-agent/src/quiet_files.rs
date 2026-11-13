@@ -441,6 +441,10 @@ mod tests {
         (said(answer, run.path()), loaded)
     }
 
+    /// Arguments that are tabs by selector, as [`Kind::Tab`] is, though the table calls them text: a list of them, or one for a pane. Read as
+    /// [`crate::TabRef`]s, which only ever match the open tabs' names, so an outside file's path in one is no tab, and is refused at its tab by design.
+    const SELECTORS: &[(&str, &str)] = &[("compare", "tabs"), ("compare", "toggle"), ("compare", "reading")];
+
     /// Failure (review of the branch, S1's sweep beyond QA; and round 2, B1: the sweep set the tab to the outside file too, so nearly every command was
     /// refused at its tab before its value was used, and it could fail for none of them): a command's argument is text to the table but a file to the
     /// command, so no wall sees it, and a confined session reads, writes, makes or learns of a file outside its folders through it. Every session command
@@ -485,6 +489,9 @@ mod tests {
                         line[arg.key] = json!(form.replace(BESIDE, &run.join("mine.pdf").to_string_lossy()));
                         line
                     };
+                    // A line that isn't a command reaches nothing. Nor does a choice's: its words are fixed, and a typed payload refuses any other as
+                    // it's read (step R2.5); but that is no value used past the tab, which only an argument that ran can be (review of R2.5, F8: a
+                    // choice refused as read counted as one, so a command's path-taking argument refused at its tab for every value slipped by).
                     if parse(&make(Path::new("/tmp")).to_string()).is_err() {
                         continue;
                     }
@@ -497,7 +504,7 @@ mod tests {
                     assert_eq!(there, missing, "{what}: the answer says whether the outside file is there");
                     assert!(!there.contains("user's own"), "{what}: the outside file was read: {there}");
                     assert_eq!(outside.looks(), outside.before, "{what}: the outside file was read, moved or written");
-                    if arg.kind != Kind::Tab {
+                    if arg.kind != Kind::Tab && !SELECTORS.contains(&(spec.tag, arg.key)) {
                         tried = true;
                         got_past_the_tab |= !there.starts_with("no_such_tab:");
                     }
@@ -510,12 +517,21 @@ mod tests {
                 "{}: refused at its tab for every value, so nothing was tried",
                 spec.name
             );
+            // A command none of whose values ran takes no free text, which is what could hold a file: a choice's words are fixed and its type
+            // refuses any other as it's read, a path is held above, and the rest are numbers and grammars a line can't carry a path in.
+            let takes_free_text = spec
+                .args
+                .iter()
+                .any(|arg| matches!(arg.kind, Kind::Text | Kind::Rest) && !SELECTORS.contains(&(spec.tag, arg.key)));
+            assert!(tried || !takes_free_text, "{}: free text that could hold a file was never tried", spec.name);
             commands += 1;
             past_the_tab += usize::from(got_past_the_tab);
         }
         eprintln!("the sweep: {commands} commands, {past_the_tab} with a value used past their tab, {lines} lines");
+        // 19 until the typed payloads (R2.5): edit mode's, contents show's, update dev-builds', settings' and compare's choices are refused as they're read now, so
+        // reach no run; the assertion above holds that such a command takes no free text.
         assert!(
-            past_the_tab >= 19,
+            past_the_tab >= 14,
             "the commands with a value the sweep used past their tab: {past_the_tab} of {commands}"
         );
     }

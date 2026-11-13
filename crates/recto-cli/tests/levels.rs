@@ -222,6 +222,38 @@ fn nothing_an_agent_can_send_or_set_raises_a_level() {
     assert!(!said.contains("Private"), "{said}");
 }
 
+/// Failure (review of R2.5, S1, and its second review, B1): through `recto session`, the in-process route QA scripts use, a command whose arguments its
+/// type refuses as it's read is answered as `"cmd":"unknown"` and logged as `unknown`, where the socket answers and logs it as itself; or each attempt is
+/// written in full, which lets an agent at Off push out what earlier agents read. Both read lines one way: each attempt is answered as `edit_mode`, the first
+/// is written as its own `edit_mode`/`usage` line, and the rest as one count when the session ends, with nothing of what it held.
+#[test]
+fn a_command_refused_as_its_read_keeps_its_name_in_process() {
+    let state = State::at(Level::ReadOnly);
+    let mut session = state.command().arg("session").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut stdin = session.stdin.take().unwrap();
+    for _ in 0..3 {
+        writeln!(stdin, r#"{{"cmd":"edit_mode","set":"sideways"}}"#).unwrap();
+    }
+    drop(stdin);
+    let mut said = String::new();
+    session.stdout.take().unwrap().read_to_string(&mut said).unwrap();
+    session.wait().unwrap();
+    let replies: Vec<Value> = said.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(replies.len(), 3, "{said}");
+    for reply in &replies {
+        assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("edit_mode"), &json!("usage")), "{reply}");
+    }
+    let log = std::fs::read_to_string(&state.paths.other_log).unwrap_or_default();
+    let lines: Vec<Value> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["cmd"] == "edit_mode" && line["outcome"] == "usage")
+        .collect();
+    assert_eq!(lines.len(), 2, "one line by its name, and one count for the rest: {log}");
+    assert!(lines[0]["count"].is_null() && lines[1]["count"] == 2, "{log}");
+    assert!(!log.contains("sideways"), "nothing of what it held: {log}");
+}
+
 /// Failure: an agent with Read-only opens any file on disk through the in-process route, which is what Control is for.
 #[test]
 fn the_in_process_route_has_the_same_levels() {

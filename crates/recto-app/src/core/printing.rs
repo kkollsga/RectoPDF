@@ -7,6 +7,7 @@
 //! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
 
 use super::{CoreCall, HostAction, Inner, SelectionNotice, lock};
+use recto_agent::Code;
 use recto_agent::print;
 use recto_session::TabId;
 use std::path::{Path, PathBuf};
@@ -277,12 +278,12 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
         let listed = runner
             .host
             .session
-            .with_session(|session| print::print_pages_in(session, &format!("#{}", tab.0), Some(&pages)));
+            .with_session(|session| print::print_pages_in(session, &recto_agent::TabRef::Id(tab), Some(&pages)));
         let path = temp_path(generation);
         let outcome = listed.and_then(|listed| {
             if request.to_file && !request.anyway && print::any_copy_restricted(&listed) {
                 return Err(recto_agent::AgentError::new(
-                    "copy_restricted",
+                    Code::COPY_RESTRICTED,
                     "This file's permissions ask that it isn't copied.",
                     recto_agent::exit::PROTECTED,
                 ));
@@ -303,13 +304,13 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
                 }
                 *lock(&printing.ready) = Some(path);
             }
-            Err(error) if error.code == "copy_restricted" => {
+            Err(error) if said_as(&error) == Told::Anyway => {
                 // A QA print's target stays, for "Print anyway" to write to.
                 let serial = printing.say(error.message, true);
                 *lock(&printing.refused) = Some((serial, request));
             }
             Err(error) => {
-                if error.code != "cancelled" {
+                if said_as(&error) == Told::Words {
                     printing.say(error.message, false);
                 }
                 lock(&printing.qa_target).take();
@@ -329,9 +330,45 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
     true
 }
 
+/// How a print that didn't go is said.
+#[derive(Debug, PartialEq, Eq)]
+enum Told {
+    /// The file asks not to be copied: its notice offers "Print anyway".
+    Anyway,
+    /// It was stopped, as the person asked: nothing.
+    Nothing,
+    /// Its words.
+    Words,
+}
+
+/// How a print's refusal is said, by its named code.
+fn said_as(error: &recto_agent::AgentError) -> Told {
+    match error.code {
+        Code::COPY_RESTRICTED => Told::Anyway,
+        Code::CANCELLED => Told::Nothing,
+        _ => Told::Words,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (R2.5): a print to a file that asks not to be copied says its words with no "Print anyway", or a stopped print says it failed, as its refusal
+    /// was told apart by a code's string. By named codes: restricted offers Print anyway, stopped says nothing, anything else its words.
+    #[test]
+    fn a_prints_refusal_is_said_by_its_code() {
+        use recto_agent::{AgentError, Code, exit};
+        assert_eq!(
+            super::said_as(&AgentError::new(Code::COPY_RESTRICTED, "restricted", exit::PROTECTED)),
+            super::Told::Anyway
+        );
+        assert_eq!(super::said_as(&AgentError::new(Code::CANCELLED, "stopped", exit::FAILED)), super::Told::Nothing);
+        assert_eq!(
+            super::said_as(&AgentError::new(Code::WRITE_FAILED, "not written", exit::FAILED)),
+            super::Told::Words
+        );
+    }
 
     /// Failure: the panel's answer prints the wrong pages: a range past the end, a range backwards, a selection's pages counted from 0 as the page view holds them, or a selection made upwards giving a range whose end is before its start, which underflowed the page count.
     #[test]
