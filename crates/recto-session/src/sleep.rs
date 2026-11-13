@@ -451,11 +451,11 @@ impl<L: DocLoader> Session<L> {
                 edits.set_journal_seq(restored.seq);
                 let said_unreadable = self.lists.woken(id, edits);
                 if let Some(tab) = self.tab_mut(id) {
-                    if said_unreadable && matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)) {
-                        tab.notice = None;
+                    if said_unreadable && matches!(tab.file.notice.as_deref(), Some(FileNotice::EditsUnreadable)) {
+                        tab.file.notice = None;
                     }
                     if restored.rolled_off {
-                        tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                        tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
                     }
                 }
                 // Steps have gone that the journal has, so it has to start again from the list, or it wouldn't read back as this.
@@ -467,7 +467,7 @@ impl<L: DocLoader> Session<L> {
             _ => {
                 self.lists.wake_failed(id);
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.notice = Some(Box::new(FileNotice::EditsUnreadable));
+                    tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
                 }
                 false
             }
@@ -498,13 +498,13 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<SleepFacts> {
         let tab = self.tab(id)?;
-        let stamp = tab.stamp?;
+        let stamp = tab.file.stamp?;
         // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
-        if tab.encrypted
+        if tab.file.encrypted
             || tab.from_sleep.is_some()
             || self.lists.is_asleep(id)
             || matches!(
-                tab.notice.as_deref(),
+                tab.file.notice.as_deref(),
                 Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)
             )
         {
@@ -541,10 +541,10 @@ impl<L: DocLoader> Session<L> {
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.
     pub fn sleep_to_read_awake(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
         let tab = self.tab(id)?;
-        if !self.dormancy.sleep_files() || tab.encrypted {
+        if !self.dormancy.sleep_files() || tab.file.encrypted {
             return None;
         }
-        Some((tab.stamp?, self.path_of(id)?))
+        Some((tab.file.stamp?, self.path_of(id)?))
     }
 
     /// What's on hand to wake a cold tab from its sleep file: which file, as far as anything's known, without looking at it. `None` for a tab that isn't cold.
@@ -553,10 +553,10 @@ impl<L: DocLoader> Session<L> {
             return None;
         }
         let tab = self.tab(id)?;
-        if tab.encrypted || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword)) {
+        if tab.file.encrypted || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword)) {
             return None;
         }
-        Some((tab.stamp?, self.path_of(id)?))
+        Some((tab.file.stamp?, self.path_of(id)?))
     }
 
     /// Whether cold tabs wake from their sleep files here: only with someone to look at the file on the way past, and tell [`Self::apply_file_status`] if it's not what it was, by [`Self::take_woken_from_file`].

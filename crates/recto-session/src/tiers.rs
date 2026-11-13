@@ -110,10 +110,10 @@ impl<L: DocLoader> Session<L> {
             let clean = !self.has_list(left);
             self.touch(left);
             if let Some(tab) = self.tab_mut(left)
-                && ((clean && matches!(tab.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
+                && ((clean && matches!(tab.file.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+                    || matches!(tab.file.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
             {
-                tab.notice = None;
+                tab.file.notice = None;
             }
         }
         self.tabs.set_active(Some(id));
@@ -130,22 +130,22 @@ impl<L: DocLoader> Session<L> {
         };
         // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
         if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
-            && self.tab(id).is_some_and(|tab| tab.stamp == Some(known))
+            && self.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
             && list.file_pages() != facts.page_count
         {
             self.let_go_of_list(id);
             if let Some(tab) = self.tab_mut(id) {
-                tab.notice = Some(Box::new(FileNotice::EditsUnreadable));
+                tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
             }
         }
         // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
         if let (Some(now), Some(list)) = (stamp, self.lists.get(id))
             && !list.is_edited()
-            && self.tab(id).and_then(|tab| tab.stamp).is_some_and(|known| !known.same_contents(now))
+            && self.tab(id).and_then(|tab| tab.file.stamp).is_some_and(|known| !known.same_contents(now))
         {
             self.clear_history(id, ClearReason::FileChanged);
             if let Some(tab) = self.tab_mut(id) {
-                tab.notice = Some(Box::new(FileNotice::Changed));
+                tab.file.notice = Some(Box::new(FileNotice::Changed));
             }
         }
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
@@ -162,15 +162,15 @@ impl<L: DocLoader> Session<L> {
                     tab.page = tab.page.min(pages_with_edits.unwrap_or(facts.page_count).saturating_sub(1));
                     tab.problem = None;
                     tab.renderer_only = facts.renderer_only;
-                    tab.encrypted = facts.encrypted;
+                    tab.file.encrypted = facts.encrypted;
                     tab.place_dirty = true;
-                    if matches!(tab.notice.as_deref(), Some(FileNotice::Missing | FileNotice::NeedsPassword)) {
-                        tab.notice = None;
+                    if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing | FileNotice::NeedsPassword)) {
+                        tab.file.notice = None;
                     }
                     // With edits, the numbers in them are about the version they were made on, and that must stay known.
                     if pages_with_edits.is_none() {
-                        replaced = tab.stamp.filter(|known| stamp.is_some_and(|now| !known.same_contents(now)));
-                        tab.stamp = stamp;
+                        replaced = tab.file.stamp.filter(|known| stamp.is_some_and(|now| !known.same_contents(now)));
+                        tab.file.stamp = stamp;
                     }
                 }
                 // Another version of the file than the sleep file's about, which won't be read again.
@@ -184,7 +184,7 @@ impl<L: DocLoader> Session<L> {
                     tab.problem = Some(problem);
                     // A password is never kept, so a protected file asks again, and says that's why.
                     if problem == OpenError::PasswordNeeded {
-                        tab.notice = Some(Box::new(FileNotice::NeedsPassword));
+                        tab.file.notice = Some(Box::new(FileNotice::NeedsPassword));
                     }
                 }
             }

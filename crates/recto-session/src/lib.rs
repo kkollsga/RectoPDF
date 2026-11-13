@@ -86,20 +86,14 @@ pub enum Tier {
 }
 
 /// One tab. Everything else about it can be rebuilt from disk.
-// size: asserted <= 224 (today's, 2 of them padding) by `tab_record_stays_small`. Held per tab, including cold ones.
+// size: asserted <= 224 at compile time, below, and by `tab_record_stays_small`: its parts' 2 bytes of padding and none of its own. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
     /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.
     from_sleep: Option<u64>,
-    /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
-    encrypted: bool,
-    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
-    password: bool,
     /// When it was last active, edited or worked on, in seconds of the session. What going dormant goes by, with no timer of its own.
     touched: u32,
     pub id: TabId,
-    dir: u32,
-    file_name: Box<OsStr>,
     /// The name shown in the sidebar: the file's name without its extension.
     pub name: Box<str>,
     /// Zero-based page the reader is on.
@@ -110,18 +104,10 @@ pub struct TabRecord {
     pub problem: Option<OpenError>,
     /// Only the renderer could read this file. See [`DocFacts::renderer_only`].
     pub renderer_only: bool,
-    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
-    stamp: Option<FileStamp>,
-    /// Exactly where the reader was, so a tab that goes cold or across a restart comes back there. It's what's asked for on showing the tab, and what the page view says on leaving one.
-    place: Option<PlaceRecord>,
     /// Quarter turns of the view: every page drawn turned, on top of what its edits turn. Set by QA's `view_rotation` and kept in the record.
     pub view_rotation: u8,
     /// How its pages are laid out: a page to a row, or two side by side.
     pub spread: record::Spread,
-    /// What's selected, as the page view last said: kept in the record, so it comes back across a restart.
-    selection: Option<Box<Selection>>,
-    /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
-    notice: Option<Box<FileNotice>>,
     /// Its place has changed since it was last written, so one small line says so.
     place_dirty: bool,
     /// What's thought of its own contents, worked out once when they're read, so the sidebar needn't at every page.
@@ -130,9 +116,47 @@ pub struct TabRecord {
     pub generated_contents: bool,
     /// Sections the reader opened or closed by hand, as `(entry, open)`, against what following the place opens. Nothing for a tab nobody's folded, so a cold tab pays a pointer.
     folds: Option<Box<[(u32, bool)]>>,
+    /// Its file: where it is, which version, and what's said of it.
+    file: TabFile,
+    /// Where the reader is in it, what's selected, and Back and Forward.
+    reading: TabPlace,
+}
+
+/// A tab's file: where it is, which version of it the tab is about, whether it's protected, and what the reader's told of it.
+// size: asserted <= 72 at compile time, 2 of them padding. Held per tab, including cold ones.
+#[derive(Debug)]
+struct TabFile {
+    /// Its folder's number in the session's folders.
+    dir: u32,
+    file_name: Box<OsStr>,
+    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
+    stamp: Option<FileStamp>,
+    /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
+    notice: Option<Box<FileNotice>>,
+    /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
+    encrypted: bool,
+    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
+    password: bool,
+}
+
+/// Where the reader is in a tab: the exact place, what's selected, and Back and Forward.
+// size: asserted <= 80 at compile time. Held per tab, including cold ones.
+#[derive(Debug)]
+struct TabPlace {
+    /// Exactly where the reader was, so a tab that goes cold or across a restart comes back there. It's what's asked for on showing the tab, and what the page view says on leaving one.
+    place: Option<PlaceRecord>,
+    /// What's selected, as the page view last said: kept in the record, so it comes back across a restart.
+    selection: Option<Box<Selection>>,
     /// Back and Forward, once someone's jumped in it: see [`trail`]. A pointer for a tab nobody has, and at most 100 stops of 12 bytes for one somebody has, counted in a cold tab's cost (`a_cold_tab_with_a_full_trail_stays_in_budget`).
     trail: Option<Box<trail::Trail>>,
 }
+
+/// A tab's record and its parts are paid for by every tab, cold ones too, a thousand times over (rule 1). Failure caught: a field added to a tab, or a part that brings padding of its own, grows every tab unnoticed. A contents part would take the tab to 232: don't make one. Numbers that fall are lowered here.
+const _: () = {
+    assert!(std::mem::size_of::<TabFile>() <= 72);
+    assert!(std::mem::size_of::<TabPlace>() <= 80);
+    assert!(std::mem::size_of::<TabRecord>() <= 224);
+};
 
 /// A trail stop's page, and which file and file page that was, if it was any.
 type StopSource = (u32, Option<(u16, u32)>);
@@ -218,7 +242,7 @@ pub struct SidebarModel<'a> {
 
 /// How much of a tab's row in the host is what it's told about the file.
 pub fn tab_notice_words(tab: &TabRecord, has_edits: bool) -> Option<&'static str> {
-    tab.notice.as_deref().map(|notice| notice.message(has_edits))
+    tab.file.notice.as_deref().map(|notice| notice.message(has_edits))
 }
 
 /// A tab's row in the sidebar, in points.

@@ -66,7 +66,7 @@ impl Tabs {
     /// The tab at this place goes, its folder let go of if no other tab is in it.
     pub(crate) fn remove(&mut self, index: usize) -> TabRecord {
         let closed = self.tabs.remove(index);
-        self.let_go_of_dir_if_unused(closed.dir);
+        self.let_go_of_dir_if_unused(closed.file.dir);
         closed
     }
 
@@ -109,19 +109,19 @@ impl Tabs {
     /// The tab's full path, rebuilt from its interned folder and name.
     pub(crate) fn path_of(&self, id: TabId) -> Option<PathBuf> {
         let tab = self.get(id)?;
-        Some(self.dirs.get(tab.dir)?.join(&*tab.file_name))
+        Some(self.dirs.get(tab.file.dir)?.join(&*tab.file.file_name))
     }
 
     /// The tab already showing this file, by its path.
     pub(crate) fn for_path(&self, path: &Path) -> Option<TabId> {
         let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
-        self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
+        self.tabs.iter().find(|t| t.file.dir == dir && &*t.file.file_name == file_name).map(|t| t.id)
     }
 
     /// A folder no tab is in any more is let go of, so the folders kept are only those in use.
     pub(crate) fn let_go_of_dir_if_unused(&mut self, dir: u32) {
-        if !self.tabs.iter().any(|tab| tab.dir == dir) {
+        if !self.tabs.iter().any(|tab| tab.file.dir == dir) {
             self.dirs.let_go(dir);
         }
     }

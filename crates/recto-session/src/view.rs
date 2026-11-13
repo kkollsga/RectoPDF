@@ -60,15 +60,15 @@ impl<L: DocLoader> Session<L> {
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
-            tab.selection = selection.map(Box::new);
+            tab.reading.selection = selection.map(Box::new);
         }
     }
 
     /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
     pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
         for tab in self.tabs.iter_mut() {
-            if tab.selection.is_some() && tab.id != showing {
-                tab.selection = None;
+            if tab.reading.selection.is_some() && tab.id != showing {
+                tab.reading.selection = None;
             }
         }
         self.set_selection(showing, selection);
@@ -76,15 +76,15 @@ impl<L: DocLoader> Session<L> {
 
     /// What's selected in a tab.
     pub fn selection_of(&self, id: TabId) -> Option<Selection> {
-        self.tab(id)?.selection.as_deref().copied()
+        self.tab(id)?.reading.selection.as_deref().copied()
     }
 
     /// Exactly where a tab's reader is, as the page view says. Marked to be written only if it's moved.
     pub fn note_place(&mut self, id: TabId, place: PlaceRecord) {
         if let Some(tab) = self.tab_mut(id)
-            && tab.place != Some(place)
+            && tab.reading.place != Some(place)
         {
-            tab.place = Some(place);
+            tab.reading.place = Some(place);
             tab.place_dirty = true;
         }
     }
@@ -92,7 +92,7 @@ impl<L: DocLoader> Session<L> {
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.
     pub fn place_to_show(&self, id: TabId) -> Option<PlaceRecord> {
         let tab = self.tab(id)?;
-        tab.place.filter(|place| place.page == tab.page)
+        tab.reading.place.filter(|place| place.page == tab.page)
     }
 
     /// What's changed that a line of the log of places can say. Marks it as said.
@@ -100,7 +100,7 @@ impl<L: DocLoader> Session<L> {
         let mut places = Vec::new();
         for tab in self.tabs.iter_mut() {
             if std::mem::take(&mut tab.place_dirty) {
-                places.push((tab.id.0, tab.page, tab.place));
+                places.push((tab.id.0, tab.page, tab.reading.place));
             }
         }
         PlaceDelta {

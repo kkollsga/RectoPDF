@@ -25,29 +25,31 @@ impl<L: DocLoader> Session<L> {
             .map(|tab| {
                 let TabRecord {
                     from_sleep: _,
-                    encrypted: _,
-                    password,
                     touched: _,
                     id,
-                    dir: _,
-                    file_name: _,
                     name: _,
                     page,
                     page_count,
                     toc_open,
                     problem: _,
                     renderer_only,
-                    stamp,
-                    place,
                     view_rotation,
                     spread,
-                    selection,
-                    notice,
                     place_dirty: _,
                     contents_verdict: _,
                     generated_contents,
                     folds,
-                    trail,
+
+                    file:
+                        TabFile {
+                            dir: _,
+                            file_name: _,
+                            stamp,
+                            notice,
+                            encrypted: _,
+                            password,
+                        },
+                    reading: TabPlace { place, selection, trail },
                 } = tab;
                 TabEntry {
                     id: id.0,
@@ -147,29 +149,33 @@ impl<L: DocLoader> Session<L> {
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {
                 from_sleep: None,
-                encrypted: false,
-                password: entry.password,
                 touched: 0,
                 id,
-                dir,
-                file_name: file_name.into(),
                 name: tab_name(&path).into(),
                 page: entry.page.min(pages.saturating_sub(1)),
                 page_count: entry.page_count,
                 toc_open: entry.toc_open,
                 problem: None,
                 renderer_only: entry.renderer_only,
-                stamp: entry.file.map(Into::into),
-                place: entry.place,
                 view_rotation: entry.view_rotation,
                 spread: entry.layout,
-                selection: entry.selection.map(Box::new),
-                notice: notice.map(Box::new),
                 place_dirty: false,
                 contents_verdict: ContentsVerdict::Fine,
                 generated_contents: entry.generated_contents,
                 folds: (!entry.contents_folds.is_empty()).then(|| entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect()),
-                trail,
+                file: TabFile {
+                    dir,
+                    file_name: file_name.into(),
+                    stamp: entry.file.map(Into::into),
+                    notice: notice.map(Box::new),
+                    encrypted: false,
+                    password: entry.password,
+                },
+                reading: TabPlace {
+                    place: entry.place,
+                    selection: entry.selection.map(Box::new),
+                    trail,
+                },
             });
         }
         self.tabs.set_active(record.active.map(TabId).filter(|id| self.tab(*id).is_some()));

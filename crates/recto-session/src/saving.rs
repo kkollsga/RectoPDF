@@ -23,9 +23,9 @@ impl<L: DocLoader> Session<L> {
             Some(edit::AddedSource {
                 path: self.path_of(id)?.into_boxed_path(),
                 page_count: tab.page_count,
-                stamp: tab.stamp,
+                stamp: tab.file.stamp,
                 kept: false,
-                protected: tab.encrypted,
+                protected: tab.file.encrypted,
                 holds: None,
             })
         });
@@ -50,13 +50,13 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         // What's in the new version is what was shown, page for page, so the page view goes on from where it was.
-        let before = self.tab(id).and_then(|tab| tab.stamp);
+        let before = self.tab(id).and_then(|tab| tab.file.stamp);
         self.saves.saved_over(id, before, now);
         if let Some(tab) = self.tab_mut(id) {
-            tab.stamp = Some(now);
+            tab.file.stamp = Some(now);
             tab.page_count = pages;
             tab.page = tab.page.min(pages.saturating_sub(1));
-            tab.notice = (rolled_off > 0).then(|| Box::new(FileNotice::HistoryRolledOff));
+            tab.file.notice = (rolled_off > 0).then(|| Box::new(FileNotice::HistoryRolledOff));
             tab.problem = None;
             tab.place_dirty = true;
         }
@@ -95,7 +95,7 @@ impl<L: DocLoader> Session<L> {
         let snapshot = match self.lists.get(id).filter(|list| list.is_edited()) {
             Some(list) => SaveSnapshot {
                 path,
-                stamp: tab.stamp,
+                stamp: tab.file.stamp,
                 file_pages: list.file_pages(),
                 slots: list.slots().to_vec(),
                 added: list.added_sources().to_vec(),
@@ -107,7 +107,7 @@ impl<L: DocLoader> Session<L> {
                 let pages = tab.page_count;
                 SaveSnapshot {
                     path,
-                    stamp: tab.stamp,
+                    stamp: tab.file.stamp,
                     file_pages: pages,
                     slots: (0..pages)
                         .map(|page| edit::PageSlot {
@@ -185,7 +185,7 @@ impl<L: DocLoader> Session<L> {
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
             if let Some(tab) = self.tab_mut(id) {
-                tab.notice = None;
+                tab.file.notice = None;
             }
             return true;
         }
@@ -210,11 +210,11 @@ impl<L: DocLoader> Session<L> {
         self.let_go_of_list(id);
         if let Some(tab) = self.tab_mut(id)
             && matches!(
-                tab.notice.as_deref(),
+                tab.file.notice.as_deref(),
                 Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff)
             )
         {
-            tab.notice = None;
+            tab.file.notice = None;
         }
         self.after_change(id, place);
         true

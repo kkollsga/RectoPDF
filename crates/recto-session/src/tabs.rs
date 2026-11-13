@@ -72,7 +72,7 @@ impl<L: DocLoader> Session<L> {
         self.tab_for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
             let same_number = self.tabs.all().iter().find(|tab| {
-                tab.stamp.is_some_and(|known| {
+                tab.file.stamp.is_some_and(|known| {
                     known.inode == stamp.inode
                         && known.device == stamp.device
                         && (known.same_contents(stamp)
@@ -162,32 +162,36 @@ impl<L: DocLoader> Session<L> {
         let name = tab_name(path);
         self.tabs.push(TabRecord {
             from_sleep: None,
-            encrypted: false,
-            password: false,
             touched: 0,
             id,
-            dir,
-            file_name: file_name.into(),
             name: name.into(),
             page: 0,
             page_count: facts.page_count,
             toc_open: true,
             problem: None,
             renderer_only: facts.renderer_only,
-            stamp,
-            place: None,
             view_rotation: 0,
             spread: record::Spread::Single,
-            selection: None,
-            notice: None,
             place_dirty: true,
             contents_verdict: ContentsVerdict::Fine,
             generated_contents: false,
             folds: None,
-            trail: None,
+            file: TabFile {
+                dir,
+                file_name: file_name.into(),
+                stamp,
+                notice: None,
+                encrypted: false,
+                password: false,
+            },
+            reading: TabPlace {
+                place: None,
+                selection: None,
+                trail: None,
+            },
         });
         if let Some(tab) = self.tab_mut(id) {
-            tab.encrypted = facts.encrypted;
+            tab.file.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.tabs.set_active(Some(id));
@@ -199,7 +203,7 @@ impl<L: DocLoader> Session<L> {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tab_mut(id) {
-                tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
             }
         }
         Ok(id)
@@ -227,7 +231,7 @@ impl<L: DocLoader> Session<L> {
     /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
     pub fn note_password_used(&mut self, id: TabId) {
         if let Some(tab) = self.tab_mut(id) {
-            tab.password = true;
+            tab.file.password = true;
         }
     }
 
@@ -250,7 +254,7 @@ impl<L: DocLoader> Session<L> {
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
         self.tab(id).is_some_and(|tab| {
-            tab.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword))
+            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
         })
     }
 
@@ -281,9 +285,9 @@ impl<L: DocLoader> Session<L> {
         let name = tab_name(path);
         let mut left = None;
         if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
-            left = Some(tab.dir).filter(|was| *was != dir);
-            tab.dir = dir;
-            tab.file_name = file_name.into();
+            left = Some(tab.file.dir).filter(|was| *was != dir);
+            tab.file.dir = dir;
+            tab.file.file_name = file_name.into();
             tab.name = name.into();
         }
         if let Some(was) = left {

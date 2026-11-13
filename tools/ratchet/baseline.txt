@@ -110,6 +110,6 @@ struct crates/recto-render-service/src/host.rs::Policy 16
 struct crates/recto-render-service/src/host.rs::RenderStats 17
 struct crates/recto-render/src/pdfium/contents.rs::Walk 44
 struct crates/recto-session/src/edit.rs::PageEdits 17
-struct crates/recto-session/src/lib.rs::TabRecord 24
+struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
