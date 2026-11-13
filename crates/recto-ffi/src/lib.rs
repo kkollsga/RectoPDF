@@ -684,8 +684,7 @@ impl AppCore {
         let note = published.sidebar.toc_open && published.sidebar.contents_note.is_some();
         drop(published);
         // Find's block comes off the top first, and the rest divides as it always has.
-        let finding = find::view(&self.inner);
-        let found = find::heights(room, finding.open, finding.row_count);
+        let found = find::layout(&self.inner, room);
         let heights = sidebar_heights_with_note((room - found.block).max(0.0), tabs, rows, note);
         SidebarLayout {
             tab_row: TAB_ROW_HEIGHT,
@@ -697,7 +696,7 @@ impl AppCore {
             find_list: found.list,
             find_row: find::ROW_HEIGHT,
             find_field: find::FIELD_HEIGHT,
-            find_status: find::STATUS_HEIGHT,
+            find_status: found.status,
         }
     }
 

@@ -37,6 +37,17 @@ pub fn with_older_pictures(mut sleep: SleepFile, there: Option<SleepFile>, in_vi
     sleep
 }
 
+/// **Whether the sleep file there holds pictures only for another paper than the new ones** (found 2026-11-13 in a quiet run: a tab slept again inside its gap
+/// after the look went from light to dark kept a file of light-paper pictures, which no page of dark paper shows, so its wake was bare). `new_dark` is the
+/// paper of the pictures on hand, `None` with none. With none on hand, or none there, there's nothing a write would put right.
+#[must_use]
+pub fn there_for_other_paper(there: Option<&SleepFile>, new_dark: Option<bool>) -> bool {
+    let (Some(there), Some(new_dark)) = (there, new_dark) else {
+        return false;
+    };
+    !there.pictures.is_empty() && there.pictures.iter().all(|picture| picture.dark != new_dark)
+}
+
 /// How soon a look at dormancy that couldn't go ahead, as a file's being read or the app's frozen, comes again.
 pub const BUSY_RETRY_MS: u64 = 5_000;
 
@@ -79,8 +90,15 @@ pub enum Event {
     GoDormant { why: Why, tabs: Vec<(TabId, bool)>, frozen: bool },
     /// What came of it: this many went.
     WentDormant { why: Why, gone: usize },
-    /// A sleep file's about to be written, the one-at-a-time lock held: `there` is whether the tab has a sleep file already.
-    Write { id: TabId, by: By, there: bool, pictures_allowed: bool },
+    /// A sleep file's about to be written, the one-at-a-time lock held: `there` is whether the tab has a sleep file already, and `there_for_other_paper`
+    /// whether that file's pictures are all for another paper than the ones on hand ([`there_for_other_paper`]).
+    Write {
+        id: TabId,
+        by: By,
+        there: bool,
+        pictures_allowed: bool,
+        there_for_other_paper: bool,
+    },
     /// It was, this many bytes; zero is nothing new, so nothing was.
     Wrote { id: TabId, bytes: u64 },
     /// A write someone's waiting on (a flush's, being asked's) wants the one-at-a-time lock: the queue's writer lets it go first.
@@ -131,6 +149,8 @@ pub struct Counts {
     pub sleep_bytes: u64,
     pub sleep_files: u64,
     pub writes_put_off: u64,
+    /// Written inside the gap, as the file there had pictures only for another paper: once for each change of the look, at most, for each tab.
+    pub writes_for_paper: u64,
     /// The tab on screen's file at a flush, not written as another was being written past the flush's time.
     pub writes_skipped_busy: u64,
     pub woken_from_file: u64,
@@ -216,8 +236,15 @@ impl SleepWriter {
                 by,
                 there,
                 pictures_allowed,
+                there_for_other_paper,
             } => {
-                let may = by == By::Flush || self.may_write_pictures(id, now);
+                let mut may = by == By::Flush || self.may_write_pictures(id, now);
+                // A file whose pictures no page of this paper shows is worth one write inside the gap, still within the hour's cap: a change of the look is
+                // rare, and once written, the file there is of this paper, so the next is held to the gap again.
+                if !may && there && pictures_allowed && there_for_other_paper && self.hour.has_room(now) {
+                    may = true;
+                    self.counts.writes_for_paper += 1;
+                }
                 if !may && there {
                     self.counts.writes_put_off += 1;
                     return Some(Out::Write(Write::PutOff));

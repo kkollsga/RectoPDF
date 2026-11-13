@@ -100,6 +100,7 @@ final class TextLine: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        string.draw(with: bounds, options: wraps ? [.usesLineFragmentOrigin] : [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        // Wrapped text given less height than it needs ends its last line with an ellipsis, as one line does.
+        string.draw(with: bounds, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 }

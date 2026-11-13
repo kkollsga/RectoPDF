@@ -193,6 +193,7 @@ fn every_order_of_writes_the_gap_and_the_hour_keeps_the_ssd_rule() {
                             by,
                             there: true,
                             pictures_allowed: true,
+                            there_for_other_paper: false,
                         },
                         now,
                     );
@@ -228,6 +229,7 @@ fn a_tab_with_no_file_gets_its_facts_and_a_protected_one_never_gets_pictures() {
                 by,
                 there,
                 pictures_allowed,
+                there_for_other_paper: false,
             },
             10,
         )
@@ -318,6 +320,7 @@ fn what_is_remembered_of_writes_stays_within_the_gap() {
         by: By::Queue,
         there: true,
         pictures_allowed: true,
+        there_for_other_paper: false,
     };
     assert_eq!(machine.step(write, now), Some(Out::Write(Write::WithPictures)));
     assert_eq!(
@@ -442,4 +445,69 @@ fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
     assert!(with_older_pictures(file_with(&[]), None, &[12]).pictures.is_empty());
     // New pictures are the file's own, whatever was there.
     assert_eq!(pages_of(&with_older_pictures(file_with(&[19]), Some(there), &[19])), vec![19]);
+}
+
+/// Failure (the first worker's quiet run of 2026-11-13, `02-wake-at-once-dark.png`): a tab slept again inside its gap after the look changed kept a file whose
+/// pictures were all for the other paper, so its wake was bare paper. And the other way: letting that through spends the SSD rule on every sleep, not once a
+/// change of look. Inside the gap: the same paper again is put off as before; a file for the other paper is written once, and counted; then it's this paper's,
+/// so the next is put off; a second change of look is one more write; with the hour's cap reached, none; and a protected tab is never let through for it.
+#[test]
+fn a_file_for_the_other_paper_is_written_once_a_change_of_look_inside_the_gap_and_never_past_the_hour() {
+    let mut machine = SleepWriter::default();
+    let (one, two) = (TabId(1), TabId(2));
+    let write = |machine: &mut SleepWriter, id, other_paper, pictures_allowed| {
+        machine.step(
+            Event::Write {
+                id,
+                by: By::Queue,
+                there: true,
+                pictures_allowed,
+                there_for_other_paper: other_paper,
+            },
+            10,
+        )
+    };
+    let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+    assert_eq!(
+        write(&mut machine, one, false, true),
+        Some(Out::Write(Write::PutOff)),
+        "the same paper, inside the gap"
+    );
+    let mut written = 0;
+    for change in 0..2 {
+        assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::WithPictures)), "change {change}");
+        let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+        written += 1;
+        // Written: the file there is of this paper now.
+        assert_eq!(write(&mut machine, one, false, true), Some(Out::Write(Write::PutOff)), "after change {change}");
+    }
+    assert_eq!(machine.counts().writes_for_paper, written, "one write for each change of the look, and no more");
+    assert_eq!(
+        write(&mut machine, one, true, false),
+        Some(Out::Write(Write::PutOff)),
+        "protected: no pictures to put right"
+    );
+    let _ = machine.step(
+        Event::Wrote {
+            id: two,
+            bytes: SLEEP_BYTES_PER_HOUR,
+        },
+        10,
+    );
+    assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::PutOff)), "the hour's cap holds");
+    assert_eq!(machine.counts().writes_for_paper, written);
+}
+
+/// Failure: the test of a file's paper says a file is for the other paper when it holds a picture for this one too, or with nothing on hand to write instead.
+#[test]
+fn a_file_is_for_the_other_paper_only_when_every_picture_in_it_is() {
+    let light = file_with(&[3, 4]);
+    let mut mixed = light.clone();
+    mixed.pictures[1].dark = true;
+    assert!(there_for_other_paper(Some(&light), Some(true)));
+    assert!(!there_for_other_paper(Some(&light), Some(false)), "the same paper");
+    assert!(!there_for_other_paper(Some(&mixed), Some(true)), "one for this paper there");
+    assert!(!there_for_other_paper(Some(&light), None), "nothing on hand");
+    assert!(!there_for_other_paper(Some(&file_with(&[])), Some(true)), "no pictures there");
+    assert!(!there_for_other_paper(None, Some(true)), "no file");
 }

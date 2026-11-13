@@ -262,7 +262,8 @@ impl Waking {
             .cache
             .entries
             .values()
-            .filter(|entry| entry.tab == doc.tab && (entry.surface.is_some() || entry.rgb.is_some()))
+            // Only what goes on a page of this paper: a picture for the other is never put on one.
+            .filter(|entry| entry.tab == doc.tab && entry.paper == reader.paper && (entry.surface.is_some() || entry.rgb.is_some()))
             .map(|entry| entry.page)
             .collect();
         pages.into_iter().all(|page| {
@@ -292,7 +293,8 @@ impl Waking {
             .cache
             .entries
             .values()
-            .filter(|entry| entry.tab == tab && (entry.surface.is_some() || entry.rgb.is_some()))
+            // A picture for the other paper isn't one this wake can show (a sleep file written before the look changed).
+            .filter(|entry| entry.tab == tab && entry.paper == reader.paper && (entry.surface.is_some() || entry.rgb.is_some()))
             .fold(std::collections::HashMap::new(), |mut have, entry| {
                 *have.entry(entry.page).or_insert(false) |= reader.cache.from_sleep.contains(&entry.id);
                 have

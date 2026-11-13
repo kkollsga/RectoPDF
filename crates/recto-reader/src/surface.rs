@@ -281,6 +281,7 @@ Engine::pub fn fit(&self) -> Option<f64>
 Engine::pub fn follow(&self, page: u32, within: f64) -> Option<u32>
 Engine::pub fn follow_soon(&self, page: u32, within: f64) -> bool
 Engine::pub fn has_thread(&self) -> bool
+Engine::pub fn hold_busy(&self, on: bool)
 Engine::pub fn hold_drawing(&self, on: bool)
 Engine::pub fn hot_tab(&self) -> Option<u32>
 Engine::pub fn jump_to(&self, page: u32)

@@ -123,12 +123,15 @@ impl<L: DocLoader> Session<L> {
         true
     }
 
-    /// Every tab's file and what's known of it, for one pass by one thread after a restore. No thread or handle per tab.
-    pub fn files_to_look_at(&self) -> Vec<(TabId, PathBuf, Option<FileStamp>)> {
+    /// Every tab's file and what's known of it, for one pass by one thread after a restore: its stamp, and whether the tab says something of its file (a
+    /// change under its edits, a file gone), which makes a look that finds the stamp news. Read from each record as the walk has it, with no lookup of the
+    /// tab again, so the walk stays one pass. No thread or handle per tab.
+    pub fn files_to_look_at(&self) -> Vec<(TabId, PathBuf, Option<FileStamp>, bool)> {
+        let notices = self.notices();
         self.tabs
             .all()
             .iter()
-            .filter_map(|tab| Some((tab.id, self.tabs.named_path_of(tab)?, tab.file.stamp)))
+            .filter_map(|tab| Some((tab.id, self.tabs.named_path_of(tab)?, tab.file.stamp, notices.said_of(tab).is_some())))
             .collect()
     }
 }
