@@ -435,6 +435,8 @@ pub struct ReadingFacts {
     /// The tab, its file and the file's stamp, if there is a tab being read and its file is known.
     pub file: Option<(TabId, PathBuf, recto_platform::FileStamp)>,
     pub needs_rewrite: bool,
+    /// Opened with its password: nothing saves into a protected file yet, so Save and Save As are off.
+    pub protected: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
     /// The page by its label, or its number: what the go-to field starts with.
@@ -468,6 +470,7 @@ impl ReadingFacts {
             saving: false,
             file: None,
             needs_rewrite: false,
+            protected: false,
             can_go_back: false,
             can_go_forward: false,
             page_text: String::new(),
@@ -521,6 +524,7 @@ fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot
             .zip(session.own_stamp(shown.id))
             .map(|(path, stamp)| (shown.id, path, stamp)),
         needs_rewrite: session.needs_rewrite(shown.id),
+        protected: session.withheld_from_agents(shown.id),
         can_go_back,
         can_go_forward,
         page_text: session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string()),

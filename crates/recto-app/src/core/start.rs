@@ -112,6 +112,7 @@ impl Inner {
             core: Arc::clone(&core),
         }));
         host.session.set_records(Arc::new(super::record_commands::AppRecords(Arc::downgrade(&host))));
+        host.session.set_effects(super::find::effects(Arc::clone(&core)));
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let update_hooks = updates::Hooks::new(update_seams.installer);

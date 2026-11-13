@@ -8,7 +8,13 @@ pub const LOCKED_CHAPTER: &str = "Secret chapter";
 /// chapter, [`LOCKED_CHAPTER`].
 #[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
 pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
-    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    locked_allowing(password, pages, lopdf::encryption::Permissions::all())
+}
+
+/// The same, with what its permissions allow.
+#[allow(clippy::disallowed_methods)] // As above.
+pub fn locked_allowing(password: &str, pages: usize, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion};
     use lopdf::{Object, dictionary};
     let plain: Vec<recto_testpdf::Page> = (0..pages)
         .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)])))
@@ -33,7 +39,7 @@ pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
         owner_password: "owner",
         user_password: password,
         key_length: 128,
-        permissions: Permissions::all(),
+        permissions,
     })
     .unwrap();
     document.encrypt(&encryption).unwrap();

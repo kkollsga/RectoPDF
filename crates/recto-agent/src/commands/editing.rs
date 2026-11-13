@@ -25,6 +25,7 @@ impl Cmd for PageMove {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -40,7 +41,7 @@ impl Cmd for PageMove {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, pages, to } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         {
             let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
@@ -49,7 +50,7 @@ impl Cmd for PageMove {
             } else {
                 format!("Moved {} to {to}.", which_pages(pages, "", ""))
             };
-            edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
+            edit(access, actor, tab, events, did, |e| e.move_pages(start, len, destination))
         }
     }
     fn human(data: &Value) -> String {
@@ -71,6 +72,7 @@ impl Cmd for PageDelete {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -86,10 +88,10 @@ impl Cmd for PageDelete {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, pages } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         {
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, level, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| {
+            edit(access, actor, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| {
                 e.delete(start, len)
             })
         }
@@ -114,6 +116,7 @@ impl Cmd for PageInsert {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -129,7 +132,7 @@ impl Cmd for PageInsert {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, path, at } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         {
             require_absolute(path)?;
             let position = one_based(*at)?;
@@ -139,9 +142,9 @@ impl Cmd for PageInsert {
             let facts = loader.load(path)?;
             access.with(|s| {
                 let id = select(s, tab)?;
-                keep_owners_undone_steps(s, id, level)?;
-                s.set_agent_at_full(level >= Level::Full);
-                s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
+                keep_owners_undone_steps(s, id, actor.level())?;
+                note_agent_at_full(s, actor);
+                s.insert_pdf_with_facts(id, actor.author(), position, path, &facts, stamp)?;
                 events.push(edits_changed(s, id));
                 let mut data = edit_state_json(s, id);
                 data["did"] = json!(format!(
@@ -175,6 +178,7 @@ impl Cmd for Edits {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -215,6 +219,7 @@ impl Cmd for Discard {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -391,6 +396,7 @@ impl Cmd for PageRotate {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -406,18 +412,18 @@ impl Cmd for PageRotate {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, pages, degrees } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         let turns = quarter_turns(*degrees)?;
         // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
         if pages == "all" {
-            return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| {
+            return edit(access, actor, tab, events, format!("Rotated every page by {degrees} degrees."), |e| {
                 e.rotate(0, e.len(), turns)
             });
         }
         let (start, len) = parse_pages(pages, false)?;
         edit(
             access,
-            level,
+            actor,
             tab,
             events,
             format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")),
@@ -443,6 +449,7 @@ impl Cmd for Undo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -456,11 +463,11 @@ impl Cmd for Undo {
         json!({ "tab": super::log_tab(&self.tab) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (level, events) = (cx.level, &mut *cx.events);
+        let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
-            s.set_agent_at_full(level >= Level::Full);
-            if !s.undo_edit_as(id, Author::Agent)? {
+            note_agent_at_full(s, actor);
+            if !s.undo_edit_as(id, actor.author())? {
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
@@ -488,6 +495,7 @@ impl Cmd for Redo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -501,11 +509,11 @@ impl Cmd for Redo {
         json!({ "tab": super::log_tab(&self.tab) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (level, events) = (cx.level, &mut *cx.events);
+        let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
-            s.set_agent_at_full(level >= Level::Full);
-            if !s.redo_edit_as(id, Author::Agent)? {
+            note_agent_at_full(s, actor);
+            if !s.redo_edit_as(id, actor.author())? {
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
@@ -533,6 +541,7 @@ impl Cmd for ClearHistory {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }

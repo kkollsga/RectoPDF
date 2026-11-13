@@ -122,7 +122,7 @@ mod tests {
     }
 
     fn run(host: &SessionHost<Fake>, level: Level, line: &str) -> Result<Value, AgentError> {
-        host.run(level, &parse(line).expect("a command"), &mut Vec::new())
+        host.run(recto_agent::Actor::Agent(level), &parse(line).expect("a command"), &mut Vec::new())
     }
 
     fn with_record() -> (SessionHost<Fake>, recto_testpdf::TempDir) {

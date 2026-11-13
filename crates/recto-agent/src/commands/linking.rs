@@ -25,6 +25,7 @@ impl Cmd for Links {
     const DRAWS: bool = false;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -77,6 +78,7 @@ impl Cmd for Goto {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -94,11 +96,11 @@ impl Cmd for Goto {
         match (self.page, &self.label) {
             (Some(page), None) => cx.access.with(|s| {
                 let id = select(s, &self.tab)?;
-                go_to(s, id, page)?;
+                go_to(s, id, page, cx.actor.author())?;
                 cx.events.push(page_now(s, id));
                 Ok(where_json(s, id))
             }),
-            (None, Some(label)) => linking::goto_label(cx.access, &self.tab, label, cx.events),
+            (None, Some(label)) => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
             _ => Err(AgentError::new(
                 "usage",
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
@@ -125,6 +127,7 @@ impl Cmd for Back {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -141,7 +144,7 @@ impl Cmd for Back {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
-        linking::step(access, tab, true, events)
+        linking::step(access, cx.actor.author(), tab, true, events)
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -161,6 +164,7 @@ impl Cmd for Forward {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -177,7 +181,7 @@ impl Cmd for Forward {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
-        linking::step(access, tab, false, events)
+        linking::step(access, cx.actor.author(), tab, false, events)
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -200,6 +204,8 @@ impl Cmd for Follow {
     const DRAWS: bool = false;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    // It reads the page's links from its file in place.
+    const WAITS: bool = true;
     fn tab(&self) -> Option<&str> {
         Some(&self.tab)
     }
@@ -216,7 +222,7 @@ impl Cmd for Follow {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, page, link } = self;
         let (access, events) = (cx.access, &mut *cx.events);
-        linking::follow(access, tab, *page, *link, events)
+        linking::follow(access, cx.actor.author(), tab, *page, *link, events)
     }
     fn human(data: &Value) -> String {
         place(data)

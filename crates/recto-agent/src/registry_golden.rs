@@ -81,7 +81,12 @@ fn replies() -> String {
             continue;
         }
         let mut events = Vec::new();
-        let result = execute(&Direct(RefCell::new(&mut session), None), Level::Full, &command, &mut events);
+        let result = execute(
+            &Direct(RefCell::new(&mut session), None),
+            crate::Actor::Agent(Level::Full),
+            &command,
+            &mut events,
+        );
         let words = match &result {
             Ok(data) => human::render(command.tag(), data),
             Err(_) => String::new(),

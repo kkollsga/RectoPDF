@@ -61,3 +61,23 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     app.settle();
     assert_eq!(shown(&app).2, Some(7), "and it goes on from there");
 }
+
+/// Failure: an agent's `recto find --next` goes to a hit and the page view doesn't select it, as ⌘G's does, because what the window does after a command was
+/// worked out from its answer by the host and not said by the command (R2.3's effects). The hit gone to is selected on the page, at its characters.
+#[test]
+fn an_agents_step_to_a_hit_selects_it_on_the_page() {
+    let disk = Disk::new();
+    let doc = disk.pdf("findable.pdf", 30);
+    let app = disk.start();
+    app.open(&doc);
+    app.recto(recto_agent::Level::Control, &["find", "pdf page 1"]).expect("found");
+    let went = app.recto(recto_agent::Level::Control, &["find", "--next"]).expect("a step");
+    app.settle();
+    let to = &went["went_to"];
+    let range = selected(&app).expect("the hit gone to is selected on the page");
+    assert_eq!(
+        (u64::from(range.start.page) + 1, u64::from(range.start.at), u64::from(range.end.at)),
+        (to["page"].as_u64().unwrap(), to["start"].as_u64().unwrap(), to["end"].as_u64().unwrap()),
+        "at the hit's characters: {went}"
+    );
+}

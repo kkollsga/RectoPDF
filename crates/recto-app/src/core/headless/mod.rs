@@ -4,11 +4,14 @@
 mod exits;
 mod files;
 mod find;
+mod input_to_frame;
 mod launch;
 mod levels;
 mod palette;
 mod passwords;
+mod protected_save;
 mod quit;
+mod reading_later;
 mod recent;
 mod selection;
 mod sidebar;

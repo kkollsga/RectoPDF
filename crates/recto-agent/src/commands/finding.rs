@@ -30,6 +30,8 @@ impl Cmd for Find {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    // An agent's query waits for its hits; until the person's doesn't, it isn't run on the window's session thread.
+    const WAITS: bool = true;
     /// None held: it's in the document being read, which `execute` asks about for a protected one.
     fn tab(&self) -> Option<&str> {
         None

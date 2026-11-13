@@ -9,7 +9,7 @@ use recto_agent::commands::record::Records;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
 use recto_agent::{
-    AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
+    Actor, AgentError, Command, Condition, ConditionState, DrawableLoader, Event, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
 };
 
 mod own_record;
@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 
 /// The session, as the server sees it. Called from job threads, never the thread watching the socket.
 pub trait Host: Send + Sync + 'static {
-    /// Runs a command at a level.
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
+    /// Runs a command for whoever asked: an agent at its level over the socket, or the person at the window.
+    fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
     /// Looks at a condition once.
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState;
     /// How many tabs are open. Must never block: `status` answers from the socket's own thread.
@@ -63,7 +63,12 @@ pub struct SessionHost<L = DrawableLoader> {
     find_keys: std::sync::OnceLock<recto_agent::find::KeyLookup>,
     /// The app's state record, which it keeps as it goes, for the record's commands. Set once, by the app.
     records: std::sync::OnceLock<Arc<dyn Records + Send + Sync>>,
+    /// Where what a command asks of the window goes, set once by the app: none for a session with no window.
+    effects: std::sync::OnceLock<Effects>,
 }
+
+/// What carries a command's [`recto_agent::Effect`] to the window.
+pub type Effects = Arc<dyn Fn(recto_agent::Effect) + Send + Sync>;
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
 pub struct BackupsOnly(pub PathBuf);
@@ -88,6 +93,9 @@ struct Hosted<'a, L> {
     finder: &'a Finder,
     /// The app's record, or this session's own, or none.
     records: Option<&'a (dyn Records + Send + Sync)>,
+    effects: Option<&'a Effects>,
+    /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
+    reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -115,6 +123,14 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
             (None, None) => Err(recto_agent::commands::record::no_record()),
         }
     }
+    fn effect(&self, effect: recto_agent::Effect) {
+        if let Some(effects) = self.effects {
+            effects(effect);
+        }
+    }
+    fn reads_later(&self) -> Option<&dyn recto_agent::later::ReadLater> {
+        self.reads_later
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -135,6 +151,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             saving: std::sync::OnceLock::new(),
             find_keys: std::sync::OnceLock::new(),
             records: std::sync::OnceLock::new(),
+            effects: std::sync::OnceLock::new(),
         }
     }
 
@@ -206,6 +223,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.records.set(records);
     }
 
+    /// Where what a command asks of the window goes. The first one set stays.
+    pub fn set_effects(&self, effects: Effects) {
+        let _ = self.effects.set(effects);
+    }
+
     /// With generated contents made on demand, kept in the state folder's contents folder.
     #[must_use]
     pub fn with_generating(mut self, paths: &StatePaths) -> Self {
@@ -233,8 +255,48 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             finder: &self.finder,
             saving: self.saving.get().map(|saving| &**saving),
             records: self.records.get().map(|records| &**records),
+            effects: self.effects.get(),
+            reads_later: None,
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
+    }
+
+    /// **A command on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`, off this thread, and it
+    /// runs again once that's in ([`recto_agent::later`]). Otherwise as [`Host::run`].
+    pub fn run_reading_later(
+        &self,
+        actor: Actor,
+        command: &Command,
+        events: &mut Vec<Event>,
+        reads: &dyn recto_agent::later::ReadLater,
+    ) -> Result<Value, AgentError> {
+        self.run_on(
+            &Hosted {
+                reads_later: Some(reads),
+                ..self.access()
+            },
+            actor,
+            command,
+            events,
+        )
+    }
+
+    /// A command on the session, by whichever way it's reached, and what a close takes with it.
+    fn run_on(&self, access: &Hosted<'_, L>, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        // A tab that closes takes its generated contents' job with it, if one's running or waiting.
+        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
+            .then(|| {
+                let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                acted_tab(&session, command).and_then(|id| session.path_of(id))
+            })
+            .flatten();
+        let result = recto_agent::execute(access, actor, command, events);
+        if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
+            generator.cancel_path(path);
+        }
+        let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
+        self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
+        result
     }
 
     /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
@@ -272,18 +334,8 @@ pub fn store_error(error: StoreError) -> AgentError {
 }
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        // A tab that closes takes its generated contents' job with it, if one's running or waiting.
-        let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
-            .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
-            .flatten();
-        let result = recto_agent::execute(&self.access(), level, command, events);
-        if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
-            generator.cancel_path(path);
-        }
-        let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
-        self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
-        result
+    fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        self.run_on(&self.access(), actor, command, events)
     }
 
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {

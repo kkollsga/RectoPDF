@@ -12,8 +12,8 @@ use crate::state::StatePaths;
 use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session::Stop, sync::Wait, sync::Watch};
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
-    AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, Runs, VERSION, allowed,
-    condition_topics, exit, parse, refusal, reply, table,
+    Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, Runs, VERSION,
+    allowed, condition_topics, exit, parse, refusal, reply, table,
 };
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
@@ -1392,7 +1392,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                         Err(unsaved_refusal(&unsaved))
                     };
                 }
-                host.run(level, &command, &mut events)
+                host.run(Actor::Agent(level), &command, &mut events)
             }))
             .unwrap_or_else(|_| Err(internal()));
             let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");

@@ -25,7 +25,7 @@ impl DocLoader for Fake {
 /// A command run as an agent at Full, with the events it made.
 fn events_of(session: &mut Session<Fake>, command: Command) -> Vec<Event> {
     let mut events = Vec::new();
-    execute(&Direct(RefCell::new(session), None), Level::Full, &command, &mut events).unwrap();
+    execute(&Direct(RefCell::new(session), None), crate::Actor::Agent(Level::Full), &command, &mut events).unwrap();
     events
 }
 

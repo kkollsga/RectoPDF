@@ -71,6 +71,11 @@ impl<L: DocLoader> Session<L> {
         self.path_of(id).map(|path| (id, path))
     }
 
+    /// Whether a read of this cold tab's file is held for its waking, so it needn't be read again.
+    pub fn holds_read_of(&self, id: TabId) -> bool {
+        self.woken.iter().any(|(tab, _, _)| *tab == id)
+    }
+
     /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`], kept for that tab's waking. A tab closed or already woken while it was being read has no use for it. Several can be read at once, so they don't take each other's place, and the oldest goes past the cap.
     pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
         self.woken.retain(|(tab, _, _)| *tab != id);

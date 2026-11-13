@@ -4,7 +4,12 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod actor;
+pub use actor::Actor;
 pub mod agreement;
+pub mod effect;
+pub mod later;
+pub use effect::Effect;
 pub mod commands;
 pub mod event;
 #[cfg(test)]
@@ -436,6 +441,12 @@ pub trait SessionAccess {
     fn records(&self) -> Result<&dyn commands::record::Records, AgentError> {
         Err(commands::needs_server())
     }
+    /// What the window's to do after this command, if there's a window: see [`Effect`]. A session with no window has nothing to show.
+    fn effect(&self, _effect: Effect) {}
+    /// How this host reads what a command needs, if it mustn't wait on a disk: see [`later`]. Every host but the window's session thread reads in place.
+    fn reads_later(&self) -> Option<&dyn later::ReadLater> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -470,7 +481,7 @@ pub fn run_indexed<L: DocLoader + Clone>(
     command: &Command,
     indexing: Option<&dyn index::Indexing>,
 ) -> Result<Value, AgentError> {
-    execute(&Direct(RefCell::new(session), indexing), level, command, &mut Vec::new())
+    execute(&Direct(RefCell::new(session), indexing), Actor::Agent(level), command, &mut Vec::new())
 }
 
 /// What's chosen, in a word: `auto` goes with the window.
@@ -531,15 +542,15 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
     json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "sidebar": !session.view().sidebar_hidden })
 }
 
-/// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
-pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+/// **The one executor:** runs one command for whoever asked, `actor`, noting what happened in `events`. The person's actions at the window and an agent's commands both come here; what tells them apart is [`Actor`]'s. Commands that only a long-running session can answer say so.
+pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let needed = command.access();
-    if !allowed(level, needed) {
-        return Err(refusal(table::display_name(command.tag()), level, needed));
+    if !actor.may(needed) {
+        return Err(refusal(table::display_name(command.tag()), actor.level(), needed));
     }
     // The record's commands read nothing of a document, and `session sleep`'s tab mustn't be held awake: each host's record answers them.
     if command.route() == Runs::Record {
-        return execute_held(access, level, command, events);
+        return execute_held(access, actor, command, events);
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
@@ -548,6 +559,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some("active"));
     if let Some(selector) = about
         && !command.protected_ok()
+        && !actor.sees_protected()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
     {
         return Err(protected_refusal());
@@ -556,6 +568,9 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     let held = command.tab_selector().and_then(|selector| {
         access.with(|s| {
             let id = select(s, selector).ok()?;
+            // Its edits' list, if it's asleep, is read back from its journal: a bounded private file in the app's own state folder, never the PDF or its
+            // volume, so it's read here, on whatever thread runs this, the window's session thread included, as that thread's own taps, opens and edits
+            // always have (coordinator, 2026-11-13).
             let awake = s.wake_list(id);
             s.touch(id);
             s.hold(id);
@@ -570,7 +585,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )
         .then("`recto discard` gives up on them, and `recto session show` says what's known of them.")),
-        _ => execute_held(access, level, command, events),
+        _ => execute_held(access, actor, command, events),
     };
     let held = held.map(|(id, _)| id);
     if let Some(id) = held {
@@ -579,19 +594,20 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     result
 }
 
-fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+fn execute_held<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let level = actor.level();
     match command {
-        Command::Measure(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Edit(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Move(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Read(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Updates(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Start(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Waits(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Session(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Qa(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::Record(command) => command.run(&mut commands::Cx { access, level, events }),
+        Command::Measure(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Edit(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Move(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Read(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Updates(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Start(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Waits(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Rights(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Session(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Qa(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Record(command) => command.run(&mut commands::Cx { access, actor, level, events }),
     }
 }
 
@@ -692,24 +708,42 @@ pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
     })
 }
 
-/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
-fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
-    let Some((id, path)) = access.with(|s| plan(s)) else { return };
+/// Reads a cold tab's file, if what's about to happen needs it awake, with the session free. A file on a dead volume holds up this command and no other. A host
+/// that mustn't wait has it read off its thread and runs the command again: [`later`].
+fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) -> Result<(), AgentError> {
+    // On a host that reads later, what's held already was read for this command, which is running again now it's in.
+    let reads_later = access.reads_later().is_some();
+    let Some((id, path)) = access.with(|s| plan(s).filter(|(id, _)| !(reads_later && s.holds_read_of(*id)))) else {
+        return Ok(());
+    };
+    if let Some(reads) = access.reads_later() {
+        reads.wake(id, path);
+        return Err(later::later());
+    }
     let loader = access.with(|s| s.loader().clone());
     let stamp = recto_platform::file_stamp(&path).ok();
     let loaded = loader.load(&path);
     access.with(|s| s.give_woken(id, loaded, stamp));
+    Ok(())
+}
+
+/// [`read_ahead`] where it only spares the session's lock a read it would otherwise make, as for the tab a close shows next: a host that reads later lets the
+/// session wake it as that host always has, and the command doesn't wait for it.
+fn read_soon<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
+    if access.reads_later().is_none() {
+        let _ = read_ahead(access, plan);
+    }
 }
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
 /// `recto goto`: a jump, so Back comes here again, as following a link does.
-fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32) -> Result<(), AgentError> {
+fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, by: Author) -> Result<(), AgentError> {
     let position = page
         .checked_sub(1)
         .filter(|position| *position < session.pages_in(id))
         .ok_or_else(no_such_page)?;
-    // An agent's mark, which gives way to the person's in the trail.
-    session.jump_as(id, position, 0.0, recto_session::Author::Agent)?;
+    // An agent's mark gives way to the person's in the trail.
+    session.jump_as(id, position, 0.0, by)?;
     Ok(())
 }
 
@@ -775,7 +809,7 @@ fn which_pages(pages: &str, one: &str, many: &str) -> String {
 
 fn edit<A: SessionAccess>(
     access: &A,
-    level: Level,
+    actor: Actor,
     tab: &str,
     events: &mut Vec<Event>,
     did: String,
@@ -783,14 +817,21 @@ fn edit<A: SessionAccess>(
 ) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        keep_owners_undone_steps(s, id, level)?;
-        s.set_agent_at_full(level >= Level::Full);
-        s.edit_pages_as(id, Author::Agent, change)?;
+        keep_owners_undone_steps(s, id, actor.level())?;
+        note_agent_at_full(s, actor);
+        s.edit_pages_as(id, actor.author(), change)?;
         events.push(edits_changed(s, id));
         let mut data = edit_state_json(s, id);
         data["did"] = json!(did);
         Ok(with_place_note(s, id, data))
     })
+}
+
+/// An agent's edit, undo or redo says whether it's at Full, which may push past the owner's steps. The person's edits are the owner's, and say nothing of it.
+fn note_agent_at_full<L: DocLoader>(session: &mut Session<L>, actor: Actor) {
+    if let Actor::Agent(level) = actor {
+        session.set_agent_at_full(level >= Level::Full);
+    }
 }
 
 /// What asking for Full is for, where only that would do. The one command an agent can run to get there.
@@ -1277,7 +1318,7 @@ mod tests {
             gate.release.store(false, Ordering::SeqCst);
             gate.armed.store(true, Ordering::SeqCst);
             let shared = Arc::clone(&session);
-            let running = std::thread::spawn(move || execute(&*shared, Level::Control, &command, &mut Vec::new()).map(|_| ()));
+            let running = std::thread::spawn(move || execute(&*shared, Actor::Agent(Level::Control), &command, &mut Vec::new()).map(|_| ()));
             while !gate.inside.load(Ordering::SeqCst) {
                 std::thread::yield_now();
             }
@@ -1297,6 +1338,123 @@ mod tests {
             page: None,
         }));
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(3));
+    }
+
+    /// A session on a host that mustn't wait on a disk, as the window's session thread is: what a command asks to read is noted, and read only when the test
+    /// says, as the window's own read would be.
+    struct Deferring<'a> {
+        session: RefCell<&'a mut Session<Fake>>,
+        woke: RefCell<Vec<(TabId, PathBuf)>>,
+        loads: RefCell<Vec<PathBuf>>,
+        ready: RefCell<Option<later::Fetched>>,
+    }
+
+    impl SessionAccess for Deferring<'_> {
+        type Loader = Fake;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<Fake>) -> R) -> R {
+            step(&mut self.session.borrow_mut())
+        }
+        fn reads_later(&self) -> Option<&dyn later::ReadLater> {
+            Some(self)
+        }
+    }
+
+    impl later::ReadLater for Deferring<'_> {
+        fn wake(&self, tab: TabId, path: PathBuf) {
+            self.woke.borrow_mut().push((tab, path));
+        }
+        fn load(&self, path: &Path) -> Option<later::Fetched> {
+            let ready = self.ready.borrow_mut().take();
+            if ready.is_none() {
+                self.loads.borrow_mut().push(path.to_path_buf());
+            }
+            ready
+        }
+    }
+
+    /// What a command could have changed: the tabs, which is active, and each one's page.
+    fn looks(session: &Session<Fake>) -> (Option<TabId>, Vec<(TabId, u32)>) {
+        (session.active(), session.tabs().iter().map(|tab| (tab.id, tab.page)).collect())
+    }
+
+    /// Failure (R2.3's riskiest part): a person's command on the window's session thread, waiting for a file to be read, changes something before its read, so
+    /// running it again once the read's in does it twice or half (a tab opened twice, a tap that leaves a comparison and then lands elsewhere); or it reads the
+    /// file in place and holds the thread up; or a close waits on the next tab's read, which a dead volume would make for ever. For a tap of a cold tab, an open of
+    /// a new file and of a cold tab already open, and a close: nothing changes and nothing's said until the read's in, asking again changes nothing either, and
+    /// once it's in the command answers as it would have in one go.
+    #[test]
+    fn a_command_waiting_for_a_read_does_nothing_until_it_runs_again() {
+        let names = ["a", "b", "c", "d", "e", "f"];
+        let tap = Command::from(crate::commands::tabs::Tap { tab: "#1".into() });
+        let open_new = Command::from(crate::commands::tabs::Open {
+            path: PathBuf::from("/d/new.pdf"),
+            page: None,
+        });
+        let open_cold = Command::from(crate::commands::tabs::Open {
+            path: PathBuf::from("/d/a.pdf"),
+            page: Some(2),
+        });
+        for command in [&tap, &open_new, &open_cold] {
+            let mut session = with_tabs(&names);
+            let before = looks(&session);
+            let deferring = Deferring {
+                session: RefCell::new(&mut session),
+                woke: RefCell::default(),
+                loads: RefCell::default(),
+                ready: RefCell::default(),
+            };
+            let mut events = Vec::new();
+            for asked in 0..2 {
+                let first = execute(&deferring, Actor::Person, command, &mut events).expect_err("it waits for its read");
+                assert!(later::is_later(&first), "{}: {first:?}", command.tag());
+                assert_eq!(
+                    deferring.with(|s| looks(s)),
+                    before,
+                    "{}: nothing changed before the read, asked {} times",
+                    command.tag(),
+                    asked + 1
+                );
+                assert!(events.is_empty(), "{}: and nothing said", command.tag());
+            }
+            // The read, as the window's thread makes it.
+            let woke = deferring.woke.borrow_mut().drain(..).next_back();
+            if let Some((tab, path)) = woke {
+                deferring.with(|s| s.give_woken(tab, Fake.load(&path), None));
+            } else {
+                assert_eq!(
+                    deferring.loads.borrow().last().map(PathBuf::as_path),
+                    Some(Path::new("/d/new.pdf")),
+                    "{}",
+                    command.tag()
+                );
+                *deferring.ready.borrow_mut() = Some(later::Fetched {
+                    stamp: None,
+                    facts: Fake.load(Path::new("/d/new.pdf")),
+                    history: None,
+                    unlocked: false,
+                });
+            }
+            let answer = execute(&deferring, Actor::Person, command, &mut events).expect("once it's in");
+            let after = deferring.with(|s| looks(s));
+            let mut twin = with_tabs(&names);
+            let mut twin_events = Vec::new();
+            let direct = execute(&Direct(RefCell::new(&mut twin), None), Actor::Person, command, &mut twin_events).expect("in one go");
+            assert_eq!(answer, direct, "{}: the same answer", command.tag());
+            assert_eq!(after, looks(&twin), "{}: the same session", command.tag());
+            assert_eq!(format!("{events:?}"), format!("{twin_events:?}"), "{}: the same news", command.tag());
+        }
+        // A close doesn't wait for the tab it shows next: the session wakes that as it always has for the window.
+        let mut session = with_tabs(&names);
+        let deferring = Deferring {
+            session: RefCell::new(&mut session),
+            woke: RefCell::default(),
+            loads: RefCell::default(),
+            ready: RefCell::default(),
+        };
+        let close = Command::from(crate::commands::tabs::Close { tab: "#6".into() });
+        execute(&deferring, Actor::Person, &close, &mut Vec::new()).expect("closed at once");
+        assert!(deferring.woke.borrow().is_empty(), "nothing read for it");
+        assert_eq!(deferring.with(|s| s.tabs().len()), 5);
     }
 
     fn with_tabs(names: &[&str]) -> Session<Fake> {
@@ -2719,6 +2877,66 @@ mod tests {
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
         assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
+    }
+
+    /// Failure: the person's edit through a command is recorded as an agent's, so an agent below Full may throw it away, undo it past them or lose it with a new
+    /// edit; or the person's undo of an agent's step counts as the agent's. The same commands as the window sends, run as the person, are the owner's.
+    #[test]
+    fn every_edit_by_a_person_is_the_owners() {
+        let tab = || "#1".to_string();
+        let commands = [
+            Command::from(crate::commands::editing::PageRotate {
+                tab: tab(),
+                pages: "all".into(),
+                degrees: 90,
+            }),
+            Command::from(crate::commands::editing::PageMove {
+                tab: tab(),
+                pages: "1".into(),
+                to: 2,
+            }),
+            Command::from(crate::commands::editing::PageDelete { tab: tab(), pages: "1".into() }),
+            Command::from(crate::commands::editing::PageInsert {
+                tab: tab(),
+                path: "/d/b.pdf".into(),
+                at: 1,
+            }),
+        ];
+        for command in commands {
+            let mut s = edit_session();
+            execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &command, &mut Vec::new()).unwrap();
+            assert!(
+                s.page_edits(TabId(1)).unwrap().holds_owner_edits(),
+                "{} by the person is the owner's",
+                command.tag()
+            );
+            // An agent below Full can't throw it away, as it couldn't one made through the window's own call.
+            let discard = Command::from(crate::commands::editing::Discard { tab: tab() });
+            assert_eq!(
+                run(&mut s, Level::Control, &discard).unwrap_err().code,
+                "would_discard_user_edits",
+                "{}",
+                command.tag()
+            );
+        }
+        // An agent's step, undone and redone by the person: the person's undo is theirs, and leaves the agent's step the agent's.
+        let mut s = edit_session();
+        run(&mut s, Level::Control, &commands_rotate(tab())).unwrap();
+        for step in [
+            Command::from(crate::commands::editing::Undo { tab: tab() }),
+            Command::from(crate::commands::editing::Redo { tab: tab() }),
+        ] {
+            execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &step, &mut Vec::new()).unwrap();
+        }
+        assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "the agent's step stays the agent's");
+    }
+
+    fn commands_rotate(tab: String) -> Command {
+        Command::from(crate::commands::editing::PageRotate {
+            tab,
+            pages: "1".into(),
+            degrees: 90,
+        })
     }
 
     /// Failure: an agent makes enough edits that the user's step falls off the capped list, and then its discard counts only what's left on the list, and throws away the user's edit, still in the page order, along with its own. And the reverse: an agent's step falling off must not stop it clearing up.

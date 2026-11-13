@@ -155,7 +155,7 @@ fn a_query_started_mid_run_stops_the_first() {
     let host = Arc::new(SessionHost::new(DrawableLoader).with_indexing(&state.paths));
     let file = doc("overlap.pdf", 400, "alpha");
     host.run(
-        Level::Full,
+        recto_agent::Actor::Agent(Level::Full),
         &Command::from(recto_agent::commands::tabs::Open {
             path: file.0.clone(),
             page: None,

@@ -18,12 +18,14 @@ pub mod start;
 pub mod updates;
 
 mod comparison;
+pub mod controls;
 mod editing;
 #[cfg(test)]
 mod headless;
 mod launching;
 mod navigation;
 mod opening;
+pub mod person;
 mod quitting;
 mod record_commands;
 mod unlocking;
@@ -66,7 +68,7 @@ use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FileSta
 use recto_session::{ContentsFollow, DocLoader, DrawNote, Paper, SessionError, TabId, ViewSettings};
 use saver::Saver;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

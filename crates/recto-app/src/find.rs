@@ -64,7 +64,7 @@ pub enum FindCall {
     Choose(u32),
     /// The Finder has more, or has finished.
     News,
-    /// `recto find --next` went to a hit, which the page view selects.
+    /// A command went to a hit, which the page view selects: `Effect::Reveal`, whoever asked.
     Reveal(u32, find::Hit),
 }
 

@@ -1,9 +1,9 @@
 //! **The session the socket and the app share:** the host every command runs on, and what the page views tell the app.
 
 use super::*;
-use recto_agent::Runs;
 use recto_agent::commands::Move;
 use recto_agent::commands::view::{Palette, View};
+use recto_agent::{Actor, Runs};
 
 #[cfg(test)]
 mod route_tests;
@@ -46,7 +46,7 @@ impl AppHost {
 }
 
 impl Host for AppHost {
-    fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let asks_only = command.only_asks();
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
@@ -59,7 +59,7 @@ impl Host for AppHost {
                 );
             }
         }
-        let result = self.run_counted(level, command, events);
+        let result = self.run_counted(actor, command, events);
         if !asks_only {
             self.running.fetch_sub(1, Ordering::SeqCst);
         }
@@ -108,58 +108,46 @@ impl Host for AppHost {
 
 impl AppHost {
     /// Where a command goes, by its declared route: the app's own to [`Self::run_app`], the rest to the session.
-    pub fn run_counted(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    pub fn run_counted(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         match command.route() {
-            Runs::App => self.run_app(level, command, events),
+            Runs::App => self.run_app(actor, command, events),
             // The record's commands are the session's, with the app's record: they change nothing the window needs to look at again.
-            Runs::Record => self.session.run(level, command, events),
-            Runs::Session | Runs::Server => self.run_session(level, command, events),
+            Runs::Record => self.session.run(actor, command, events),
+            Runs::Session | Runs::Server => self.run_session(actor, command, events),
         }
     }
 
     /// A command the session answers, and what the window does after it.
-    fn run_session(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let result = self.session.run(level, command, events);
-        // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
-        if let (Command::Move(Move::Find(_)), Ok(answer)) = (command, &result)
-            && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
-            && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
-        {
-            let hit = recto_agent::find::Hit {
-                page: (page as u32).saturating_sub(1),
-                start: start as u32,
-                end: end as u32,
-                before: "".into(),
-                matched: "".into(),
-                after: "".into(),
-                hidden: false,
-            };
-            self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
-        }
+    fn run_session(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        let result = self.session.run(actor, command, events);
         self.core.push(CoreCall::Reconcile);
         result
     }
 
     /// The app's own commands: QA, the zoom, the palette and updates. Their level's checked here, as `execute` checks the session's: the server checked it too, but this host is also reached from inside the app.
-    fn run_app(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        if !recto_agent::allowed(level, command.access()) {
-            return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
+    fn run_app(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        if !actor.may(command.access()) {
+            return Err(recto_agent::refusal(
+                recto_agent::table::display_name(command.tag()),
+                actor.level(),
+                command.access(),
+            ));
         }
         match command {
             Command::Qa(asked) => match &self.qa {
                 Some(qa) => qa.run(asked),
                 None => Err(recto_agent::qa_needs_app()),
             },
-            Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) => self.zoom(level, asked, word, events),
-            Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(level, query, run, limit, events),
+            Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) => self.zoom(actor, asked, word, events),
+            Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(actor, query, run, limit, events),
             Command::Updates(_) => self.saver.inner().ok_or_else(recto_agent::update_needs_app)?.update_command(command),
             // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
-            _ => self.run_session(level, command, events),
+            _ => self.run_session(actor, command, events),
         }
     }
 
     /// Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-    fn zoom(&self, level: Level, asked: &View, word: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn zoom(&self, actor: Actor, asked: &View, word: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let zoom = menus::zoom_from_word(word).ok_or_else(|| {
             AgentError::new(
                 "usage",
@@ -171,7 +159,7 @@ impl AppHost {
             )
         })?;
         let rest = Command::from(View { zoom: None, ..asked.clone() });
-        let mut answer = self.session.run(level, &rest, events)?;
+        let mut answer = self.session.run(actor, &rest, events)?;
         let inner = self.saver.inner();
         let reading = inner
             .as_ref()
@@ -189,7 +177,7 @@ impl AppHost {
     }
 
     /// **`recto palette`:** what the query finds, as the window's palette ranks it, and with `--run` the first row run at the agent's level, as its own command where it has one.
-    fn run_palette(&self, level: Level, query: &Option<String>, run: &bool, limit: &Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    fn run_palette(&self, actor: Actor, query: &Option<String>, run: &bool, limit: &Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let inner = self
             .saver
             .inner()
@@ -204,7 +192,7 @@ impl AppHost {
                     .map(|tab| tab.id.0)
                     .collect()
             }),
-            recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
+            recent: recto_agent::table::by_tag("recent").is_some_and(|spec| actor.may(spec.access)),
         };
         let rows = palette::found_for(&inner, query.as_deref().unwrap_or(""), &whom);
         // A tab's name is the file's, so it's marked as the document's words.
@@ -226,7 +214,7 @@ impl AppHost {
             let host = match palette::as_command(&first.id, &reader, &inner.recent_files()) {
                 Some(direct) => {
                     inner.tools.palette.close();
-                    self.run_counted(level, &direct, events)?;
+                    self.run_counted(actor, &direct, events)?;
                     HostAction::None
                 }
                 None => {
@@ -235,8 +223,8 @@ impl AppHost {
                     } else {
                         recto_agent::table::Access::At(Level::Full)
                     };
-                    if !recto_agent::allowed(level, needed) {
-                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed)
+                    if !actor.may(needed) {
+                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), actor.level(), needed)
                             .then("Run that command itself, if it has one, at the level it needs."));
                     }
                     palette::run(&inner, &first.id)

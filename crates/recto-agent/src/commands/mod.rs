@@ -23,7 +23,7 @@ pub mod updates;
 pub mod view;
 
 use crate::table::{self, Access, Spec};
-use crate::{AgentError, Command, Event, Level, Runs, SessionAccess};
+use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -39,6 +39,10 @@ pub trait Cmd {
     const READS_PAGES: bool;
     /// It reads nothing of a document, so it may act on one the user opened with its password (closing it, asking where it is).
     const PROTECTED_OK: bool;
+    /// Run for the person at the window, it may hold its thread for long: it writes a file, draws, reads pages or a file in place, waits on a worker, a helper,
+    /// the network or the clock, or on the window's session thread itself. The window runs such a command on a thread of its own, never on its session thread,
+    /// which the person's every tap goes through (R2.3). One that forgot could stop the window answering.
+    const WAITS: bool;
     /// The selector of the tab it acts on, which `execute` holds awake for as long as it runs. One that forgot could see its tab go dormant mid-command.
     fn tab(&self) -> Option<&str>;
     /// Who may run it. Most say their row's level, [`row_access`]; some depend on what's asked.
@@ -58,9 +62,10 @@ pub trait OnlyAsks {
     fn only_asks(&self) -> bool;
 }
 
-/// What a command runs with: the session, the level it was asked at, and the events it makes.
+/// What a command runs with: the session, who asked and the level that goes by ([`Actor::level`]), and the events it makes.
 pub struct Cx<'a, A> {
     pub access: &'a A,
+    pub actor: Actor,
     pub level: Level,
     pub events: &'a mut Vec<Event>,
 }
@@ -141,6 +146,12 @@ macro_rules! family {
             pub fn reads_pages(&self) -> bool {
                 match self {
                     $(Self::$variant(_) => <$payload as $crate::commands::Cmd>::READS_PAGES,)*
+                }
+            }
+
+            pub fn waits(&self) -> bool {
+                match self {
+                    $(Self::$variant(_) => <$payload as $crate::commands::Cmd>::WAITS,)*
                 }
             }
 
