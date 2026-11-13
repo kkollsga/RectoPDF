@@ -192,7 +192,7 @@ pub struct Inner {
 /// R1.4 makes a state machine on the clock.
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state, held back while the record's lock hasn't come ([`updates::LaunchFacts`]).
-    pub(crate) update_facts: Mutex<updates::LaunchFacts>,
+    update_facts: Mutex<updates::LaunchFacts>,
     /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
     pub started: Instant,
     /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
@@ -219,7 +219,7 @@ pub struct Lifecycle {
     pub(crate) last_input_ms: AtomicU64,
     /// The person has touched the app since the launch: a click, a key, a scroll or a pinch, which moving or resizing the window begins with. Not the pointer only
     /// passing over it.
-    pub(crate) touched: AtomicBool,
+    touched: AtomicBool,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
     /// When the window was last put up, for how long the patience had run when it was shown.
@@ -350,12 +350,12 @@ impl Lifecycle {
     }
 
     /// Whether this copy keeps the record, or is trying again for its lock ([`crate::lifecycle::keeping`]).
-    pub(crate) fn keeping(&self) -> crate::lifecycle::keeping::Keeping {
+    fn keeping(&self) -> crate::lifecycle::keeping::Keeping {
         self.life().keeping()
     }
 
     /// How long until the next try at the record's lock, while a launch that didn't get it tries again.
-    pub(crate) fn keeping_due(&self) -> Option<Duration> {
+    fn keeping_due(&self) -> Option<Duration> {
         let now = self.now_ms();
         self.life().keeping_due(now)
     }
@@ -363,7 +363,7 @@ impl Lifecycle {
     /// **A late try at the record's lock, back,** taken in with whether something of the person's is `busy` (a command under way on its own thread), looked at
     /// under this lock only for a try that got the lock while it's trying, as `person::submit` counts and then looks at the machine: a lock it got is then given
     /// back. `busy` is a load of two atomics: nothing under this lock touches the disk.
-    pub(crate) fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
+    fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
         let now = self.now_ms();
         let mut life = lock(&self.life);
         let busy = got && life.keeping().trying() && busy();
