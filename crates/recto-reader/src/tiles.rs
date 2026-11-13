@@ -21,9 +21,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod host;
+mod place;
 mod zoom;
 
 use host::{HostQueue, Placement};
+use place::Place;
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -556,11 +558,7 @@ pub struct Reader {
     clock: u64,
     running: Option<Running>,
     next_generation: u64,
-    next_seq: u64,
-    jump: Option<u64>,
-    scrolled_to: u64,
-    last_view_page: Option<u32>,
-    moved_page: Option<u32>,
+    place: Place,
     /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
     selection_before_change: Option<(u32, recto_index::select::Range)>,
     /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, the hit, and whether its page was jumped to for it, which then places it whatever it shows.
@@ -592,10 +590,6 @@ pub struct Reader {
     share: usize,
     /// The least room either side of the pages: a comparison's pane has less than a window.
     margins: (f64, f64),
-    /// The last viewport was the reader scrolling, and not the host arriving where it was sent, a zoom, a resize or a pinch: what synced scroll goes by.
-    user_scrolled: bool,
-    /// The last viewport was the host arriving at a scroll it was sent, as a change of layout sends one to keep the place. Where it arrived is the place, or as near as the view reaches, so the place isn't taken again from it.
-    arrived: bool,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -627,11 +621,7 @@ impl Reader {
             clock: 0,
             running: None,
             next_generation: 1,
-            next_seq: 1,
-            jump: None,
-            scrolled_to: 0,
-            last_view_page: None,
-            moved_page: None,
+            place: Place::new(),
             selection_before_change: None,
             revealing: None,
             counts: ReaderCounts::default(),
@@ -649,8 +639,6 @@ impl Reader {
             waking: None,
             last_wake: None,
             share: 1,
-            user_scrolled: false,
-            arrived: false,
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
         }
     }
@@ -664,54 +652,10 @@ impl Reader {
         }
     }
 
-    /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
-    pub fn set_margins(&mut self, left: f64, right: f64) {
-        self.margins = (left, right);
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        if doc.layout.set_margins(left, right) {
-            doc.exact_y = None;
-            self.lay_out();
-            self.refresh(MAX_ATTACH_PER_TURN);
-        }
-    }
-
     /// The last scroll the host said it had reached, for a test to go on from.
     #[cfg(test)]
     pub(crate) fn viewport_scrolled_to(&self) -> u64 {
         self.viewport.scrolled_to
-    }
-
-    /// Where the reader is in the tab showing: a page and how far down it, as a change of layout keeps it.
-    pub fn reading_anchor(&self) -> Option<(u32, f64)> {
-        self.doc().map(|doc| doc.anchor)
-    }
-
-    /// Whether the last viewport was the reader scrolling, which another pane follows with synced scroll. Asking clears it.
-    pub fn take_user_scrolled(&mut self) -> bool {
-        std::mem::take(&mut self.user_scrolled)
-    }
-
-    /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
-    pub fn follow(&mut self, page: u32, within: f64) -> Option<u32> {
-        self.finish_wake();
-        let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
-        let page = page.min(doc.layout.count().saturating_sub(1));
-        let within = if within.is_finite() { within.clamp(0.0, 1.0) } else { 0.0 };
-        doc.anchor = (page, within);
-        let y = doc.layout.anchor_y((page, within));
-        doc.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        self.jump = Some(seq);
-        let moved = self.last_view_page != Some(page);
-        self.last_view_page = Some(page);
-        if moved {
-            self.moved_page = Some(page);
-        }
-        self.host.ops.push_back(Op::ScrollTo { y, seq });
-        Some(page)
     }
 
     /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
@@ -862,7 +806,7 @@ impl Reader {
 
     /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
     pub fn is_showable(&self) -> bool {
-        if self.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
+        if self.place.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
             return false;
         }
         let Some(doc) = self.doc() else { return false };
@@ -898,7 +842,7 @@ impl Reader {
             return;
         }
         let Some(doc) = self.doc() else { return };
-        if self.jump.is_none() && self.viewport.height > 0.0 {
+        if self.place.jump.is_none() && self.viewport.height > 0.0 {
             let covered = self.pages_all_covered(doc);
             if covered && report.first_frame_us.is_none() {
                 report.first_frame_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
@@ -1183,15 +1127,6 @@ impl Reader {
         self.window_open
     }
 
-    pub(crate) fn has_moved_page(&self) -> bool {
-        self.moved_page.is_some()
-    }
-
-    /// A page the reader scrolled to, for the session to take as its place. Asking clears it.
-    pub fn take_moved_page(&mut self) -> Option<u32> {
-        self.moved_page.take()
-    }
-
     fn doc(&self) -> Option<&DocView> {
         self.hot.and_then(|tab| self.docs.get(&tab))
     }
@@ -1216,7 +1151,7 @@ impl Reader {
                     doc.left_pictures = Some(pictures);
                 }
             }
-            let last_page = self.last_view_page;
+            let last_page = self.place.last_view_page;
             let (left_x, left_y) = (self.viewport.x, self.viewport.y);
             if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
                 doc.left_at = last_page.map(|page| (page, doc.anchor));
@@ -1225,8 +1160,8 @@ impl Reader {
             }
             self.clear_screen();
             self.hot = Some(tab);
-            self.last_view_page = None;
-            self.moved_page = None;
+            self.place.last_view_page = None;
+            self.place.moved_page = None;
             // A selection is in what's on screen, and a tab off screen holds none.
             self.selecting.reset();
             self.linking.clear();
@@ -1429,57 +1364,6 @@ impl Reader {
         }
     }
 
-    /// Exactly where each tab it holds is, for the session to keep. Hot and warm tabs: a few at most, and a cold tab's is already kept.
-    pub fn places(&self) -> Vec<(u32, SavedPlace)> {
-        self.docs
-            .values()
-            .filter_map(|doc| {
-                let page_size = doc.layout.usual_size();
-                if self.hot == Some(doc.tab) {
-                    let page = self.last_view_page?;
-                    // Not yet arrived where it's been sent: what the view says is about somewhere else.
-                    let (x, y) = if self.jump.is_some() {
-                        (doc.scroll_x, doc.exact_y.map_or_else(|| doc.layout.anchor_y(doc.anchor), |(y, _)| y))
-                    } else {
-                        (self.viewport.x, self.viewport.y)
-                    };
-                    Some((
-                        doc.tab,
-                        SavedPlace {
-                            page,
-                            anchor: doc.anchor,
-                            x,
-                            y,
-                            document_height: doc.layout.document_height(),
-                            magnification: doc.magnification,
-                            page_size,
-                        },
-                    ))
-                } else {
-                    let (page, anchor) = doc.left_at?;
-                    let y = doc.exact_y.map_or_else(|| doc.layout.anchor_y(anchor), |(y, _)| y);
-                    Some((
-                        doc.tab,
-                        SavedPlace {
-                            page,
-                            anchor,
-                            x: doc.scroll_x,
-                            y,
-                            document_height: doc.layout.document_height(),
-                            magnification: doc.magnification,
-                            page_size,
-                        },
-                    ))
-                }
-            })
-            .collect()
-    }
-
-    /// Whether what's on the layers is the place on the hot tab, with nothing still on its way there: what makes it right to show a window.
-    pub fn is_on_place(&self) -> bool {
-        self.hot.is_some() && self.jump.is_none() && self.is_settled()
-    }
-
     /// Which tabs are warm now, the hot one staying as it is. A tab that's stopped being warm, closed perhaps, holds nothing from here on, and its renderer goes.
     pub fn set_warm(&mut self, warm: &[u32]) {
         let Some(hot) = self.hot else { return };
@@ -1524,120 +1408,35 @@ impl Reader {
         self.selecting.layers_gone();
     }
 
-    /// Lays the tab showing out another way: a page to a row, or two side by side. The reader stays on the page they were on, as far down it, and the zoom stays.
-    pub fn set_spread(&mut self, spread: Spread) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        if !doc.layout.set_spread(spread) {
-            return;
-        }
-        // The height the view was at is about the old layout. Where it is in its page is what holds.
-        doc.exact_y = None;
-        self.lay_out();
-        self.refresh(MAX_ATTACH_PER_TURN);
-    }
-
-    /// The tab showing's layout.
-    pub fn spread(&self) -> Option<Spread> {
-        self.doc().map(|doc| doc.layout.spread())
-    }
-
-    /// Asks the host to go to a page, as an agent's `goto` or a contents row does.
-    pub fn jump_to(&mut self, page: u32) {
-        // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
-        self.finish_wake();
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        let page = page.min(doc.layout.count().saturating_sub(1));
-        doc.anchor = (page, 0.0);
-        let y = doc.layout.jump_y(page);
-        // To the pixel while the layout holds: the first page's jump goes above it, to the margin, which its anchor can't say.
-        doc.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        self.jump = Some(seq);
-        self.last_view_page = Some(page);
-        self.host.ops.push_back(Op::ScrollTo { y, seq });
-    }
-
-    /// How far down the tab's place is: to the pixel if the layout's what it was, and otherwise as far down its page.
-    fn place_y(doc: &DocView) -> f64 {
-        match doc.exact_y {
-            Some((y, height)) if height == doc.layout.document_height() => y,
-            _ => doc.layout.anchor_y(doc.anchor),
-        }
-    }
-
-    /// Goes where the tab's anchor says, which is on this page, as a jump.
-    fn jump_to_anchor(&mut self, page: u32) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
-        let y = Self::place_y(doc);
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        self.jump = Some(seq);
-        self.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
-        self.host.ops.push_back(Op::ScrollTo { y, seq });
-    }
-
-    /// The document's size, then the place in it. Called when the fit or a page's size has changed.
-    fn lay_out(&mut self) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        doc.layout.set_margins(self.margins.0, self.margins.1);
-        doc.layout.set_frame(self.viewport.frame_width);
-        let (top_room, bottom_room) = doc.layout.end_room();
-        let y = Self::place_y(doc);
-        doc.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
-        self.host.ops.push_back(Op::Document {
-            width: doc.width_shown,
-            height: doc.layout.document_height(),
-            top_room,
-            bottom_room,
-        });
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        if self.jump.is_some() {
-            self.jump = Some(seq);
-        }
-        self.host.ops.push_back(Op::ScrollTo { y, seq });
-    }
-
     /// The host's view moved. Called on every scroll, on the UI thread: a few map lookups per visible tile, and at most [`MAX_ATTACH_PER_TURN`] surfaces reclaimed. What it returns is for the host to apply now.
     pub fn set_viewport(&mut self, viewport: Viewport) -> Vec<Op> {
         let was = self.viewport;
         self.viewport = viewport;
         self.counts.viewport_steps += 1;
-        self.scrolled_to = viewport.scrolled_to.max(self.scrolled_to);
+        self.place.scrolled_to = viewport.scrolled_to.max(self.place.scrolled_to);
         // A new window's first word, before it's been told anything: the top of the document at no zoom. That's nobody's place.
         if !self.window_open {
             return self.host.take_ops();
         }
         // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
-        self.user_scrolled = !viewport.live
-            && self.jump.is_none()
-            && viewport.y != was.y
-            && viewport.scrolled_to == was.scrolled_to
-            && viewport.magnification == was.magnification
-            && viewport.frame_width == was.frame_width
-            && viewport.height == was.height;
-        self.arrived = viewport.scrolled_to > was.scrolled_to && viewport.scrolled_to != u64::MAX;
+        self.place.note_viewport(was, viewport);
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
                 moved_layout = true;
             }
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
-            if !viewport.live && self.jump.is_none() {
+            if !viewport.live && self.place.jump.is_none() {
                 doc.magnification = viewport.magnification;
             }
         }
         if moved_layout {
             self.lay_out();
         } else {
-            self.track_place();
+            let viewport = self.viewport;
+            if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
+                self.place.track(doc, viewport);
+            }
             self.widen_for_view();
         }
         // After the refresh, which is what moves the tiles' scale on.
@@ -1645,73 +1444,6 @@ impl Reader {
         self.cancel_if_unwanted();
         self.count_blanks();
         self.host.take_ops()
-    }
-
-    /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
-    fn widen_for_view(&mut self) {
-        let viewport = self.viewport;
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);
-        if (width - doc.width_shown).abs() < 0.5 {
-            return;
-        }
-        doc.width_shown = width;
-        let (top_room, bottom_room) = doc.layout.end_room();
-        self.host.ops.push_back(Op::Document {
-            width,
-            height: doc.layout.document_height(),
-            top_room,
-            bottom_room,
-        });
-    }
-
-    /// Follows the reader's place. Only a change the reader made is the session's business: arriving where a jump sent them isn't.
-    fn track_place(&mut self) {
-        let viewport = self.viewport;
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
-        };
-        let bottom = doc.layout.document_height() - viewport.height;
-        let page = if viewport.y >= bottom - 1.0 && viewport.y > 0.0 {
-            doc.layout.count().saturating_sub(1)
-        } else {
-            doc.layout.page_at(viewport.y + viewport.height / 3.0)
-        };
-        // Side by side, the reader's page stays whichever of its row they were on: a jump to a right-hand page, or reading on in a row, isn't a move to the left one.
-        let page = match self.last_view_page {
-            Some(was) if doc.layout.same_row(was, page) => was,
-            // The host arrived where a change of layout sent it, back to the place: the page the place was kept on, if it's in the row. A round trip through a view too small to reach the place, where the last page was taken for the reader's, otherwise lands on the row's left page (side-by-side review, finding 4).
-            _ if self.arrived && doc.layout.same_row(doc.anchor.0, page) => doc.anchor.0,
-            _ => page,
-        };
-        if let Some(jump) = self.jump {
-            // Still on its way: where the view is now isn't where it's going, and taken for the place, it would be where it ends up on the next layout. On arrival the place is left as it was sent, to the pixel.
-            if self.scrolled_to >= jump {
-                self.jump = None;
-                // Where it arrived can be another page than was asked, as when a pane's narrower than the view the place was taken in, or a place deep in a page puts the next one where the reader's eye is. The session's page goes with it, or the two disagree, and the place isn't brought back after a restart.
-                if self.last_view_page != Some(page) {
-                    self.moved_page = Some(page);
-                }
-                self.last_view_page = Some(page);
-            }
-            return;
-        }
-        // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
-        let moved = !self.arrived && doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
-        if moved {
-            // The host puts the view on its own pixels, so a view this near where the place is is on it, said the host's way. Taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them.
-            if (doc.layout.anchor_y(doc.anchor) - viewport.y).abs() >= HOST_ROUNDING {
-                doc.anchor = doc.layout.anchor_for(viewport.y, page);
-            }
-            doc.exact_y = None;
-        }
-        doc.scroll_x = viewport.x;
-        if self.last_view_page != Some(page) {
-            self.last_view_page = Some(page);
-            self.moved_page = Some(page);
-        }
     }
 
     /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
@@ -2303,7 +2035,7 @@ impl Reader {
         if let Some(magnification) = self.doc().map(|doc| doc.magnification) {
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
-            self.jump = Some(u64::MAX);
+            self.place.jump = Some(u64::MAX);
         }
         self.lay_out();
         if let Some(across) = self.doc().map(|doc| doc.scroll_x) {
@@ -3157,7 +2889,7 @@ impl Reader {
             "tab": self.hot,
             "pages": doc.map(|doc| doc.layout.count()),
             "visible_pages": visible,
-            "page": self.last_view_page.map(|page| page + 1),
+            "page": self.place.last_view_page.map(|page| page + 1),
             "magnification": self.viewport.magnification,
             "fit": doc.map(|doc| doc.layout.fit()),
             "spread": doc.map(|doc| format!("{:?}", doc.layout.spread())),
