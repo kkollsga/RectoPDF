@@ -14,6 +14,14 @@ use recto_session::compare::{Comparison, MAX_PANES};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// **What a pane's page view was last sent by the session thread:** the tab it shows and the page. What it says of where it is is its own only once
+/// this is what the session has ([`crate::core::places::is_views_own`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent {
+    pub tab: TabId,
+    pub page: u32,
+}
+
 /// What the UI thread acts on for synced scroll and zoom, as the session thread last laid it out.
 #[derive(Default)]
 struct Plan {
@@ -31,6 +39,8 @@ pub struct Panes {
     reading: AtomicUsize,
     /// What each pane shows, left to right.
     shown: Mutex<Vec<TabId>>,
+    /// What each pane's page view was last sent, for what takes in the views' places off the session thread.
+    sent: Mutex<Vec<Option<Sent>>>,
     plan: Mutex<Plan>,
     hooks: Arc<dyn EngineEvents>,
     config: EngineConfig,
@@ -42,6 +52,7 @@ impl Panes {
             extra: Mutex::new(Vec::new()),
             reading: AtomicUsize::new(0),
             shown: Mutex::new(Vec::new()),
+            sent: Mutex::new(Vec::new()),
             plan: Mutex::new(Plan::default()),
             hooks,
             config,
@@ -110,6 +121,15 @@ impl Panes {
             let (left, right) = margins(pane, count);
             engine.set_margins(left, right);
         }
+    }
+
+    /// What each pane's page view has been sent, as the session thread's look leaves it.
+    pub fn set_sent(&self, sent: Vec<Option<Sent>>) {
+        *lock(&self.sent) = sent;
+    }
+
+    pub fn sent(&self) -> Vec<Option<Sent>> {
+        lock(&self.sent).clone()
     }
 
     /// What's side by side now, for the UI thread: which tab each pane shows, which is read, and the comparison with each pane's length.

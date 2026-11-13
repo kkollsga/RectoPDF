@@ -8,7 +8,9 @@
 #
 # The seed is an APFS clone (`cp -c`): near-instant, and no disk is used until one side writes a file. Without APFS it seeds nothing,
 # rather than copying tens of gigabytes. What it takes: every registry and git dependency already built (debug, release, dev-release, the Windows
-# check), the build scripts' output and PDFium. What it leaves: the workspace's own object files and incremental caches, which the
+# check), the build scripts' output and PDFium. PDFium goes first, and a file that can't be cloned (one a build is writing or removing as
+# the seed runs) is said and skipped, so the worker's library is always there to draw with; with none in the main checkout, `tools/pdfium.sh`
+# is named and the seed goes on. What it leaves: the workspace's own object files and incremental caches, which the
 # worktree rebuilds anyway, as its sources are newer than anything in the seed. That is what keeps a seed correct: the clone keeps the
 # main checkout's times, and the worktree's files are checked out after them, so cargo sees every workspace crate as changed and only
 # the dependencies as built. Leaving out the object files and caches is most of the files and makes the clone a few seconds, not a minute.
@@ -24,8 +26,11 @@ clone_dir() {
   local src=$1 dst=$2
   shift 2
   mkdir -p "$dst"
-  # -p keeps the times: the seed must look older than the worktree's sources (above).
-  find "$src" -mindepth 1 -maxdepth 1 "$@" -print0 | xargs -0 -J % cp -c -p -R % "$dst/"
+  # -p keeps the times: the seed must look older than the worktree's sources (above). One at a time, so a file that can't be cloned costs
+  # only itself: it's said, and the build makes it again.
+  find "$src" -mindepth 1 -maxdepth 1 "$@" -print0 | while IFS= read -r -d '' entry; do
+    cp -c -p -R "$entry" "$dst/" || echo "worktree: couldn't clone $entry, so it's left for the build." >&2
+  done
 }
 
 seed() {
@@ -41,7 +46,7 @@ seed() {
   mkdir -p "$to"
   # A clone works only within one APFS volume. Anything else would be a real copy of tens of gigabytes, so it seeds nothing.
   local probe
-  probe=$(find "$from/debug" -maxdepth 1 -type f | head -1)
+  probe=$(find "$from/debug" -maxdepth 1 -type f -perm -u+r | head -1)
   if [ -z "$probe" ] || ! cp -c "$probe" "$to/.probe" 2>/dev/null; then
     rm -rf "$to"
     echo "worktree: can't clone from $from into $to (not one APFS volume), so it isn't seeded. The first build is cold." >&2
@@ -49,6 +54,12 @@ seed() {
   fi
   rm -rf "$to/.probe"
   started=$(date +%s)
+  # First, so nothing below can keep it out: without it no page can be read or drawn in this worktree.
+  if [ -d "$from/pdfium" ]; then
+    cp -c -p -R "$from/pdfium" "$to/" || echo "worktree: couldn't clone $from/pdfium: run tools/pdfium.sh here before any test that draws a page." >&2
+  else
+    echo "worktree: the main checkout has no PDFium at $from/pdfium to seed: run tools/pdfium.sh here before any test that draws a page." >&2
+  fi
   for profile in "$from"/debug "$from"/release "$from"/dev-release "$from"/*/debug "$from"/*/release; do
     [ -d "$profile" ] || continue
     local rel=${profile#"$from"/}
@@ -58,8 +69,7 @@ seed() {
     # The workspace's object files, kept for line numbers in backtraces, are almost all the files and are rebuilt here anyway.
     [ -d "$profile/deps" ] && clone_dir "$profile/deps" "$to/$rel/deps" ! -name '*.o'
   done
-  [ -d "$from/pdfium" ] && cp -c -p -R "$from/pdfium" "$to/"
-  [ -f "$from/CACHEDIR.TAG" ] && cp -c -p "$from/CACHEDIR.TAG" "$to/"
+  if [ -f "$from/CACHEDIR.TAG" ]; then cp -c -p "$from/CACHEDIR.TAG" "$to/" || true; fi
   echo "worktree: seeded $to from $from in $(($(date +%s) - started)) s ($(find "$to" -type f | wc -l | tr -d ' ') files, cloned, so no disk until written)."
 }
 

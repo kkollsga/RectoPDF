@@ -14,58 +14,32 @@ use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::sleep_writer::{By, Event, Out, SleepWriter, Write};
+use crate::sleeper as app;
 pub use crate::sleeper::Why;
-use crate::sleeper::{self as app, SLEEP_WRITE_EVERY_SECONDS};
 pub use crate::sleeper::{DORMANT_AFTER_SECONDS, LIVE_BUDGET_BYTES};
 /// How often a flush looks again for the sleep files' lock, while it may wait for it.
 const WRITING_LOOK_EVERY: Duration = Duration::from_millis(10);
-/// How soon a pass that couldn't go ahead, as something's being read, tries again.
-const BUSY_RETRY: Duration = Duration::from_secs(5);
-
-#[derive(Default)]
-struct Counts {
-    left_alone: AtomicU64,
-    budget: AtomicU64,
-    pressure: AtomicU64,
-    asked: AtomicU64,
-    sleep_bytes: AtomicU64,
-    sleep_files: AtomicU64,
-    writes_put_off: AtomicU64,
-    /// The tab on screen's file at a flush, not written as another was being written past the flush's time.
-    writes_skipped_busy: AtomicU64,
-    woken_from_file: AtomicU64,
-    pressure_events: AtomicU64,
-    /// The system's own pressure in a quiet run, counted and not acted on: warnings, and critical.
-    system_warning: AtomicU64,
-    system_critical: AtomicU64,
-}
 
 pub struct Sleeper {
-    /// What `crate::sleeper`'s decisions go by: when dormancy is due, the write gap and the hourly cap. The host's clock, a test's fake one. The waits for the sleep files'
-    /// lock (a flush's `until` and the writer's hold-back) are real time and go by `Instant`, as they wait on another thread's disk. Which tabs are due is the session's own
-    /// clock (`Session::seconds_now`), as it always was.
+    /// What the machine's decisions go by: when dormancy is due, the write gap and the hourly cap, the budget's look. The host's clock, a test's fake one. The
+    /// waits for the sleep files' lock (a flush's `until` and the writer's hold-back) are real time and go by `Instant`, as they wait on another thread's disk.
+    /// Which tabs are due is the session's own clock (`Session::seconds_now`), as it always was: see [`crate::sleep_writer`].
     clock: Arc<dyn Clock>,
-    after_seconds: AtomicU32,
-    budget_bytes: AtomicU64,
-    /// When the soonest is due, in milliseconds of `clock` plus one, and zero for nothing.
+    /// When the soonest is due, in milliseconds of `clock` plus one, and zero for nothing: the machine's [`Out::Due`], kept where the session thread's wait reads
+    /// it with the queue's lock held, as an atomic.
     due: AtomicU64,
-    last_budget_look: Mutex<app::BudgetLook>,
-    write_gap_seconds: AtomicU32,
-    /// When each tab's sleep file was last written, for those that have been. Next to no bytes per tab.
-    last_written: Mutex<app::Written>,
-    /// The hour this began, and what's been written in it.
-    this_hour: Mutex<app::Hour>,
+    /// **The sleep writer's state, as one machine** ([`SleepWriter`]). Held only inside [`Self::step`] and the queries beside it: never across carrying out an
+    /// `Out`, a session call or the disk. Taken inside [`Self::writing`] (a write's decision and its count), never the other way round.
+    machine: Mutex<SleepWriter>,
     /// One sleep file being written at a time, so a flush has what's on its way.
     writing: Mutex<()>,
-    /// Writes waiting for [`Self::writing`] that someone's waiting on, a flush's or being asked's: the queue's writer lets them go first.
-    others_waiting: AtomicU32,
     /// Sleep files written off the session's time, waiting for their one writer: [`crate::sleep_queue`].
     leaving: Mutex<crate::sleep_queue::LeavingQueue>,
-    counts: Counts,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
 }
@@ -112,18 +86,10 @@ impl Sleeper {
     pub fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
             clock,
-            after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS),
-            budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES),
             due: AtomicU64::new(0),
-            last_budget_look: Mutex::new(app::BudgetLook::default()),
-            write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS),
-            last_written: Mutex::new(app::Written::default()),
-            // The hour starts with the clock, at its first millisecond.
-            this_hour: Mutex::new(app::Hour::starting(1)),
+            machine: Mutex::new(SleepWriter::default()),
             writing: Mutex::new(()),
-            others_waiting: AtomicU32::new(0),
             leaving: Mutex::new(crate::sleep_queue::LeavingQueue::default()),
-            counts: Counts::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
         }
     }
@@ -132,50 +98,53 @@ impl Sleeper {
         self.clock.now_ms() + 1
     }
 
+    /// **What happens to the sleep writer,** now by the clock. The lock's let go of before this returns: the caller carries out what it comes to. A new
+    /// deadline is kept here, as it's only stored.
+    fn step(&self, event: Event) -> Option<Out> {
+        let now = self.millis();
+        let out = lock(&self.machine).step(event, now);
+        if let Some(Out::Due(due)) = out {
+            self.due.store(due, Ordering::SeqCst);
+            return None;
+        }
+        out
+    }
+
     /// How long until something's due, for the session thread's wait, or `None`. An atomic: it's asked with the queue's lock held.
     pub fn wait_for_due(&self) -> Option<Duration> {
         app::wait_for(self.due.load(Ordering::SeqCst), self.millis()).map(Duration::from_millis)
     }
 
     pub fn set_after(&self, seconds: u32) {
-        self.after_seconds.store(seconds, Ordering::SeqCst);
+        let _ = self.step(Event::SetAfter(seconds));
     }
 
     /// How long a tab that's only moving about waits for its next sleep file. None at all takes the hourly limit with it.
     pub fn set_write_gap(&self, seconds: u32) {
-        self.write_gap_seconds.store(seconds, Ordering::SeqCst);
+        let _ = self.step(Event::SetWriteGap(seconds));
     }
 
-    /// Whether a tab that's only moving about may have a new picture written now. Asked before anything's packed, as that's work too.
-    fn may_write_pictures(&self, id: TabId) -> bool {
-        let gap = self.write_gap_seconds.load(Ordering::SeqCst);
-        if gap == 0 {
-            return true;
-        }
-        let now = self.millis();
-        let soon = lock(&self.last_written).soon(id, u64::from(gap) * 1000, now);
-        let room = lock(&self.this_hour).has_room(now);
-        !soon && room
+    fn after_seconds(&self) -> u32 {
+        lock(&self.machine).after_seconds()
     }
 
-    /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further, and counted meanwhile so the queue's writer lets it go first. A flush's thread or being asked's, never the UI's.
+    /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further (counted as skipped past it),
+    /// and said to the machine meanwhile so the queue's writer lets it go first. A flush's thread or being asked's, never the UI's.
     /// `until` is real time, not the clock: a wait on another thread's disk.
     fn take_writing(&self, until: Option<Instant>) -> Option<std::sync::MutexGuard<'_, ()>> {
-        self.others_waiting.fetch_add(1, Ordering::SeqCst);
-        let Some(until) = until else {
-            let taken = lock(&self.writing);
-            self.others_waiting.fetch_sub(1, Ordering::SeqCst);
-            return Some(taken);
+        let _ = self.step(Event::LockWanted);
+        let taken = match until {
+            None => Some(lock(&self.writing)),
+            Some(until) => loop {
+                match self.writing.try_lock() {
+                    Ok(guard) => break Some(guard),
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => break Some(poisoned.into_inner()),
+                    Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= until => break None,
+                    Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(WRITING_LOOK_EVERY),
+                }
+            },
         };
-        let taken = loop {
-            match self.writing.try_lock() {
-                Ok(guard) => break Some(guard),
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => break Some(poisoned.into_inner()),
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= until => break None,
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(WRITING_LOOK_EVERY),
-            }
-        };
-        self.others_waiting.fetch_sub(1, Ordering::SeqCst);
+        let _ = self.step(Event::LockWaited { got: taken.is_some() });
         taken
     }
 
@@ -183,21 +152,9 @@ impl Sleeper {
     fn let_others_go_first(&self) {
         // Real time, not the clock: how long the writer has held back, a wait on other threads.
         let began = Instant::now();
-        while app::hold_back_for_others(
-            self.others_waiting.load(Ordering::SeqCst),
-            u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
-        ) {
+        while lock(&self.machine).holds_back(u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)) {
             std::thread::sleep(WRITING_LOOK_EVERY);
         }
-    }
-
-    fn note_written(&self, id: TabId, bytes: u64) {
-        let gap = u64::from(self.write_gap_seconds.load(Ordering::SeqCst)) * 1000;
-        // Only a write within the gap holds the next one back, so older ones go: without this every tab ever written stayed, closed ones too, a day's soak of them.
-        lock(&self.last_written).note(id, gap, self.millis());
-        lock(&self.this_hour).add(bytes);
-        self.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
-        self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Looks at woken tabs' files under way now.
@@ -206,24 +163,26 @@ impl Sleeper {
     }
 
     pub fn set_budget(&self, bytes: u64) {
-        self.budget_bytes.store(bytes, Ordering::SeqCst);
+        let _ = self.step(Event::SetBudget(bytes));
     }
 
     pub fn report(&self) -> Value {
-        let count = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
-        let counts = &self.counts;
+        let (counts, after_seconds, budget_bytes) = {
+            let machine = lock(&self.machine);
+            (machine.counts(), machine.after_seconds(), machine.budget_bytes())
+        };
         json!({
-            "after_seconds": self.after_seconds.load(Ordering::SeqCst),
-            "budget_bytes": self.budget_bytes.load(Ordering::SeqCst),
+            "after_seconds": after_seconds,
+            "budget_bytes": budget_bytes,
             "due_in_ms": self.wait_for_due().map(|wait| u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
-            "gone_dormant": { "left_alone": count(&counts.left_alone), "budget": count(&counts.budget), "pressure": count(&counts.pressure), "asked": count(&counts.asked) },
-            "sleep_files_written": count(&counts.sleep_files),
-            "writes_put_off": count(&counts.writes_put_off),
-            "writes_skipped_busy": count(&counts.writes_skipped_busy),
-            "sleep_bytes_written": count(&counts.sleep_bytes),
-            "woken_from_file": count(&counts.woken_from_file),
-            "pressure_events": count(&counts.pressure_events),
-            "system_pressure": { "warning": count(&counts.system_warning), "critical": count(&counts.system_critical) },
+            "gone_dormant": { "left_alone": counts.left_alone, "budget": counts.budget, "pressure": counts.pressure, "asked": counts.asked },
+            "sleep_files_written": counts.sleep_files,
+            "writes_put_off": counts.writes_put_off,
+            "writes_skipped_busy": counts.writes_skipped_busy,
+            "sleep_bytes_written": counts.sleep_bytes,
+            "woken_from_file": counts.woken_from_file,
+            "pressure_events": counts.pressure_events,
+            "system_pressure": { "warning": counts.system_warning, "critical": counts.system_critical },
             "looks_running": self.looks.running(),
             "leaving": lock(&self.leaving).report(),
         })
@@ -232,43 +191,43 @@ impl Sleeper {
 
 impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
+    ///
+    /// **Real time:** how long until the next is due is the session's own clock (`next_dormant_at` less `seconds_now`, as every `touch` goes by it); the
+    /// deadline it comes to is on the app's clock.
     pub fn rearm_dormancy(&self) {
-        let after = self.sleeper.after_seconds.load(Ordering::SeqCst);
-        let wait = self
+        let after = self.sleeper.after_seconds();
+        let in_seconds = self
             .host
             .session
             .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
-        let due = app::due_at(self.sleeper.millis(), wait);
-        self.sleeper.due.store(due, Ordering::SeqCst);
+        let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
+    /// **Real time:** which are due is the session's, by its own clock (`seconds_now`).
     pub fn dormancy_due(&self) -> Option<Vec<TabId>> {
-        if self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
-            self.sleeper
-                .due
-                .store(self.sleeper.millis() + u64::try_from(BUSY_RETRY.as_millis()).unwrap_or(5000), Ordering::SeqCst);
-            return None;
-        }
-        let after = self.sleeper.after_seconds.load(Ordering::SeqCst);
+        let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
+        self.sleeper.step(Event::DueNow { busy })?;
+        let after = self.sleeper.after_seconds();
         Some(self.host.session.with_session(|session| session.due_dormant(session.seconds_now(), after)))
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
     pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
-        let tabs: Vec<TabId> = self
+        let tabs: Vec<(TabId, bool)> = self
             .host
             .session
-            .with_session(|session| tabs.iter().copied().filter(|id| session.can_go_dormant(*id)).collect());
-        if tabs.is_empty() || self.core.frozen.load(Ordering::SeqCst) {
+            .with_session(|session| tabs.iter().map(|id| (*id, session.can_go_dormant(*id))).collect());
+        let frozen = self.core.frozen.load(Ordering::SeqCst);
+        let Some(Out::GoDormant { tabs, in_place }) = self.sleeper.step(Event::GoDormant { why, tabs, frozen }) else {
             return 0;
-        }
+        };
         self.saver.write_journals_now(self);
         let mut gone = 0;
         for &id in &tabs {
-            // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a quit and a hand-off don't wait (review).
-            if why == Why::Asked {
-                self.write_sleep_for(id, false);
+            // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a flush doesn't wait (review).
+            if in_place {
+                self.write_sleep_for(id, By::Asked);
             } else {
                 self.queue_sleep_for(id);
             }
@@ -285,28 +244,21 @@ impl Inner {
             });
             gone += usize::from(went);
         }
-        let counts = &self.sleeper.counts;
-        let counter = match why {
-            Why::LeftAlone => &counts.left_alone,
-            Why::Budget => &counts.budget,
-            Why::Pressure => &counts.pressure,
-            Why::Asked => &counts.asked,
-        };
-        counter.fetch_add(gone as u64, Ordering::Relaxed);
+        let _ = self.sleeper.step(Event::WentDormant { why, gone });
         gone
     }
 
-    /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
-    pub fn write_sleep_for(&self, id: TabId, now: bool) {
-        self.write_sleep_now_for(id, now, None);
+    /// Writes a tab's sleep file from what's known of it now, if that's anything new, waiting behind the one being written: as being asked has it, or a flush.
+    pub fn write_sleep_for(&self, id: TabId, by: By) {
+        self.write_sleep_now_for(id, by, None);
     }
 
     /// The same, as a quit or a hand-off has it, waiting for another sleep file being written only until `until`, and counted as skipped past it. These are only a way to be quick, and the state's already written by then: a quit waited its 5 s behind sleep files queued for a slow disk and went without the state (slow mode, 2026-11-11). Skipped, the next launch's first frame is bare paper, which the count says.
     pub fn write_sleep_for_until(&self, id: TabId, until: Instant) {
-        self.write_sleep_now_for(id, true, Some(until));
+        self.write_sleep_now_for(id, By::Flush, Some(until));
     }
 
-    fn write_sleep_now_for(&self, id: TabId, now: bool, until: Option<Instant>) {
+    fn write_sleep_now_for(&self, id: TabId, by: By, until: Option<Instant>) {
         let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
             return;
         };
@@ -316,20 +268,20 @@ impl Inner {
         };
         // What's queued for it is older than this.
         lock(&self.sleeper.leaving).forget(id);
-        self.write_with_material(facts, material, now, until);
+        self.write_with_material(facts, material, by, until);
     }
 
     /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
-    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool, until: Option<Instant>) {
+    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, by: By, until: Option<Instant>) {
+        // Past `until` it's counted as skipped, by the machine.
         let Some(_one_at_a_time) = self.sleeper.take_writing(until) else {
-            self.sleeper.counts.writes_skipped_busy.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        self.write_holding_lock(facts, material, now);
+        self.write_holding_lock(facts, material, by);
     }
 
-    /// The same, with the one-at-a-time lock held.
-    fn write_holding_lock(&self, facts: SleepFacts, material: SleepMaterial, now: bool) {
+    /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]).
+    fn write_holding_lock(&self, facts: SleepFacts, material: SleepMaterial, by: By) {
         let SleepFacts {
             id,
             path,
@@ -337,13 +289,17 @@ impl Inner {
             pictures_allowed,
         } = facts;
         let there = self.saver.store.read_sleep(sleep.file, &path);
-        let may = now || self.sleeper.may_write_pictures(id);
-        if !may && there.is_some() {
-            self.sleeper.counts.writes_put_off.fetch_add(1, Ordering::Relaxed);
+        let write = self.sleeper.step(Event::Write {
+            id,
+            by,
+            there: there.is_some(),
+            pictures_allowed,
+        });
+        let Some(Out::Write(write @ (Write::WithPictures | Write::FactsOnly))) = write else {
             return;
-        }
+        };
         let mut sleep = with_material(sleep, material);
-        if !pictures_allowed || !may {
+        if write == Write::FactsOnly {
             sleep.pictures.clear();
         } else if sleep.pictures.is_empty()
             && let Some(there) = there
@@ -352,9 +308,7 @@ impl Inner {
             sleep.pictures = there.pictures;
         }
         let bytes = self.saver.store.write_sleep(&path, &sleep);
-        if bytes > 0 {
-            self.sleeper.note_written(id, bytes);
-        }
+        let _ = self.sleeper.step(Event::Wrote { id, bytes });
     }
 
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). A flush doesn't wait for these: it writes the state first, and then the tab on screen's file, waiting behind the one being written only for what's left of its time.
@@ -412,7 +366,7 @@ impl Inner {
             self.sleeper.let_others_go_first();
             let one_at_a_time = lock(&self.sleeper.writing);
             if lock(queue).still_wanted() {
-                self.write_holding_lock(facts, material, false);
+                self.write_holding_lock(facts, material, By::Queue);
             }
             drop(one_at_a_time);
             lock(queue).done();
@@ -425,7 +379,7 @@ impl Inner {
         if woken.is_empty() {
             return;
         }
-        self.sleeper.counts.woken_from_file.fetch_add(woken.len() as u64, Ordering::Relaxed);
+        let _ = self.sleeper.step(Event::Woken(woken.len()));
         if let Some(inner) = self.saver.inner() {
             for id in woken {
                 check_woken_file(&inner, id);
@@ -480,16 +434,17 @@ impl Inner {
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
     pub fn look_at_budget(&self) {
         let (warm, active) = self.host.session.with_session(|session| (session.dormant_oldest_first(), session.active()));
-        if warm.is_empty() {
+        // A change of tab is when a document comes to be off screen, so that's looked at straight away.
+        if self
+            .sleeper
+            .step(Event::LookAtBudget {
+                active,
+                off_screen: !warm.is_empty(),
+            })
+            .is_none()
+        {
             return;
         }
-        {
-            // A change of tab is when a document comes to be off screen, so that's looked at straight away.
-            if !lock(&self.sleeper.last_budget_look).now(active, self.sleeper.millis()) {
-                return;
-            }
-        }
-        let budget = self.sleeper.budget_bytes.load(Ordering::SeqCst);
         let costs: Vec<(TabId, u64)> = warm
             .iter()
             .map(|id| {
@@ -503,27 +458,24 @@ impl Inner {
                 )
             })
             .collect();
-        let over = app::over_budget(&costs, budget);
-        if !over.is_empty() {
-            self.core.push(CoreCall::SleepTabs(over, Why::Budget));
+        if let Some(Out::SleepTabs(over, why)) = self.sleeper.step(Event::Costs(costs)) {
+            self.core.push(CoreCall::SleepTabs(over, why));
         }
     }
 
     /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`crate::pressure::heard`]). A quiet run is the one with a QA bridge.
     pub fn system_pressure(&self, critical: bool) {
-        match crate::pressure::heard(self.qa.is_some(), crate::pressure::Source::System) {
-            crate::pressure::Heard::Act => self.core.push(CoreCall::MemoryPressure(critical)),
-            crate::pressure::Heard::Count => {
-                let counts = &self.sleeper.counts;
-                let counter = if critical { &counts.system_critical } else { &counts.system_warning };
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
+        let quiet = self.qa.is_some();
+        if let Some(Out::Pressure(critical)) = self.sleeper.step(Event::SystemPressure { critical, quiet }) {
+            self.core.push(CoreCall::MemoryPressure(critical));
         }
     }
 
     /// The system's asked for memory back: the same as a tab's being left alone, for all that can go, and now. Counted first, so a test can see it came.
     pub fn memory_pressure(&self, critical: bool) {
-        self.sleeper.counts.pressure_events.fetch_add(1, Ordering::Relaxed);
+        let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
+            return;
+        };
         let tabs = self.host.session.with_session(|session| session.dormant_oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
         for engine in self.panes.engines(&self.engine) {

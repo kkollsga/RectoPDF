@@ -16,6 +16,8 @@ The whole suite decides a hand-back. It's never how you find out why something c
 | How many full runs has this branch had? | `tools/check.sh --runs` |
 | Which tests are slow, and is a tier over its time budget? | `tools/check.sh --slow` |
 
+A named in-process test that uses the worker (an export, a render, a print in `recto-agent`) runs whatever `target/debug/recto-render-service` is there: when worker code changed, put `-p recto-render-service` in the same run, or it runs a stale worker (2026-11-13: a seeded bug in the worker went unseen that way until it was added).
+
 ## How to work
 
 0. **Start from a warm build.** Make your worktree with `tools/worktree.sh new <branch> .worktrees/<name>`, which seeds its `target/` from the main checkout's as an APFS clone: no extra disk, and the first build compiles only the workspace. A worktree made with plain `git worktree add` starts cold.

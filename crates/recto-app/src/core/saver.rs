@@ -7,7 +7,7 @@ use crate::clock::Clock;
 use crate::saver as app;
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
-use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, PlaceRecord, Selection, SessionRecord};
+use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, SessionRecord};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -333,44 +333,6 @@ fn micros(since: Instant) -> u64 {
 }
 
 impl Inner {
-    /// Takes in where the page view says each tab it holds is.
-    pub fn take_places(&self) {
-        let engines = self.panes.engines(&self.engine);
-        let places: Vec<_> = engines.iter().flat_map(recto_reader::Engine::places).collect();
-        if places.is_empty() {
-            return;
-        }
-        // What's selected is the pane being read's: the session keeps one selection, on the tab it's on.
-        let selection = self.panes.reading_engine(&self.engine).hot_selection();
-        self.host.session.with_session(|session| {
-            if let Some((tab, range)) = selection {
-                session.note_selection(
-                    recto_session::TabId(tab),
-                    range.map(|range| Selection {
-                        from_page: range.start.page,
-                        from_char: range.start.at,
-                        to_page: range.end.page,
-                        to_char: range.end.at,
-                    }),
-                );
-            }
-            for (tab, saved) in places {
-                let place = PlaceRecord {
-                    page: saved.page,
-                    anchor_page: saved.anchor.0,
-                    within: saved.anchor.1,
-                    x: saved.x,
-                    y: saved.y,
-                    document_height: saved.document_height,
-                    zoom: saved.magnification,
-                    page_width: saved.page_size.map_or(0.0, |size| size.width),
-                    page_height: saved.page_size.map_or(0.0, |size| size.height),
-                };
-                session.note_place(recto_session::TabId(tab), place);
-            }
-        });
-    }
-
     /// The whole record as things stand, and what a line of the log would say of it. The session is held only for the copy.
     pub fn gather_record(&self) -> (SessionRecord, PlaceDelta) {
         self.take_places();
