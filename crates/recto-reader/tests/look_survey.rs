@@ -281,6 +281,7 @@ fn survey() {
 fn small_pictures() {
     let list = std::fs::read_to_string(std::env::var("RECTO_LOOK_LIST").unwrap()).unwrap();
     let (mut small, mut large, mut warm, mut footprint) = (Vec::new(), Vec::new(), Vec::new(), 0u64);
+    let mut slowest: Vec<(f64, String)> = Vec::new();
     for line in list.lines() {
         let Some((path, list)) = line.rsplit_once(' ') else { continue };
         let Ok(mut doc) = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()) else {
@@ -296,6 +297,7 @@ fn small_pictures() {
             let Some((_, _, _, ms)) = picture_of(&mut doc, page, 128.0) else { continue };
             small.push(ms);
             file_small.push(ms);
+            slowest.push((ms, format!("{path} {}", page + 1)));
             footprint = footprint.max(doc.worker_footprint().unwrap_or(0));
             if let Some((_, _, _, ms)) = picture_of(&mut doc, page, 512.0) {
                 large.push(ms);
@@ -314,6 +316,11 @@ fn small_pictures() {
             );
         }
     }
+    // The pages with no images slowest to draw small, the heaviest drawings in vectors, as `path page` lines a wake can be measured on (`wakes`).
+    slowest.sort_by(|one, two| two.0.total_cmp(&one.0));
+    for (ms, page) in slowest.iter().take(8) {
+        println!("SLOW {ms:.2} ms {page}");
+    }
     let at = |draws: &mut Vec<f64>, share: f64| {
         draws.sort_by(f64::total_cmp);
         draws.get(((draws.len().max(1) - 1) as f64 * share) as usize).copied().unwrap_or(0.0)
@@ -330,4 +337,132 @@ fn small_pictures() {
         at(&mut warm, 0.99),
         footprint as f64 / 1_048_576.0
     );
+}
+
+/// The events a page view tells, none listened to.
+struct Quiet;
+impl recto_reader::engine::EngineEvents for Quiet {
+    fn ops_ready(&self) {}
+    fn note_changed(&self) {}
+    fn page_moved(&self) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+}
+
+/// `wakes`: for each file of `RECTO_WAKE_LIST` (a path a line, its pages each a page to measure, two of them for a spread with `2up` after the path), on dark paper, a wake onto a sleep picture of the pages at the top, to the first tile sharper than it and to a sharp tile on every page in view, ten times each, p50 and worst. A wake's first job for a page is a tile, the sleep picture standing for its preview, so a page with no images is decided from a 128 px picture drawn for it where `main` took a page of text's look: run on `main` and on the branch, release, the load written down:
+///
+///     RECTO_WAKE_LIST=list.txt cargo test --release -p recto-reader --test look_survey -- --ignored --exact wakes --nocapture
+#[test]
+#[ignore = "a measurement"]
+#[allow(unsafe_code)]
+fn wakes() {
+    use recto_reader::layout::{PageBox, Spread};
+    use recto_reader::tiles::{Op, PageMap, SleepShot, SleepView, Viewport};
+    use recto_reader::{Engine, EngineConfig, PaperKind};
+    use std::time::Duration;
+    let list = std::fs::read_to_string(std::env::var("RECTO_WAKE_LIST").unwrap()).unwrap();
+    let view = Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    };
+    for line in list.lines().filter(|line| !line.trim().is_empty()) {
+        let (path, spread) = match line.split_once(' ') {
+            Some((path, "2up")) => (path, Spread::TwoUp),
+            _ => (line, Spread::Single),
+        };
+        let mut doc = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap();
+        let (width, height) = doc.page_size(0).unwrap();
+        let count = doc.known_page_count().unwrap();
+        let version = doc.known_version();
+        let in_view = if spread == Spread::TwoUp { 2 } else { 1 };
+        let images: Vec<usize> = (0..in_view)
+            .map(|page| doc.image_boxes(page, 1).ok().flatten().map_or(usize::MAX, |boxes| boxes.len()))
+            .collect();
+        drop(doc);
+        let (mut first, mut all) = (Vec::new(), Vec::new());
+        for _ in 0..10 {
+            let engine = Engine::new(
+                EngineConfig {
+                    service: None,
+                    policy: Some(Policy::default()),
+                    keys: None,
+                },
+                std::sync::Arc::new(Quiet),
+            );
+            engine.set_viewport(view);
+            engine.set_paper(PaperKind::Dark);
+            engine.set_spread(spread);
+            engine.waking().note_wake(1, Instant::now());
+            let pictures = (0..in_view)
+                .map(|page| SleepShot {
+                    page,
+                    scale: 0.5,
+                    paper: PaperKind::Dark,
+                    surface: PixelSurface::create((width * 0.5) as u32, (height * 0.5) as u32).unwrap(),
+                })
+                .collect();
+            engine.waking().give_sleep(
+                1,
+                SleepView {
+                    version,
+                    usual: Some(PageBox { width, height }),
+                    sizes: Vec::new(),
+                    pictures,
+                },
+            );
+            let map = PageMap {
+                files: vec![Path::new(path).to_path_buf()],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            };
+            let started = Instant::now();
+            engine.activate(1, count, 0, map, &[], None, spread);
+            let (mut sharp_first, mut sharp_pages) = (None, std::collections::BTreeSet::new());
+            while sharp_pages.len() < in_view as usize && started.elapsed() < Duration::from_secs(60) {
+                let mut ops = engine.set_viewport(view);
+                ops.extend(engine.drain());
+                engine.applied();
+                for op in ops {
+                    if let Op::Attach {
+                        surface,
+                        crop_width,
+                        width,
+                        page,
+                        ..
+                    } = op
+                    {
+                        // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+                        let surface = unsafe { PixelSurface::from_host_reference(surface) };
+                        let density = surface.map_or(0.0, |surface| crop_width * f64::from(surface.width()) / width);
+                        if density > 1.0 {
+                            sharp_first.get_or_insert(started.elapsed());
+                            sharp_pages.insert(page);
+                        }
+                    }
+                }
+                engine.wait_settled(Duration::from_millis(1));
+            }
+            all.push(started.elapsed());
+            engine.shut_down();
+            first.push(sharp_first.expect("a sharp tile"));
+        }
+        let ms = |times: &mut Vec<Duration>| {
+            times.sort_unstable();
+            (times[times.len() / 2].as_secs_f64() * 1000.0, times[times.len() - 1].as_secs_f64() * 1000.0)
+        };
+        let ((first_p50, first_most), (all_p50, all_most)) = (ms(&mut first), ms(&mut all));
+        println!(
+            "WAKE {} {spread:?} images {images:?}: first sharp tile p50 {first_p50:.1} ms, worst {first_most:.1}; every page in view sharp p50 {all_p50:.1}, worst {all_most:.1}",
+            Path::new(path).file_name().unwrap().to_string_lossy()
+        );
+    }
 }
