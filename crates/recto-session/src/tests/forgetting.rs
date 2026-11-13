@@ -21,6 +21,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("fresh_journals", s.fresh_journals.iter().any(|(tab, _, _)| *tab == id)),
         ("departing", s.departing.iter().any(|append| append.tab == id)),
         ("saving", s.saves.is_saving(id)),
+        ("abandoned_saves", s.saves.abandoned_has(id)),
         ("comparison", s.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))),
         ("generated", s.generated.view(id).is_some()),
         ("saved_over", s.saves.remembers(id)),

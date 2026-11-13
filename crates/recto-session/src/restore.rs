@@ -131,7 +131,7 @@ impl<L: DocLoader> Session<L> {
         self.fresh_journals.clear();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
         self.generated = generated::Generated::default();
-        self.saves = saves::Saves::default();
+        self.saves.restored();
         self.held.clear();
         self.just_read = None;
         self.woken_from_file.clear();

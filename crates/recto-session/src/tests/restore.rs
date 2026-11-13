@@ -192,7 +192,7 @@ fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
 }
 
 /// The record of a session with the same tab numbers as `tabs` live ones, each another file, on a version the record names, the first of them active.
-fn another_session_with(tabs: usize) -> SessionRecord {
+pub(super) fn another_session_with(tabs: usize) -> SessionRecord {
     let mut other = session(10);
     for n in 0..tabs {
         other.open(Path::new(&format!("/d/other-{n}.pdf"))).unwrap();
@@ -205,7 +205,7 @@ fn another_session_with(tabs: usize) -> SessionRecord {
     record
 }
 
-fn replaced_stamp(n: u64) -> FileStamp {
+pub(super) fn replaced_stamp(n: u64) -> FileStamp {
     FileStamp {
         size: 100 + n,
         mtime_ns: 100,

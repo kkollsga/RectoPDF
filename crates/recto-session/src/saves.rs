@@ -3,6 +3,9 @@
 use crate::{MAX_SAVED_OVER, TabId};
 use recto_platform::FileStamp;
 
+/// Saves left under way by a restore that are kept by name. Saves run one a tab and end in moments, so a restore meets next to none; past this many, every save not begun since is doubted (see [`Saves::beyond`]).
+pub(crate) const MAX_ABANDONED_SAVES: usize = 64;
+
 /// Tabs being saved, and saves remembered for the page view.
 #[derive(Debug, Default)]
 pub(crate) struct Saves {
@@ -10,9 +13,59 @@ pub(crate) struct Saves {
     saving: Vec<TabId>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
     saved_over: Vec<(TabId, FileStamp, FileStamp)>,
+    /// **Saves a restore left under way: they belong to the session it replaced.** A restored tab can have one of their tabs' numbers, and the callers pass back only that number, so what such a save says on finishing (`save_prepared`, `saved`) is not believed of the restored tab: it changes nothing of it. Its end takes it off this list, and until then no new save of that number begins, so an old save's word can't land on a new one. At most [`MAX_ABANDONED_SAVES`], the oldest kept.
+    ///
+    /// What this doesn't cover: the old save still writes the file it was saving, which is the old document's own file, and that's right. And the app saver's own steps for that number (`before_writing`, `keep_pages`, `note_on_disk`, `after_save`) still run, outside this crate.
+    abandoned: Vec<TabId>,
+    /// A restore left more saves under way than are kept by name, so the rest aren't known: from then on, for the rest of this session, no save is believed of a tab that has no save begun since, and no new save begins. Edits stay in their journals for the next launch. When in doubt a save isn't believed, and no person or agent reaches this many saves at once.
+    beyond: bool,
 }
 
 impl Saves {
+    /// A restore: saves under way belong to the session it replaces, and what was remembered of saves is about its tabs.
+    pub(crate) fn restored(&mut self) {
+        for id in std::mem::take(&mut self.saving) {
+            if self.abandoned.contains(&id) {
+                continue;
+            }
+            if self.abandoned.len() >= MAX_ABANDONED_SAVES {
+                self.beyond = true;
+            } else {
+                self.abandoned.push(id);
+            }
+        }
+        self.saved_over.clear();
+    }
+
+    /// Whether what a save of this tab says on finishing is to be doubted: it was left under way by a restore.
+    pub(crate) fn doubted(&self, id: TabId) -> bool {
+        self.abandoned.contains(&id) || (self.beyond && !self.saving.contains(&id))
+    }
+
+    /// Whether a new save of this tab must wait: an old one, left by a restore, may still be finishing.
+    pub(crate) fn must_wait(&self, id: TabId) -> bool {
+        self.beyond || self.abandoned.contains(&id)
+    }
+
+    /// The end of a save left under way by a restore: it's let go of, and nothing else. Says whether it was one.
+    pub(crate) fn end_abandoned(&mut self, id: TabId) -> bool {
+        let Some(at) = self.abandoned.iter().position(|abandoned| *abandoned == id) else {
+            return false;
+        };
+        self.abandoned.remove(at);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abandoned_has(&self, id: TabId) -> bool {
+        self.abandoned.contains(&id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abandoned_len(&self) -> usize {
+        self.abandoned.len()
+    }
+
     pub(crate) fn begin(&mut self, id: TabId) {
         self.saving.push(id);
     }
