@@ -80,25 +80,17 @@ fn build_folder(checkout: &Path) -> PathBuf {
 fn settle_build_folder(path: &Path, limit: std::time::Duration) -> Result<std::time::Duration, String> {
     let executable = path.join("Contents/MacOS/RectoPDF");
     let began = std::time::Instant::now();
-    let mut clean = 0;
-    loop {
+    // Two looks in a row, each forgetting until the dump says it is gone: a registration still on its way can land after one clean look.
+    for _ in 0..2 {
         let running = recto_platform::local::processes_running(&executable);
         if !running.is_empty() {
             return Err(format!("{} is still running as process {running:?}", executable.display()));
         }
-        clean = if registry::forget_until_gone(path, std::time::Duration::ZERO) {
-            clean + 1
-        } else {
-            0
-        };
-        if clean >= 2 {
-            return Ok(began.elapsed());
-        }
-        if began.elapsed() > limit {
+        if !registry::forget_until_gone(path, limit / 2) {
             return Err(format!("{} would not stay forgotten within {} s", path.display(), limit.as_secs()));
         }
-        std::thread::sleep(std::time::Duration::from_millis(250));
     }
+    Ok(began.elapsed())
 }
 
 /// What is done with a copy. **Another tree's ended test's copy is never this tree's to change, nor to answer for:** its tree's own stage forgets it and fails on it (2026-11-13: this stage forgot a copy another tree's update test had made 3 s before, blamed its own tree, and hid it from the tree whose test had left it).
