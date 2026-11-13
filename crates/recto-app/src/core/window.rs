@@ -16,16 +16,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
 /// notices that go by themselves.
 pub struct Window {
-    pub contents_follow: Mutex<ContentsFollow>,
+    /// The contents' follow, which the window's opening and the session thread's look at the contents set as well.
+    pub(super) contents_follow: Mutex<ContentsFollow>,
+    /// What the host tells of the window, for the record. Reached from outside the core only by the bridge's `window_placement`, which moves here next
+    /// (R3.7 S2, once `build/record-lock-retry` is in), and by the headless kit's launch.
     pub app: Mutex<AppState>,
-    pub watchdog: Watchdog,
-    pub dark: AtomicBool,
-    pub panel_open: AtomicBool,
-    pub(crate) open_failure: Mutex<Option<String>>,
+    watchdog: Watchdog,
+    /// The system's appearance is dark, for the paper's look.
+    pub(super) dark: AtomicBool,
+    /// The sidebar's panel is open: its row toggles it and a restore sets it.
+    pub(super) panel_open: AtomicBool,
+    pub(super) open_failure: Mutex<Option<String>>,
     /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub(crate) action_notice: Mutex<Option<String>>,
+    pub(super) action_notice: Mutex<Option<String>>,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub(crate) notice_tab: AtomicU32,
+    pub(super) notice_tab: AtomicU32,
 }
 
 impl Window {

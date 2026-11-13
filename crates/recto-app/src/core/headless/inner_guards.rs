@@ -235,13 +235,6 @@ Tools.pub(crate) save_ui: saving::SaveUi
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
 Window (pub struct)
 Window.pub app: Mutex<AppState>
-Window.pub contents_follow: Mutex<ContentsFollow>
-Window.pub dark: AtomicBool
-Window.pub panel_open: AtomicBool
-Window.pub watchdog: Watchdog
-Window.pub(crate) action_notice: Mutex<Option<String>>
-Window.pub(crate) notice_tab: AtomicU32
-Window.pub(crate) open_failure: Mutex<Option<String>>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
