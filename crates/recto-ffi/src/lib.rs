@@ -864,7 +864,7 @@ impl AppCore {
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let mut panel = menus::panel(self.inner.window.panel_open(), reader.edit_mode, reader.can_rotate);
-        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool.is_on(), reader.edit_mode);
+        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool().is_on(), reader.edit_mode);
         panel
     }
 
@@ -944,8 +944,8 @@ impl AppCore {
             self.focus_moved(tab);
         }
         // With the snapshot tool on, a press is the tool's, not a selection's.
-        if self.inner.tools.tool.is_on() {
-            return self.inner.tools.tool.press(&engine, pane as usize, x, y);
+        if self.inner.tools.tool().is_on() {
+            return self.inner.tools.tool().press(&engine, pane as usize, x, y);
         }
         engine.selection().press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
     }
@@ -954,8 +954,8 @@ impl AppCore {
         let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
             return Vec::new();
         };
-        if self.inner.tools.tool.is_drawing() {
-            return self.inner.tools.tool.drag(&engine, pane as usize, x, y);
+        if self.inner.tools.tool().is_drawing() {
+            return self.inner.tools.tool().drag(&engine, pane as usize, x, y);
         }
         engine.selection().drag(x, y).into_iter().map(ReaderOp::from).collect()
     }
@@ -965,8 +965,8 @@ impl AppCore {
         let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
             return Vec::new();
         };
-        if self.inner.tools.tool.is_drawing() {
-            return self.inner.tools.tool.release(&self.inner, &engine, pane as usize);
+        if self.inner.tools.tool().is_drawing() {
+            return self.inner.tools.tool().release(&self.inner, &engine, pane as usize);
         }
         let ops = engine.selection().release().into_iter().map(ReaderOp::from).collect();
         if let Some(hit) = engine.links().take_clicked() {
@@ -984,7 +984,7 @@ impl AppCore {
             };
         };
         // The snapshot tool's pointer is a crosshair wherever it is, and a link isn't followed while it's on.
-        if self.inner.tools.tool.is_on() {
+        if self.inner.tools.tool().is_on() {
             return linking::PointerLook {
                 cursor: "crosshair".into(),
                 hint: None,
@@ -1026,7 +1026,7 @@ impl AppCore {
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
     pub fn pointer_is_over_text(&self, pane: u32, x: f64, y: f64) -> bool {
         // The snapshot tool's pointer is a crosshair wherever it is.
-        if self.inner.tools.tool.is_on() {
+        if self.inner.tools.tool().is_on() {
             return false;
         }
         self.inner

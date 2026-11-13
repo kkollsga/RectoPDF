@@ -224,15 +224,15 @@ Serving.pub(crate) socket: bool
 Serving.pub(crate) stopper: Mutex<Option<Stopper>>
 Serving.pub(crate) waiting_server: Mutex<Option<Server>>
 Tools (pub struct)
-Tools.pub chrome: crate::chrome::Chrome
-Tools.pub folds: crate::sidebar_access::Folds
-Tools.pub printing: printing::Printing
-Tools.pub tool: snapshot_tool::Tool
-Tools.pub(crate) find_field: Mutex<crate::find::Field>
-Tools.pub(crate) palette: crate::palette::Palette
-Tools.pub(crate) prompts: crate::prompts::Prompts
-Tools.pub(crate) save_ui: saving::SaveUi
+Tools::pub fn chrome(&self) -> &crate::chrome::Chrome
+Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
+Tools::pub fn printing(&self) -> &printing::Printing
+Tools::pub fn tool(&self) -> &snapshot_tool::Tool
+Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
+Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
+Tools::pub(crate) fn prompts(&self) -> &crate::prompts::Prompts
+Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
 Window.pub app: Mutex<AppState>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord

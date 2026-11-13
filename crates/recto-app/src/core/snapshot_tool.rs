@@ -297,8 +297,8 @@ impl Tool {
 
 /// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
 pub fn tab_came_forward(inner: &super::Inner) {
-    if inner.tools.tool.is_on() {
-        inner.tools.tool.toggle();
+    if inner.tools.tool().is_on() {
+        inner.tools.tool().toggle();
     }
 }
 
@@ -311,7 +311,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             "the snapshot tool is what the pointer does in the window",
             super::menu_rows::Agents::AT_FULL,
             move || {
-                inner.tools.tool.toggle();
+                inner.tools.tool().toggle();
                 inner.core.push(super::CoreCall::Reconcile);
                 inner.listener.model_changed();
                 super::HostAction::None
@@ -323,7 +323,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard: their decision, where an agent's is `--anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto snapshot --anyway`"),
         move || {
-            if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
+            if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool().take_refused(serial)) {
                 start(inner, Job { anyway: true, ..job });
             }
             inner.core.push(super::CoreCall::Reconcile);
@@ -345,7 +345,7 @@ fn words_for(outcome: &ClipOutcome) -> (String, bool) {
 
 /// Takes a job off the UI thread: now, on a thread of its own, or after the one running, which it stops.
 fn start(inner: &Arc<Inner>, job: Job) {
-    let tool = &inner.tools.tool;
+    let tool = inner.tools.tool();
     // A box on a heavy page can take seconds, so the reader is told it's on its way, until the answer replaces this.
     tool.say("Copying…", false);
     lock(&tool.refused).take();
@@ -360,13 +360,13 @@ fn start(inner: &Arc<Inner>, job: Job) {
         while let Some((job, stop)) = next {
             let (outcome, source) = take(&runner, job, &stop);
             // Under the slot's lock, so a release now either waits for this thread or finds the slot free after the answer is in. Nothing here takes the session's lock.
-            let mut jobs = lock(&runner.tools.tool.jobs);
+            let mut jobs = lock(&runner.tools.tool().jobs);
             next = jobs.next();
             if next.is_none() {
                 publish(&runner, job, outcome, source);
             }
         }
-        runner.tools.tool.running.fetch_sub(1, Ordering::SeqCst);
+        runner.tools.tool().running.fetch_sub(1, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
         runner.core.push(super::CoreCall::Reconcile);
     });
@@ -381,7 +381,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
 
 /// The newest job's answer: the notice, and what's for the clipboard.
 fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBuf, u32)>) {
-    let tool = &inner.tools.tool;
+    let tool = inner.tools.tool();
     if matches!(outcome, ClipOutcome::Stopped) {
         lock(&tool.notice).take();
         return;

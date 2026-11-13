@@ -522,7 +522,7 @@ impl QaBridge {
             | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
-                if !self.inner().is_some_and(|inner| inner.tools.palette.is_open()) {
+                if !self.inner().is_some_and(|inner| inner.tools.palette().is_open()) {
                     return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
                 }
             }
@@ -627,8 +627,8 @@ impl QaBridge {
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed(), "worst": self.watchdog.worst_stall().map_or(Value::Null, |stall| json!({ "wall_ms": stall.wall_ms, "cpu_ms": stall.cpu_ms, "window_ms": stall.window_ms, "state": stall.state, "waiting_looks": stall.waiting_looks, "running_looks": stall.running_looks, "verb": stall.verb, "ended": stall.ended })) },
-            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing.busy(), "notice": inner.tools.printing.notice(), "pid": std::process::id() })),
-            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool.is_on(), "drawing": inner.tools.tool.is_drawing(), "busy": inner.tools.tool.busy(), "notice": inner.tools.tool.notice().map(|notice| notice.text) })),
+            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing().busy(), "notice": inner.tools.printing().notice(), "pid": std::process::id() })),
+            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool().is_on(), "drawing": inner.tools.tool().is_drawing(), "busy": inner.tools.tool().busy(), "notice": inner.tools.tool().notice().map(|notice| notice.text) })),
             "slow": slow_report(),
         }))
     }
@@ -655,7 +655,7 @@ impl QaBridge {
             let running = self.ask("animations", "")?;
             // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
             // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
-            let snapshot_busy = self.inner().is_some_and(|inner| inner.tools.tool.busy() || inner.tools.printing.busy());
+            let snapshot_busy = self.inner().is_some_and(|inner| inner.tools.tool().busy() || inner.tools.printing().busy());
             if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
                 return Ok(
                     json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),
@@ -757,7 +757,7 @@ impl QaBridge {
 /// **`qa password` types only into a test's own sheet:** the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so
 /// it can't type into one for the person's own (review O6).
 pub(crate) fn password_sheet_is_a_tests(inner: &Inner) -> Result<(), AgentError> {
-    let path = lock(&inner.tools.prompts.passwords)
+    let path = lock(&inner.tools.prompts().passwords)
         .showing()
         .map(|ask| ask.path.clone())
         .ok_or_else(|| bad("No password sheet is open."))?;

@@ -79,30 +79,30 @@ impl AppCore {
         let written = folder.join(format!(
             ".recto-print-{}-{}.pdf",
             std::process::id(),
-            self.inner.tools.printing.generation.load(Ordering::SeqCst) + 1
+            self.inner.tools.printing().generation.load(Ordering::SeqCst) + 1
         ));
         if std::fs::symlink_metadata(&written).is_ok() {
             return None;
         }
-        *lock(&self.inner.tools.printing.qa_target) = Some((written.clone(), out));
+        *lock(&self.inner.tools.printing().qa_target) = Some((written.clone(), out));
         Some(written.to_string_lossy().into_owned())
     }
 
     /// The file a print's pages are in, once, for the host to hand to the system's printing.
     pub fn take_print(&self) -> Option<String> {
-        let path = self.inner.tools.printing.take_ready().map(|path| path.to_string_lossy().into_owned());
+        let path = self.inner.tools.printing().take_ready().map(|path| path.to_string_lossy().into_owned());
         self.inner.core.push(CoreCall::Reconcile);
         path
     }
 
     /// The system's printing is done with a file, however it went: it goes.
     pub fn print_finished(&self, path: String) {
-        self.inner.tools.printing.finished(&path);
+        self.inner.tools.printing().finished(&path);
         self.inner.core.push(CoreCall::Reconcile);
     }
 
     /// Stops a print being prepared, at the next page: the notice's Stop.
     pub fn print_cancel(&self) {
-        self.inner.tools.printing.cancel();
+        self.inner.tools.printing().cancel();
     }
 }

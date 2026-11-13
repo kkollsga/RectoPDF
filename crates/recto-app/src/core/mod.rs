@@ -364,8 +364,8 @@ impl Inner {
             self.life.reads_running.load(Ordering::SeqCst),
             self.life.sheets.load(Ordering::SeqCst),
             self.host.running.load(Ordering::SeqCst),
-            self.tools.save_ui.running.load(Ordering::SeqCst),
-            self.tools.printing.busy(),
+            self.tools.save_ui().running.load(Ordering::SeqCst),
+            self.tools.printing().busy(),
         );
         let last = self.life.last_input_ms.load(Ordering::Relaxed);
         let now = self.life.now_ms();

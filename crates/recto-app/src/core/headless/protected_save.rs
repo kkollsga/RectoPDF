@@ -55,7 +55,7 @@ fn a_document_opened_with_its_password_says_it_cant_be_saved_and_isnt_touched() 
     );
     app.core().perform("file.save".into());
     app.settle();
-    assert!(app.core().tools.save_ui.problem().is_none(), "nothing was tried");
+    assert!(app.core().tools.save_ui().problem().is_none(), "nothing was tried");
     assert_eq!(std::fs::read(&file).expect("the file"), original, "and the file is as it was");
 }
 

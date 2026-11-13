@@ -236,7 +236,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             "stops the person's print being prepared for the system's print panel",
             super::menu_rows::Agents::Never,
             move || {
-                inner.tools.printing.cancel();
+                inner.tools.printing().cancel();
                 HostAction::None
             },
         ));
@@ -246,7 +246,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
+            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing().take_refused(serial)) {
                 start(inner, Request { anyway: true, ..request });
             }
             inner.core.push(CoreCall::Reconcile);
@@ -257,7 +257,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.
 pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
-    let printing = &inner.tools.printing;
+    let printing = inner.tools.printing();
     if printing.running.swap(true, Ordering::SeqCst) {
         printing.say("A print is already being prepared.", false);
         return false;
@@ -272,7 +272,7 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
     inner.core.push(CoreCall::Reconcile);
     let runner = Arc::clone(inner);
     let spawned = std::thread::Builder::new().name("recto-print".into()).stack_size(STACK).spawn(move || {
-        let printing = &runner.tools.printing;
+        let printing = runner.tools.printing();
         let pages = format!("{first}-{last}");
         let tab = request.tab;
         let listed = runner

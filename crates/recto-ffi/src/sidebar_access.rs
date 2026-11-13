@@ -78,7 +78,7 @@ impl AppCore {
             .contents
             .get(first as usize)
             .map(|entry| (entry.tab, entry.entry, entry.expanded));
-        self.inner.tools.folds.acted(entry);
+        self.inner.tools.folds().acted(entry);
         self.act(crate::controls::UiAction::Chevron { first });
     }
 
@@ -91,7 +91,7 @@ impl AppCore {
         }
         let (contents, current) = (std::sync::Arc::clone(&published.contents), published.sidebar.contents_current);
         drop(published);
-        let Some(target) = self.inner.tools.folds.key_target(key, &contents, current) else {
+        let Some(target) = self.inner.tools.folds().key_target(key, &contents, current) else {
             return false;
         };
         self.act(crate::controls::UiAction::Chevron {

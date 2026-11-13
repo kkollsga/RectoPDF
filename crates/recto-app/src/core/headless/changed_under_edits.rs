@@ -95,17 +95,17 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
         reader.edited,
         reader.save_enabled,
         reader.saving,
-        app.core().tools.save_ui.disagreement_now()
+        app.core().tools.save_ui().disagreement_now()
     );
     app.core().perform("file.save".into());
     app.settle();
     app.wait_for("the person's Save answered in the window", || {
-        app.core().tools.save_ui.problem().map(|_| ()).ok_or_else(|| {
+        app.core().tools.save_ui().problem().map(|_| ()).ok_or_else(|| {
             let reader = app.reader();
             format!("no problem to show; save on {}, saving {}", reader.save_enabled, reader.saving)
         })
     });
-    let problem = app.core().tools.save_ui.problem().expect("the person's told");
+    let problem = app.core().tools.save_ui().problem().expect("the person's told");
     assert_eq!(problem.save_as_title, None, "Save As isn't offered, as it would be refused: {problem:?}");
     assert!(!problem.message.contains("Save As"), "{problem:?}");
     assert!(app.reader().edited, "the edits are still here");

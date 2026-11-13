@@ -96,7 +96,7 @@ fn save_as_outside_the_run_writes_nothing() {
         path: outside.path().join("copy.pdf").to_string_lossy().into_owned(),
     });
     app.wait_until("the save to be over", || {
-        app.core().tools.save_ui.running.load(std::sync::atomic::Ordering::SeqCst) == 0
+        app.core().tools.save_ui().running.load(std::sync::atomic::Ordering::SeqCst) == 0
     });
     app.settle();
     assert!(!outside.path().join("copy.pdf").exists(), "a save was written outside the run's folders");

@@ -18,11 +18,11 @@ pub fn unlocked(
             let identity = stamp.map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0));
             match identity {
                 None => {
-                    lock(&inner.tools.prompts.passwords).failed(ask.id);
+                    lock(&inner.tools.prompts().passwords).failed(ask.id);
                     *lock(&inner.window.open_failure) = Some(passwords::CANT_KEEP.to_string());
                 }
                 Some(identity) => {
-                    lock(&inner.tools.prompts.passwords).opened(ask.id);
+                    lock(&inner.tools.prompts().passwords).opened(ask.id);
                     inner.keys.set(identity, password);
                     for engine in inner.panes.engines(&inner.engine) {
                         engine.key_given(&ask.path);
@@ -38,12 +38,12 @@ pub fn unlocked(
             }
         }
         Err(OpenError::PasswordNeeded) => {
-            if lock(&inner.tools.prompts.passwords).wrong(ask.id) == passwords::Wrong::Stopped {
+            if lock(&inner.tools.prompts().passwords).wrong(ask.id) == passwords::Wrong::Stopped {
                 *lock(&inner.window.action_notice) = Some(passwords::stopped_asking());
             }
         }
         Err(error) => {
-            lock(&inner.tools.prompts.passwords).failed(ask.id);
+            lock(&inner.tools.prompts().passwords).failed(ask.id);
             *lock(&inner.window.open_failure) = Some(error.message().to_string());
         }
     }
@@ -53,7 +53,7 @@ pub fn unlocked(
 /// nothing for Cancel. Tried on a thread of its own, as reading a file can wait on its disk.
 impl Inner {
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        let mut asks = lock(&self.tools.prompts.passwords);
+        let mut asks = lock(&self.tools.prompts().passwords);
         let Some(typed) = password else {
             asks.cancel(id);
             drop(asks);
@@ -80,7 +80,7 @@ impl Inner {
             core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
         });
         if spawned.is_err() {
-            lock(&self.tools.prompts.passwords).failed(id);
+            lock(&self.tools.prompts().passwords).failed(id);
         }
         self.core.push(CoreCall::Reconcile);
     }

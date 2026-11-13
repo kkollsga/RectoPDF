@@ -33,8 +33,8 @@ impl Inner {
                 // What's done from here wouldn't come back. If it turns out it isn't quitting, it's taken again.
                 self.set_frozen(true);
                 self.updates.stop();
-                self.tools.tool.quitting();
-                self.tools.printing.quitting();
+                self.tools.tool().quitting();
+                self.tools.printing().quitting();
                 self.write_for_quit();
             }
             other => self.carry_out(other),

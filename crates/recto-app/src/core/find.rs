@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub(super) fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
     step(&FindHandle {
         session: &inner.host.session,
-        field: &inner.tools.find_field,
+        field: inner.tools.find_field(),
         frozen: &inner.core.frozen,
         panes: &inner.panes,
         engine: &inner.engine,
@@ -103,7 +103,7 @@ pub fn chosen(find: &FindHandle<'_, dyn crate::Listener>, row: u32) -> Option<Co
 }
 
 pub fn is_open(inner: &Inner) -> bool {
-    app::is_open(&inner.tools.find_field)
+    app::is_open(inner.tools.find_field())
 }
 
 /// Find's heights in the sidebar, for this much room: its line wrapped at the sidebar's width as the session has it.
