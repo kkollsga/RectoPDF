@@ -193,9 +193,10 @@ impl<L: DocLoader> Session<L> {
         }
         let Some(tab) = self.tabs.tab(id) else { return };
         let heard_changed = matches!(tab.file.notice(), Some(FileNotice::Changed)) || tab.file.elsewhere().is_some_and(|elsewhere| elsewhere.file_changed);
+        let length_differs = list_pages.is_some_and(|list_pages| list_pages != pages);
         let elsewhere = if other_version || own.is_none() {
             // Another version than the edits' own, or edits that name none: what's held is of this one.
-            Some((own, read, Some(pages), heard_changed || other_version))
+            Some((own, read, Some(pages), heard_changed || other_version, length_differs))
         } else if other_length {
             // Replaced mid-read, the stamp is still the version the edits were made on, and a stat, in this one rare case, says so. Otherwise the stamp is the
             // file's as it is, which the edits aren't about, and it goes. The file's said to have changed only where that's known.
@@ -205,20 +206,21 @@ impl<L: DocLoader> Session<L> {
                 .and_then(|path| file_stamp(&path).ok())
                 .filter(|now| !now.same_contents(read))
             {
-                Some(now) => Some((own, now, None, true)),
-                None => Some((None, read, Some(pages), heard_changed)),
+                Some(now) => Some((own, now, None, true, true)),
+                None => Some((None, read, Some(pages), heard_changed, true)),
             }
         } else {
             None
         };
         let Some(tab) = self.tab_mut(id) else { return };
         match elsewhere {
-            Some((stamp, seen, seen_pages, file_changed)) => {
+            Some((stamp, seen, seen_pages, file_changed, other_length)) => {
                 tab.file.stamp = stamp;
                 tab.file.set_elsewhere(Some(fit::Elsewhere {
                     seen: Some(seen),
                     seen_pages,
                     file_changed,
+                    other_length,
                 }));
                 if file_changed {
                     tab.file.set_notice(Some(FileNotice::Changed));

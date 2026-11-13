@@ -52,12 +52,15 @@ impl<L: DocLoader> Session<L> {
                     // Edits about another version than what's held, found to fit again, are news whatever's said: what's held is of the other one.
                     let was = (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                     if other_version_unnamed {
-                        // What's read next is this version, and it's what a look will find again; the edits stay about none.
-                        let file_changed = fit != EditsFit::NotThisFile;
+                        // What's read next is this version, and it's what a look will find again; the edits stay about none, and what's known against
+                        // them stays known until a read of this one says otherwise.
+                        let file_changed = matches!(fit, EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown);
+                        let other_length = elsewhere.is_some_and(|elsewhere| elsewhere.other_length);
                         tab.file.set_elsewhere(Some(fit::Elsewhere {
                             seen: Some(now),
                             seen_pages: None,
                             file_changed,
+                            other_length,
                         }));
                     }
                     if stamp.is_some() || !has_edits {
@@ -103,6 +106,7 @@ impl<L: DocLoader> Session<L> {
                             seen: Some(now),
                             seen_pages: None,
                             file_changed: true,
+                            other_length: false,
                         }));
                     } else {
                         tab.file.take_version(Some(now));

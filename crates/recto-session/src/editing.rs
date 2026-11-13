@@ -77,13 +77,13 @@ impl<L: DocLoader> Session<L> {
         let Before { place, stops, fit } = before;
         // Edits that didn't fit their file, undone or discarded back to nothing unsaved: what's left is history about another version, which redo mustn't bring
         // back, so it goes, and the tab is the file as last read, said once, as only history is when its file's found changed (`compare_read_with_edits`).
-        // Not for a tab whose file had no stamp when it was opened, and nothing since: its history is about the file it read, whichever version that was.
-        let elsewhere = self.tabs.tab(id).and_then(|tab| tab.file.elsewhere());
-        if !fit.fits() && (elsewhere.is_some() || fit != EditsFit::NotThisFile) && !self.lists.is_edited(id) {
+        // Not for edits whose version is only unknown: their history is about the file they read, whichever version that was.
+        if !fit.fits() && fit != EditsFit::VersionUnknown && !self.lists.is_edited(id) {
             self.let_go_of_list(id);
             let own = self.tabs.tab(id).and_then(|tab| tab.file.stamp);
             let now = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());
             let replaced = fit != EditsFit::NotThisFile || own.zip(now).is_some_and(|(own, now)| !own.same_contents(now));
+            let elsewhere = self.tabs.tab(id).and_then(|tab| tab.file.elsewhere());
             let seen = elsewhere.and_then(|elsewhere| elsewhere.seen).or(now);
             if replaced && seen != own {
                 self.retire_sleep_file(id);

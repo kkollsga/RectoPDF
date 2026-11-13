@@ -24,28 +24,38 @@ const VERSION_UNKNOWN_NEXT: &str = "Tell the user: the file changed on disk afte
 /// The same when the file isn't known to have changed at all: the edits (their journal) don't fit it.
 const NOT_THIS_FILE_NEXT: &str = "Tell the user: these unsaved edits don't fit the file on disk, so they can't be saved, here or as a copy. The edits are kept until the user discards them.";
 
+/// The same when nothing has ever said which version they were made on, and nothing's been found against them.
+const NEVER_KNOWN_NEXT: &str = "Tell the user: which version of the file these edits were made on isn't known, so they can't be saved, here or as a copy. The edits are kept until the user discards them.";
+
 /// **The refusal of `asked` on a tab whose edits are `fit`,** or nothing if they fit. An edit names its page by its number in the version it was made on, so
 /// until the page matcher (owner, 2026-11-13) nothing found in or written from the file as it is can be put on a page of the edited document.
 pub fn refusal(fit: EditsFit, asked: Asked) -> Option<AgentError> {
-    let changed = match fit {
-        EditsFit::Fit => return None,
-        EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => true,
-        EditsFit::NotThisFile => false,
-    };
-    let message = match (asked, changed) {
-        (Asked::Save, true) => recto_core::save::SaveError::FileChanged.message(),
-        (Asked::Save, false) => {
+    let message = match (fit, asked) {
+        (EditsFit::Fit, _) => return None,
+        (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Save) => recto_core::save::SaveError::FileChanged.message(),
+        (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Find) => {
+            "Find can't search this file: it changed on disk after its unsaved edits were made.".into()
+        }
+        (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Search) => {
+            "This file can't be searched: it changed on disk after its unsaved edits were made.".into()
+        }
+        (EditsFit::NotThisFile, Asked::Save) => {
             "These edits don't fit this file as it is on disk, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept."
                 .into()
         }
-        (Asked::Find, true) => "Find can't search this file: it changed on disk after its unsaved edits were made.".into(),
-        (Asked::Find, false) => "Find can't search this file: its unsaved edits don't fit it.".into(),
-        (Asked::Search, true) => "This file can't be searched: it changed on disk after its unsaved edits were made.".into(),
-        (Asked::Search, false) => "This file can't be searched: its unsaved edits don't fit it.".into(),
+        (EditsFit::NotThisFile, Asked::Find) => "Find can't search this file: its unsaved edits don't fit it.".into(),
+        (EditsFit::NotThisFile, Asked::Search) => "This file can't be searched: its unsaved edits don't fit it.".into(),
+        (EditsFit::VersionUnknown, Asked::Save) => {
+            "Which version of this file these edits were made on isn't known, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept."
+                .into()
+        }
+        (EditsFit::VersionUnknown, Asked::Find) => "Find can't search this file: which version its unsaved edits were made on isn't known.".into(),
+        (EditsFit::VersionUnknown, Asked::Search) => "This file can't be searched: which version its unsaved edits were made on isn't known.".into(),
     };
     let next = match fit {
         EditsFit::FileChanged => CHANGED_UNDER_EDITS_NEXT,
         EditsFit::FileChangedVersionUnknown => VERSION_UNKNOWN_NEXT,
+        EditsFit::VersionUnknown => NEVER_KNOWN_NEXT,
         _ => NOT_THIS_FILE_NEXT,
     };
     let code = fit.said().map_or("file_changed", |said| said.code);
@@ -75,6 +85,12 @@ mod tests {
                 !unknown.next.contains("earlier version back") && unknown.next.contains("discard"),
                 "{unknown:?}"
             );
+            let unknown_version = refusal(EditsFit::VersionUnknown, asked).unwrap();
+            assert_eq!(unknown_version.code, "edits_version_unknown");
+            for text in [&unknown_version.message, &unknown_version.next] {
+                assert!(!text.contains("changed") && !text.contains("don't fit"), "{unknown_version:?}");
+            }
+            assert!(unknown_version.next.contains("discard"), "{unknown_version:?}");
             let journal = refusal(EditsFit::NotThisFile, asked).unwrap();
             assert_eq!(journal.code, "edits_dont_fit");
             assert!(!journal.message.contains("changed") && !journal.next.contains("changed"), "{journal:?}");

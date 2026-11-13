@@ -17,6 +17,9 @@ pub enum EditsFit {
     FileChangedVersionUnknown,
     /// Nothing says they fit this file, and it isn't known to have changed: their journal names a length it doesn't have, as a damaged or forged one can.
     NotThisFile,
+    /// Which version they were made on isn't known (the file had no stamp when it was opened, and nothing's been found against them since), so no version
+    /// of the file can be taken to be theirs.
+    VersionUnknown,
 }
 
 impl EditsFit {
@@ -41,6 +44,10 @@ impl EditsFit {
                 code: "edits_dont_fit",
                 message: "This tab's unsaved edits don't fit this file as it is on disk. They're kept, but they can't be saved onto it, here or as a copy. Nothing has been written to the file.",
             }),
+            Self::VersionUnknown => Some(NoticeSaid {
+                code: "edits_version_unknown",
+                message: "Which version of this file these unsaved edits were made on isn't known, so they can't be saved onto it, here or as a copy. They're kept, and nothing has been written to the file.",
+            }),
         }
     }
 }
@@ -62,6 +69,8 @@ pub(crate) struct Elsewhere {
     pub(crate) seen_pages: Option<u32>,
     /// The file's known to have changed on disk. Without, only that the edits don't fit it.
     pub(crate) file_changed: bool,
+    /// A read found the file isn't the length the edits were made on. Without that or a change, which version they were made on is only unknown.
+    pub(crate) other_length: bool,
 }
 
 /// What's rare about a tab's file, behind the one pointer a tab with none of it pays.
@@ -135,14 +144,15 @@ impl Notices<'_> {
         let Some(tab) = self.tabs.tab(id).filter(|_| self.lists.is_edited(id)) else {
             return EditsFit::Fit;
         };
-        let file_changed = tab
-            .file
-            .elsewhere()
-            .map_or(matches!(tab.file.notice(), Some(FileNotice::Changed)), |elsewhere| elsewhere.file_changed);
-        match (tab.file.stamp, tab.file.elsewhere()) {
+        // Not the notice: whatever's said over it, this is what's known.
+        let elsewhere = tab.file.elsewhere();
+        let file_changed = elsewhere.is_some_and(|elsewhere| elsewhere.file_changed);
+        match (tab.file.stamp, elsewhere) {
             (Some(_), None) => EditsFit::Fit,
             (Some(_), Some(_)) if file_changed => EditsFit::FileChanged,
             (None, _) if file_changed => EditsFit::FileChangedVersionUnknown,
+            (None, None) => EditsFit::VersionUnknown,
+            (None, Some(elsewhere)) if !elsewhere.other_length => EditsFit::VersionUnknown,
             _ => EditsFit::NotThisFile,
         }
     }

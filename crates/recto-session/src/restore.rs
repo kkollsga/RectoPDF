@@ -155,6 +155,7 @@ impl<L: DocLoader> Session<L> {
                 seen: None,
                 seen_pages: None,
                 file_changed: true,
+                other_length: false,
             });
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {

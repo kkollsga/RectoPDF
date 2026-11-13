@@ -334,6 +334,46 @@ fn dropped_stamp() -> (Bed, TabId, TabId) {
     (bed, a, b)
 }
 
+/// `a` edited with no stamp since it was opened (the look at its file failed then), and nothing known against its edits.
+fn never_stamped() -> (Bed, TabId, TabId) {
+    let (mut bed, a, b) = Bed::new(10);
+    bed.s.tabs_mut().tab_mut(a).unwrap().file.stamp = None;
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    (bed, a, b)
+}
+
+/// `a`'s edits taken up from a journal about a twelve-page file, over a file of five that hasn't changed: they don't fit it.
+fn journal_of_another_length() -> (Bed, TabId, TabId) {
+    let (mut bed, a, b) = Bed::new(5);
+    let mut list = PageEdits::new(12);
+    list.journal_from_now();
+    list.rotate(11, 1, 1).unwrap();
+    bed.s.take_up_history(a, "journal-00000000000000ab.log", list, 1);
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    (bed, a, b)
+}
+
+/// Failure (D): an edited tab whose file had no stamp when it was opened read as "these edits don't fit this file", which nothing had found: only which
+/// version they were made on isn't known. It says that, and keeps saying it through a look and a read of the file at the same length; a read that finds
+/// another length than the edits were made on is what says they don't fit.
+#[test]
+fn edits_on_a_file_never_stamped_are_of_an_unknown_version_not_one_they_dont_fit() {
+    let (mut bed, a, b) = never_stamped();
+    let said = |bed: &Bed| bed.s.notices().said(a).map(|said| said.code);
+    assert_eq!(bed.s.notices().fit(a), EditsFit::VersionUnknown);
+    assert_eq!(said(&bed), Some("edits_version_unknown"));
+    bed.s.apply_file_status(a, record::look_at_file(&bed.path(), None));
+    assert_eq!(bed.s.notices().fit(a), EditsFit::VersionUnknown, "after a look");
+    bed.s.forget_read(a);
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_eq!(bed.s.notices().fit(a), EditsFit::VersionUnknown, "after a read at the same length");
+    let (bed, a, _b) = journal_of_another_length();
+    assert_eq!(bed.s.notices().fit(a), EditsFit::NotThisFile);
+    assert_eq!(said(&bed), Some("edits_dont_fit"));
+}
+
 /// What has to hold while a tab's edits are about another version than its file: the tab says so, nothing reads the file as its pages, and no sleep file is
 /// made of it.
 fn assert_known_not_to_fit(bed: &Bed, a: TabId, what: &str) {
@@ -498,7 +538,12 @@ fn no_notice_over_edits_that_dont_fit_changes_what_is_allowed() {
         Some(FileNotice::EditsNotMerged),
         Some(FileNotice::HistoryRolledOff),
     ];
-    for (what, (mut bed, a, _b)) in [("kept stamp", kept()), ("no stamp", dropped_stamp())] {
+    for (what, (mut bed, a, _b)) in [
+        ("kept stamp", kept()),
+        ("no stamp", dropped_stamp()),
+        ("never stamped", never_stamped()),
+        ("another length", journal_of_another_length()),
+    ] {
         let fit = bed.s.notices().fit(a);
         assert!(!fit.fits(), "{what}");
         for notice in notices.clone() {
@@ -526,6 +571,7 @@ fn nothing_decides_by_a_notice_code_string() {
         "\"edits_not_merged\"",
         "\"history_rolled_off\"",
         "\"edits_dont_fit\"",
+        "\"edits_version_unknown\"",
     ];
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut found = Vec::new();
