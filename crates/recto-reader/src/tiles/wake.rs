@@ -57,7 +57,7 @@ pub(super) const MIN_SHARE_OF_VIEW: f64 = 0.05;
 /// How long a wake's followed, for how long it took.
 pub(super) const WAKE_FOLLOWED_FOR: Duration = Duration::from_secs(5);
 
-/// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
+/// Pictures that go in a sleep file: as many as `recto_session::sleep::MAX_SLEEP_PICTURES` says, which this crate doesn't know of. Six rows' worth of pages side by side, which are each a quarter of the pixels a page to a row has, so the bytes are about the same.
 pub(super) const MAX_SLEEP_SHOTS: usize = 12;
 
 /// What a tab held off screen keeps of the pictures it was left with, in all. A letter page at a Retina window's fit is 730 KiB, so a page to a row has its view kept, and a view of many small pages keeps the first few: the rest come from what's here when it goes to sleep, as before.

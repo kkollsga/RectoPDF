@@ -53,7 +53,7 @@ pub(super) struct Entry {
     pub(super) rgb: Option<u32>,
     pub(super) crop: (f64, f64),
     pub(super) low_res: Option<LowResNote>,
-    /// Which version of its file it was drawn from, as the worker said: see [`DocView::versions`]. `None` when nothing's said, as a picture from a sleep file written before this was known.
+    /// Which version of its file it was drawn from, as the worker said: see [`super::doc::DocDrawing::versions`]. `None` when nothing's said, as a picture from a sleep file written before this was known.
     pub(super) version: Option<u64>,
     pub(super) attached: bool,
     pub(super) discardable: bool,
