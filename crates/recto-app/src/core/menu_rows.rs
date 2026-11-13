@@ -137,6 +137,16 @@ pub fn row<'a>(inner: &'a Arc<Inner>, id: &str) -> Option<Row<'a>> {
     ROWS.iter().find_map(|(_, rows)| rows(inner, &asked))
 }
 
+/// The features whose rows claim `id`: one, or none for an id nothing has. Two would be one id with two meanings, the first of which [`row`] takes.
+#[cfg(test)]
+pub fn claimed_by(inner: &Arc<Inner>, id: &str) -> Vec<&'static str> {
+    let asked = Asked {
+        id,
+        action: crate::menus::action(id),
+    };
+    ROWS.iter().filter(|(_, rows)| rows(inner, &asked).is_some()).map(|(name, _)| *name).collect()
+}
+
 /// **The person's run of a row,** saying what's left for the host. Never waits.
 pub fn by_person(inner: &Arc<Inner>, row: Row<'_>) -> HostAction {
     match row {

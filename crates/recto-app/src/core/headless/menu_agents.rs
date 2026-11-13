@@ -88,3 +88,20 @@ fn no_rows_agent_run_sends_a_command_as_the_person() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// Failure (review of R2.3, F8): one menu id claimed by two features' rows, so it means what the first in the table says and the other feature's row is
+/// dead code that reads as live. Every menu id, the notices' included, is claimed by exactly one feature, and the failure names both.
+#[test]
+fn each_menu_id_is_claimed_by_one_feature() {
+    let app = HeadlessApp::start();
+    let file = app.disk().pdf("a.pdf", 3);
+    app.open(&file);
+    let mut wrong = Vec::new();
+    for id in every_id() {
+        let claims = crate::core::menu_rows::claimed_by(app.core(), &id);
+        if claims.len() != 1 {
+            wrong.push(format!("{id}: claimed by {claims:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
