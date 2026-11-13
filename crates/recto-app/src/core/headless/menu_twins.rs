@@ -21,17 +21,20 @@ enum Showing {
     FindOpen,
     /// Find closed after something was found, which ⌘G finds again.
     FindClosed,
+    /// The page's text selected, so Copy can be chosen.
+    Selected,
     /// The owner's unsaved edits, one of them undone, and a step back made, so Undo, Redo, Forward, Save and Clear History can be chosen.
     Edited,
 }
 
-const GRID: [Showing; 7] = [
+const GRID: [Showing; 8] = [
     Showing::Reading,
     Showing::SidebarHidden,
     Showing::EditMode,
     Showing::Comparing,
     Showing::FindOpen,
     Showing::FindClosed,
+    Showing::Selected,
     Showing::Edited,
 ];
 
@@ -55,6 +58,7 @@ fn set_up(app: &HeadlessApp, showing: Showing) {
         Showing::EditMode => vec![r#"{"cmd":"edit_mode","set":"on"}"#],
         Showing::Comparing => vec![r##"{"cmd":"compare","toggle":"#1"}"##],
         Showing::FindOpen => vec![r#"{"cmd":"find","open":true}"#, r#"{"cmd":"find","query":"page"}"#],
+        Showing::Selected => vec![],
         Showing::FindClosed => vec![
             r#"{"cmd":"find","open":true}"#,
             r#"{"cmd":"find","query":"page"}"#,
@@ -69,6 +73,10 @@ fn set_up(app: &HeadlessApp, showing: Showing) {
     });
     for line in lines {
         app.person(line);
+        app.settle();
+    }
+    if showing == Showing::Selected {
+        app.act(UiAction::Menu { id: "edit.select_all".into() });
         app.settle();
     }
     drop(app.heard_events());
@@ -232,9 +240,11 @@ fn rows_now(app: &HeadlessApp) -> Vec<(String, String)> {
 fn every_menu_id_is_one_action_for_the_person_and_an_agent() {
     let mut wrong = Vec::new();
     let mut ran = 0;
+    let mut ids = std::collections::BTreeSet::new();
     for showing in GRID {
         for (id, title) in rows(showing) {
             ran += 1;
+            ids.insert(id.clone());
             for difference in differences(showing, &id, &title) {
                 wrong.push(format!("{showing:?} {id}: {difference}"));
             }
@@ -246,6 +256,10 @@ fn every_menu_id_is_one_action_for_the_person_and_an_agent() {
         }
     }
     assert!(ran > 100, "every row in every state: {ran}");
+    // The ids with a way of their own that an agent's palette can run are each in the grid: the zoom, Save, the update, Copy and Select All.
+    for id in ["view.zoom_in", "file.save", "app.update", "edit.copy", "edit.select_all"] {
+        assert!(ids.contains(id), "{id} is run in some state of the grid");
+    }
     assert!(wrong.is_empty(), "{} differences:\n{}", wrong.len(), wrong.join("\n"));
 }
 
