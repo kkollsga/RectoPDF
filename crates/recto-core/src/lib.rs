@@ -562,6 +562,12 @@ fn pdf_doc_char(b: u8) -> char {
     }
 }
 
+/// The PDFs the integration tests write, for a unit test that needs a seam they can't reach.
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+#[allow(dead_code)]
+mod test_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +594,31 @@ mod tests {
             deadline: Instant::now(),
         };
         assert!(!late.may_visit(), "out of time");
+    }
+
+    /// Failure: a wide name tree under a long outline makes `open` resolve every child for every entry, billions of reads, while the session waits. Each entry spends one visit, so it's the time that ends this, and the contents say they aren't whole. Shown at a limit of 200 ms, as the walk is the same at any, in place of waiting out the 5 s one.
+    #[test]
+    fn a_hostile_name_tree_under_a_long_outline_ends_soon() {
+        use crate::test_support as support;
+        // 20,000 entries, each naming a destination that isn't in a tree with one node of 200,000 references to itself and to a leaf.
+        let refs = "7 0 R ".repeat(200_000);
+        let mut extra = vec![
+            "<< /Type /Outlines /First 9 0 R >>".to_string(),
+            format!("<< /Kids [{refs}] >>"),
+            "<< /Dests 7 0 R >>".to_string(),
+        ];
+        let entries = 20_000;
+        for i in 0..entries {
+            let next = if i + 1 < entries { format!("/Next {} 0 R", 10 + i) } else { String::new() };
+            extra.push(format!("<< /Title (Entry) /Dest (nowhere) {next} >>"));
+        }
+        let file = support::TempPdf::new("name-bomb.pdf", &support::three_page_pdf("/Outlines 6 0 R /Names 8 0 R", &extra, ""));
+        let reader = open_reader(&file.0).unwrap();
+        let limit = Duration::from_millis(200);
+        let started = Instant::now();
+        let toc = read_toc_within(&reader, limit).unwrap();
+        assert!(started.elapsed() < limit + Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(toc.truncated, "it must say the contents aren't whole");
     }
 
     /// Failure: a title with bidi overrides or newlines reaches the sidebar or an agent's prompt intact; or one with tag characters, which take two UTF-16 units each and which no
