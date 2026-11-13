@@ -21,7 +21,11 @@ pub fn stall_exit_handlers(ms: u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static STALL_MS: AtomicU64 = AtomicU64::new(0);
     extern "C" fn stall() {
-        std::thread::sleep(std::time::Duration::from_millis(STALL_MS.load(Ordering::SeqCst)));
+        // Parked, not slept: this is a stall on purpose, not a wait for a condition.
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(STALL_MS.load(Ordering::SeqCst));
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            std::thread::park_timeout(left);
+        }
     }
     STALL_MS.store(ms, Ordering::SeqCst);
     // SAFETY: registers a plain function with no state of its own.
