@@ -482,16 +482,36 @@ fi
 if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 1 ]; then
   echo "check: the tools' tests run: $scope_tools_why."
   tools_started=$(date +%s)
-  for tool_test in tools/ratchet-test.sh tools/target-hygiene-test.sh tools/check-test.sh; do
+  # Only the tests of the tools that changed (tool_tests_for, tools/check-scope.sh), side by side: each is a script on a throwaway repository and lock of its
+  # own, and its output goes to a file of its own in one folder, so none shares a file with another. check-test.sh is the long one and runs its own parts side
+  # by side. A failure prints that script's output whole (without its ok lines, last 40).
+  tool_out=$(mktemp -d "${TMPDIR:-/tmp}/recto-tool-test.XXXXXX")
+  tool_pids="" tool_launched=""
+  for tool in ratchet hygiene check; do
+    case " $scope_tools_which " in *" $tool "*) ;; *) continue ;; esac
+    case "$tool" in ratchet) tool_test=tools/ratchet-test.sh ;; hygiene) tool_test=tools/target-hygiene-test.sh ;; *) tool_test=tools/check-test.sh ;; esac
     [ -f "$tool_test" ] || continue
-    "$tool_test" > "${TMPDIR:-/tmp}/recto-tool-test.$$" 2>&1 || {
-      echo "check: $tool_test failed, so nothing was queued:" >&2
-      grep -v '^ok' "${TMPDIR:-/tmp}/recto-tool-test.$$" | tail -20 >&2
-      rm -f "${TMPDIR:-/tmp}/recto-tool-test.$$"
-      exit 1
-    }
+    ( started=$(date +%s); tool_rc=0; "$tool_test" > "$tool_out/$tool.out" 2>&1 || tool_rc=$?; echo "$tool_rc $(($(date +%s) - started)) $tool_test" > "$tool_out/$tool.rc" ) &
+    tool_pids="$tool_pids $!" tool_launched="$tool_launched $tool"
   done
-  rm -f "${TMPDIR:-/tmp}/recto-tool-test.$$"
+  # shellcheck disable=SC2086
+  [ -z "$tool_pids" ] || wait $tool_pids || true
+  tool_failed=""
+  for tool in $tool_launched; do
+    # A script killed before it wrote its line is a failure, not a pass.
+    read -r tool_rc tool_secs tool_test < "$tool_out/$tool.rc" 2>/dev/null || { tool_rc=killed tool_secs=0 tool_test="the $tool test"; echo "killed 0 the $tool test" > "$tool_out/$tool.rc"; }
+    echo "check: $tool_test took $tool_secs s"
+    [ "$tool_rc" = 0 ] || tool_failed="$tool_failed $tool"
+  done
+  if [ -n "$tool_failed" ]; then
+    for tool in $tool_failed; do
+      echo "check: $(cut -d' ' -f3- "$tool_out/$tool.rc") failed, so nothing was queued:" >&2
+      grep -v '^ok' "$tool_out/$tool.out" | tail -40 >&2
+    done
+    rm -rf "$tool_out"
+    exit 1
+  fi
+  rm -rf "$tool_out"
   echo "check: the tools' tests took $(($(date +%s) - tools_started)) s"
 fi
 # The compile gate, before any test is queued. The layout first, outside the queue as it builds nothing: one layout, so two branches that each add a field

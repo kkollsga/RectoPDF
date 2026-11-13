@@ -1,9 +1,9 @@
 //! **What a menu item, a panel button or a key does,** and whether it can be chosen now: the person's actions, as `AppCore` forwards them and as ⌘K's palette and
 //! `recto palette --run` run them, with the menu bar as it stands.
 
-use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, lock, menus, saving, updates};
+use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, SidebarRow, lock, menus, updates};
 use crate::menus::RecentItem;
-use recto_session::{Paper, TabId, ViewSettings, record};
+use recto_session::{Paper, ViewSettings, record};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,7 +32,7 @@ impl Inner {
         }
     }
 
-    /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
+    /// Does what a menu item, a panel button or a key does, and says what's left for the host: the row `menu_rows` has for its id, run as the person's.
     pub fn perform(self: &Arc<Self>, id: String) -> HostAction {
         // Past a hand-off's last look, what's done here wouldn't come back.
         if self.core.frozen.load(Ordering::SeqCst) {
@@ -42,72 +42,7 @@ impl Inner {
         if !updates::takes_input_now(self.window_interactive(), &id) {
             return HostAction::None;
         }
-        // Features that answer ids of their own: the snapshot tool, and printing.
-        if super::snapshot_tool::perform(self, &id) || super::printing::perform(self, &id) {
-            return HostAction::None;
-        }
-        let Some(action) = menus::action(&id) else { return HostAction::None };
-        match action {
-            menus::Action::Host(host) => return host,
-            menus::Action::Copy { anyway } => self.panes.reading_engine(&self.engine).copy_selection(anyway),
-            menus::Action::SelectAll => self.panes.reading_engine(&self.engine).select_all(),
-            menus::Action::SetSynced(on) => self.synced_for_person(on),
-            menus::Action::PaletteOpen => {
-                // The palette is in the sidebar, so ⌘K shows it.
-                if lock(&self.published).reader.sidebar_hidden {
-                    self.show_sidebar();
-                }
-                self.tools.palette.open();
-                self.listener.model_changed();
-                return HostAction::FocusPalette;
-            }
-            menus::Action::OpenRecent(key) => self.open_recent(key),
-            menus::Action::ClearRecent => super::opening::clear_recent(self),
-            menus::Action::FindOpen => {
-                self.find_open_for_person();
-                return HostAction::FocusFind;
-            }
-            menus::Action::FindStep(forward) => self.find_step_for_person(forward, false),
-            menus::Action::LeaveEditMode => self.edit_mode_for_person(false),
-            menus::Action::Step(back) => self.step_for_person(back),
-            menus::Action::ClearEditHistory => self.clear_history_for_person(),
-            menus::Action::Zoom(zoom) => {
-                self.zoom_for_person(zoom);
-            }
-            menus::Action::ToggleSidebar => self.toggle_sidebar(),
-            menus::Action::SetSpread(spread) => self.set_layout(spread),
-            menus::Action::Rotate(turns) => self.rotate_for_person(turns),
-            menus::Action::Undo => self.undo_or_redo_for_person(true),
-            menus::Action::Redo => self.undo_or_redo_for_person(false),
-            menus::Action::ToggleAgentIcon => self.toggle_agent_icon(),
-            menus::Action::SetPaper(paper) => self.set_paper(paper),
-            menus::Action::TogglePanel => {
-                self.window.panel_open.fetch_xor(true, Ordering::SeqCst);
-                self.listener.model_changed();
-            }
-            // Off this thread by itself, and it says how it went.
-            menus::Action::Update => self.update_chosen_for_person(),
-            menus::Action::Save => {
-                let reader = lock(&self.published).reader.clone();
-                if self.can_save() && reader.shown_tab != 0 {
-                    saving::start_save(self, TabId(reader.shown_tab), None, false);
-                }
-            }
-            menus::Action::CloseDocument => {
-                let reader = lock(&self.published).reader.clone();
-                if reader.home || reader.saving {
-                    return HostAction::None;
-                }
-                // Unsaved edits, or the owner's undone ones, which closing would lose: it asks, as any Mac app does.
-                if reader.edited || lock(&self.published).sidebar.undone_owner_steps {
-                    return HostAction::ConfirmClose;
-                }
-                if reader.shown_tab != 0 {
-                    self.close_for_person(TabId(reader.shown_tab));
-                }
-            }
-        }
-        HostAction::None
+        super::menu_rows::row(self, &id).map_or(HostAction::None, |row| super::menu_rows::by_person(self, row))
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.

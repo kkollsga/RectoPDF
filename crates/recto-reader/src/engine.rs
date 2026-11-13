@@ -409,9 +409,11 @@ impl Engine {
             .sum()
     }
 
-    /// Exactly where each tab it holds is. A short lock.
-    pub fn places(&self) -> Vec<(u32, SavedPlace)> {
-        lock(&self.shared.reader).places()
+    /// Exactly where each tab it holds is, with the place clock as it was read ([`crate::tiles::place_stamp`]): what's read is of that moment, and a jump
+    /// this view was sent that came to the clock at or before the stamp is in it. A short lock.
+    pub fn places(&self) -> (u64, Vec<(u32, SavedPlace)>) {
+        let reader = lock(&self.shared.reader);
+        (crate::tiles::place_stamp(), reader.places())
     }
 
     /// Whether the place is on the layers, and nothing's on its way. A short lock, asked only until the window is showing.
@@ -464,14 +466,17 @@ impl Engine {
         self.after(reader);
     }
 
-    /// A jump to a place in a page, as a link or Back goes: the page's top, margin above the first page included, or that far down it.
-    pub fn jump_within(&self, page: u32, within: f64) {
+    /// A jump to a place in a page, as a link or Back goes: the page's top, margin above the first page included, or that far down it. Says where the
+    /// place clock had come to once it was sent, taken with the lock still held, so every read of this view's places after it carries that stamp or a later
+    /// one and every read before it an earlier one; `None` if it wasn't sent, with no tab showing.
+    pub fn jump_within(&self, page: u32, within: f64) -> Option<u64> {
         let mut reader = lock(&self.shared.reader);
         if within.is_finite() && within > 0.0 {
             lock(&self.shared.pending).follow = None;
         }
-        reader.jump_to(page, within);
+        let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
         self.after(reader);
+        sent
     }
 
     /// The link under the pointer, if its page's links are here. A page not read yet is read next. A short lock, on the UI thread.

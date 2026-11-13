@@ -246,111 +246,18 @@ pub fn found_for(
     both.into_iter().take(palette::MAX_RESULTS).map(|(row, _)| row).collect()
 }
 
-/// What of the window an agent's command for a row depends on.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Showing {
-    pub sidebar_hidden: bool,
-    pub agent_icon_hidden: bool,
-    pub edit_mode: bool,
-}
-
-/// **The rows that are the window's alone,** which send no command: a system panel or sheet, the keyboard's focus, the pasteboard, the window's own
-/// panel and pointer mode. Only these may an agent's `palette --run` do as the menu does; any other row with no command of its own of [`as_command`]'s is
-/// refused, as the menu's way would run it as the person (review, 2026-11-13). `core::headless::coverage` holds that each of these sends no command.
-pub const THE_WINDOWS_ALONE: &[&str] = &[
-    "app.about",
-    "app.quit",
-    "app.services",
-    "app.settings",
-    "edit.copy",
-    "edit.copy_anyway",
-    "edit.select_all",
-    "file.close_window",
-    "file.open",
-    "file.open_recent",
-    "file.print",
-    "file.save_as",
-    "file.settings",
-    "go.page",
-    "palette.open",
-    "panel.toggle",
-    "tools.snapshot",
-    "view.paper",
-];
-
-/// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
-pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<recto_agent::Command> {
+/// The agent's command a tab's or a recent file's row comes to, for `recto palette --run`: `tap` and `open`. A menu id's is `core::menu_rows`'s, the one
+/// table both actors' runs go by.
+pub fn as_command(id: &str, recent: &[(&str, &str)]) -> Option<recto_agent::Command> {
     use recto_agent::Command;
-    let active = || "active".to_string();
-    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| {
-        Command::from(recto_agent::commands::view::View {
-            paper: paper.map(str::to_string),
-            sidebar: sidebar.map(str::to_string),
-            agent_icon: agent_icon.map(str::to_string),
-            zoom: zoom.map(str::to_string),
-            layout: layout.map(str::to_string),
-            tab: None,
-        })
-    };
-    Some(match id {
-        "view.zoom_in" => view(None, None, None, Some("in"), None),
-        "view.zoom_out" => view(None, None, None, Some("out"), None),
-        "view.actual_size" => view(None, None, None, Some("actual"), None),
-        "view.fit" => view(None, None, None, Some("fit"), None),
-        "view.sidebar" => view(None, Some(if reader.sidebar_hidden { "on" } else { "off" }), None, None, None),
-        "view.agent_icon" => view(None, None, Some(if reader.agent_icon_hidden { "on" } else { "off" }), None, None),
-        "layout.single" => view(None, None, None, None, Some("single")),
-        "layout.two_up" => view(None, None, None, None, Some("two-up")),
-        "layout.two_up_cover" => view(None, None, None, None, Some("two-up-cover")),
-        "paper.white" => view(Some("white"), None, None, None, None),
-        "paper.warm" => view(Some("warm"), None, None, None, None),
-        "paper.dark" => view(Some("dark"), None, None, None, None),
-        "compare.separate" => Command::from(recto_agent::commands::compare::Compare {
-            tabs: None,
-            sync: Some("off".into()),
-            off: false,
-            toggle: None,
-            reading: None,
-        }),
-        "compare.synced" => Command::from(recto_agent::commands::compare::Compare {
-            tabs: None,
-            sync: Some("on".into()),
-            off: false,
-            toggle: None,
-            reading: None,
-        }),
-        "edit.undo" => Command::from(recto_agent::commands::editing::Undo { tab: active() }),
-        "edit.redo" => Command::from(recto_agent::commands::editing::Redo { tab: active() }),
-        "edit.clear_history" => Command::from(recto_agent::commands::editing::ClearHistory { tab: active() }),
-        "file.save" => Command::from(recto_agent::commands::saving::Save {
-            tab: active(),
-            out: None,
-            replace: false,
-        }),
-        "find.next" | "find.previous" => Command::from(recto_agent::commands::finding::Find {
-            next: id == "find.next",
-            previous: id == "find.previous",
-            ..Default::default()
-        }),
-        "rotate.left" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
-            tab: active(),
-            pages: "all".into(),
-            degrees: -90,
-        }),
-        "rotate.right" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
-            tab: active(),
-            pages: "all".into(),
-            degrees: 90,
-        }),
-        file if file.starts_with(RECENT) => Command::from(recto_agent::commands::tabs::Open {
-            path: recent.iter().find(|(key, _)| *key == &file[RECENT.len()..])?.1.into(),
+    if let Some(key) = id.strip_prefix(RECENT) {
+        return Some(Command::from(recto_agent::commands::tabs::Open {
+            path: recent.iter().find(|(file, _)| *file == key)?.1.into(),
             page: None,
-        }),
-        tab if tab.starts_with("tab:") => Command::from(recto_agent::commands::tabs::Tap {
-            tab: format!("#{}", tab.trim_start_matches("tab:")),
-        }),
-        _ => return None,
-    })
+        }));
+    }
+    let tab = id.strip_prefix("tab:")?;
+    Some(Command::from(recto_agent::commands::tabs::Tap { tab: format!("#{tab}") }))
 }
 
 /// What running a row comes to, once the palette's closed.

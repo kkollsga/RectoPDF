@@ -23,8 +23,10 @@ fn full(app: &HeadlessApp, words: &[&str]) -> Value {
     app.recto(Level::Full, words).unwrap_or_else(|error| panic!("{words:?}: {error:?}"))
 }
 
-fn owner(app: &HeadlessApp, edit: &str) {
-    app.core().qa_session_verb("owner_edit", edit).expect("a QA verb").expect("the owner's edit");
+/// The person's command, as the window sends it: the owner's edit.
+fn owner(app: &HeadlessApp, line: &str) {
+    app.person(line);
+    app.settle();
 }
 
 /// A document per kind, each with that edit, some the owner's and some an agent's, and the PDF the added pages come from.
@@ -40,10 +42,10 @@ fn one_of_each(app: &HeadlessApp) -> (Vec<Edited>, Edited) {
         let path = app.disk().pdf(&format!("{kind}.pdf"), 4);
         app.open(&path);
         match kind {
-            "turn" => owner(app, "rotate:2"),
+            "turn" => owner(app, r#"{"cmd":"page_rotate","pages":"2","degrees":90}"#),
             "move" => drop(full(app, &["page", "move", "3", "--to", "1"])),
             "add" => drop(full(app, &["page", "insert", extra.path.to_str().expect("a path"), "--at", "2"])),
-            "delete" => owner(app, "delete:2"),
+            "delete" => owner(app, r#"{"cmd":"page_delete","pages":"2"}"#),
             _ => drop(full(app, &["page", "rotate", "all", "--by", "90"])),
         }
         app.settle();

@@ -74,19 +74,20 @@ impl<L: DocLoader> Session<L> {
         self.set_selection(showing, selection);
     }
 
-    /// What's selected in a tab.
-    pub fn selection_of(&self, id: TabId) -> Option<Selection> {
-        self.tab(id)?.reading.selection.as_deref().copied()
-    }
-
-    /// Exactly where a tab's reader is, as the page view says. Marked to be written only if it's moved.
-    pub fn note_place(&mut self, id: TabId, place: PlaceRecord) {
+    /// **Exactly where a tab's reader is, as a read of the page view stamped `stamp` on the place clock says,** taken in only if it's as new as the
+    /// read taken in last on this tab, whoever took that in: an older read still landing doesn't undo a newer one, the person's own scroll among it. A jump
+    /// the view was sent at or before `stamp` is then told of ([`Self::here`]). Says whether it was taken. Marked to be written only if it's moved.
+    pub fn view_told_of(&mut self, id: TabId, place: PlaceRecord, stamp: u64) -> bool {
+        if self.tab(id).is_none() || !self.mail.view_told_of(id, stamp) {
+            return false;
+        }
         if let Some(tab) = self.tab_mut(id)
             && tab.reading.place != Some(place)
         {
             tab.reading.place = Some(place);
             tab.place_dirty = true;
         }
+        true
     }
 
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.

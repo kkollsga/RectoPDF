@@ -40,6 +40,18 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 const LOOK_EVERY: Duration = Duration::from_millis(2);
 
 /// **A state folder and a folder for the test's files, kept between runs of the app,** as a disk is between launches. [`HeadlessApp::quit`] gives it back, to
+/// **A file's path outside every folder a quiet run's test may use** (its state and the system's temp folders), for a test of what's refused there: in the
+/// build's own `target` folder. `None` when the checkout itself is in a temp folder, where nothing near it is outside; the test then says it skipped that
+/// part rather than calling a test's own file someone else's.
+pub fn outside_the_tests_folders(name: &str) -> Option<PathBuf> {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").canonicalize().ok()?;
+    if recto_control::quiet::temp_folders().iter().any(|temp| target.starts_with(temp)) {
+        eprintln!("this checkout is in a temp folder: the part about a file outside the test's folders is skipped");
+        return None;
+    }
+    Some(target.join(format!("{}-{name}", std::process::id())))
+}
+
 /// [`Disk::start`] again on.
 pub struct Disk {
     root: TempDir,
@@ -234,6 +246,7 @@ impl Builder {
             disk: Some(disk),
             host: std::sync::Mutex::new(HostPlay::default()),
             open: self.open.clone(),
+            view: std::sync::Mutex::new(super::scrolled::ScrolledView::default()),
         };
         let state_held = self.held.contains(&Seam::State);
         // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
@@ -366,6 +379,9 @@ pub struct HeadlessApp {
     host: std::sync::Mutex<HostPlay>,
     /// Files named at launch.
     open: Vec<PathBuf>,
+    /// The page being read's view as the host has it, by [`Self::person_scrolls`]: where it's scrolled to and the last scroll it was sent that it's
+    /// arrived at; and the last scroll it was sent, from the layer changes taken, `(y, seq)`.
+    pub(super) view: std::sync::Mutex<super::scrolled::ScrolledView>,
 }
 
 impl HeadlessApp {
@@ -526,6 +542,11 @@ impl HeadlessApp {
         if persons > 0 {
             busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
         }
+        // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
+        let saves = inner.tools.save_ui.running.load(Ordering::SeqCst);
+        if saves > 0 {
+            busy.push(format!("{saves} of the window's save(s)"));
+        }
         if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
             busy.push("the other tabs' files being looked at".to_string());
         }
@@ -546,8 +567,12 @@ impl HeadlessApp {
     /// The page views' layer changes, taken and applied as the host's UI thread does on `ops_ready`, so what's drawn and let go goes as it would.
     fn take_ops(&self) {
         let inner = self.core();
+        let reading = inner.panes.reading_engine(&inner.engine);
         for engine in inner.panes.engines(&inner.engine) {
-            drop(engine.drain());
+            let ops = engine.drain();
+            if engine.same_as(&reading) {
+                self.note_scrolls_sent(&ops);
+            }
             engine.applied();
         }
     }

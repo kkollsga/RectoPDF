@@ -40,7 +40,7 @@ fn an_older_records_focus_view_comes_back_as_a_hidden_sidebar() {
 fn a_session_comes_back_whole_from_its_record_and_journals() {
     let mut s = journaled(5);
     let (a, _b) = with_owner_and_agent_edits(&mut s);
-    s.note_place(
+    s.view_told_of(
         a,
         PlaceRecord {
             page: 2,
@@ -53,6 +53,7 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
             page_width: 612.0,
             page_height: 792.0,
         },
+        1,
     );
     s.set_find(true, "ran", "typed but not run");
     s.set_edit_mode(true);

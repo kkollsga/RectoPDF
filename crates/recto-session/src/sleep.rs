@@ -431,6 +431,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.warm.forget(id);
         self.mail.forget_draws(id);
+        self.mail.forget_view_word(id);
         !self.lists.contains(id) || self.put_list_to_sleep(id)
     }
 

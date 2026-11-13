@@ -18,6 +18,12 @@ impl<L: DocLoader> Session<L> {
         self.lists.has_undone_owner_steps(id)
     }
 
+    /// **What a tab's edits come to, wherever its list is,** in memory or asleep with only its summary kept: unsaved or not, the steps to undo and redo, and
+    /// whether the owner's are among them. With nothing read. `None` for a tab with no list.
+    pub fn edits_summary(&self, id: TabId) -> Option<record::EditsSummary> {
+        self.lists.summary(id)
+    }
+
     /// A tab's page edits, if it has any and they're in memory. A list that's asleep has to be woken first, with [`Self::wake_list`], which everything that's about a tab does: this says `None` of one that's on disk, so anything that reads a tab from here is after that.
     pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
         self.lists.get(id)
@@ -152,11 +158,6 @@ impl<L: DocLoader> Session<L> {
         self.journals.retire(id);
     }
 
-    /// Whether a tab has a list of edits, in memory or on disk.
-    pub(crate) fn has_list(&self, id: TabId) -> bool {
-        self.lists.has_list(id)
-    }
-
     /// Whether there's a step to undo and one to redo, wherever its list is. With nothing read.
     pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
         self.lists.undo_and_redo(id)
@@ -245,7 +246,7 @@ impl<L: DocLoader> Session<L> {
     /// Whether a tab with edits still has the file those edits are about. A tab with none has no page numbers to get wrong: reading from the file as it is now is what's wanted.
     pub fn own_file_is_current(&self, id: TabId) -> bool {
         let Some(tab) = self.tab(id) else { return true };
-        if !self.has_list(id) {
+        if !self.lists.has_list(id) {
             return true;
         }
         tab.file.stamp.is_none() || self.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.file.stamp

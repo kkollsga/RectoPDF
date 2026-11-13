@@ -1,7 +1,8 @@
 //! **Every control the window has is a command, or the host's alone, said why** (step R2.3, C6; owner, 2026-11-12: "all features should be implemented
 //! once"). Every menu item of the menu bar in every state it can be drawn in, the snapshot tool's menu, the context menu, the panel with the snapshot tool's
 //! part, the palette's rows with a tab's and a recent file's, the keys that work with no ⌘, and every kind of [`UiAction`]: each, done on an app of its own,
-//! sends the person's command to the one executor, or is in [`HOST_ONLY`] with the reason. A command a person sends is a line an agent could send: it reads
+//! sends the person's command to the one executor, or is the window's alone with the reason its row in the one table gives
+//! (`core::menu_rows`), or [`HOST_ONLY`]'s for a control that's no menu id. A command a person sends is a line an agent could send: it reads
 //! back from its own line as itself.
 
 use crate::RowKind;
@@ -13,33 +14,9 @@ use recto_agent::Level;
 use recto_session::{Paper, ViewSettings, record::Spread};
 use std::collections::BTreeSet;
 
-/// **What the window does itself, with no command,** and why: drawing, a system panel or sheet, the keyboard's focus, or the window's own pointer mode.
-/// What's chosen in a panel or sheet comes back as a control of its own, which is a command.
+/// **What the window does itself with no command, and why, for the controls that are no menu id:** a menu id's reason is its row's in the one table
+/// (`core::menu_rows`). What's chosen in a panel or sheet comes back as a control of its own, which is a command.
 const HOST_ONLY: &[(&str, &str)] = &[
-    ("app.about", "the About window is the system's"),
-    (
-        "app.quit",
-        "quitting is the app's lifecycle: it asks about unsaved edits, then the hand-off of the state",
-    ),
-    ("app.services", "the system fills the Services menu"),
-    ("app.settings", "opens the Settings window; what's chosen there is `SettingChosen`"),
-    (
-        "edit.copy",
-        "the selection is the page view's, on the UI thread, and goes to the system's pasteboard",
-    ),
-    ("edit.copy_anyway", "the same, after the person has said to copy a protected document's text"),
-    ("edit.select_all", "the selection is the page view's"),
-    ("file.close_window", "closes the window, which is the system's"),
-    ("file.open", "opens the system's Open panel; what's chosen there is `Open`"),
-    ("file.open_recent", "a submenu's own item only opens it"),
-    ("file.print", "opens the system's print panel, which is the host's"),
-    ("file.save_as", "opens the Save As sheet; its answer is `SaveAs`"),
-    ("file.settings", "opens the Settings window, as `app.settings`"),
-    ("go.page", "opens the go-to field; what's typed there is `PageTyped`"),
-    ("palette.open", "the palette's field takes the keyboard"),
-    ("panel.toggle", "the tools panel open or shut is the window's own, and nothing of a document's"),
-    ("tools.snapshot", "the snapshot tool is what the pointer does in the window"),
-    ("view.paper", "a submenu's own item only opens it"),
     ("UiAction::CloseAnswered(Cancel)", "the close prompt goes, and nothing else happens"),
     (
         "UiAction::CloseAnswered(SaveAs)",
@@ -60,7 +37,7 @@ const ANY_RECENT: &str = "0123456789abcdef";
 /// The ids of the menu bar in every state it's drawn in: each paper, the sidebar and the agent icon shown or hidden, each layout or none, the update item's
 /// two titles, Open Recent empty and not; the snapshot tool's menu off and on; the context menu with each layout, in a comparison or not; the panel open,
 /// in edit mode, rotating or not, with the snapshot tool's part; and the keys with no ⌘.
-fn menu_ids() -> BTreeSet<String> {
+pub(super) fn menu_ids() -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let mut add = |entries: Vec<menus::MenuEntry>| ids.extend(entries.into_iter().map(|entry| entry.id).filter(|id| !id.is_empty()));
     let recent = [RecentItem { key: ANY_RECENT, name: "c" }];
@@ -240,15 +217,21 @@ fn kind(action: &UiAction) -> String {
     format!("UiAction::{name}")
 }
 
-/// What one control sent on an app of its own, settled: the person's commands, each checked to read back from its own line as itself.
-fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Vec<String> {
+/// What one control sent on an app of its own, settled: the person's commands, each checked to read back from its own line as itself; and why it's the
+/// window's alone, if it's said to be: a menu id's by its row in the one table, any other control's by [`HOST_ONLY`].
+fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> (Vec<String>, Option<&'static str>) {
     let app = app();
     prepare(&app, name);
     let action = make(&app);
+    let why = match &action {
+        UiAction::Menu { id } | UiAction::PaletteRun { id } => crate::core::menu_rows::row(app.core(), id).and_then(|row| row.windows_alone()),
+        _ => HOST_ONLY.iter().find(|(host, _)| *host == name).map(|(_, why)| *why),
+    };
     app.keep_sent();
     app.act(action);
     app.settle();
-    app.sent()
+    let sent = app
+        .sent()
         .into_iter()
         .map(|command| {
             let wire = command.wire();
@@ -256,11 +239,12 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Vec<Strin
             assert_eq!(format!("{again:?}"), format!("{command:?}"), "{name}: {wire} reads back as another command");
             wire
         })
-        .collect()
+        .collect();
+    (sent, why)
 }
 
-/// Every control's name and what it sent.
-fn every_control() -> Vec<(String, Vec<String>)> {
+/// Every control's name, what it sent, and why it's the window's alone if it's said to be.
+fn every_control() -> Vec<(String, Vec<String>, Option<&'static str>)> {
     let mut controls: BTreeSet<Control> = menu_ids().into_iter().map(Control::Menu).collect();
     let probe = app();
     let rows = crate::palette::items(probe.core().bar_now(), |_| true, false, true)
@@ -269,29 +253,29 @@ fn every_control() -> Vec<(String, Vec<String>)> {
         .map(|row| row.id)
         .chain([format!("tab:{}", probe.tabs()[0].tab), format!("recent:{}", recent_key(&probe))]);
     controls.extend(rows.map(Control::Palette));
-    let mut out: Vec<(String, Vec<String>)> = controls
+    let mut out: Vec<(String, Vec<String>, Option<&'static str>)> = controls
         .into_iter()
         .map(|control| match control {
             Control::Menu(id) => {
                 let name = id.clone();
-                let sent = sent_by(&name, |app| UiAction::Menu {
+                let (sent, why) = sent_by(&name, |app| UiAction::Menu {
                     id: id.replace(&format!("recent.{ANY_RECENT}"), &format!("recent.{}", recent_key(app))),
                 });
-                (name, sent)
+                (name, sent, why)
             }
             Control::Palette(id) => {
                 let name = format!("palette {id}");
-                let sent = sent_by(&name, |app| UiAction::PaletteRun {
+                let (sent, why) = sent_by(&name, |app| UiAction::PaletteRun {
                     id: id.replace(&recent_key(&probe), &recent_key(app)),
                 });
-                (name, sent)
+                (name, sent, why)
             }
         })
         .collect();
     let kinds = every_kind(&probe);
     for (at, (name, _)) in kinds.iter().enumerate() {
-        let sent = sent_by(name, |app| every_kind(app).swap_remove(at).1);
-        out.push((name.clone(), sent));
+        let (sent, why) = sent_by(name, |app| every_kind(app).swap_remove(at).1);
+        out.push((name.clone(), sent, why));
     }
     out
 }
@@ -303,33 +287,22 @@ fn every_control() -> Vec<(String, Vec<String>)> {
 #[test]
 fn every_control_is_a_command_or_the_hosts_with_a_reason() {
     let controls = every_control();
-    let host_only = |name: &str| {
-        let name = name.strip_prefix("palette ").unwrap_or(name);
-        HOST_ONLY.iter().find(|(id, _)| *id == name).map(|(_, why)| *why)
-    };
     let mut wrong = Vec::new();
     let mut seen = BTreeSet::new();
-    for (name, sent) in &controls {
-        let why = host_only(name);
+    for (name, sent, why) in &controls {
         if why.is_some() {
-            seen.insert(name.strip_prefix("palette ").unwrap_or(name).to_string());
+            seen.insert(name.as_str());
         }
         match (sent.is_empty(), why) {
             (true, None) => wrong.push(format!("{name} sends no command and isn't the host's")),
             (false, Some(why)) => wrong.push(format!("{name} is said to be the host's ({why}) and sends {sent:?}")),
+            (_, Some("")) => wrong.push(format!("{name} needs its reason")),
             _ => {}
         }
     }
-    for (id, why) in HOST_ONLY {
-        assert!(!why.is_empty(), "{id} needs its reason");
-        if !seen.contains(*id) {
+    for (id, _) in HOST_ONLY {
+        if !seen.contains(id) {
             wrong.push(format!("{id} is in HOST_ONLY and no control is it"));
-        }
-    }
-    // What an agent's `palette --run` may do as the menu does is only what sends no command (review, 2026-11-13).
-    for id in crate::palette::THE_WINDOWS_ALONE {
-        if !HOST_ONLY.iter().any(|(host, _)| host == id) {
-            wrong.push(format!("{id} is in palette::THE_WINDOWS_ALONE and isn't the host's alone"));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));

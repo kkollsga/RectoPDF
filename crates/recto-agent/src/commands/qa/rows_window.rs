@@ -1,5 +1,6 @@
 //! The QA verbs' rows, part of [`super::ROWS_QA`]: The window, looked at and driven as a person would: what it shows, the pointer, keys, menus, sheets and the window's own states.
 
+use super::verbs::{Area::*, QaKind::*, QaVerb, verb};
 use crate::Level;
 use crate::table::*;
 
@@ -894,4 +895,63 @@ pub(crate) const ROWS: &[Spec] = &[
         client_wait_s: 35,
         ..BASE
     },
+];
+
+/// These rows' verbs in the table ([`super::verbs`]): what kind each is, and the host's area that answers it.
+pub(super) const VERBS: &[QaVerb] = &[
+    verb("state", Look, Some(Report)),
+    verb("shot", Look, Some(Shots)),
+    verb("settled", Look, None),
+    verb("appearance", Condition, Some(Window)),
+    verb("scroll", HostInput, Some(Pointer)),
+    // The end of a pinch.
+    verb("zoom", HostInput, Some(Pointer)),
+    verb("hover", HostInput, Some(Pointer)),
+    verb("pane_scroll", HostInput, Some(Panes)),
+    verb("pane_context_menu", HostInput, Some(Panes)),
+    verb("pane_focus", HostInput, Some(Panes)),
+    verb("compare_click", HostInput, Some(Sidebar)),
+    verb("click_row", HostInput, Some(Sidebar)),
+    verb("contents_scroll", HostInput, Some(Sidebar)),
+    verb("contents_pointer", HostInput, Some(Pointer)),
+    verb("corner_pointer", HostInput, Some(Pointer)),
+    verb("reduce_motion", Condition, Some(Window)),
+    // What the system's accessibility calls.
+    verb("accessibility", HostInput, Some(Window)),
+    verb("reveal", HostInput, Some(Sidebar)),
+    verb("resize", HostInput, Some(Window)),
+    verb("window", HostInput, Some(Window)),
+    verb("entry_points", Look, Some(Report)),
+    verb("scroller_style", Condition, Some(Window)),
+    verb("menu", HostInput, Some(Menus)),
+    verb("button", HostInput, Some(Controls)),
+    verb("zoom_type", HostInput, Some(Controls)),
+    verb("context_menu", HostInput, Some(Menus)),
+    verb("key_action", HostInput, Some(Menus)),
+    verb("password", HostInput, Some(Dialogs)),
+    verb("page_type", HostInput, Some(Controls)),
+    verb("page_escape", HostInput, Some(Controls)),
+    verb("swipe", HostInput, Some(Pointer)),
+    verb("zoom_escape", HostInput, Some(Controls)),
+    verb("panel", HostInput, Some(Sidebar)),
+    verb("mouse_down", HostInput, Some(Pointer)),
+    verb("mouse_drag", HostInput, Some(Pointer)),
+    // The system's printing, by File > Print's own path.
+    verb("print_to_pdf", HostInput, Some(Dialogs)),
+    verb("mouse_up", HostInput, Some(Pointer)),
+    verb("pointer", HostInput, Some(Pointer)),
+    verb("copied", Look, Some(Dialogs)),
+    // Asks the host's `copied` for one type.
+    verb("paste", Look, None),
+    verb("services", Look, Some(Dialogs)),
+    verb("notice_button", HostInput, Some(Dialogs)),
+    verb("stall", Condition, Some(Window)),
+    // A steady scroll, measured: the host's `scroll_step`, sent by Rust.
+    verb("sweep", HostInput, None),
+    verb("full_screen", HostInput, Some(Window)),
+    verb("focus", HostInput, Some(Window)),
+    verb("frontmost", Condition, Some(Window)),
+    verb("minimise", HostInput, Some(Window)),
+    verb("hide_app", HostInput, Some(Window)),
+    verb("sidebar_width", HostInput, Some(Sidebar)),
 ];

@@ -235,11 +235,12 @@ impl Cmd for Discard {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let (access, actor, level, events) = (cx.access, cx.actor, cx.level, &mut *cx.events);
         access.with(|s| {
             let id = select(s, tab)?;
+            refuse_unreadable(s, id, actor, "discarded")?;
             refuse_discard_of_owners_edits(s, id, level)?;
-            let had_any = s.page_edits(id).is_some();
+            let had_any = s.edits_summary(id).is_some();
             s.discard_edits(id);
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
@@ -555,11 +556,12 @@ impl Cmd for ClearHistory {
         json!({ "tab": super::log_tab(&self.tab) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (level, events) = (cx.level, &mut *cx.events);
+        let (actor, level, events) = (cx.actor, cx.level, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
+            refuse_unreadable(s, id, actor, "cleared")?;
             refuse_discard_of_owners_edits(s, id, level)?;
-            let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
+            let had_any = s.edits_summary(id).is_some_and(|summary| summary.undo > 0 || summary.redo > 0);
             s.clear_history(id, recto_session::ClearReason::UserAsked);
             // Announced when there was history to clear, and only then (R2.3, by A2's rule).
             if had_any {

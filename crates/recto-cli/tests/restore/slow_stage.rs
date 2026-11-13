@@ -22,14 +22,14 @@ pub(crate) fn make_rich_lean(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["back"]);
     run.ok(&["qa", "zoom", "1.7"]);
     run.ok(&["qa", "scroll", "137"]);
-    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    run.ok(&["qa", "as-person", "page rotate 2 --by 90"]);
     run.ok(&["page", "delete", "5"]);
     run.ok(&["page", "move", "6", "--to", "2"]);
     run.ok(&["page", "insert", files[1].0.to_str().unwrap(), "--at", "3"]);
-    run.ok(&["qa", "owner-edit", "delete:9"]);
+    run.ok(&["qa", "as-person", "page delete 9"]);
     run.ok(&["page", "rotate", "3", "--by", "90"]);
     run.ok(&["undo"]);
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "undo"]);
     // The second: another zoom, a layout and folded contents.
     run.ok(&["tap", "#2"]);
     run.ok(&["view", "--layout", "two-up-cover"]);
@@ -55,11 +55,11 @@ pub(crate) fn make_rich_lean(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["qa", "sidebar-width", "318"]);
     run.ok(&["qa", "panel", "toggle"]);
     run.ok(&["qa", "full-screen", "on"]);
-    run.ok(&["qa", "find", "open"]);
-    run.ok(&["qa", "find-query", "ran this"]);
+    run.ok(&["qa", "as-person", "find --open"]);
+    run.ok(&["qa", "as-person", "find \"ran this\""]);
     run.ok(&["qa", "find-draft", "typed but not run"]);
     run.ok(&["qa", "focus", "find"]);
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["edit", "mode", "on"]);
     run.ok(&["qa", "view-rotation", "1"]);
     run.settled();
 }
@@ -92,6 +92,6 @@ fn everything_comes_back_after_a_quit_when_every_wait_is_late() {
     }
     assert_eq!(after["session"]["find"]["draft"], "typed but not run");
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
-    run.ok(&["qa", "owner-edit", "redo"]);
+    run.ok(&["qa", "as-person", "redo"]);
     run.quit();
 }

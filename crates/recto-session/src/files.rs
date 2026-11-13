@@ -10,7 +10,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Words for what's wrong with a tab's file, if anything is.
     pub fn tab_notice_message(&self, id: TabId) -> Option<&'static str> {
-        tab_notice_words(self.tab(id)?, self.has_list(id))
+        tab_notice_words(self.tab(id)?, self.lists.has_list(id))
     }
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
@@ -23,7 +23,7 @@ impl<L: DocLoader> Session<L> {
                 tab.folds = None;
             }
         }
-        let has_edits = self.has_list(id);
+        let has_edits = self.lists.has_list(id);
         match status {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
@@ -58,7 +58,7 @@ impl<L: DocLoader> Session<L> {
                 if has_edits && !self.is_edited(id) {
                     self.clear_history(id, ClearReason::FileChanged);
                 }
-                let has_edits = self.has_list(id);
+                let has_edits = self.lists.has_list(id);
                 if let Some(tab) = self.tab_mut(id) {
                     if !has_edits {
                         tab.file.stamp = Some(now);

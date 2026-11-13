@@ -1,6 +1,7 @@
 //! **Bringing the window up to date:** what the session thread publishes after each pass, and the steps it takes on the way.
 
 use super::*;
+use recto_session::trail::Stop;
 
 /// A change to how pages are shown, as `recto view` makes it: announced only if something changed (R2.3, accident A2), as `view`'s is.
 pub fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut ViewSettings)) {
@@ -64,12 +65,14 @@ pub fn notice(inner: &Inner, words: &str) {
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
-pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: &PaneSnapshot) {
+/// Says the jump it sent, if it sent one, with the place clock the send came to; a jump it didn't send, as while the tab's file is being looked at, is left
+/// waiting.
+pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: &PaneSnapshot) -> Option<(TabId, Stop, u64)> {
     let id = shown.id;
     // Its file's being looked at: nothing goes on the page until that's known.
     let holding = *lock(&inner.life.holding_tab) == Some(id) && synced.tab.is_none();
     if holding {
-        return;
+        return None;
     }
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
         inner.queue_those_leaving();
@@ -105,14 +108,14 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         synced.map = shown.map.clone();
         synced.page = shown.page;
         synced.warm = shown.warm.clone();
-        send_jump(engine, shown);
-        return;
+        return send_jump(engine, shown);
     }
     if synced.spread != Some(shown.spread) {
         engine.set_spread(reader_spread(shown.spread));
         synced.spread = Some(shown.spread);
     }
-    if send_jump(engine, shown) {
+    let sent = send_jump(engine, shown);
+    if sent.is_some() {
         synced.page = shown.page;
     } else if synced.page != shown.page {
         engine.jump_to(shown.page);
@@ -123,19 +126,48 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         engine.set_warm(&shown.warm);
         synced.warm = shown.warm.clone();
     }
+    sent
 }
 
 /// **A jump lands where it says,** on its page and as far down it: even on the page the reader's on already, as Back to a place higher up the same page
 /// does, and on a tab shown anew in the same look, which is shown at its page and the place kept there, the jump being newer (the red `main` of CI run
-/// 43411305187: Forward to 0.8 of the way down page 5 landed at the 0.3 kept there). Says whether there was one.
-fn send_jump(engine: &Engine, shown: &PaneSnapshot) -> bool {
-    let Some(stop) = shown.jump else { return false };
-    engine.jump_within(stop.page, f64::from(stop.within));
-    true
+/// 43411305187: Forward to 0.8 of the way down page 5 landed at the 0.3 kept there). Says the jump if it went to the page view, with the place clock its
+/// send came to.
+fn send_jump(engine: &Engine, shown: &PaneSnapshot) -> Option<(TabId, Stop, u64)> {
+    let stop = shown.jump?;
+    let stamp = engine.jump_within(stop.page, f64::from(stop.within))?;
+    Some((shown.id, stop, stamp))
+}
+
+/// **A page view for each pane, and no more,** each showing what the session has for it: one that's gone ends with what it held. The jumps sent are said
+/// to the session ([`places::jumps_sent`]); one not sent, as on a pane with no page view yet, waits for the next look. Says whether any pane shows another
+/// tab than it did.
+fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], paper: PaperKind) -> bool {
+    let count = panes.len().max(1);
+    if synced.count != count {
+        let window_open = !lock(&inner.window.app).window_closed;
+        inner.panes.set_count(&inner.engine, count, paper, window_open);
+        synced.count = count;
+    }
+    synced.panes.resize_with(count, PaneSynced::default);
+    if panes.is_empty() && synced.panes[0].tab.take().is_some() {
+        inner.engine.deactivate();
+    }
+    let mut changed = false;
+    let mut sent = Vec::new();
+    for (pane, snapshot) in panes.iter().enumerate() {
+        let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
+        changed |= synced.panes[pane].tab != Some(snapshot.id);
+        sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot));
+    }
+    places::jumps_sent(inner, &sent);
+    changed
 }
 
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
+    #[cfg(any(test, feature = "testkit"))]
+    inner.serving.place_seams.look_began();
     let nothing_held = lock(&inner.life.holding_tab).is_none();
     // A tab about to be shown in a pane that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
     let panes_now = inner.host.session.with_session(|session| session.panes());
@@ -146,6 +178,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     // What the page views say of where they are goes in the session first, the tabs they're about to let go of among it, as a cold tab holds nothing there.
     let said = places::Said::read(inner, true);
+    #[cfg(any(test, feature = "testkit"))]
+    inner.serving.place_seams.look_read();
     let held = {
         let published = lock(&inner.published);
         crate::Held {
@@ -196,24 +230,10 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         synced.active = active;
     }
-    // A page view for each pane, and no more: one that's gone ends with what it held.
-    let count = facts.panes.len().max(1);
-    if synced.count != count {
-        let window_open = !lock(&inner.window.app).window_closed;
-        inner.panes.set_count(&inner.engine, count, paper, window_open);
-        synced.count = count;
-    }
-    synced.panes.resize_with(count, PaneSynced::default);
-    if facts.panes.is_empty() && synced.panes[0].tab.take().is_some() {
-        inner.engine.deactivate();
-    }
-    let mut panes_changed = false;
-    for (pane, snapshot) in facts.panes.iter().enumerate() {
-        let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
-        panes_changed |= synced.panes[pane].tab != Some(snapshot.id);
-        show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot);
-    }
-    inner.panes.set_sent(places::sent_to_views(synced));
+    let panes_changed = show_in_panes(inner, synced, &facts.panes, paper);
+    #[cfg(any(test, feature = "testkit"))]
+    inner.serving.place_seams.look_done();
+    inner.panes.set_given(places::given_to_views(synced));
     let shown_tabs: Vec<TabId> = facts.panes.iter().map(|shown| shown.id).collect();
     let reading_pane = active.and_then(|id| shown_tabs.iter().position(|shown| *shown == id)).unwrap_or(0);
     let comparing = comparison.is_some();

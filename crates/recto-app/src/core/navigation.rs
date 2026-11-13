@@ -22,6 +22,25 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     }
 }
 
+/// **Going's menu ids** ([`super::menu_rows`]): Back and Forward are `back` and `forward` on the tab being read; Go to Page opens the window's field.
+pub fn row<'a>(_: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
+    match (asked.action.as_ref()?, asked.id) {
+        (menus::Action::Step(back), _) => Some(menu_rows::Row::command(step(*back))),
+        (menus::Action::Host(host), "go.page") => Some(menu_rows::Row::host(
+            "opens the go-to field for the person to type in; what's typed there is `PageTyped`",
+            menu_rows::Agents::ItsOwn("`recto goto <page>`"),
+            *host,
+        )),
+        _ => None,
+    }
+}
+
+/// Back, or Forward, in the tab being read.
+fn step(back: bool) -> Command {
+    let tab = "active".to_string();
+    if back { Back { tab }.into() } else { Forward { tab }.into() }
+}
+
 fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64>) -> Command {
     Goto {
         tab: format!("#{}", tab.0),
@@ -52,9 +71,7 @@ impl Inner {
 
     /// Back or Forward in the tab showing: ⌘[ and ⌘], a swipe, or a link that says so.
     pub fn step_for_person(self: &Arc<Self>, back: bool) {
-        let tab = "active".to_string();
-        let command: Command = if back { Back { tab }.into() } else { Forward { tab }.into() };
-        person::submit(self, command);
+        person::submit(self, step(back));
     }
 
     /// The sheet asking about a web or email address was answered, by its id: with Open, the address, exactly as the sheet showed it; with Cancel, nothing.

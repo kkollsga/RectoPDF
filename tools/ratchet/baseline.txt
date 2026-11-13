@@ -1,7 +1,6 @@
 apptest crates/recto-cli/tests 201
-ffi crates/recto-ffi/src 2288
+ffi crates/recto-ffi/src 2276
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 1505
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
@@ -11,7 +10,7 @@ fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
 fn crates/recto-agent/src/selecting.rs::run_counted 157
-fn crates/recto-app/src/core/reconcile.rs::reconcile 239
+fn crates/recto-app/src/core/reconcile.rs::reconcile 229
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187
@@ -39,7 +38,7 @@ sleep crates/recto-agent/src/agreement.rs 1
 sleep crates/recto-agent/src/generated.rs 1
 sleep crates/recto-agent/src/index.rs 1
 sleep crates/recto-agent/src/render.rs 1
-sleep crates/recto-app/src/core/qa.rs 5
+sleep crates/recto-app/src/core/qa/mod.rs 5
 sleep crates/recto-app/src/core/session.rs 2
 sleep crates/recto-app/src/core/sleeper.rs 2
 sleep crates/recto-app/src/core/updates.rs 1
@@ -106,12 +105,12 @@ struct crates/recto-session/src/edit.rs::PageEdits 17
 struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
-type crates/recto-app/src::Inner 123
+type crates/recto-app/src::Inner 113
 type crates/recto-ffi/src::AppCore 135
 type crates/recto-reader/src::Engine 81
 type crates/recto-reader/src::Reader 139
 type crates/recto-render-service/src::DocRenderer 64
 type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 69
-type crates/recto-session/src::Session 192
+type crates/recto-session/src::Session 190
 type crates/recto-update/src::Updater 74

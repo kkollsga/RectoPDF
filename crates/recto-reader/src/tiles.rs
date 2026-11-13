@@ -37,6 +37,7 @@ use host::HostQueue;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind, Work};
 use place::Place;
+pub use place::place_stamp;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
@@ -590,6 +591,7 @@ impl Reader {
         let was = self.viewport;
         self.viewport = viewport;
         self.counts.viewport_steps += 1;
+        place::tick();
         self.place.scrolled_to = viewport.scrolled_to.max(self.place.scrolled_to);
         // A new window's first word, before it's been told anything: the top of the document at no zoom. That's nobody's place.
         if !self.window_open {
