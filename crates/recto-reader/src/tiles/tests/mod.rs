@@ -1,5 +1,6 @@
 use super::cache::{MAX_KEPT_BYTES, MAX_KEPT_PREVIEWS};
 use super::*;
+use super::{MAX_ISSUES_REMEMBERED, MAX_SEEN_REMEMBERED};
 use crate::layout::PageBox;
 use recto_index::select::Range;
 use recto_platform::surface::PixelSurface;
@@ -694,4 +695,84 @@ mod cost {
             "{allocations} allocations in 50 steps, against {SCROLL_ALLOCATIONS_ON_MAIN} on main"
         );
     }
+}
+
+/// Failure: the page view remembers every page it has drawn, so a file that claims millions of pages, scrolled through, holds memory for each one (rules 1 and 6).
+#[test]
+fn the_pages_remembered_as_seen_stay_bounded() {
+    let mut reader = reader_on(10);
+    let doc = reader.docs.get_mut(&1).unwrap();
+    let cap = u32::try_from(MAX_SEEN_REMEMBERED).unwrap();
+    for page in 0..=cap {
+        doc.note_seen(page);
+    }
+    assert!(doc.seen.len() <= MAX_SEEN_REMEMBERED, "{} remembered", doc.seen.len());
+    assert!(doc.seen.contains(&cap), "the last page drawn is remembered");
+}
+
+/// Failure: the page view remembers the problem of every page that failed, so a hostile file whose millions of pages all fail holds memory for each (rules 1 and 6).
+#[test]
+fn the_pages_remembered_as_failing_stay_bounded() {
+    let mut reader = reader_on(8_000_000);
+    let cap = u32::try_from(MAX_ISSUES_REMEMBERED).unwrap();
+    for page in 0..=cap {
+        reader.note_issue(1, 1_000 + page, "It failed.".to_string(), false);
+    }
+    let issues = &reader.docs[&1].issues;
+    assert!(issues.len() <= MAX_ISSUES_REMEMBERED, "{} remembered", issues.len());
+    assert!(issues.contains_key(&(1_000 + cap)), "the last failure is remembered");
+}
+
+/// Failure: a failed page whose problem was let go at the cap is asked for again on every look once it's back in view, so the engine never rests; or a page in view loses its problem at the cap and is asked for at once.
+#[test]
+fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
+    let mut reader = reader_on(20);
+    reader.note_issue(1, 0, "It failed.".to_string(), false);
+    let mut asked = 0;
+    let run = |reader: &mut Reader, asked: &mut u32| {
+        for _ in 0..1_000 {
+            reader.host.take_ops();
+            reader.applied();
+            let Some(job) = reader.next_job() else { break };
+            let outcome = if job.position == 0 {
+                *asked += 1;
+                Outcome::PageFailed {
+                    message: "It failed again.".to_string(),
+                    may_pass: false,
+                }
+            } else {
+                match &job.kind {
+                    JobKind::Size => Outcome::Size(letter()),
+                    JobKind::Traits => Outcome::Heavy(false),
+                    JobKind::Links => Outcome::Links(None),
+                    _ => Outcome::Drawn {
+                        kind: TileKind::Colour,
+                        low_res: None,
+                    },
+                }
+            };
+            reader.finish(job, outcome);
+            reader.drain(MAX_ATTACH_PER_TURN);
+            reader.applied();
+        }
+    };
+    run(&mut reader, &mut asked);
+    assert_eq!(asked, 0, "its problem is remembered");
+    reader.set_viewport(view(15.0 * 1100.0));
+    run(&mut reader, &mut asked);
+    let in_view = *reader.visible_pages(reader.doc().unwrap()).start();
+    reader.note_issue(1, in_view, "It failed.".to_string(), false);
+    // Enough other failures to pass the cap, none of them near the view: page 0 is let go.
+    for page in 0..u32::try_from(MAX_ISSUES_REMEMBERED).unwrap() {
+        reader.note_issue(1, 100 + page, "It failed.".to_string(), false);
+    }
+    assert!(!reader.docs[&1].issues.contains_key(&0), "let go at the cap");
+    assert!(reader.docs[&1].issues.contains_key(&in_view), "what's in view keeps its own");
+    reader.set_viewport(view(0.0));
+    run(&mut reader, &mut asked);
+    for _ in 0..20 {
+        reader.set_viewport(view(0.0));
+        run(&mut reader, &mut asked);
+    }
+    assert_eq!(asked, 1, "asked for once on its way back, and remembered again");
 }

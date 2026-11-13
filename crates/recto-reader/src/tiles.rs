@@ -52,6 +52,10 @@ const SCALE_SLACK: f64 = 0.005;
 const TRY_AGAIN_AFTER: Duration = Duration::from_secs(3);
 /// Pages remembered as heavy or not.
 const MAX_HEAVY_REMEMBERED: usize = 4096;
+/// Pages remembered as drawn at least once, which only the QA count of blank steps on pages seen before goes by. A file can claim 8 million pages, and a long scroll draws page after page, so past this they're all forgotten at once, as `heavy` is. **What that costs is the count's accuracy:** a page drawn before then counts as never seen until it's drawn again. As many as the layout keeps sizes for, far past any book read through in one sitting, and about 0.6 MiB a held tab at the most.
+const MAX_SEEN_REMEMBERED: usize = crate::layout::MAX_OVERRIDES;
+/// Pages whose problem is remembered, so they aren't asked for again. Past it, the problems of pages away from the view go: such a page is asked for once more when it's back in view, and its answer remembered again, so it's never asked on every look. 4,096 failing pages is far past what a damaged real file has, and about 0.5 MiB a held tab at the most.
+const MAX_ISSUES_REMEMBERED: usize = 4096;
 /// Pages either side of what's visible whose sizes are asked for, so layout near the reader settles early.
 const SIZES_AROUND: u32 = 2;
 
@@ -206,6 +210,16 @@ struct DocView {
     left_pictures: Option<Vec<RawPicture>>,
     /// The document's width as the host was last told it: the window's, or a fold-out's while its row is in view.
     width_shown: f64,
+}
+
+impl DocView {
+    /// A page's been drawn, for the QA count of blank steps on pages seen before. Held to [`MAX_SEEN_REMEMBERED`].
+    fn note_seen(&mut self, page: u32) {
+        if self.seen.len() >= MAX_SEEN_REMEMBERED && !self.seen.contains(&page) {
+            self.seen.clear();
+        }
+        self.seen.insert(page);
+    }
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -1029,7 +1043,15 @@ impl Reader {
     }
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
+        // What the view is on, and the pages around it whose sizes are asked for, keep theirs past the cap: those are the pages that would be asked for again at once.
+        let near = self.doc().filter(|doc| doc.tab == tab).map(|doc| {
+            let visible = self.visible_pages(doc);
+            visible.start().saturating_sub(SIZES_AROUND)..=visible.end().saturating_add(SIZES_AROUND)
+        });
         if let Some(doc) = self.docs.get_mut(&tab) {
+            if doc.issues.len() >= MAX_ISSUES_REMEMBERED && !doc.issues.contains_key(&page) {
+                doc.issues.retain(|known, _| near.as_ref().is_some_and(|near| near.contains(known)));
+            }
             doc.issues.insert(
                 page,
                 Issue {
