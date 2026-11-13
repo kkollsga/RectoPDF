@@ -52,7 +52,7 @@ impl SnapshotTool {
         self.page_size = page_size;
     }
 
-    /// The page the button went down on, which a drag's points are given on: the host converts a point over another page onto this one (`Engine::point_on_given_page`), so a box stays on one page.
+    /// The page the button went down on, which a drag's points are given on: the host converts a point over another page onto this one (`Engine::points().on_given_page`), so a box stays on one page.
     pub fn pressed_page(&self) -> Option<u32> {
         self.press.map(|press| press.page)
     }

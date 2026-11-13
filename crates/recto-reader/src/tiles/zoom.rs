@@ -95,7 +95,7 @@ pub fn zoom_after_scroll(current: f64, points: f64) -> f64 {
 impl Reader {
     /// Zooms, wherever it's asked from. The host keeps the middle of the view where it is, and tiles stretch until new ones come, as with any zoom.
     pub fn zoom(&mut self, zoom: Zoom) -> Option<f64> {
-        let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
+        let doc = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab))?;
         let value = match zoom {
             Zoom::In => doc.place.magnification * ZOOM_STEP,
             Zoom::Out => doc.place.magnification / ZOOM_STEP,
@@ -113,15 +113,5 @@ impl Reader {
         super::place::tick();
         self.host.ops.push_back(Op::Magnify { value });
         Some(value)
-    }
-
-    /// The tab showing's fit, if one is.
-    pub fn fit(&self) -> Option<f64> {
-        self.doc().map(|doc| doc.layout.fit())
-    }
-
-    /// The tab showing's magnification, if one is.
-    pub fn magnification(&self) -> Option<f64> {
-        self.doc().map(|doc| doc.place.magnification)
     }
 }

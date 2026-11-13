@@ -18,7 +18,7 @@ pub const SLEEP_KIND: &str = "recto-sleep";
 pub const MAX_SLEEP_PICTURES: usize = 12;
 /// The most one picture can be, unpacked. As a preview is.
 pub const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
-/// The most a picture takes up on disk (owner, 2026-11-07: "reduce SSD wear as much as we can"). It's there for a moment, so a page that doesn't pack to this goes at a lower resolution, and fewer colours, till it does: see [`pack_picture`]. A page of text never comes near it.
+/// The most a picture takes up on disk (owner, 2026-11-07: "reduce SSD wear as much as we can"). It's there for a moment, so a page that doesn't pack to this goes at a lower resolution, and fewer colours, till it does: see `pack_picture`. A page of text never comes near it.
 pub const MAX_PACKED_PICTURE: usize = 100 * 1024;
 /// The most a file can be read as.
 pub const MAX_SLEEP_FILE_BYTES: usize = 32 * 1024 * 1024;

@@ -10,7 +10,7 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
         end: recto_index::select::Place { page: 6, at: 4 },
     };
     reader.reveal_range(range);
-    assert_eq!(reader.selection_range(), Some(range), "selected");
+    assert_eq!(reader.pointer.selection_range(), Some(range), "selected");
     let to_page = reader
         .host
         .take_ops()
@@ -27,7 +27,7 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
         .rev()
         .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
         .expect("then the hit, once its place is known");
-    let doc = reader.doc().unwrap();
+    let doc = reader.docs.shown().unwrap();
     let top = doc.layout.rect(6).y + (792.0 - 50.0) * doc.layout.fit();
     let height = view(0.0).height;
     assert!(
@@ -76,11 +76,15 @@ fn a_jump_the_session_sends_drops_a_hit_waiting_for_its_text() {
         reader.jump_to(1, within);
         let back = last_scroll(&mut reader).expect("page 2");
         reader.set_viewport(view(back));
-        reader.take_moved_page();
+        reader.place.take_moved_page();
         reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
         assert_eq!(last_scroll(&mut reader), None, "{what}: the text of the hit's page moves nothing");
-        assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(1), "{what}: still where the jump put it");
-        assert_eq!(reader.take_moved_page(), None, "{what}: and tells of no move");
+        assert_eq!(
+            reader.docs.shown().map(|doc| doc.reading_anchor()).map(|(page, _)| page),
+            Some(1),
+            "{what}: still where the jump put it"
+        );
+        assert_eq!(reader.place.take_moved_page(), None, "{what}: and tells of no move");
     }
     // The session's jump to the hit's own page, as the look after ⌘G sends it, leaves the hit to be put a third down once its text is in.
     let mut reader = reader_on(10);
@@ -99,7 +103,7 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     use recto_core::nav::{Link, LinkTarget, PageLinks};
     let mut reader = reader_on(10);
     settle(&mut reader);
-    let (x, y) = reader.document_point(0, 50.0, 20.0).unwrap();
+    let (x, y) = reader.docs.shown().unwrap().document_point(0, 50.0, 20.0).unwrap();
     assert_eq!(reader.pointer_link(x, y), None, "not read yet");
     let job = reader.next_job().expect("its links are asked for first");
     assert!(matches!(job.kind, JobKind::Links) && job.position == 0, "{job:?}");
@@ -113,13 +117,13 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     reader.finish(job, Outcome::Links(Some(Arc::new(links))));
     let hit = reader.pointer_link(x, y).expect("now it's known");
     assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
-    assert_eq!(reader.position_in_same_file(0, 4), Some(4));
+    assert_eq!(reader.docs.shown().unwrap().position_in_same_file(0, 4), Some(4));
     reader.selection_press(x, y, 1, false);
-    reader.selection_release();
-    assert_eq!(reader.take_clicked_link().map(|hit| hit.page), Some(0));
+    reader.pointer.selection_release();
+    assert_eq!(reader.pointer.take_clicked_link().map(|hit| hit.page), Some(0));
     // Another tab: what's known goes with the one that was showing.
     reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
-    assert_eq!(reader.link_pages_held(), 0);
+    assert_eq!(reader.pointer.link_pages_held(), 0);
 }
 
 /// Failure: a hidden-text check that takes seconds keeps the page the reader has just scrolled to blank, over and over on a hostile file, as a running text job couldn't be told to stop. Its first read, which is quick and is what the reader's hand is waiting on, isn't given up for a scroll.
@@ -130,7 +134,7 @@ fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
     reader.select_all();
     let first = settle_to_text(&mut reader).expect("what shows is read");
     assert!(matches!(first.kind, JobKind::Text { check: false }), "{first:?}");
-    reader.note_started(&first, None);
+    reader.work.note_started(&first, None);
     reader.set_viewport(view(40_000.0));
     assert!(reader.running_is_wanted(), "a read stays, as what's showing needs it");
     reader.work.running = None;
@@ -140,7 +144,7 @@ fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
     reader.finish(first, Outcome::Text { text, checked: false });
     let check = settle_to_text(&mut reader).expect("selected and showing, so it's checked");
     assert!(matches!(check.kind, JobKind::Text { check: true }), "{check:?}");
-    reader.note_started(&check, None);
+    reader.work.note_started(&check, None);
     assert!(reader.running_is_wanted(), "nothing else is wanted");
     // A scroll to pages with nothing drawn.
     let asked = reader.counts.cancels_asked;

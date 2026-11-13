@@ -1,7 +1,7 @@
 //! **The tile cache:** what's drawn and kept, by key, which of it is on a layer, and what's let go, least recently used first, within the byte and count budgets every view of a window shares.
 
 use super::host::HostQueue;
-use super::{DocView, DrawKind, Op, Reader};
+use super::{DrawKind, Op, Reader};
 use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{TILE_EDGE, TileRect};
@@ -31,6 +31,36 @@ pub(super) struct TileKey {
 // size: one per tile in `cover`, up to `MAX_ENTRIES` of them and more for a region's tiles. Held at what it is today, so a field added to it is a deliberate change.
 const _: () = assert!(size_of::<TileKey>() <= 20, "a tile's key in the cache grew");
 
+impl TileKey {
+    /// The key of a page's tile at a scale, on this paper. On the scroll path: a few stores, inlined.
+    #[inline]
+    pub(super) fn tile(tab: u32, page: u32, scale: f32, (column, row): (u16, u16), paper: PaperKind) -> Self {
+        Self {
+            tab,
+            page,
+            scale_bits: scale.to_bits(),
+            column,
+            row,
+            paper,
+            preview: false,
+        }
+    }
+
+    /// The key of a page's preview, on this paper, whatever its scale.
+    #[inline]
+    pub(super) fn preview(tab: u32, page: u32, paper: PaperKind) -> Self {
+        Self {
+            tab,
+            page,
+            scale_bits: 0,
+            column: 0,
+            row: 0,
+            paper,
+            preview: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct LowResNote {
     pub(super) message: &'static str,
@@ -53,15 +83,16 @@ pub(super) struct Entry {
     pub(super) rgb: Option<u32>,
     pub(super) crop: (f64, f64),
     pub(super) low_res: Option<LowResNote>,
-    /// Which version of its file it was drawn from, as the worker said: see [`DocView::versions`]. `None` when nothing's said, as a picture from a sleep file written before this was known.
+    /// Which version of its file it was drawn from, as the worker said: see [`super::doc::DocDrawing::versions`]. `None` when nothing's said, as a picture from a sleep file written before this was known.
     pub(super) version: Option<u64>,
     pub(super) attached: bool,
     pub(super) discardable: bool,
     pub(super) last_used: u64,
 }
 
+/// Built only in the tiles module ([`TileCache::new`]): the engine reaches it through `Reader`'s field for its share and QA's discard, and can neither build one nor put another in its place.
 #[derive(Debug)]
-pub(super) struct TileCache {
+pub(crate) struct TileCache {
     pub(super) entries: HashMap<u64, Entry>,
     pub(super) cover: HashMap<TileKey, u64>,
     pub(super) next_id: u64,
@@ -75,6 +106,10 @@ pub(super) struct TileCache {
     /// Lists of a page's tiles on its layer, emptied when the page went off the view and kept for the next page that comes on, so scrolling a page in or out makes no list. At most [`SPARE_LISTS`], each of at most [`SPARE_LIST_ROOM`].
     pub(super) spare: Vec<Vec<u64>>,
 }
+
+// size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<TileCache>() <= 240, "the tile cache grew");
 
 /// Emptied lists of a page's tiles kept for pages to come: about as many pages as come and go in a scroll step, side by side and zoomed out.
 pub(super) const SPARE_LISTS: usize = 8;
@@ -166,6 +201,35 @@ impl TileCache {
         keys
     }
 
+    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now, told to `host`.
+    pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue) {
+        let views = views.clamp(1, 8);
+        if views != self.share {
+            self.share = views;
+            self.evict(host);
+        }
+    }
+
+    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
+    pub(crate) fn empty_discardable(&mut self) -> usize {
+        let mut emptied = 0;
+        for entry in self.entries.values().filter(|entry| entry.discardable) {
+            if let Some(surface) = &entry.surface {
+                surface.empty_now();
+                emptied += 1;
+            }
+        }
+        emptied
+    }
+
+    /// Everything drawn of a tab goes, told to `host`.
+    pub(super) fn drop_tab(&mut self, tab: u32, host: &mut HostQueue) {
+        let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
+        for id in ids {
+            self.forget(id, host);
+        }
+    }
+
     /// Least recently used first, with a page's preview outliving its tiles: it's a fraction of their size, and it's what keeps a page seen a while ago from coming back blank. Bounded, as the entries are, and a look along them only when something has just gone off a layer.
     pub(super) fn evict(&mut self, host: &mut HostQueue) {
         loop {
@@ -199,37 +263,11 @@ impl TileCache {
 }
 
 impl Reader {
-    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now.
-    pub fn set_share(&mut self, views: usize) {
-        let views = views.clamp(1, 8);
-        if views != self.cache.share {
-            self.cache.share = views;
-            self.cache.evict(&mut self.host);
-        }
-    }
-
-    /// For QA: what the system does when it takes back memory marked discardable, with no word to the app. Every surface marked so is emptied. Says how many.
-    pub fn empty_discardable(&mut self) -> usize {
-        let mut emptied = 0;
-        for entry in self.cache.entries.values().filter(|entry| entry.discardable) {
-            if let Some(surface) = &entry.surface {
-                surface.empty_now();
-                emptied += 1;
-            }
-        }
-        emptied
-    }
-
-    /// How many surfaces are held, for QA.
-    pub fn entry_count(&self) -> usize {
-        self.cache.entries.len()
-    }
-
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
     pub fn memory_pressure(&mut self, critical: bool) {
         // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
         if critical {
-            for doc in self.docs.values_mut() {
+            for doc in self.docs.views.values_mut() {
                 doc.drawing.left_pictures = None;
             }
         }
@@ -248,43 +286,12 @@ impl Reader {
         }
     }
 
-    pub(super) fn drop_tab_entries(&mut self, tab: u32) {
-        let ids: Vec<u64> = self.cache.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
-        for id in ids {
-            self.cache.forget(id, &mut self.host);
-        }
-    }
-
-    pub(super) fn key(&self, doc: &DocView, page: u32, scale: f32, (column, row): (u16, u16)) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: scale.to_bits(),
-            column,
-            row,
-            paper: self.paper,
-            preview: false,
-        }
-    }
-
-    pub(super) fn preview_key(&self, doc: &DocView, page: u32) -> TileKey {
-        TileKey {
-            tab: doc.tab,
-            page,
-            scale_bits: 0,
-            column: 0,
-            row: 0,
-            paper: self.paper,
-            preview: true,
-        }
-    }
-
     pub(super) fn attach(&mut self, id: u64, below: bool) -> bool {
         self.cache.clock += 1;
         let clock = self.cache.clock;
         // Of another version of its file than the one there is now: it goes, and its page is drawn again.
         if let Some(entry) = self.cache.entries.get(&id)
-            && !self.is_current(entry)
+            && !self.docs.is_current(entry)
         {
             self.cache.forget(id, &mut self.host);
             return false;
@@ -374,7 +381,7 @@ impl Reader {
             at: Instant::now(),
         });
         self.cache.clock += 1;
-        let version = self.version_of_page(tab, page);
+        let version = self.docs.version_of_page(tab, page);
         let entry = Entry {
             id,
             tab,
@@ -400,7 +407,7 @@ impl Reader {
             }
         }
         self.cache.entries.insert(id, entry);
-        if let Some(doc) = self.docs.get_mut(&tab) {
+        if let Some(doc) = self.docs.views.get_mut(&tab) {
             doc.drawing.note_seen(page);
         }
         id
@@ -412,7 +419,7 @@ impl Reader {
         let page = entry.page;
         let still_used = TileCache::keys_of(entry).iter().any(|key| self.cache.cover.get(key) == Some(&old));
         if !still_used {
-            if entry.attached && self.hot == Some(tab) {
+            if entry.attached && self.docs.hot == Some(tab) {
                 self.detach(old, page);
             }
             if let Some(entry) = self.cache.entries.get(&old)

@@ -149,6 +149,21 @@ impl Tabs {
         self.dirs.len()
     }
 
+    /// **The host's confinement cell, put back if a step it ran with the session in hand swapped another session in** (R3.5a, R3.5b): the host's cell
+    /// is the authority, as it's what the host reads with no lock. Says whether it was the session's already, which is always so unless something replaced
+    /// the whole session. Never widens: a cell that would let the session use more than it may now isn't taken (`Confinement::may_replace`), and the
+    /// session keeps its own; a narrower one, the host's, is, so a session swapped in on wider folders is pulled back inside the host's. The crate's: only
+    /// a [`crate::held::Held`]'s guard calls it, with its host's own cell, so nothing outside can put a session on a cell of its choosing.
+    pub(crate) fn keep_confinement(&mut self, host: &Confinement) -> bool {
+        if self.confinement.is(host) {
+            return true;
+        }
+        if host.may_replace(&self.confinement) {
+            self.confinement = host.shared();
+        }
+        false
+    }
+
     /// The session's confinement: see [`crate::confined`].
     pub(crate) fn confinement(&self) -> &Confinement {
         &self.confinement
@@ -308,20 +323,6 @@ impl crate::parts::PartMut<'_, Tabs> {
             }
             _ => false,
         }
-    }
-
-    /// **The host's confinement cell, put back if a step it ran with the session in hand swapped another session in** (R3.5a): the host's cell is the
-    /// authority, as it's what the host reads with no lock. Says whether it was the session's already, which is always so unless something replaced the
-    /// whole session. Never widens: a cell that would let the session use more than it may now isn't taken (`Confinement::may_replace`), and the
-    /// session keeps its own.
-    pub fn keep_confinement(&mut self, host: &Confinement) -> bool {
-        if self.0.confinement.is(host) {
-            return true;
-        }
-        if host.may_replace(&self.0.confinement) {
-            self.0.confinement = host.shared();
-        }
-        false
     }
 
     /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.

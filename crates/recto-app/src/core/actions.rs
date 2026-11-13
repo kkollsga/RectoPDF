@@ -57,7 +57,7 @@ impl Inner {
             Enable::Always => true,
             Enable::Document | Enable::Selection => {
                 let reading = self.panes.reading_engine(&self.engine);
-                menus::enabled_by_reading(rule, reading.has_document(), reading.has_selection()).unwrap_or(false)
+                menus::enabled_by_reading(rule, reading.points().has_document(), reading.selection().has_any()).unwrap_or(false)
             }
             Enable::Update => self.updates.menu_item().enabled,
             Enable::Save => self.can_save(),
@@ -112,7 +112,7 @@ impl Inner {
     /// The reader has dismissed the notice, or its time's up: every notice that goes by itself goes.
     pub fn dismiss_selection_notice(&self) {
         for engine in self.panes.engines(&self.engine) {
-            engine.dismiss_selection_notice();
+            engine.selection().dismiss_notice();
         }
         lock(&self.window.action_notice).take();
         self.tools.tool.dismiss_notice();

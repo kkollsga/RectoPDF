@@ -30,12 +30,13 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let engine = self.inner.panes.reading_engine(&self.inner.engine);
         let (width_pt, height_pt) = engine
+            .points()
             .page_size_shown(0)
             .map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
         PrintModel {
             tab: reader.shown_tab,
-            pages: engine.page_count(),
-            has_selection: engine.has_selection(),
+            pages: engine.points().page_count(),
+            has_selection: engine.selection().has_any(),
             job_title: reader.document_name,
             width_pt,
             height_pt,
@@ -49,7 +50,7 @@ impl AppCore {
         }
         let model = self.print_model();
         let selection = selection_only
-            .then(|| self.inner.panes.reading_engine(&self.inner.engine).hot_selection())
+            .then(|| self.inner.panes.reading_engine(&self.inner.engine).selection().hot())
             .flatten()
             .and_then(|(_, range)| range)
             .map(|range| (range.start.page, range.end.page));

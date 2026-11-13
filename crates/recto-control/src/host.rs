@@ -15,11 +15,12 @@ use recto_agent::{
 mod own_record;
 #[cfg(test)]
 mod route_tests;
+use recto_session::held::Held;
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// The session, as the server sees it. Called from job threads, never the thread watching the socket.
 pub trait Host: Send + Sync + 'static {
@@ -49,7 +50,9 @@ pub trait Host: Send + Sync + 'static {
 
 /// A session in this process.
 pub struct SessionHost<L = DrawableLoader> {
-    session: Mutex<Session<L>>,
+    /// The session, its lock and the confinement cell this host reads with no lock: every way to the session out of the lock puts the cell back after
+    /// ([`recto_session::held`]).
+    session: Held<L>,
     tabs: AtomicU32,
     indexer: Option<Indexer>,
     generator: Option<Generator>,
@@ -67,9 +70,6 @@ pub struct SessionHost<L = DrawableLoader> {
     effects: std::sync::OnceLock<Effects>,
     /// What takes in where the window's page views are, before a jump: set once by the app, none for a session with no window.
     places: std::sync::OnceLock<Places>,
-    /// Whether the session is confined to a quiet run's folders, the session's own cell ([`recto_session::confined::Confinement::shared`]), so a command asks it with
-    /// no lock.
-    confinement: recto_session::confined::Confinement,
 }
 
 /// What carries a command's [`recto_agent::Effect`] to the window.
@@ -94,7 +94,7 @@ pub fn backups_folder(paths: &StatePaths) -> PathBuf {
 
 /// The session and its indexer, the way a command reaches them.
 struct Hosted<'a, L> {
-    session: &'a Mutex<Session<L>>,
+    session: &'a Held<L>,
     indexer: Option<&'a Indexer>,
     saving: Option<&'a (dyn SaveSupport + Send)>,
     generator: Option<&'a Generator>,
@@ -110,8 +110,6 @@ struct Hosted<'a, L> {
     /// The person's passwords, for their own Find.
     find_keys: Option<&'a recto_agent::find::KeyLookup>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
-    /// The session's confinement, read without its lock.
-    confinement: &'a recto_session::confined::Confinement,
 }
 
 #[cfg(test)]
@@ -125,10 +123,7 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
         #[cfg(test)]
         SESSION_LOCKS.with(|locks| locks.set(locks.get() + 1));
-        let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = step(&mut session);
-        keep_the_hosts_cell(&mut session, self.confinement);
-        result
+        step(&mut self.session.lock())
     }
     fn indexing(&self) -> Option<&dyn Indexing> {
         self.indexer.map(|indexer| indexer as &dyn Indexing)
@@ -169,7 +164,7 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
         self.find_keys.filter(|_| actor.sees_protected()).cloned()
     }
     fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
-        self.confinement.folders().cloned()
+        self.session.confinement().folders().cloned()
     }
 }
 
@@ -193,11 +188,8 @@ impl SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        let session = Session::new(loader);
-        let confinement = session.confinement().shared();
         Self {
-            confinement,
-            session: Mutex::new(session),
+            session: Held::new(Session::new(loader)),
             tabs: AtomicU32::new(0),
             indexer: None,
             generator: None,
@@ -215,8 +207,8 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     /// from a state folder, so there's no host to forget to confine (review of the branch, F7). A guard test fails any other.
     #[must_use]
     pub fn on_state(paths: &StatePaths, loader: L) -> Self {
-        let mut host = Self::new(loader);
-        crate::quiet::confine(host.session.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner), paths);
+        let host = Self::new(loader);
+        crate::quiet::confine(&mut host.session.lock(), paths);
         host
     }
 
@@ -317,7 +309,6 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             answer_read: true,
             find_keys: self.find_keys.get(),
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
-            confinement: &self.confinement,
         }
     }
 
@@ -350,7 +341,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
         let closing = matches!(command, Command::Move(recto_agent::commands::Move::Close(_)))
             .then(|| {
-                let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = self.session.lock();
                 acted_tab(&session, command).and_then(|id| session.tabs().path_of(id))
             })
             .flatten();
@@ -358,51 +349,32 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
             generator.cancel_path(path);
         }
-        let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
+        let tabs = self.session.lock().tabs().len();
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result
     }
 
     /// **The folders this session is confined to, if it is,** asked with no lock: set when the session was made and never changed.
     pub fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
-        self.confinement.folders().cloned()
+        self.session.confinement().folders().cloned()
     }
 
     /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
     pub fn try_with_session<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> Option<R> {
-        let mut session = match self.session.try_lock() {
-            Ok(session) => session,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
-        let result = step(&mut session);
-        keep_the_hosts_cell(&mut session, &self.confinement);
-        Some(result)
+        let mut session = self.session.try_lock()?;
+        Some(step(&mut session))
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
     pub fn with_session<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
         let (result, tabs) = {
-            let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut session = self.session.lock();
             let result = step(&mut session);
-            keep_the_hosts_cell(&mut session, &self.confinement);
             (result, session.tabs().len())
         };
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result
     }
-}
-
-/// **After a step run with the session in hand, the session goes by the host's confinement cell** (R3.5a): the host reads that cell with no lock, so
-/// it's the authority. A step that replaced the whole session (`*session = Session::new(..)`, or a swap with another host's) brought a cell of its own;
-/// the host's is put back, never widening the session ([`recto_session::PartMut::keep_confinement`]). No shipping code does that, so it's a loud failure
-/// in a debug build, and quietly mended in a release one. An `Arc::ptr_eq` when nothing was replaced, under the lock the step already holds.
-fn keep_the_hosts_cell<L: DocLoader>(session: &mut Session<L>, cell: &recto_session::confined::Confinement) {
-    let kept = session.tabs_mut().keep_confinement(cell);
-    debug_assert!(
-        kept,
-        "a step replaced the host's session, and its confinement cell with it: make a session with its host, never inside its lock"
-    );
 }
 
 /// What's known about a record, for `session show`. Numbers, and Rust's own words.
@@ -431,7 +403,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     }
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
-        acted_tab(&self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner), command)
+        acted_tab(&self.session.lock(), command)
     }
 
     fn attach(&self, notify: Notifier) {
@@ -465,7 +437,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     }
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
-        let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = self.session.lock();
         // Undone steps count: they can still be got back, and stopping would lose them. Asked wherever the list is: one asleep says so in its summary.
         session
             .tabs()

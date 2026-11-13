@@ -6,7 +6,7 @@ use recto_platform::slow::Seam;
 
 /// What's selected on the tab showing, as the page view has it: its tab and its range.
 fn selected(app: &HeadlessApp) -> Option<(u32, recto_index::select::Range)> {
-    let (tab, range) = app.core().panes.reading_engine(&app.core().engine).hot_selection()?;
+    let (tab, range) = app.core().panes.reading_engine(&app.core().engine).selection().hot()?;
     Some((tab, range?))
 }
 

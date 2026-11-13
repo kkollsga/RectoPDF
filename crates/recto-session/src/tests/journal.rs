@@ -175,3 +175,25 @@ fn a_checkpoint_keeps_a_save_in_progress() {
     let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
     assert_eq!(parsed.header.saving, Some(target.into()));
 }
+
+/// **Failure (R3.5b): a page edit made through the handle a caller's closure gets isn't marked by who made it, or doesn't go to the journal**: an
+/// agent's step taken for the owner's would be one an agent below Full could then push out of the history past the owner's-edits rule, and a step not
+/// journaled is lost in a crash. The owner's step is the owner's, an agent's the agent's, each in the journal as it was made.
+#[test]
+fn a_step_through_the_edit_handle_is_its_authors_and_journaled() {
+    let mut s = journaled(5);
+    let a = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+    s.edit_pages_as(a, Author::Agent, |e| e.move_pages(0, 1, 2)).unwrap();
+    s.edit_pages_as(a, Author::Agent, |e| e.delete(e.len() - 1, 1)).unwrap();
+    let ops: Vec<JournalOp> = s.journal_work().appends.into_iter().flat_map(|append| append.ops).collect();
+    assert_eq!(
+        ops,
+        vec![
+            JournalOp::Rotate(0, 1, 1, record::AuthorName::Owner),
+            JournalOp::Move(0, 1, 2, record::AuthorName::Agent),
+            JournalOp::Delete(4, 1, record::AuthorName::Agent),
+        ]
+    );
+    assert!(s.lists().get(a).is_some_and(edit::PageEdits::holds_owner_edits));
+}

@@ -2,14 +2,50 @@
 
 use super::*;
 
+/// **What a caller's page edit may do to a tab's list: move, turn or delete pages, and nothing else** (R3.5b). The closure handed to
+/// [`Session::edit_pages_as`] gets this, not `&mut PageEdits`, so it can't put a new list in the tab's place, which would take the owner's edits past
+/// the close and discard rules and drop the author marking and journaling set on the list it replaced, and can't add another PDF's pages, which go only
+/// through [`Session::insert_pdf_with_facts`] and its check that a quiet run's file is in its folders. These are what the executor's commands do.
+impl crate::parts::PartMut<'_, PageEdits> {
+    /// [`PageEdits::rotate`].
+    pub fn rotate(&mut self, start: u32, len: u32, quarter_turns: i32) -> Result<(), EditError> {
+        self.0.rotate(start, len, quarter_turns)
+    }
+
+    /// [`PageEdits::move_pages`].
+    pub fn move_pages(&mut self, start: u32, len: u32, to: u32) -> Result<(), EditError> {
+        self.0.move_pages(start, len, to)
+    }
+
+    /// [`PageEdits::delete`].
+    pub fn delete(&mut self, start: u32, len: u32) -> Result<(), EditError> {
+        self.0.delete(start, len)
+    }
+
+    /// How many pages the tab has now, for an edit of all of them. Never none, as a document can't lose its last page, so there's no `is_empty`.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u32 {
+        self.0.len()
+    }
+}
+
 impl<L: DocLoader> Session<L> {
     /// Applies the owner's page edit: rearranging, rotating or deleting. This is what the app's own edits call, with nothing to say whose they are. Everything from the agent interface goes through [`Self::edit_pages_as`] with [`Author::Agent`].
-    pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+    pub fn edit_pages(
+        &mut self,
+        id: TabId,
+        change: impl FnOnce(&mut crate::parts::PartMut<'_, PageEdits>) -> Result<(), EditError>,
+    ) -> Result<(), SessionError> {
         self.edit_pages_as(id, Author::Owner, change)
     }
 
     /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
-    pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+    pub fn edit_pages_as(
+        &mut self,
+        id: TabId,
+        by: Author,
+        change: impl FnOnce(&mut crate::parts::PartMut<'_, PageEdits>) -> Result<(), EditError>,
+    ) -> Result<(), SessionError> {
         if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
@@ -35,7 +71,7 @@ impl<L: DocLoader> Session<L> {
         }
         edits.act_as(by);
         edits.let_owner_steps_go(may_push_owner);
-        let result = change(edits);
+        let result = change(&mut crate::parts::PartMut(edits));
         edits.act_as(Author::Owner);
         edits.let_owner_steps_go(false);
         if result.is_ok() {
@@ -162,7 +198,7 @@ impl<L: DocLoader> Session<L> {
                 .map(|(_, added)| added.path.clone())
                 .chain(list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone()))
                 .collect();
-            self.retire_kept(kept);
+            self.journals.retire_kept(kept);
         }
         self.journals.let_go_of_fresh(id);
         self.journals.retire(id);
@@ -203,7 +239,7 @@ impl<L: DocLoader> Session<L> {
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_pages_as(id, by, |edits| edits.insert_pdf_noting(at, path, facts.page_count, stamp, facts.encrypted))
+        self.edit_pages_as(id, by, |edits| edits.0.insert_pdf_noting(at, path, facts.page_count, stamp, facts.encrypted))
     }
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.

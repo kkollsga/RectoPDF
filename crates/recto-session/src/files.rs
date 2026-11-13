@@ -11,7 +11,7 @@ impl<L: DocLoader> Session<L> {
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) -> bool {
         // A confined tab whose path no longer leads into its folders (one swapped for a link after the open) is a missing file, whatever the look found
         // where the path leads now: see [`confined`] and [`Self::path_of`].
-        let status = if self.tabs.tab(id).is_some() && self.path_of(id).is_none() {
+        let status = if self.tabs.tab(id).is_some() && self.tabs.path_of(id).is_none() {
             FileStatus::Missing
         } else {
             status
@@ -41,14 +41,14 @@ impl<L: DocLoader> Session<L> {
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) || other_version_unnamed {
             self.generated.forget(id);
             // Folds are by entry number, which another version's contents don't share.
-            if let Some(tab) = self.tab_mut(id) {
+            if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.folds = None;
             }
         }
         match status {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     // Edits about another version than what's held, found to fit again, are news whatever's said: what's held is of the other one.
                     let was = (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                     if other_version_unnamed {
@@ -79,15 +79,15 @@ impl<L: DocLoader> Session<L> {
             FileStatus::Moved(path, now) => {
                 // Another tab having it means this one isn't a move of that file so much as a second look at it. And a quiet run's tab doesn't
                 // follow its file out of the run's folders: see [`confined`].
-                if self.tab_for_path(&path).is_some_and(|other| other != id) || !self.tabs.confinement().admits(&path) {
-                    if let Some(tab) = self.tab_mut(id) {
+                if self.tabs.for_path(&path).is_some_and(|other| other != id) || !self.tabs.confinement().admits(&path) {
+                    if let Some(tab) = self.tabs.tab_mut(id) {
                         tab.file.set_notice(Some(FileNotice::Missing));
                     }
                     return true;
                 }
                 let from = self.tabs.named_path(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     tab.file.take_version(Some(now));
                     tab.file.set_notice(from.map(|from| FileNotice::Moved { from }));
                 }
@@ -99,7 +99,7 @@ impl<L: DocLoader> Session<L> {
                     self.clear_history(id, ClearReason::FileChanged);
                 }
                 let has_edits = self.lists.has_list(id);
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     if has_edits {
                         // The stamp stays the version the edits were made on, and they don't fit what's there now.
                         tab.file.set_elsewhere(Some(fit::Elsewhere {
@@ -115,7 +115,7 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Missing => {
-                if let Some(tab) = self.tab_mut(id) {
+                if let Some(tab) = self.tabs.tab_mut(id) {
                     tab.file.set_notice(Some(FileNotice::Missing));
                 }
             }

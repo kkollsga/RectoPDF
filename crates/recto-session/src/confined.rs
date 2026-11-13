@@ -61,7 +61,7 @@ impl Confinement {
 
     /// **Whether this cell may take `current`'s place in a session without widening what it may use,** a free one first taking `current`'s folders
     /// (so the host whose cell it is becomes confined with its session, the safe direction). A confined one may only if each of its folders is in one of
-    /// `current`'s. So a session confined can't come out of [`crate::parts::PartMut::keep_confinement`] free, or with wider folders, whatever cell it's
+    /// `current`'s. So a session confined can't come out of `Tabs::keep_confinement` free, or with wider folders, whatever cell it's
     /// handed: a `Confinement::default()` made for the purpose included.
     pub(crate) fn may_replace(&self, current: &Self) -> bool {
         let Some(folders) = current.folders() else { return true };

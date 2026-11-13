@@ -1,7 +1,7 @@
 //! **Page labels and places in words:** a look over a tab's record, its list of edits and its contents' labels, changing none of them.
 
 use crate::TabId;
-use crate::lists::Lists;
+use crate::lists::{Lists, Order};
 use crate::registry::Tabs;
 use crate::warm::Warm;
 
@@ -13,21 +13,22 @@ pub struct Pages<'a> {
 }
 
 impl Pages<'_> {
-    /// **What the file calls a page,** zero-based, counting unsaved edits: `iv` for a page of front matter. Nothing for a file without labels, a page added from another file, or a tab whose file isn't read, which shows its number. A moved page keeps its own label, as its file names it.
+    /// **What the file calls a page,** zero-based, counting unsaved edits: `iv` for a page of front matter. Nothing for a file without labels, a page added from another file, a tab whose file isn't read, or one whose list is asleep, which shows its number. A moved page keeps its own label, as its file names it.
     pub fn label(&self, id: TabId, position: u32) -> Option<String> {
         let toc = self.warm.toc(id)?;
         if toc.labels.is_empty() {
             return None;
         }
-        let page = match self.lists.get(id) {
-            None => position,
-            Some(edits) => {
+        let page = match self.lists.order(id) {
+            Order::File => position,
+            Order::Edited(edits) => {
                 let slot = edits.slots().get(position as usize)?;
                 if slot.source != 0 {
                     return None;
                 }
                 slot.page
             }
+            Order::Unknown => return None,
         };
         toc.labels.label(page)
     }
@@ -46,7 +47,7 @@ impl Pages<'_> {
         }
     }
 
-    /// **The page typed in the go-to field,** zero-based: a label the file uses first, as Preview and Acrobat read it, then a plain number. Nothing if it's neither.
+    /// **The page typed in the go-to field,** zero-based: a label the file uses first, as Preview and Acrobat read it, then a plain number. Nothing if it's neither. Only a number while the tab's list is asleep.
     pub fn for_typed(&self, id: TabId, typed: &str) -> Option<u32> {
         let typed = typed.trim();
         let pages = self.count(id);
@@ -55,24 +56,27 @@ impl Pages<'_> {
         {
             let file_pages = self.tabs.tab(id).map_or(0, |tab| tab.page_count);
             if let Some(file_page) = toc.labels.find(typed, file_pages) {
-                match self.lists.get(id) {
-                    None => return Some(file_page),
-                    Some(edits) => {
+                match self.lists.order(id) {
+                    Order::File => return Some(file_page),
+                    Order::Edited(edits) => {
                         if let Some(position) = edits.slots().iter().position(|slot| slot.source == 0 && slot.page == file_page) {
                             return u32::try_from(position).ok();
                         }
                     }
+                    // Where the file's page is now isn't known: what's typed is taken as a number.
+                    Order::Unknown => {}
                 }
             }
         }
         typed.parse::<u32>().ok().filter(|page| *page >= 1 && *page <= pages).map(|page| page - 1)
     }
 
-    /// **Where a link's page goes now,** with edits counted: `file_page` of the same file as the page at position `from`, which is what a link on that page means. Nothing if that page isn't in the document any more.
+    /// **Where a link's page goes now,** with edits counted: `file_page` of the same file as the page at position `from`, which is what a link on that page means. Nothing if that page isn't in the document any more, or the tab's list is asleep, so where it is isn't known.
     pub fn position_in_same_file(&self, id: TabId, from: u32, file_page: u32) -> Option<u32> {
-        match self.lists.get(id) {
-            None => (file_page < self.count(id)).then_some(file_page),
-            Some(edits) => {
+        match self.lists.order(id) {
+            Order::File => (file_page < self.count(id)).then_some(file_page),
+            Order::Unknown => None,
+            Order::Edited(edits) => {
                 let source = edits.slots().get(from as usize)?.source;
                 edits
                     .slots()

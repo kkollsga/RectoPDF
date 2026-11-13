@@ -44,7 +44,7 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
     }
     let Some(tab) = inner.panes.tab_of(pane) else { return };
     match hit.target {
-        recto_core::nav::LinkTarget::Page { page, within } => match engine.position_in_same_file(hit.page, page) {
+        recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
             Some(position) => inner.link_to_page(tab, position, within),
             None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
         },
@@ -77,8 +77,8 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
         inner.queue_those_leaving();
         // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
-        if !engine.holds(id.0) {
-            engine.note_wake(id.0, Instant::now());
+        if !engine.waking().holds(id.0) {
+            engine.waking().note_wake(id.0, Instant::now());
             inner.give_sleep_view(engine, id);
         }
         engine.activate(
@@ -101,7 +101,9 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
             }
         };
         if let Some(selection) = selection {
-            engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
+            engine
+                .selection()
+                .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
         synced.tab = Some(id);
         synced.pages = shown.pages;
@@ -297,7 +299,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     .note();
     let selection_notice = crate::SelectionSources {
-        copy: reading_engine.selection_notice().map(|notice| crate::CopyNotice {
+        copy: reading_engine.selection().notice().map(|notice| crate::CopyNotice {
             text: notice.text,
             offers_copy_anyway: notice.offers_copy_anyway,
             fades: notice.fades,

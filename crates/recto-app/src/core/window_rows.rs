@@ -20,7 +20,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
             "the person's selection, by the page view's own copy, which doesn't know who asked, to the system's clipboard, which is the person's",
             Agents::ItsOwn("`recto copy`"),
             move || {
-                inner.panes.reading_engine(&inner.engine).copy_selection(false);
+                inner.panes.reading_engine(&inner.engine).selection().copy(false);
                 HostAction::None
             },
         ),
@@ -28,7 +28,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
             "the same, after the person has said to copy a protected document's text: the person's own decision, where an agent's is `copy --anyway`, which is logged",
             Agents::ItsOwn("`recto copy --anyway`"),
             move || {
-                inner.panes.reading_engine(&inner.engine).copy_selection(true);
+                inner.panes.reading_engine(&inner.engine).selection().copy(true);
                 HostAction::None
             },
         ),
@@ -36,7 +36,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
             "the person's selection in the page view, which rearranges their window",
             Agents::ItsOwn("`recto select --all`"),
             move || {
-                inner.panes.reading_engine(&inner.engine).select_all();
+                inner.panes.reading_engine(&inner.engine).selection().select_all();
                 HostAction::None
             },
         ),

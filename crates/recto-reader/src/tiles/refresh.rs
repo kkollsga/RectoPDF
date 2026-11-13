@@ -1,5 +1,6 @@
 //! **The screen brought into line with what's wanted,** on every scroll and whenever something's drawn: the pages' layers placed or taken off, the tiles in view put on them from what's kept, at most a turn's worth, and those scrolled out of view taken off; with what the reader is told about the pages in view, and the count of steps that left one blank.
 
+use super::cache::TileKey;
 use super::host::Placement;
 use super::scratch::Scratch;
 use super::{CANT_DRAW, DocView, Op, Reader, SCALE_SLACK};
@@ -73,19 +74,19 @@ impl Reader {
     /// [`Self::refresh`], with the lists it fills.
     pub(super) fn refresh_with(&mut self, mut budget: usize, scratch: &mut Scratch) {
         self.host.more_to_attach = false;
-        let Some(tab) = self.hot else { return };
+        let Some(tab) = self.docs.hot else { return };
         if !self.window_open {
             return;
         }
-        let Some(doc) = self.docs.get(&tab) else { return };
+        let Some(doc) = self.docs.views.get(&tab) else { return };
         let target = self.target_scale(doc);
         let change = f64::from(target) / f64::from(doc.drawing.tile_scale.max(f32::MIN_POSITIVE));
         let retarget = doc.drawing.tile_scale == 0.0 || (!self.viewport.live && (change - 1.0).abs() > SCALE_SLACK);
-        if retarget && let Some(doc) = self.docs.get_mut(&tab) {
+        if retarget && let Some(doc) = self.docs.views.get_mut(&tab) {
             doc.drawing.tile_scale = target;
             doc.drawing.issues.retain(|_, issue| issue.try_again_at.is_some());
         }
-        let Some(doc) = self.docs.get(&tab) else { return };
+        let Some(doc) = self.docs.views.get(&tab) else { return };
         let scale = doc.drawing.tile_scale;
         scratch.visible.extend(self.visible_pages(doc).filter(|page| doc.layout.is_known(*page)));
         // A tab that's come from a sleep file knows what size its pages are likely to be, so with or without a picture its place is there on the paper from the first frame, and real sizes follow.
@@ -101,7 +102,7 @@ impl Reader {
         for &page in &scratch.going_pages {
             self.hide_page(page);
         }
-        let Some(doc) = self.docs.get(&tab) else { return };
+        let Some(doc) = self.docs.views.get(&tab) else { return };
         let paper_rgb = self.paper.rgb();
         let device = self.viewport.magnification * self.viewport.backing;
         for &page in &scratch.on_paper {
@@ -140,8 +141,8 @@ impl Reader {
         self.highlight_ops();
         // Every visible page shows something before any page gets more: a preview is one attachment and fills a page. Without this, a tall page's first eight tiles leave the next page blank for a turn.
         for &page in &scratch.visible {
-            let Some(doc) = self.docs.get(&tab) else { return };
-            let preview = self.preview_key(doc, page);
+            let Some(doc) = self.docs.views.get(&tab) else { return };
+            let preview = TileKey::preview(doc.tab, page, self.paper);
             let bare = !self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
             if bare
                 && let Some(&id) = self.cache.cover.get(&preview)
@@ -152,7 +153,7 @@ impl Reader {
         }
         let now = Instant::now();
         for &page in &scratch.visible {
-            let Some(doc) = self.docs.get(&tab) else { return };
+            let Some(doc) = self.docs.views.get(&tab) else { return };
             if doc.drawing.issues.contains_key(&page) && !doc.drawing.issues[&page].try_again_at.is_some_and(|at| now >= at) {
                 continue;
             }
@@ -160,8 +161,10 @@ impl Reader {
                 continue;
             };
             scratch.keys.clear();
-            scratch.keys.extend(scratch.cells.iter().map(|cell| self.key(doc, page, scale, *cell)));
-            let preview = self.preview_key(doc, page);
+            scratch
+                .keys
+                .extend(scratch.cells.iter().map(|cell| TileKey::tile(doc.tab, page, scale, *cell, self.paper)));
+            let preview = TileKey::preview(doc.tab, page, self.paper);
             let mut missing = false;
             scratch.wanted.clear();
             for key in &scratch.keys {
@@ -202,7 +205,7 @@ impl Reader {
             if !missing {
                 continue;
             }
-            let Some(doc) = self.docs.get(&tab) else { return };
+            let Some(doc) = self.docs.views.get(&tab) else { return };
             scratch.going.clear();
             scratch.going.extend(self.cache.attached_on(page).filter(|id| {
                 self.cache.entries.get(id).is_some_and(|entry| {
@@ -217,7 +220,7 @@ impl Reader {
     }
 
     pub(super) fn update_note(&mut self) {
-        let note = self.doc().and_then(|doc| {
+        let note = self.docs.shown().and_then(|doc| {
             if let Some(problem) = &doc.drawing.problem {
                 return Some(problem.clone());
             }
@@ -273,7 +276,7 @@ impl Reader {
 
     /// Counts a step that left a page in view bare: one that shows a pixel, by the same cells drawing goes by, so a sliver of 0.004 points isn't a blank page.
     pub(super) fn count_blanks(&mut self) {
-        let Some(doc) = self.doc() else { return };
+        let Some(doc) = self.docs.shown() else { return };
         let (mut blank, mut blank_seen) = (false, false);
         for page in self.visible_pages(doc) {
             let has_something = self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
