@@ -68,6 +68,10 @@ Never `git stash`, which is shared across worktrees. To compare with old code, u
 - **Name what you keep by your branch.** The scratchpad folder is shared by every worker of a session: `full.txt` there has been overwritten by another worker's run. Use `<branch>-full.txt`, `<branch>-quick.txt`.
 - **A lifecycle run (`--like-ci lifecycle`) goes at ordinary load.** Read `uptime` first and write the load down before and after; over about 30, wait or tell the coordinator.
 
+## Two things every hand-back carries (2026-11-13)
+- **A test you add is run 20 times as CI runs it before you hand back:** `tools/check.sh --like-ci '<nextest filter for your new tests>' --times 20`, with the machine's load written down. Three times in one day `main` went red on CI from a new test that passed here and failed about one run in five on CI's slow runner: a hold that returned early, an ordinary job run under a test's own 200 ms deadline, a settle that returned before a result was taken in. A failure there is an ordering to force with a seam and fix, not to retry.
+- **A change to the session, the app's core, the host or the page view is measured for input to frame, before and after:** the harness in `recto-app` (`grep -rn input_to_frame crates/recto-app`; ignored, release build), at 1, 100 and 1,000 tabs, your branch against its base in the same hour, the load written down; the bound is after ≤ 1.1 × before + 200 µs, and a difference over about 10 µs at 1,000 tabs is explained even inside it. On 2026-11-13 a branch that read a fact by a tab's id where it had the record in hand made every action cost a search per open tab, six times slower at 1,000 tabs, and passed every check and two reviews. An action's cost must not grow with tabs that aren't involved.
+
 ## Before you hand back (added 2026-11-13, from `AGENTS.md`)
 
 - **Read each result before the next step:** a check's exit code and its last lines, never a check chained into a merge or a push. Keep a check's whole output in a file until you've handed back; don't filter away the line that names a failure.
