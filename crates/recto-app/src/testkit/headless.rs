@@ -140,6 +140,7 @@ pub struct Builder {
     update: Option<UpdateBed>,
     state_late: bool,
     held: Vec<Seam>,
+    another_keeps: bool,
 }
 
 impl Builder {
@@ -177,6 +178,14 @@ impl Builder {
     #[must_use]
     pub fn state_late(mut self) -> Self {
         self.state_late = true;
+        self
+    }
+
+    /// **Another copy keeps the record at the launch** (a store the test holds): the launch is let start without its lock, which a launch otherwise fails on, and
+    /// its trying again for it is what's tested ([`crate::lifecycle::keeping`]).
+    #[must_use]
+    pub fn another_keeps(mut self) -> Self {
+        self.another_keeps = true;
         self
     }
 
@@ -221,7 +230,7 @@ impl Builder {
         .expect("the core starts");
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
-            inner.saver.store.holds_the_record(),
+            self.another_keeps || inner.saver.store.holds_the_record(),
             "the headless app didn't get the record's lock in {}: {}",
             disk.paths.root.display(),
             inner.saver.store.why_not_keeping().unwrap_or_else(|| "no reason was kept".to_owned())
@@ -359,6 +368,12 @@ impl DiskBuilder {
     #[must_use]
     pub fn hold(mut self, seams: &[Seam]) -> Self {
         self.builder = self.builder.hold(seams);
+        self
+    }
+
+    #[must_use]
+    pub fn another_keeps(mut self) -> Self {
+        self.builder = self.builder.another_keeps();
         self
     }
 

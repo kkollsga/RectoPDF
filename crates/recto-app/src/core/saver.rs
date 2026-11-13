@@ -168,6 +168,14 @@ impl Saver {
             return;
         };
         let urgent = self.urgent.swap(false, Ordering::SeqCst);
+        // A copy that doesn't keep the record writes nothing, and that's what it's for, not a failure: the window says it won't be remembered, and not that its
+        // state couldn't be saved. What's waiting goes, so nothing comes due again for it.
+        if !self.store.holds_the_record() {
+            self.first_edit.store(0, Ordering::SeqCst);
+            self.view_changed.store(false, Ordering::Relaxed);
+            self.last_record_write.store(now, Ordering::SeqCst);
+            return;
+        }
         let due = app::pass(self.pending(urgent), now);
         let _gate = lock(&self.gate);
         let mut failed = None;
