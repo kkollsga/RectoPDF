@@ -3,7 +3,7 @@
 //! Every word and rule's here, and the host only draws. What it needs of the app, it asks through [`Host`], which is all a test needs to stand in for.
 
 use crate::fetch::FetchError;
-use crate::plan::{Files, Outcome, OutcomeKind, Plan, TestLaunch, beside_app, helper_alive, log, new_app_in, previous_app_in};
+use crate::plan::{Files, Plan, TestLaunch, beside_app, helper_alive, log, new_app_in, previous_app_in};
 use crate::rules::{self, AutoLook, AutoStep, Latest, is_newer};
 use crate::saved::{LastUpdate, Probation, Saved};
 use crate::source::{Mode, Source};
@@ -23,6 +23,7 @@ mod menu;
 mod now;
 mod said;
 pub mod seams;
+mod settle;
 mod words;
 use flow::Going;
 pub use now::UpdateAction;
@@ -543,128 +544,6 @@ impl Updater {
         self.log("what the version that didn't work left couldn't be read, so the record from before the update was put back");
     }
 
-    /// What the last install left behind. The installer tidies up when it finishes: this is for when it didn't get to.
-    fn settle_last_install(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> Settled {
-        let mut settled = Settled::default();
-        let Some(beside) = beside_app(app) else { return settled };
-        if let Some(outcome) = Outcome::read(&self.files.outcome()) {
-            let _ = std::fs::remove_file(self.files.outcome());
-            let _ = std::fs::remove_file(self.files.plan());
-            let _ = std::fs::remove_file(self.files.helper_pid());
-            // Gone back with it put back, the copy's for nothing. Stuck on a version that didn't come up, it's the state before it, and stays. Gone back with the record as it was, it's what to fall back on if the previous version can't read that, and it goes after its week as ever.
-            let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
-            if kept_ending {
-                settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
-            } else if outcome.kind != OutcomeKind::CouldntGoBack {
-                let _ = std::fs::remove_dir_all(self.files.before());
-            }
-            settled.reopened = match outcome.kind {
-                OutcomeKind::WentBack => true,
-                OutcomeKind::NotInstalled => installer_reopened(&outcome.why),
-                OutcomeKind::CouldntGoBack => false,
-            };
-            settled.changed = true;
-            settled.plan_gone = true;
-            match outcome.kind {
-                OutcomeKind::WentBack => {
-                    saved.note_failed_version(&outcome.to);
-                    saved.install_failures = 0;
-                    settled.status = Some(Status::WentBack {
-                        version: outcome.to.clone(),
-                        back_on: current.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: went_back_words(&outcome.why, &outcome.to, current),
-                        fades: true,
-                    });
-                    self.log(&format!("{} didn't work ({}), and {current} came back", outcome.to, clean_code(&outcome.why)));
-                }
-                OutcomeKind::CouldntGoBack => {
-                    saved.note_failed_version(&outcome.to);
-                    let why = "it didn't come up, and there was no earlier version to go back to";
-                    settled.status = Some(Status::Failed {
-                        version: outcome.to.clone(),
-                        why: why.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: format!("{APP_NAME} {} is what's installed, and {why}.", outcome.to),
-                        fades: true,
-                    });
-                    self.log(&format!("{} didn't come up, and couldn't go back: {}", outcome.to, clean_code(&outcome.why)));
-                }
-                OutcomeKind::NotInstalled => {
-                    saved.install_failures = saved.install_failures.saturating_add(1);
-                    saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
-                    saved.last_install_ms = Some(now);
-                    let (why, lasting) = why_not_installed(&outcome.why);
-                    // Whatever it was, the app went away and came back for nothing, and the user may have seen that. Say so, and don't do it for ever.
-                    if lasting || saved.quits_for_nothing >= QUITS_FOR_NOTHING {
-                        saved.note_failed_version(&outcome.to);
-                    }
-                    settled.status = Some(Status::Failed {
-                        version: outcome.to.clone(),
-                        why: why.to_owned(),
-                    });
-                    settled.notice = Some(Notice {
-                        text: format!("Couldn't update to {}: {why}. {APP_NAME} is unchanged.", outcome.to),
-                        fades: true,
-                    });
-                    self.log(&format!("{} wasn't installed: {}", outcome.to, clean_code(&outcome.why)));
-                }
-            }
-            return settled;
-        }
-        let Some(plan) = Plan::read(&self.files.plan()) else {
-            settled.plan_gone = true;
-            return settled;
-        };
-        settled.changed = true;
-        let alive = helper_alive(&self.files);
-        if plan.to == current {
-            settled.status = Some(Status::Updated(plan.to.clone()));
-            settled.notice = Some(Notice {
-                text: builds::arrived_words(&plan),
-                fades: true,
-            });
-            saved.offered = None;
-            saved.install_failures = 0;
-            saved.quits_for_nothing = 0;
-            saved.failures = 0;
-            if !alive {
-                self.tidy_after_swap(&plan, &beside);
-            }
-            settled.arrived = Some(plan);
-        } else if alive {
-            // Reopened by someone in the moment it was gone, with the installer still about. It stands down when it sees this, and there's nothing here to wait for: this copy goes on as normal, and the next launch hears how it ended.
-            self.log("the app was reopened while an installer was at work");
-        } else {
-            // The installer was stopped before it swapped, so this is the old app, and there's no harm done.
-            saved.install_failures = saved.install_failures.saturating_add(1);
-            saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
-            saved.last_install_ms = Some(now);
-            if saved.quits_for_nothing >= QUITS_FOR_NOTHING {
-                saved.note_failed_version(&plan.to);
-            }
-            settled.status = Some(Status::Failed {
-                version: plan.to.clone(),
-                why: "the installer stopped before it finished".to_owned(),
-            });
-            settled.notice = Some(Notice {
-                text: format!(
-                    "Couldn't update to {}: the installer stopped before it finished. {APP_NAME} is unchanged.",
-                    plan.to
-                ),
-                fades: true,
-            });
-            self.log(&format!("the install of {} stopped before it finished, and {current} is unchanged", plan.to));
-            let _ = std::fs::remove_file(self.files.plan());
-            let _ = std::fs::remove_file(self.files.helper_pid());
-            let _ = std::fs::remove_dir_all(self.files.before());
-            stage::clear_staged(app);
-        }
-        settled
-    }
-
     /// The new version's here and the installer isn't: moves the old app to where it's kept, if it stopped short of that, and clears up.
     fn tidy_after_swap(&self, plan: &Plan, beside: &Path) {
         let left = new_app_in(beside);
@@ -861,7 +740,7 @@ impl Updater {
         // update isn't sent back under a person's hands, and with no tab count, as it read no record and so can't have misread one (`plan::misread` passes a
         // count it isn't given). Nothing else: what's proven, its watch for early ends and the last update are written by the next launch that keeps the record.
         if second_copy {
-            self.say_started(&version, shown_at_ms, None);
+            say_started(&self.files, &version, shown_at_ms, None);
             self.log(&format!("{version} came up as a second copy, after an update: another copy keeps the record"));
             return;
         }
@@ -896,7 +775,7 @@ impl Updater {
             changed
         };
         if let Some(plan) = arrived {
-            self.say_started(&version, shown_at_ms, self.host.tabs_restored());
+            say_started(&self.files, &version, shown_at_ms, self.host.tabs_restored());
             self.log(&format!(
                 "updated from {} to {}: {} ms from quit to first frame",
                 plan.from,
@@ -911,14 +790,6 @@ impl Updater {
         if watched {
             self.host.changed();
         }
-    }
-
-    /// **The installer told the new version started:** the one place `launch-ok` is written, in the updater's own folder beside the record's (never the record's
-    /// folder, so a second copy may write it), with the tabs it came up with if it read the record.
-    fn say_started(&self, version: &str, shown_at_ms: u64, tabs: Option<u32>) {
-        self.ready_folder();
-        let line = crate::plan::launch_ok_line(version, std::process::id(), shown_at_ms, tabs);
-        let _ = local::write_private_file(&self.files.launch_ok(), line.as_bytes());
     }
 
     /// The answer to what's under way, said by hand: in the margin, and as an alert too if it was chosen from the menu.
@@ -1320,6 +1191,14 @@ impl Updater {
 }
 
 /// What's said once a version that didn't work has gone back, by why.
+/// **The installer told the new version started:** the one place `launch-ok` is written, in the updater's own folder beside the record's (never the record's
+/// folder, so a second copy may write it), with the tabs it came up with if it read the record.
+fn say_started(files: &Files, version: &str, shown_at_ms: u64, tabs: Option<u32>) {
+    let _ = local::ensure_private_dir(&files.work);
+    let line = crate::plan::launch_ok_line(version, std::process::id(), shown_at_ms, tabs);
+    let _ = local::write_private_file(&files.launch_ok(), line.as_bytes());
+}
+
 fn went_back_words(why: &str, version: &str, current: &str) -> String {
     match why {
         "kept_ending" => {
@@ -1385,6 +1264,7 @@ fn clean_code(code: &str) -> String {
 mod tests {
     use super::*;
     use crate::fetch::tests::{Answer, Server};
+    use crate::plan::{Outcome, OutcomeKind};
     use crate::stage::tests::{fake_app, fake_app_at, latest_json, temp_dir, zip_of};
     use std::sync::atomic::AtomicU32;
     use std::time::Instant;
