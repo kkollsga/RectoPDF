@@ -60,11 +60,7 @@ impl Records for AppRecords {
         let restored = matches!(loaded, Loaded::Restored(_));
         host.core.push(CoreCall::Restored(Box::new(loaded)));
         host.core.flush(Duration::from_secs(5));
-        Ok(Restored {
-            restored,
-            notice,
-            active_unsaid: false,
-        })
+        Ok(Restored { restored, notice })
     }
 
     fn hand_off(&self) -> HandOff {

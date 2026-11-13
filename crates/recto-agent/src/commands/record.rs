@@ -156,11 +156,7 @@ impl Cmd for SessionRestore {
         }
         let restored = records.restore()?;
         let (count, active) = cx.access.with(|session| (session.tabs().len(), session.active().map(|id| id.0)));
-        let mut answer = json!({ "restored": restored.restored, "count": count, "notice": restored.notice });
-        if restored.restored || !restored.active_unsaid {
-            answer["active"] = json!(active);
-        }
-        Ok(answer)
+        Ok(json!({ "restored": restored.restored, "count": count, "active": active, "notice": restored.notice }))
     }
     fn human(data: &Value) -> String {
         match data["notice"].as_str() {
@@ -272,8 +268,6 @@ pub struct Restored {
     pub restored: bool,
     /// What the record's reading told the reader, in Rust's words.
     pub notice: Option<&'static str>,
-    /// A session with no window doesn't say which tab is active when nothing was restored.
-    pub active_unsaid: bool,
 }
 
 /// Whether a hand-off could go now, and what's in its way: `(code, message)`.

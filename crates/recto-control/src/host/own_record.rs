@@ -72,11 +72,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
         let loaded = self.store.load();
         let notice = notice_for(&loaded).and_then(recto_session::record::notices::words);
         let Loaded::Restored(restored) = loaded else {
-            return Ok(Restored {
-                restored: false,
-                notice,
-                active_unsaid: true,
-            });
+            return Ok(Restored { restored: false, notice });
         };
         self.with(|session| {
             session
@@ -84,11 +80,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
                 .map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
             // The active tab's facts are what a session with no window would otherwise have to find out at its next look.
             session.wake_active();
-            Ok(Restored {
-                restored: true,
-                notice,
-                active_unsaid: false,
-            })
+            Ok(Restored { restored: true, notice })
         })
     }
 
@@ -193,17 +185,16 @@ mod tests {
         );
     }
 
-    /// Failure: restoring when there's nothing to restore loses the tabs that are open, or says it restored something.
+    /// Failure: `session restore` with nothing to restore answers in another shape here than in the app, leaving out which tab is active, so an agent reading `active` after a restore gets nothing on one host and a tab on the other. Or it loses the tabs that are open, or says it restored something. (The one change of R2.2's record commands: both hosts now give one shape.)
     #[test]
-    fn a_restore_with_nothing_kept_keeps_the_session() {
+    fn a_restore_with_nothing_kept_says_the_active_tab_as_the_app_does() {
         let (host, _root) = with_record();
         run(&host, Level::Full, r#"{"cmd":"open","path":"/d/a.pdf"}"#).expect("opened");
         let restored = run(&host, Level::Control, r#"{"cmd":"session_restore"}"#).expect("answered");
         assert_eq!(
-            (restored["restored"].clone(), restored["count"].clone()),
-            (false.into(), 1.into()),
+            (restored["restored"].clone(), restored["count"].clone(), restored["active"].clone()),
+            (false.into(), 1.into(), 1.into()),
             "{restored}"
         );
-        assert!(restored.get("active").is_none(), "{restored}");
     }
 }
