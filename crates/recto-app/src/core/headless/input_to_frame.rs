@@ -141,6 +141,16 @@ fn measure(tabs: usize) {
     case(&app, "undo", tabs, rotate, |app, _| {
         app.act(UiAction::Menu { id: "edit.undo".into() });
     });
+    // A file that isn't open, opened as the Open panel does: read off the session thread, and its tab made. A flush waits for the reads before it, so this
+    // is the read too. Closed again, untimed, before each; the first close is of the edited tab in front, and is refused.
+    let new = app.disk().pdf("new.pdf", 10);
+    let close_it = |app: &HeadlessApp| {
+        let _ = app.agent(recto_agent::Level::Full, r#"{"cmd":"close"}"#);
+        app.settle();
+    };
+    case(&app, "open new file", tabs, close_it, |app, _| {
+        app.act(UiAction::Open { path: new.clone() });
+    });
     drop(app.quit());
 }
 
