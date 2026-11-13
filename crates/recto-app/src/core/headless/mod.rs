@@ -22,6 +22,7 @@ mod navigation;
 mod newer_read;
 mod palette;
 mod passwords;
+mod per_tab_work;
 mod protected_save;
 mod quiet_files;
 mod quit;

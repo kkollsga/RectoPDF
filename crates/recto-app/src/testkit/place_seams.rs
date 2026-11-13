@@ -21,6 +21,9 @@ pub struct PlaceSeams {
     /// Looks begun, and looks done (the jumps they sent said to the session).
     looks_begun: AtomicU64,
     looks_done: AtomicU64,
+    /// The records the session thread's searches for a tab had looked at when its last look ended ([`recto_session::searched`], a debug build's): what
+    /// an action's walks over the tabs cost, counted, between two looks.
+    searched_at_look_end: AtomicU64,
     /// The most looks that may begin; one past it waits at its start until this is lifted.
     looks_allowed: Mutex<Option<u64>>,
     lifted: Condvar,
@@ -62,6 +65,17 @@ impl PlaceSeams {
     /// The look is done, the jumps it sent said to the session.
     pub(crate) fn look_done(&self) {
         self.looks_done.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The look has ended, everything after the publish too: the session thread's searches so far are noted, in a debug build.
+    pub(crate) fn look_ended(&self) {
+        #[cfg(debug_assertions)]
+        self.searched_at_look_end.store(recto_session::searched::records(), Ordering::SeqCst);
+    }
+
+    /// The records the session thread's searches for a tab had looked at when its last look ended.
+    pub(crate) fn searched_at_look_end(&self) -> u64 {
+        self.searched_at_look_end.load(Ordering::SeqCst)
     }
 
     /// How many looks are done.

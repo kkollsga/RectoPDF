@@ -393,6 +393,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         inner.saver.view_changed();
     }
+    #[cfg(any(test, feature = "testkit"))]
+    inner.serving.place_seams.look_ended();
 }
 
 /// **What the window's Save is for the tab being read, decided by Rust.** A signed file's (SPEC decision 27): an edit a Save over it would break the signature
