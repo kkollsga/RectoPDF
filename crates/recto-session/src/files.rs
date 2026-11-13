@@ -28,6 +28,10 @@ impl<L: DocLoader> Session<L> {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
+                    // Edits with no stamp aren't known to be about any version of the file (see `activate`), so whatever's there now doesn't become theirs.
+                    if has_edits && tab.file.stamp.is_none() {
+                        return;
+                    }
                     tab.file.stamp = Some(now);
                     // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
                     if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing))

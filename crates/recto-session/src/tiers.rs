@@ -128,15 +128,16 @@ impl<L: DocLoader> Session<L> {
                 (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
             }
         };
-        // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
+        // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp and its
+        // read, an edit landed between a change being noticed and the read, or a journal says what isn't so. **The edits and their journal stay**, as a file changing never
+        // takes a person's edits. The stamp goes, so nothing takes this file as the one they were made on and saves them onto it, and the tab says its file changed.
         if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
             && self.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
             && list.file_pages() != facts.page_count
+            && let Some(tab) = self.tab_mut(id)
         {
-            self.let_go_of_list(id);
-            if let Some(tab) = self.tab_mut(id) {
-                tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
-            }
+            tab.file.stamp = None;
+            tab.file.notice = Some(Box::new(FileNotice::Changed));
         }
         // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
         if let (Some(now), Some(list)) = (stamp, self.lists.get(id))

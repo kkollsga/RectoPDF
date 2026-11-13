@@ -393,7 +393,9 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and pages past the end are drawn or written. A file read at its own stamp and another length than the list says shows the list isn't about it.
+/// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and its pages are written onto that file. Or
+/// (B1, 2026-11-13) it's deleted with its journal, as one about a file replaced mid-read was, and a person's edits go. A file read at its own stamp and another length than
+/// the list says shows the list isn't about it: the list stays, its stamp goes so no save takes this file as its own, and the tab says the file changed.
 #[test]
 fn a_list_of_another_length_than_its_file_isnt_believed() {
     let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-forged-list-");
@@ -410,9 +412,11 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
     s.warm.clear_contents();
     s.tap(a).unwrap();
-    assert!(s.page_edits(a).is_none(), "it's gone");
-    assert_eq!(s.pages_in(a), 5);
-    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+    assert_eq!(s.page_edits(a).map(PageEdits::file_pages), Some(12), "it's kept");
+    assert_eq!(s.own_stamp(a), None, "and isn't taken to be about this file");
+    assert_eq!(s.begin_save(a, false).unwrap().unwrap().stamp, None, "so a save can't write it onto this file");
+    s.end_save(a);
+    assert_eq!(s.tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
 }
