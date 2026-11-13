@@ -136,6 +136,8 @@ impl<L: DocLoader> Session<L> {
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
         self.tabs.clear();
+        // Every tab's going, and with them every folder's number.
+        self.dirs = dirs::Dirs::default();
         self.warm.clear();
         self.woken.clear();
         self.edits.clear();

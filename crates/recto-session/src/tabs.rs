@@ -313,10 +313,22 @@ impl<L: DocLoader> Session<L> {
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
         let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
+        let mut left = None;
         if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
+            left = Some(tab.dir).filter(|was| *was != dir);
             tab.dir = dir;
             tab.file_name = file_name.into();
             tab.name = name.into();
+        }
+        if let Some(was) = left {
+            self.let_go_of_dir_if_unused(was);
+        }
+    }
+
+    /// A folder no tab is in any more is let go of, so the folders kept are only those in use.
+    fn let_go_of_dir_if_unused(&mut self, dir: u32) {
+        if !self.tabs.iter().any(|tab| tab.dir == dir) {
+            self.dirs.let_go(dir);
         }
     }
 
@@ -350,7 +362,8 @@ impl<L: DocLoader> Session<L> {
         self.edits.remove(&id);
         self.retire_sleep_file(id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
-        self.tabs.remove(index);
+        let closed = self.tabs.remove(index);
+        self.let_go_of_dir_if_unused(closed.dir);
         self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
         self.generated.retain(|(tab, _)| *tab != id);

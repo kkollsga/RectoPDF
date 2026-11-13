@@ -307,3 +307,29 @@ fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_go
     assert!(s.needs_password(locked) && s.withheld_from_agents(locked));
     assert!(!s.warm_tabs().any(|id| id == locked), "what was read with the password is let go");
 }
+
+/// Failure: every folder a file was ever opened from stays in the session after its last tab has closed, so opening and closing files across many folders grows it for as long as it runs; or letting a folder go breaks the path of a tab still open in another.
+#[test]
+fn folders_are_kept_only_while_a_tab_is_in_them() {
+    let mut s = session(5);
+    let kept = s.open(Path::new("/stays/kept.pdf")).unwrap();
+    for n in 0..2_000 {
+        let id = s.open(Path::new(&format!("/folder-{n}/a.pdf"))).unwrap();
+        let beside = s.open(Path::new(&format!("/folder-{n}/b.pdf"))).unwrap();
+        s.close(id).unwrap();
+        assert_eq!(
+            s.path_of(beside),
+            Some(PathBuf::from(format!("/folder-{n}/b.pdf"))),
+            "its folder stays while a tab's in it"
+        );
+        s.close(beside).unwrap();
+    }
+    assert_eq!(s.dirs.len(), 1, "only the folder still in use");
+    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
+    assert_eq!(s.tab_for_path(Path::new("/folder-7/a.pdf")), None);
+    let moved = s.open(Path::new("/before/moved.pdf")).unwrap();
+    s.relocate(moved, Path::new("/after/moved.pdf"));
+    assert_eq!(s.dirs.len(), 2, "a tab moved out of its folder lets it go");
+    assert_eq!(s.path_of(moved), Some(PathBuf::from("/after/moved.pdf")));
+    assert_eq!(s.path_of(kept), Some(PathBuf::from("/stays/kept.pdf")));
+}
