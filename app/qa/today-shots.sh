@@ -3,7 +3,7 @@
 #
 #   app/qa/today-shots.sh OUT_DIR [PHASE...]
 #
-# Phases (all by default): baseline wake early dark backfwd changed find close agent; also darkimg, wake2, restore, drawn and findwrap when named. OUT_DIR gets `<nn>-<what>-<light|dark>.png` and notes.txt.
+# Phases (all by default): baseline wake early dark backfwd changed find close agent; also darkimg, darkpage, wake2, restore, drawn and findwrap when named. OUT_DIR gets `<nn>-<what>-<light|dark>.png` and notes.txt.
 # The PDFs are made or taken from the system here (pics.pdf: 12 pages cycling a large colour photo, text with a small photo, and a white-backed scan; the system's bash manuals),
 # copied into the run's temp folder, and never opened in place.
 set -uo pipefail
@@ -354,6 +354,92 @@ PY2
     # The same pages on white paper, for what they are.
     look=light; r qa appearance light; r view --paper white; settle
     for p in 2 4 7 8 9 10; do r goto "$p"; settle; shot "04b-img-p$p-white-paper"; done
+fi
+
+if want darkpage; then
+    note "== 4c dark paper on pages whose own background is dark, and the range of middle tones: each page shot on dark paper, light and dark window. Pages: 1 a black slide with white text and no picture, 2 a dark slide with a small logo, 3 a white page with a dark header band, 4 a white page with a dark sidebar, 5 a white page with a dark full-width figure drawn in vectors, 6 a dark page with a white text box, 7 a dark page with a light table, 8 a page half dark and half light, 9 dark green, 10 dark grey, 11 cream, 12 light grey, 13 a pale blue tint, 14 a yellowed page, 15 a photo over 39% of a navy page, 16 a photo over 60% of a navy page, then 17 on the middle tones: grey, blue, orange, red and green at lightness 60, 90, 115, 135, 155 and 175 (Rec. 601 luma of 255), each on a page with its colour written on it"
+    /usr/bin/python3 -I - "$root/in/darkpages.pdf" "$root/in/darkpages.txt" <<'PY3'
+import sys, zlib
+def photo(w, h):
+    px = bytearray()
+    for y in range(h):
+        for x in range(w):
+            t = y / h
+            if t < 0.55: c = (int(70 + 120 * t), int(130 + 110 * t), int(230 - 40 * t))
+            else:
+                c = (30, 90 + int(70 * ((x * 3) % w) / w), 40)
+                if w * 0.3 < x < w * 0.55 and h * 0.5 < y < h * 0.75: c = (190, 40, 40)
+            px += bytes(c)
+    return bytes(px)
+def luma(c): return (77 * c[0] + 150 * c[1] + 29 * c[2]) >> 8
+def at_luma(base, target):
+    # The base colour darkened, or mixed with white, to the lightness asked for.
+    lo, hi = -1.0, 1.0
+    for _ in range(40):
+        t = (lo + hi) / 2
+        c = tuple(int(round(v * (1 + t))) if t < 0 else int(round(v + (255 - v) * t)) for v in base)
+        if luma(c) < target: lo = t
+        else: hi = t
+    return c
+objs = []
+def add(b): objs.append(b); return len(objs)
+def stream(d, data): return b"<< %s /Length %d /Filter /FlateDecode >>\nstream\n" % (d.encode(), len(zlib.compress(data))) + zlib.compress(data) + b"\nendstream"
+cat = add(b""); pages_id = add(b""); font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+big = add(stream("/Type /XObject /Subtype /Image /Width 360 /Height 420 /ColorSpace /DeviceRGB /BitsPerComponent 8", photo(360, 420)))
+rg = lambda c: b"%.3f %.3f %.3f rg\n" % tuple(v / 255 for v in c)
+fill = lambda c, x, y, w, h: rg(c) + b"%d %d %d %d re f\n" % (x, y, w, h)
+t = lambda y, s, size=14, x=72: b"BT /F1 %d Tf %d %d Td (%s) Tj ET\n" % (size, x, y, s.encode())
+lines = lambda top, n, x=72: b"".join(t(top - j * 15, "Line %d: the quick brown fox jumps over the lazy dog, and the dog sleeps." % (j + 1), 11, x) for j in range(n))
+light, ink = (242, 242, 242), (30, 30, 30)
+def slide(bg, title, body=True): return fill(bg, 0, 0, 612, 792) + rg(light) + t(700, title, 22) + (lines(640, 20) if body else b"")
+navy = (33, 59, 107)
+contents, names = [], []
+def page(name, c): names.append(name); contents.append(c)
+page("black slide, white text, no picture", slide((0, 0, 0), "A black slide with white text"))
+page("dark slide with a logo", slide((28, 36, 52), "A dark slide with a logo") + b"q 90 0 0 70 480 690 cm /Big Do Q\n")
+page("white page, dark header band", fill(navy, 0, 662, 612, 130) + rg(light) + t(715, "A white page with a dark header band", 20) + rg(ink) + lines(620, 30))
+page("white page, dark sidebar", fill(navy, 0, 0, 150, 792) + rg(light) + t(740, "Sidebar", 14, 20) + rg(ink) + t(740, "A white page with a dark sidebar", 18, 170) + lines(700, 36, 170))
+page("white page, dark figure in vectors", rg(ink) + t(740, "A white page with a dark figure in vectors", 18) + fill((20, 24, 32), 36, 330, 540, 360) + fill((70, 140, 220), 80, 380, 60, 200) + fill((220, 120, 40), 180, 380, 60, 140) + fill((80, 190, 110), 280, 380, 60, 260) + rg(ink) + t(305, "Figure 5. A dark chart drawn as vectors.") + lines(280, 14))
+page("dark page, white text box", slide(navy, "A dark page with a white text box", False) + fill((250, 250, 250), 72, 340, 468, 280) + rg(ink) + lines(600, 17, 90) + rg(light) + lines(300, 14))
+page("dark page, light table", slide((24, 28, 34), "A dark page with a light table", False) + b"".join(fill((235, 235, 235) if (r + c) % 2 == 0 else (215, 215, 215), 72 + c * 117, 300 + r * 40, 117, 40) for r in range(8) for c in range(4)) + rg(ink) + b"".join(t(312 + r * 40, "Cell %d" % (r * 4 + c), 11, 82 + c * 117) for r in range(8) for c in range(4)))
+page("half dark, half light", fill(navy, 0, 396, 612, 396) + rg(light) + t(740, "Half dark and half light", 22) + lines(690, 18) + rg(ink) + lines(360, 18))
+page("dark green slide", slide((22, 70, 40), "A dark green slide"))
+page("dark grey slide", slide((60, 60, 60), "A dark grey slide"))
+for name, bg in (("cream", (253, 246, 227)), ("light grey", (210, 210, 210)), ("pale blue tint", (225, 236, 250)), ("yellowed", (236, 226, 196))):
+    page(name + " page", fill(bg, 0, 0, 612, 792) + rg(ink) + t(740, "A %s page" % name, 22) + lines(690, 36))
+page("photo 39% on navy", fill(navy, 0, 0, 612, 792) + rg(light) + t(740, "A photo, 39% of the page, on navy", 18) + b"q 468 0 0 400 72 280 cm /Big Do Q\n" + lines(230, 8))
+page("photo 60% on navy", fill(navy, 0, 0, 612, 792) + rg(light) + t(740, "A photo, 60% of the page, on navy", 18) + b"q 504 0 0 570 54 130 cm /Big Do Q\n")
+for hue, base in (("grey", (128, 128, 128)), ("blue", (40, 90, 200)), ("orange", (240, 130, 20)), ("red", (200, 40, 40)), ("green", (40, 150, 60))):
+    for target in (60, 90, 115, 135, 155, 175):
+        bg = at_luma(base, target)
+        text = light if target < 128 else ink
+        page("%s at %d" % (hue, target), fill(bg, 0, 0, 612, 792) + rg(text) + t(700, "%s, lightness %d of 255: #%02X%02X%02X" % (hue.capitalize(), luma(bg), *bg), 22) + lines(640, 20))
+kids = []
+for c in contents:
+    cid = add(stream("", c))
+    kids.append(add(b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> /XObject << /Big %d 0 R >> >> >>" % (pages_id, cid, font, big)))
+objs[cat - 1] = b"<< /Type /Catalog /Pages %d 0 R >>" % pages_id
+objs[pages_id - 1] = b"<< /Type /Pages /Count %d /Kids [%s] >>" % (len(kids), b" ".join(b"%d 0 R" % k for k in kids))
+out = bytearray(b"%PDF-1.5\n"); offs = []
+for i, o in enumerate(objs):
+    offs.append(len(out)); out += b"%d 0 obj\n" % (i + 1) + o + b"\nendobj\n"
+x = len(out); out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+for o in offs: out += b"%010d 00000 n \n" % o
+out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, cat, x)
+open(sys.argv[1], "wb").write(out)
+open(sys.argv[2], "w").write("".join("%d %s\n" % (i + 1, n) for i, n in enumerate(names)))
+PY3
+    cp "$root/in/darkpages.txt" "$out/darkpages.txt"
+    count="$(wc -l < "$root/in/darkpages.txt" | tr -d ' ')"
+    fresh darkpage
+    r open "$root/in/darkpages.pdf"
+    for look in light dark; do
+        r qa appearance "$look"; r view --paper dark; settle
+        for p in $(seq 1 "$count"); do r goto "$p"; settle; shot "04c-dark-page-p$(printf %02d "$p")"; done
+    done
+    # The same pages on white paper, for what they are.
+    look=light; r qa appearance light; r view --paper white; settle
+    for p in $(seq 1 "$count"); do r goto "$p"; settle; shot "04c-dark-page-p$(printf %02d "$p")-white-paper"; done
 fi
 
 if want findwrap; then
