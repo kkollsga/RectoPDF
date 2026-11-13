@@ -531,11 +531,7 @@ pub use crate::version_of;
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub fn look_before_showing(inner: &Inner, id: TabId) {
-    let Some((path, stamp)) = inner
-        .host
-        .session
-        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
-    else {
+    let Some((path, stamp, says_something)) = look_facts(inner, id) else {
         return;
     };
     // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
@@ -551,7 +547,7 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
         if slots.finish(id) {
             core.push(CoreCall::LookAtShown);
         }
-        let other = !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked);
+        let other = look_is_news(&status, stamp, says_something);
         // Too late for the frame: it's said the usual way.
         if send.try_send((other, status.clone())).is_err() && other {
             core.push(CoreCall::WokenFileIsOther(id, status, stamp));
@@ -564,6 +560,26 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
     // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
     if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
         take_shown_look(inner, id, stamp, status);
+    }
+}
+
+/// What a look at a tab's file starts from: its path, its stamp, and whether the tab says something of its file now (a change under its edits, a file gone).
+fn look_facts(inner: &Inner, id: TabId) -> Option<(std::path::PathBuf, Option<recto_platform::FileStamp>, bool)> {
+    inner
+        .host
+        .session
+        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.notices().said(id).is_some())))
+}
+
+/// **Whether a look at a tab's file, made against `stamp`, is for the session to hear.** Not looked at is nothing. The file found as `stamp` says is nothing
+/// too, unless the tab says something of its file (`says_something`): then the version its edits were made on may be back, or a file gone may be back, which
+/// only the session can tell, so it's told. Found 2026-11-13 in a quiet run: that version written back over the file in place (`cp`, then `touch -r`) has the
+/// same number, size and time as the stamp the edits keep, so every look called it "as it was", and the notice and the refused Save stayed.
+pub(crate) fn look_is_news(status: &FileStatus, stamp: Option<recto_platform::FileStamp>, says_something: bool) -> bool {
+    match status {
+        FileStatus::NotLooked => false,
+        FileStatus::Same(now) if Some(*now) == stamp => says_something,
+        _ => true,
     }
 }
 
@@ -589,11 +605,7 @@ const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
 pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
-    let Some((path, stamp)) = inner
-        .host
-        .session
-        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
-    else {
+    let Some((path, stamp, says_something)) = look_facts(inner, id) else {
         return;
     };
     if !inner.sleeper.looks.start(id) {
@@ -602,7 +614,7 @@ pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     let (slots, core) = (std::sync::Arc::clone(&inner.sleeper.looks), std::sync::Arc::clone(&inner.core));
     let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let status = look_at_file(&path, stamp);
-        if !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked) {
+        if look_is_news(&status, stamp, says_something) {
             core.push(CoreCall::WokenFileIsOther(id, status, stamp));
         }
         // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.

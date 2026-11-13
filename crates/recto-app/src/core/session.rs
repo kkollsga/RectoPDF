@@ -174,12 +174,11 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
 /// What a look at a tab not showing found, made against `stamp`, taken in: whether it was news. Only something other than what was known is told, and a save
 /// meanwhile moves the stamp, so a look against the old one is about nothing now.
 pub(crate) fn take_other_look(inner: &Inner, id: TabId, stamp: Option<recto_platform::FileStamp>, status: FileStatus) -> bool {
-    let is_as_it_was = matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) || matches!(status, FileStatus::NotLooked);
-    !is_as_it_was
-        && inner
-            .host
-            .session
-            .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
+    inner.host.session.with_session(|session| {
+        sleeper::look_is_news(&status, stamp, session.notices().said(id).is_some())
+            && session.tabs().own_stamp(id) == stamp
+            && session.apply_file_status(id, status)
+    })
 }
 
 /// Runs the socket from here on, now the session's as it was: nothing asked of it could be about an empty one, or open over what's coming back.
