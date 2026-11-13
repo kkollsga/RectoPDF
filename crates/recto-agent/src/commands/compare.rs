@@ -105,6 +105,11 @@ impl std::fmt::Display for Panes {
     }
 }
 
+/// The refusals of flags that go alone, each said with another.
+pub(crate) const OFF_ALONE: &str = "`--off` goes alone: it ends the comparison.";
+pub(crate) const TOGGLE_ALONE: &str = "`--toggle` goes alone: it puts one tab side by side with the others, or takes it out.";
+pub(crate) const READING_ALONE: &str = "`--reading` goes alone: it chooses which of the tabs side by side is read.";
+
 /// Checked whole as it's read, in the order the run checked it before: what goes alone, then the scroll's word, then how many tabs are named.
 impl TryFrom<line::Compare> for Compare {
     type Error = AgentError;
@@ -122,13 +127,13 @@ impl TryFrom<line::Compare> for Compare {
             .filter(|said| *said)
             .count();
         if off && said > 1 {
-            return Err(usage("`--off` goes alone: it ends the comparison."));
+            return Err(usage(OFF_ALONE));
         }
         if toggle.is_some() && said > 1 {
-            return Err(usage("`--toggle` goes alone: it puts one tab side by side with the others, or takes it out."));
+            return Err(usage(TOGGLE_ALONE));
         }
         if reading.is_some() && said > 1 {
-            return Err(usage("`--reading` goes alone: it chooses which of the tabs side by side is read."));
+            return Err(usage(READING_ALONE));
         }
         let sync = sync
             .map(|word| OnOff::from_word(&word).ok_or_else(|| usage(&format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(&word)))))

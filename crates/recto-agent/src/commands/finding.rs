@@ -65,6 +65,10 @@ pub mod line {
     }
 }
 
+/// The refusals of flags that can't go together.
+pub(crate) const ONE_THING: &str = "That's more than one thing at once: a query, a step, a hit, opening or closing.";
+pub(crate) const JUMP_WITH_A_STEP: &str = "`--jump` goes with `--next` or `--previous`.";
+
 /// Checked whole as it's read, in the order the run checked it before: the limit, then one thing at a time, then a jump only with a step.
 impl TryFrom<line::Find> for Find {
     type Error = AgentError;
@@ -82,15 +86,10 @@ impl TryFrom<line::Find> for Find {
         let limit = limit.map(|limit| NonZeroU32::new(limit).ok_or_else(bad_limit)).transpose()?;
         let said = [query.is_some(), next || previous, hit.is_some(), open, close];
         if said.iter().filter(|said| **said).count() > 1 || (next && previous) {
-            return Err(AgentError::new(
-                Code::USAGE,
-                "That's more than one thing at once: a query, a step, a hit, opening or closing.",
-                exit::USAGE,
-            )
-            .then("Find first, then `recto find --next`."));
+            return Err(AgentError::new(Code::USAGE, ONE_THING, exit::USAGE).then("Find first, then `recto find --next`."));
         }
         if jump && !(next || previous) {
-            return Err(AgentError::new(Code::USAGE, "`--jump` goes with `--next` or `--previous`.", exit::USAGE).then("`recto find --next --jump`."));
+            return Err(AgentError::new(Code::USAGE, JUMP_WITH_A_STEP, exit::USAGE).then("`recto find --next --jump`."));
         }
         let ask = match (query, hit) {
             (Some(query), _) => FindAsk::Query(query),

@@ -1408,34 +1408,57 @@ mod tests {
         }
     }
 
-    /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field. Fills every argument of every row and parses the result.
+    /// The line a row makes from these of its arguments, each with its value, and its required ones with a sample, as `recto` sends it.
+    fn line_of(spec: &Spec, given: &[(&Arg, &str)]) -> Result<String, AgentError> {
+        let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+        let required = spec
+            .args
+            .iter()
+            .filter(|arg| arg.required && !given.iter().any(|(each, _)| each.key == arg.key));
+        for (arg, value) in required.map(|arg| (arg, sample_of(arg.kind))).chain(given.iter().copied()) {
+            words.extend(arg.flag.map(str::to_string));
+            if !value.is_empty() {
+                words.push(value.to_string());
+            }
+        }
+        let mut parsed = parse_cli(&words).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
+        // What's read from stdin rather than the line, as `recto` itself puts it in.
+        if let Some(field) = stdin_secret_field(spec) {
+            parsed.fields.insert(field.into(), json!("from stdin"));
+        }
+        let wire = parsed.wire();
+        parse(&wire).map(|_| wire)
+    }
+
+    /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field; or a word a row
+    /// offers is refused by its command's type (R2.5). Each argument of every row alone, with each word it offers, makes a command with no refusal at all
+    /// (a switch that only goes with another is refused alone only for that); every argument at once does too, or is refused only for flags that can't go
+    /// together.
     #[test]
     fn every_argument_of_every_row_reaches_the_command() {
         for spec in TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.hidden) {
-            let mut line = vec![];
-            line.extend(spec.name.split(' ').map(str::to_string));
             for arg in spec.args {
-                if let Some(flag) = arg.flag {
-                    line.push(flag.to_string());
-                }
-                let sample = sample_of(arg.kind);
-                if !sample.is_empty() {
-                    line.push(sample.to_string());
+                let values: Vec<&str> = match arg.kind {
+                    Kind::Choice(words) | Kind::List(words) => words.to_vec(),
+                    other => vec![sample_of(other)],
+                };
+                for value in values {
+                    // A switch that only goes with another (`find --jump` needs a step) is refused alone for that, and only for that.
+                    match line_of(spec, &[(arg, value)]) {
+                        Err(error) if arg.kind == Kind::Switch && crate::commands::refused_for_its_combination(spec.tag, &error) => {}
+                        Err(error) => panic!("{} --{} {value}: refused, {:?}: {}", spec.name, arg.key, error.code, error.message),
+                        Ok(_) => {}
+                    }
                 }
             }
-            let mut parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
-            // What's read from stdin rather than the line, as `recto` itself puts it in.
-            if let Some(field) = stdin_secret_field(spec) {
-                parsed.fields.insert(field.into(), json!("from stdin"));
-            }
-            // A field it doesn't know makes the line no command; a typed payload may still refuse every flag at once as a combination it can't be (R2.5).
-            if let Err(error) = parse(&parsed.wire()) {
-                assert_ne!(
-                    error.code,
-                    "bad_command",
-                    "{} sends a field its command doesn't know: {}",
+            let all: Vec<(&Arg, &str)> = spec.args.iter().map(|arg| (arg, sample_of(arg.kind))).collect();
+            if let Err(error) = line_of(spec, &all) {
+                assert!(
+                    crate::commands::refused_for_its_combination(spec.tag, &error),
+                    "{} with every argument: refused, {:?}: {}",
                     spec.name,
-                    parsed.wire()
+                    error.code,
+                    error.message
                 );
             }
         }

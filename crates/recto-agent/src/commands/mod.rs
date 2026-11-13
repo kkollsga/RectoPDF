@@ -471,6 +471,25 @@ pub(crate) fn human(tag: &str, data: &Value) -> Option<String> {
     FAMILIES.iter().find_map(|(_, _, words, _)| words(tag, data))
 }
 
+/// The refusals of flags that can't go together, by command, which a typed payload makes as it's read (step R2.5).
+#[cfg(any(test, feature = "test-words"))]
+const COMBINATIONS: &[(&str, &str)] = &[
+    ("compare", compare::OFF_ALONE),
+    ("compare", compare::TOGGLE_ALONE),
+    ("compare", compare::READING_ALONE),
+    ("find", finding::ONE_THING),
+    ("find", finding::JUMP_WITH_A_STEP),
+];
+
+/// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its
+/// words come to together. Flags that can't go together, or more tabs to compare than are read; nothing else, so a word the CLI offers and the command's
+/// type refuses can't pass as one.
+#[cfg(any(test, feature = "test-words"))]
+pub fn refused_for_its_combination(tag: &str, error: &AgentError) -> bool {
+    let words = error.message.as_str();
+    (error.code == Code::USAGE && COMBINATIONS.contains(&(tag, words))) || (tag == "compare" && error.code == Code::TOO_MANY_PANES)
+}
+
 /// Whether a wire name is a typed payload's, read from a line of its own and checked whole as it's read (step R2.5).
 pub fn is_typed(tag: &str) -> bool {
     FAMILIES.iter().any(|(.., typed)| typed.contains(&Some(tag)))
