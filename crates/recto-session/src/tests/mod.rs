@@ -8,6 +8,7 @@ mod contents;
 mod editing;
 mod files;
 mod follow;
+mod forgetting;
 mod journal;
 mod pages;
 mod paper;
