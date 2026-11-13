@@ -437,8 +437,12 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
         assert_eq!(opened["ok"], true, "{opened}");
     }
     assert!(!state.paths.corpus.exists(), "opening 200 tabs wrote to the corpus folder");
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "200 open tabs hold a thread");
+    // Whatever an open started may take a moment to go; a thread the tabs hold never does.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(Instant::now() < deadline, "200 open tabs hold a thread");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
     let (status, _) = state.json(&["index", "status"]);
     assert_eq!(
         (status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()),
@@ -483,18 +487,25 @@ fn waiting_for_the_index_starts_it_and_hears_it_finish() {
     let file = doc("waited.pdf", 5);
     state.json(&["open", path(&file)]);
     let (watch_tx, watch_rx) = std::sync::mpsc::channel();
+    let (watching_tx, watching_rx) = std::sync::mpsc::channel();
     let mut watch = state.command();
-    let output = watch
+    let mut output = watch
         .args(["watch", "--events", "indexing", "--count", "2", "--timeout", "60s", "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let stdout = output.stdout.take().unwrap();
     std::thread::spawn(move || {
-        let out = output.wait_with_output().unwrap();
-        let _ = watch_tx.send(String::from_utf8(out.stdout).unwrap());
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout)).map_while(Result::ok);
+        // Its first line says it's watching, so nothing the build says is missed.
+        let _ = watching_tx.send(lines.next().unwrap_or_default());
+        let said: Vec<String> = lines.collect();
+        let _ = output.wait();
+        let _ = watch_tx.send(said.join("\n"));
     });
-    std::thread::sleep(Duration::from_millis(300));
+    let watching = watching_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(watching.contains("\"watching\":true"), "{watching}");
     let started = Instant::now();
     let done = wait_done(&state, "active");
     assert!(started.elapsed() < Duration::from_secs(120));
@@ -1050,13 +1061,17 @@ fn clearing_stops_what_is_on_its_way() {
         (Some(1), Some(0)),
         "{cleared}"
     );
+    // A build counts as running until its helper has ended, so with none running and none waiting nothing more can be written.
     let (status, _) = state.json(&["index", "status", "--tab", "running"]);
     assert_eq!(
-        (status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64()),
-        (Some("not_started"), Some(0)),
+        (
+            status["data"]["state"].as_str(),
+            status["data"]["indexers_running"].as_u64(),
+            status["data"]["indexers_waiting"].as_u64()
+        ),
+        (Some("not_started"), Some(0), Some(0)),
         "{status}"
     );
-    std::thread::sleep(Duration::from_millis(500));
     let text = all_text_under(&root);
     assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
     assert!(!text.contains("queuedword"), "the file that was cleared got written anyway");
@@ -1085,13 +1100,22 @@ fn lowering_to_off_stops_indexing() {
     state.json(&["index"]);
     let (lowered, code) = state.json(&["permission", "set", "off"]);
     assert_eq!(code, 0, "{lowered}");
-    std::thread::sleep(Duration::from_millis(500));
-    let at_first = pages_done(&root, running_key);
-    std::thread::sleep(Duration::from_millis(1000));
-    assert_eq!(pages_done(&root, running_key), at_first, "it kept writing at Off");
-    assert!(at_first < 1200, "it was meant to stop partway");
-    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
+    // Asked at Control, as Off reads nothing about it. A build counts as running until its helper has ended, so once none is, nothing more can be written, and what's there is all there'll be: a build that went on at Off has finished by then.
     state.set_level(Level::Control);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let (status, _) = state.json(&["index", "status", "--tab", "off-waiting"]);
+        if status["data"]["indexers_running"].as_u64() == Some(0) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the build never ended: {status}");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
+    assert!(
+        matches!(recto_index::corpus::disk_state(&root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
+        "it kept writing at Off, to the end"
+    );
+    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(
@@ -1484,13 +1508,15 @@ fn the_old_corpus_folder_goes_at_startup() {
     }
     // A link there isn't the old folder, and what it points at stays.
     std::os::unix::fs::symlink(&nearly, &old).unwrap();
+    // Its ready line comes before the session is made, so it's counted once the session answers. A thread a start makes for nothing goes in a moment, which no count can see; one it holds never does. Polled for, bounded.
     let serving = state.serve();
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(
-        recto_platform::local::process_counters(serving.pid()).unwrap().threads,
-        1,
-        "a start with nothing to remove holds a thread"
-    );
+    let status = Raw::connect(&state).call(&serde_json::json!({ "cmd": "status" }));
+    assert_eq!(status["ok"], true, "{status}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while recto_platform::local::process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(Instant::now() < deadline, "a start with nothing to remove holds a thread");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
     assert!(std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
 }

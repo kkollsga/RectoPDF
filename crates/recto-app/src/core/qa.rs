@@ -556,7 +556,7 @@ impl QaBridge {
                 "disk_bytes_written": counters.map(|counters| counters.disk_bytes_written),
                 "open_handles": recto_platform::open_handle_count(),
             },
-            "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed(), "worst": self.watchdog.worst_stall().map_or(Value::Null, |stall| json!({ "wall_ms": stall.wall_ms, "cpu_ms": stall.cpu_ms, "window_ms": stall.window_ms, "state": stall.state, "verb": stall.verb, "ended": stall.ended })) },
+            "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed(), "worst": self.watchdog.worst_stall().map_or(Value::Null, |stall| json!({ "wall_ms": stall.wall_ms, "cpu_ms": stall.cpu_ms, "window_ms": stall.window_ms, "state": stall.state, "waiting_looks": stall.waiting_looks, "running_looks": stall.running_looks, "verb": stall.verb, "ended": stall.ended })) },
             "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing.busy(), "notice": inner.tools.printing.notice(), "pid": std::process::id() })),
             "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool.is_on(), "drawing": inner.tools.tool.is_drawing(), "busy": inner.tools.tool.busy(), "notice": inner.tools.tool.notice().map(|notice| notice.text) })),
             "slow": slow_report(),

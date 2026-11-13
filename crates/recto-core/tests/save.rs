@@ -789,7 +789,8 @@ fn a_huge_object_in_an_added_file_is_refused() {
 #[test]
 fn an_inherited_value_written_in_place_goes_in_once() {
     let dir = Dir::new();
-    let pages = 200;
+    // Ten pages are enough: copied into each, it's five times the bound.
+    let pages = 10;
     let padding = format!("/Pad ({})", "x".repeat(50_000));
     let mut objects = vec![
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
@@ -875,7 +876,8 @@ fn no_stamp_is_no_save() {
 /// Failure (review): copying a hostile added page holds a reference for every one it names, so objects that each name all the others reach hundreds of millions, or clones every level of a deep dictionary. The copy is bounded, and refused past it, with little held.
 #[test]
 fn a_hostile_added_page_is_refused_within_its_bounds() {
-    let count = 100;
+    // The bound is given, so a small one shows it: the same walk at any size.
+    let count = 10;
     let refs: String = (0..count).map(|at| format!("{} 0 R ", 4 + at)).collect::<String>().repeat(20);
     let mut objects = vec![
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
@@ -888,12 +890,12 @@ fn a_hostile_added_page_is_refused_within_its_bounds() {
     let hostile = build(&objects);
     let target = marked(&["MINE"]);
     assert_eq!(
-        save::plan_in_memory_within(&target, &hostile, 100_000),
+        save::plan_in_memory_within(&target, &hostile, 1_000),
         Err(SaveError::TooLarge),
-        "100 objects naming 2,000 references each is past a bound of 100,000"
+        "10 objects naming 200 references each is past a bound of 1,000"
     );
     assert_eq!(
-        save::plan_in_memory_within(&target, &hostile, 1_000_000),
+        save::plan_in_memory_within(&target, &hostile, 10_000),
         Ok(2),
         "and within a larger one it copies"
     );

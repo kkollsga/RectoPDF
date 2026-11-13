@@ -426,11 +426,13 @@ mod tests {
         assert_eq!(counted.reads, 1, "it knew at the first page");
     }
 
-    /// Failure: a tab with many PDFs inserted keeps a worker running for each through `copy --all`, at up to hundreds of MiB each, since none is let go.
+    /// Failure: a tab with many PDFs inserted keeps a worker running for each through `copy --all`, at up to hundreds of MiB each, since none is let go. Shown with one file more than the cap, which is where it has to let one go.
     #[test]
     fn a_copy_over_many_files_keeps_few_workers() {
         let file = TempPdf::new("main.pdf", &words("The main file", 1));
-        let added: Vec<TempPdf> = (0..6).map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1))).collect();
+        let added: Vec<TempPdf> = (0..MAX_WORKERS)
+            .map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1)))
+            .collect();
         let mut session = opened(&file);
         for one in &added {
             run_command(
@@ -448,10 +450,10 @@ mod tests {
         let access = Direct(RefCell::new(&mut session), None);
         let answer = run_counted(&access, &whole(), false, &mut counted).unwrap();
         let text = answer["untrusted"]["text"].as_str().unwrap();
-        for at in 0..6 {
+        for at in 0..MAX_WORKERS {
             assert!(text.contains(&format!("Added file {at}")), "{text}");
         }
-        assert_eq!(counted.reads, 7);
+        assert_eq!(counted.reads as usize, MAX_WORKERS + 1);
         assert!(counted.most_workers <= MAX_WORKERS, "{}", counted.most_workers);
     }
 
