@@ -558,8 +558,10 @@ fn no_notice_over_edits_that_dont_fit_changes_what_is_allowed() {
 }
 
 /// Failure (review round 1): a reader decided what's allowed by comparing a notice's code string (`notice == Some("file_changed")`,
-/// `notice.code() == "file_changed"`), which another notice overwrites. No code outside tests compares a tab's notice to a code: what's allowed is
-/// [`Notices::fit`]'s, and what's said is [`Notices::said`]'s.
+/// `notice.code() == "file_changed"`), which another notice overwrites. No code outside tests compares a tab's notice or what's said of it to a code: what's
+/// allowed is [`Notices::fit`]'s, and what's said is [`Notices::said`]'s. (F, review round 2: the scan stopped at a file's first `#[cfg(test)]`, so nearly
+/// all of several hubs went unread; it needed "notice" on the line, so `let c = n.code(); if c == "file_changed"` passed; and it skipped the reader and the
+/// CLI. Only test items are left out now, any comparison with a code is found, and those crates are read.)
 #[test]
 fn nothing_decides_by_a_notice_code_string() {
     let codes = [
@@ -575,10 +577,19 @@ fn nothing_decides_by_a_notice_code_string() {
     ];
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut found = Vec::new();
-    let mut folders: Vec<PathBuf> = ["recto-session", "recto-agent", "recto-app", "recto-ffi", "recto-control"]
-        .iter()
-        .map(|name| crates.join(name).join("src"))
-        .collect();
+    let mut folders: Vec<PathBuf> = [
+        "recto-session",
+        "recto-agent",
+        "recto-app",
+        "recto-ffi",
+        "recto-control",
+        "recto-reader",
+        "recto-cli",
+    ]
+    .iter()
+    .map(|name| crates.join(name).join("src"))
+    .collect();
+    let mut read = 0;
     while let Some(folder) = folders.pop() {
         for entry in std::fs::read_dir(&folder).unwrap().flatten() {
             let path = entry.path();
@@ -592,16 +603,78 @@ fn nothing_decides_by_a_notice_code_string() {
             if !name.ends_with(".rs") || name == "tests.rs" {
                 continue;
             }
+            read += 1;
             let source = std::fs::read_to_string(&path).unwrap();
-            let production = source.split("#[cfg(test)]").next().unwrap_or_default();
-            for (at, line) in production.lines().enumerate() {
-                if line.contains("notice") && codes.iter().any(|code| line.contains(code)) {
+            for (at, line) in production_lines(&source) {
+                if codes.iter().any(|code| compares(line, code)) {
                     found.push(format!("{}:{}: {}", path.display(), at + 1, line.trim()));
                 }
             }
         }
     }
+    assert!(read > 100, "the crates' sources were read: {read} files");
     assert!(found.is_empty(), "decided by a notice's code: {found:#?}");
+}
+
+/// A source's lines outside test items: an item under `#[cfg(test)]` (a `mod tests { .. }`, a test-only function or `use`) is left out to its end, and
+/// everything after it is read. Braces are counted as written, which holds for this code base's sources.
+fn production_lines(source: &str) -> Vec<(usize, &str)> {
+    let mut lines = Vec::new();
+    // Inside a test item: whether its body has opened, and how deep.
+    let mut skipping: Option<(bool, i64)> = None;
+    for (at, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if skipping.is_none() {
+            if let Some(rest) = trimmed
+                .strip_prefix("#[cfg(test)]")
+                .or_else(|| trimmed.starts_with("#[cfg(all(test").then_some(""))
+            {
+                skipping = Some((false, 0));
+                if rest.trim().is_empty() {
+                    continue;
+                }
+            } else {
+                lines.push((at, line));
+                continue;
+            }
+        }
+        let Some((opened, depth)) = skipping.as_mut() else { continue };
+        if !*opened && trimmed.starts_with("#[") {
+            continue;
+        }
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    *opened = true;
+                    *depth += 1;
+                }
+                '}' => *depth -= 1,
+                _ => {}
+            }
+        }
+        if (*opened && *depth <= 0) || (!*opened && line.trim_end().ends_with(';')) {
+            skipping = None;
+        }
+    }
+    lines
+}
+
+/// Whether a line compares something with `code`: `== "code"`, `"code" !=`, `Some("code")` beside one, a match arm or pattern (`"code" =>`, `"code" |`),
+/// `matches!`, `.eq(` or `contains(`. A code given out (`=> "code"`, `code: "code"`) isn't a comparison.
+fn compares(line: &str, code: &str) -> bool {
+    line.match_indices(code).any(|(at, _)| {
+        let before = line[..at].trim_end();
+        let after = line[at + code.len()..].trim_start();
+        let before = before.strip_suffix("Some(").map_or(before, str::trim_end);
+        let after = after.strip_prefix(')').map_or(after, str::trim_start);
+        before.ends_with("==")
+            || before.ends_with("!=")
+            || before.ends_with("eq(")
+            || before.ends_with("contains(")
+            || before.ends_with('|')
+            || line[..at].contains("matches!(")
+            || ["==", "!=", "=>", "|"].iter().any(|op| after.starts_with(op))
+    })
 }
 
 /// Failure (F2): a second change under edits that don't fit (v2, then v3) was taken for nothing new, as the tab already said its file changed, so what was held
