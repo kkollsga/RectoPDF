@@ -350,7 +350,9 @@ fn qa_commands_are_refused_without_a_quiet_app() {
     assert_eq!(reply["error"]["code"], "qa_needs_app");
 }
 
-/// Failure: a QA run can be pointed at the owner's real state, or the app starts one with no state of its own. Refused before anything's started.
+/// Failure: `recto qa start` points a quiet run at the owner's real state, or at one that isn't throwaway. Refused before anything's started. (The app's own
+/// refusal at launch is `recto-app`'s `a_quiet_launch_takes_only_temp_state`, and the rule's, `recto-control`'s `a_quiet_run_takes_only_a_folder_in_a_temp_folder`
+/// and `a_quiet_run_refuses_the_users_own_state_named_or_not`: in process, with no copy of the app started.)
 #[test]
 fn a_quiet_run_refuses_the_real_state() {
     let Some(app) = app_path() else { return };
@@ -361,19 +363,18 @@ fn a_quiet_run_refuses_the_real_state() {
         .unwrap();
     let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["error"]["code"], "needs_temp_state", "{reply}");
-    // The app itself says the same, whoever starts it.
-    // A copy's executable, not the build folder's: running the built one registers the build folder and nothing forgets it (`app_launch_guard`).
-    let Some(copy) = common::app::OwnCopy::new() else { return };
-    let output = Command::new(copy.executable())
-        .arg("--qa")
-        .env_remove(recto_control::state::STATE_ENV)
+    // Named, but not throwaway: a folder outside every temp folder, as the build's own is.
+    let kept = recto_testpdf::TempDir::new_in(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), "not-temp-state-");
+    let output = Command::new(bin())
+        .env(recto_control::state::STATE_ENV, kept.path().join("s"))
+        .args(["qa", "start", "--app", app.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Inside the home, as a CI runner's build is, the override is refused before the quiet run's own rule is asked.
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("RECTO_STATE_DIR"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        matches!(reply["error"]["code"].as_str(), Some("needs_temp_state" | "state_refused")),
+        "a state folder outside the temp folders: {reply}"
     );
 }
 
@@ -2293,8 +2294,8 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
 
     // Only undone steps: nothing to save, so the prompt offers Close, says the steps go, and closing lets them go.
     // The owner's steps, as the app's own tools make them: an agent's undone steps are its own to lose, and closing doesn't ask about those.
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
+    run.ok(&["qa", "as-person", "undo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == false);
     run.ok(&["qa", "menu", "file.close"]);
     let asked = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
@@ -2529,7 +2530,7 @@ fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
     // A tab opened with the person's password: theirs to see in ⌘K, and nothing of it for an agent.
     run.state.set_level(Level::Full);
     let locked = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", locked.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| {
@@ -2602,7 +2603,7 @@ fn files_holding(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
 fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     let asked = sheet_of(&run, "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("locked.pdf"), "{asked}");
     type_password(&run, "not it");
@@ -2677,7 +2678,7 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
 fn a_protected_file_moved_while_open_keeps_its_password() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
@@ -2703,23 +2704,14 @@ fn a_protected_file_moved_while_open_keeps_its_password() {
     std::fs::rename(&moved, &file.0).ok();
 }
 
-/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it.
+/// Failure: `qa password` takes the password on the command line, where other processes see it. (That it types only into a test's own sheet, review O6, is
+/// `recto-app`'s `qa_password_types_only_into_a_tests_own_sheet`, in process: a person's open of a file outside the test's folders, which `qa as-person`
+/// won't do.)
 #[test]
 fn qa_password_is_only_for_a_tests_own_file() {
     let Some(run) = Run::start() else { return };
-    let outside = recto_testpdf::TempDir::new_in(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), "not-a-test-folder-");
-    std::fs::create_dir_all(&outside).unwrap();
-    let file = outside.join("locked.pdf");
-    std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();
-    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
-    sheet_of(&run, "password");
-    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], "open sesame");
-    assert_ne!(code, 0, "{reply}");
-    assert!(reply["error"]["message"].as_str().unwrap().contains("test's own file"), "{reply}");
-    assert_eq!(run.report()["session"]["tabs"].as_array().map_or(0, Vec::len), 0, "nothing opened");
     let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
     assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
-    std::fs::remove_dir_all(&outside).ok();
 }
 
 /// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
@@ -2799,7 +2791,7 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
         "the tabs and the bottom bar stay: {}",
         found["app"]["contents"]
     );
-    let stepped = run.ok(&["qa", "find-key", "return"]);
+    let stepped = run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let stepped = run.report().get("app").cloned().unwrap_or(stepped);
     assert_eq!(
@@ -2860,7 +2852,7 @@ fn find_goes_by_the_pane_being_read() {
     assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
     run.ok(&["qa", "find-type", "apple"]);
     run.settled();
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let state = run.report();
     assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
@@ -2882,7 +2874,7 @@ fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
         "every page drawn a quarter turn: {turns:?}"
     );
     assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
-    run.ok(&["qa", "edit-mode", "on"]);
+    run.ok(&["qa", "as-person", "edit mode on"]);
     run.settled();
     let panel = run.report()["app"]["panel"].clone();
     assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
@@ -2908,7 +2900,7 @@ fn find_never_types_over_what_is_being_typed() {
     let file = numbered(300);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "focus", "find"]);
     for typed in ["w", "wo", "wor", "word"] {
         let state = run.ok(&["qa", "find-type", typed]);
@@ -2935,7 +2927,7 @@ fn find_shows_the_sessions_draft_until_typing_starts() {
     let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "as-person", "find --open"]);
     run.ok(&["qa", "focus", "find"]);
     run.ok(&["qa", "find-draft", "set while focused"]);
     let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
@@ -3167,7 +3159,7 @@ fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
     let file = three_marked();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["reader"]["pages"] == 2);
     assert_eq!(
         edited["app"]["save_button"]["enabled"], true,
@@ -3201,7 +3193,7 @@ fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
         "it holds the deleted page alone"
     );
     // Undo past the save: the page comes back, from the copy, and draws.
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "undo"]);
     let back = wait_for(&run, |state| state["reader"]["pages"] == 3 && state["app"]["document_edited"] == true);
     assert_eq!(back["app"]["save_button"]["visible"], true);
     run.ok(&["goto", "2"]);
@@ -3230,7 +3222,7 @@ fn a_signed_files_delete_turns_save_off_and_save_as_is_unsigned() {
         run.ok(&["open", file.0.to_str().unwrap()]);
         run.settled();
         // A certification forbids a turn too; a person's signature only what has to be written anew.
-        run.ok(&["qa", "owner-edit", if kind == "certified" { "rotate:1" } else { "delete:2" }]);
+        run.ok(&["qa", "as-person", if kind == "certified" { "page rotate 1 --by 90" } else { "page delete 2" }]);
         let off = wait_for(&run, |state| {
             state["app"]["save_button"]["visible"] == true && state["app"]["save_button"]["enabled"] == false
         });
@@ -3281,7 +3273,7 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     let file = signed_two("usage_rights");
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
     assert_eq!(
         edited["app"]["save_button"]["enabled"], true,
@@ -3621,7 +3613,7 @@ fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
         "⌘G only steps, so the way forward stays: {}",
         stepped["app"]["place"]
     );
-    run.ok(&["qa", "find-key", "return"]);
+    run.ok(&["qa", "as-person", "find --next --jump"]);
     run.settled();
     let returned = run.report();
     assert_eq!(
@@ -3659,7 +3651,7 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
 fn find_in_a_protected_document_works_for_the_person_and_never_for_an_agent() {
     let Some(run) = Run::start() else { return };
     let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
-    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.ok(&["qa", "as-person", &format!("open \"{}\"", file.0.to_str().unwrap())]);
     sheet_of(&run, "password");
     type_password(&run, "open sesame");
     wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");

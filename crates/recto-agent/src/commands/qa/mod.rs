@@ -5,6 +5,7 @@
 mod rows_features;
 mod rows_recto;
 mod rows_window;
+pub mod verbs;
 
 use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::table::*;
@@ -36,7 +37,7 @@ impl Cmd for QaRead {
         None
     }
     fn access(&self) -> Access {
-        row_access(Self::TAG)
+        verb_access(Self::TAG, &self.verb)
     }
     fn route(&self) -> Runs {
         Runs::App
@@ -74,7 +75,7 @@ impl Cmd for QaDrive {
         None
     }
     fn access(&self) -> Access {
-        row_access(Self::TAG)
+        verb_access(Self::TAG, &self.verb)
     }
     fn route(&self) -> Runs {
         Runs::App
@@ -88,6 +89,14 @@ impl Cmd for QaDrive {
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
     }
+}
+
+/// **A verb's level is its own row's,** so one verb can need more than the rest. A verb no row of this command sends has the command's first row's level,
+/// and is refused as no QA command where it's answered.
+fn verb_access(tag: &str, verb: &str) -> Access {
+    verbs::row_of(verb)
+        .filter(|row| row.tag == tag)
+        .map_or_else(|| row_access(tag), |row| row.access)
 }
 
 impl super::Qa {
@@ -110,6 +119,54 @@ impl OnlyAsks for QaDrive {
     fn only_asks(&self) -> bool {
         true
     }
+}
+
+/// What a `$NAME` in a line stands for, if anything.
+pub type Names = dyn Fn(&str) -> Option<String>;
+
+/// **A line's words, as a `.qa` script has them:** spaces between, double quotes around a word with spaces in it, and with `vars`, `$NAME` replaced by
+/// what it gives (`recto qa run` gives the environment); without, a `$` is itself. The one splitter, for a script's lines and for `qa as-person`'s command.
+///
+/// # Errors
+///
+/// A quote that isn't closed, or a `$NAME` that `vars` hasn't.
+pub fn line_words(line: &str, vars: Option<&Names>) -> Result<Vec<String>, String> {
+    let (mut words, mut word, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            '$' if vars.is_some() => {
+                let mut name = String::new();
+                while let Some(next) = chars.peek().filter(|next| next.is_ascii_alphanumeric() || **next == '_') {
+                    name.push(*next);
+                    chars.next();
+                }
+                word.push_str(&vars.and_then(|vars| vars(&name)).ok_or_else(|| format!("${name} isn't set."))?);
+                any = true;
+            }
+            ' ' | '\t' if !quoted => {
+                if any {
+                    words.push(std::mem::take(&mut word));
+                    any = false;
+                }
+            }
+            other => {
+                word.push(other);
+                any = true;
+            }
+        }
+    }
+    if quoted {
+        return Err("A quote isn't closed.".to_string());
+    }
+    if any {
+        words.push(word);
+    }
+    Ok(words)
 }
 
 /// The QA verbs' rows, `recto`'s own and the two commands', in the order the help shows them.

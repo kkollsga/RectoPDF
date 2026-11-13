@@ -14,13 +14,9 @@ extension QAChannel {
             find.typed(value)
             return true
         case "find_key":
+            // Escape in the field, by the method AppKit calls for it, as `page_escape` is. Rust has checked it's the one key this takes.
             guard let find = controller?.sidebar.find, find.model.open else { return fail(id, "Find isn't open.") }
-            switch value {
-            case "return": _ = delegate.core.act(action: .findReturn(forward: true))
-            case "shift_return": _ = delegate.core.act(action: .findReturn(forward: false))
-            case "escape": find.closeClicked()
-            default: return fail(id, "It's `return`, `shift_return` or `escape`.")
-            }
+            _ = find.control(find.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
             return true
         case "find_click":
             guard let find = controller?.sidebar.find, find.model.open, let row = Int(value), row >= 0, row < Int(find.model.rowCount) else { return fail(id, "There's no such row in Find's list.") }
