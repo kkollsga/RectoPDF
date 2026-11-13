@@ -218,6 +218,35 @@ fn a_panic_is_one_clients_error() {
     assert!(log.contains("\"outcome\":\"internal\""), "{log}");
 }
 
+/// The activity log's lines of one command and outcome, as written: a repeat that's counted rather than written isn't one.
+fn written(paths: &StatePaths, cmd: &str, outcome: &str) -> Vec<Value> {
+    std::fs::read_to_string(&paths.other_log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["cmd"] == cmd && line["outcome"] == outcome)
+        .collect()
+}
+
+/// Failure (review of R2.5, S1): a command whose arguments its type refuses as it's read (`edit_mode` with a word that's neither on nor off) is answered as
+/// `"cmd":"unknown"` and logged as `unknown`, which the log counts as a repeat rather than writing: an agent's malformed attempt at a Control command has
+/// no line of its own in the person's log. It's answered and written under its own name each time, with its code and nothing of what it held; a line that
+/// isn't a command is still `unknown`.
+#[test]
+fn a_command_refused_as_its_read_is_answered_and_logged_as_itself() {
+    let running = Running::start(Limits::default());
+    for _ in 0..2 {
+        let reply = running.call(&json!({ "cmd": "edit_mode", "set": "sideways" }));
+        assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("edit_mode"), &json!("usage")), "{reply}");
+    }
+    let lines = written(&running.paths, "edit_mode", "usage");
+    assert_eq!(lines.len(), 2, "each attempt is a line of its own: {lines:?}");
+    assert!(lines.iter().all(|line| line["details"].is_null()), "nothing of what it held: {lines:?}");
+    let reply = running.call(&json!({ "cmd": "no_such_command" }));
+    assert_eq!((&reply["cmd"], &reply["error"]["code"]), (&json!("unknown"), &json!("bad_command")), "{reply}");
+    assert_eq!(written(&running.paths, "unknown", "bad_command").len(), 1);
+}
+
 /// Failure: one slow command stalls everyone. `status` must answer while another client's command is stuck, and the stuck one still gets its answer when it's done.
 #[test]
 fn a_stuck_command_doesnt_stop_status() {

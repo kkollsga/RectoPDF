@@ -146,8 +146,9 @@ macro_rules! family {
             pub const TAGS: &'static [&'static str] = &[$(<$payload as $crate::commands::Cmd>::TAG,)*];
 
             /// Reads a line known to name one of this family's commands: as serde reads its line, refused as no command if that fails, and then, for a
-            /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5).
-            pub(crate) fn parse(line: &str) -> Result<$crate::Command, $crate::AgentError> {
+            /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5). A refusal of what a line holds is the
+            /// command's, by its tag, as a run's refusal was; only a line that isn't a command is [`UNKNOWN`](crate::UNKNOWN).
+            pub(crate) fn parse(line: &str) -> Result<$crate::Command, $crate::Refused> {
                 // Named as the family's commands are, which share their words as a family's do.
                 #[allow(clippy::enum_variant_names)]
                 #[derive(serde::Deserialize)]
@@ -155,9 +156,11 @@ macro_rules! family {
                 enum Lines {
                     $($variant(line_of!($($line)? ; $payload)),)*
                 }
-                let read = serde_json::from_str::<Lines>(line).map_err(|_| $crate::bad_command())?;
+                let read = serde_json::from_str::<Lines>(line).map_err(|_| $crate::Refused::not_a_command())?;
                 Ok($crate::Command::$family(match read {
-                    $(Lines::$variant(read) => Self::$variant(from_line!($($line)? ; $payload ; read)?),)*
+                    $(Lines::$variant(read) => Self::$variant(
+                        from_line!($($line)? ; $payload ; read).map_err(|error| $crate::Refused::of(<$payload as $crate::commands::Cmd>::TAG, error))?
+                    ),)*
                 }))
             }
 
@@ -419,7 +422,7 @@ pub(crate) fn tag_of(line: &str) -> Option<std::borrow::Cow<'_, str>> {
     serde_json::from_str::<Tag<'_>>(line).ok()?.0
 }
 
-type Reads = fn(&str) -> Result<Command, AgentError>;
+type Reads = fn(&str) -> Result<Command, crate::Refused>;
 type Words = fn(&str, &Value) -> Option<String>;
 
 /// Every family: the wire names it reads, how it reads one, and its commands' plain words. One line each.

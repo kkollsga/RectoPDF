@@ -311,13 +311,46 @@ pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
 /// Parses one JSON command. Unknown commands and fields are refused rather than guessed at.
 pub fn parse(line: &str) -> Result<Command, AgentError> {
+    read(line).map_err(|refused| *refused.error)
+}
+
+/// The name a reply and the activity log give a line that isn't a command at all.
+pub const UNKNOWN: &str = "unknown";
+
+/// A line refused as it's read, and the command it was for: [`UNKNOWN`] for a line that isn't one (`bad_command`), and the command's own tag for one whose
+/// arguments its type refuses (step R2.5), so its reply and its log line name the command, as they did when the run refused it.
+/// The refusal is boxed: it's the rare case, and it keeps every read's result small.
+#[derive(Debug)]
+pub struct Refused {
+    pub tag: &'static str,
+    pub error: Box<AgentError>,
+}
+
+impl Refused {
+    pub(crate) fn of(tag: &'static str, error: AgentError) -> Self {
+        Self { tag, error: Box::new(error) }
+    }
+
+    /// A line that's no command RectoPDF knows.
+    #[must_use]
+    pub fn not_a_command() -> Self {
+        Self::of(UNKNOWN, bad_command())
+    }
+}
+
+/// Reads one JSON command, as [`parse`] does, and says which command a refusal was for. What the socket and `recto session` read lines with, so a
+/// refusal is answered and logged under the command's name by either.
+pub fn read(line: &str) -> Result<Command, Refused> {
     if line.len() > MAX_COMMAND_BYTES {
-        return Err(AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED));
+        return Err(Refused::of(
+            UNKNOWN,
+            AgentError::new(Code::BAD_COMMAND, "That command is too long.", exit::FAILED),
+        ));
     }
     // The tag first, then the line as the family that reads it. A tag no family has is a command not moved into one yet, or none.
     match commands::tag_of(line).as_deref().and_then(commands::parser_for) {
         Some(family) => family(line),
-        None => Err(bad_command()),
+        None => Err(Refused::not_a_command()),
     }
 }
 

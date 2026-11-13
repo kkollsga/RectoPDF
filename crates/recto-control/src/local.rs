@@ -3,7 +3,7 @@
 use crate::log::ActivityLog;
 use crate::{levels, state::StatePaths};
 use recto_agent::index::ReadOnlyCorpus;
-use recto_agent::{AgentError, Command, acted_tab, allowed, refusal, run_indexed, table, with_acted_tab};
+use recto_agent::{AgentError, Command, Level, Refused, acted_tab, allowed, refusal, run_indexed, table, with_acted_tab};
 use recto_session::{DocLoader, Session};
 use serde_json::Value;
 
@@ -23,4 +23,15 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
     let outcome = result.as_ref().map_or_else(|error| error.code.as_str(), |_| "ok");
     log.record(command.tag(), level, outcome, &with_acted_tab(command.log_details(), acted, &result, command));
     result
+}
+
+/// Reads one line a client sent, and logs a refusal of it under the command it was for: `unknown` for a line that's no command, and the command's own name
+/// for one whose arguments its type refuses (step R2.5), which the log writes as a line of its own rather than counting it as a repeat. Only the name and
+/// the code: nothing of what the line held. The socket and `recto session` read every line through this, so a refusal reads and is logged alike by either.
+pub fn read_line(log: &mut ActivityLog, level: impl FnOnce() -> Level, line: &[u8]) -> Result<Command, Refused> {
+    let read = std::str::from_utf8(line).map_or_else(|_| Err(Refused::not_a_command()), recto_agent::read);
+    if let Err(refused) = &read {
+        log.record(refused.tag, level(), refused.error.code.as_str(), &Value::Null);
+    }
+    read
 }

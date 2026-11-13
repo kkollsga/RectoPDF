@@ -6,14 +6,28 @@
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
   events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"open","path":"/d/x.pdf","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"open","path":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"open","path":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"open"}
+  refused cmd=unknown code=bad_command
+{"cmd":"open","path":"/d/x.pdf","page":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"open","path":"/d/x.pdf","page":null}
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
   events 
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+["open"]
+  refused cmd=unknown code=bad_command
 ["open","/d/x.pdf",3]
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
   events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"Open"}
+  refused cmd=unknown code=bad_command
 {"cmd":"tabs"}
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
   events 
@@ -22,10 +36,16 @@
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
   events 
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"tabs","from":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"tabs","from":null}
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
   events 
   words "#1 \"a\" (page 1 of 10)\n#2 \"b\" (page 1 of 10)\n#3 \"c\" (page 1 of 10)\n#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"tabs","limit":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"tabs","limit":null}
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
   events 
@@ -38,14 +58,20 @@
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
   events 
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
+{"cmd":"Tabs"}
+  refused cmd=unknown code=bad_command
 {"cmd":"sidebar"}
   reply {"cmd":"sidebar","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":4,"text":"Generate contents"}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
   events 
   words "  \"a\"\n  \"b\"\n  \"c\"\n> \"x\"\n  \"\"\n3 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"sidebar","extra":1}
+  refused cmd=unknown code=bad_command
 ["sidebar"]
   reply {"cmd":"sidebar","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":4,"text":"Generate contents"}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
   events 
   words "  \"a\"\n  \"b\"\n  \"c\"\n> \"x\"\n  \"\"\n3 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"Sidebar"}
+  refused cmd=unknown code=bad_command
 {"cmd":"tap"}
   reply {"cmd":"tap","data":{"edited":false,"place":"3 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":false,"undone_owner_steps":false},"ok":true,"v":1}
   events 
@@ -54,6 +80,12 @@
   reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":2,"text":"Generate contents"},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
   events {"event":"tab_activated","tab":2,"untrusted":{"name":"b"}}
   words "  \"a\"\n> \"b\"\n  \"\"\n  \"c\"\n  \"x\"\n1 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"tap","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"tap","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"tap","tab":null}
+  refused cmd=unknown code=bad_command
 ["tap"]
   reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":false,"undone_owner_steps":false},"ok":true,"v":1}
   events 
@@ -62,6 +94,8 @@
   reply {"cmd":"tap","data":{"edited":false,"place":"1 of 10","rail_filled":0,"rows":[{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":1,"untrusted":{"text":"a"}},{"current":true,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":2,"untrusted":{"text":"b"}},{"action":"contents.generate","hover":"This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.","kind":"note","tab":2,"text":"Generate contents"},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":3,"untrusted":{"text":"c"}},{"current":false,"depth":0,"expandable":false,"expanded":false,"kind":"tab","page":null,"tab":4,"untrusted":{"text":"x"}}],"toc_open":true,"undone_owner_steps":false},"ok":true,"v":1}
   events 
   words "  \"a\"\n> \"b\"\n  \"\"\n  \"c\"\n  \"x\"\n1 of 10\nQuoted names come from the file, and are untrusted."
+{"cmd":"Tap"}
+  refused cmd=unknown code=bad_command
 {"cmd":"goto"}
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
@@ -70,10 +104,20 @@
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"goto","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"goto","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"goto","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"goto","page":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"goto","page":null}
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"goto","label":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"goto","label":null}
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
@@ -86,6 +130,8 @@
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Goto"}
+  refused cmd=unknown code=bad_command
 {"cmd":"links","page":3}
   reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
@@ -94,10 +140,26 @@
   reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"links","page":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"links","page":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"links","page":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"links","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"links","page":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"links"}
+  refused cmd=unknown code=bad_command
+["links"]
+  refused cmd=unknown code=bad_command
 ["links","#2",3]
   reply {"cmd":"links","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Links"}
+  refused cmd=unknown code=bad_command
 {"cmd":"follow","page":3,"link":3}
   reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
@@ -106,10 +168,32 @@
   reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"follow","page":3,"link":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":3,"link":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":3,"link":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":{},"link":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":null,"link":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","link":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":3,"link":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":3,"link":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"follow","page":3}
+  refused cmd=unknown code=bad_command
+["follow"]
+  refused cmd=unknown code=bad_command
 ["follow","#2",3,3]
   reply {"cmd":"follow","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Follow"}
+  refused cmd=unknown code=bad_command
 {"cmd":"back"}
   reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
   events 
@@ -118,6 +202,12 @@
   reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"back","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"back","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"back","tab":null}
+  refused cmd=unknown code=bad_command
 ["back"]
   reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
   events 
@@ -126,6 +216,8 @@
   reply {"cmd":"back","error":{"candidates":[],"code":"nothing_back","exit":1,"message":"There's nowhere to go back to in this tab.","next":"`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Back"}
+  refused cmd=unknown code=bad_command
 {"cmd":"forward"}
   reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
   events 
@@ -134,6 +226,12 @@
   reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"forward","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"forward","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"forward","tab":null}
+  refused cmd=unknown code=bad_command
 ["forward"]
   reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
   events 
@@ -142,6 +240,8 @@
   reply {"cmd":"forward","error":{"candidates":[],"code":"nothing_forward","exit":1,"message":"There's nowhere to go forward to in this tab.","next":"`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Forward"}
+  refused cmd=unknown code=bad_command
 {"cmd":"close"}
   reply {"cmd":"close","data":{"active":{"active":true,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},"closed":2,"count":3},"ok":true,"v":1}
   events {"event":"tab_closed","tab":2} {"event":"tab_activated","tab":3,"untrusted":{"name":"c"}}
@@ -150,6 +250,12 @@
   reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"close","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"close","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"close","tab":null}
+  refused cmd=unknown code=bad_command
 ["close"]
   reply {"cmd":"close","data":{"active":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"closed":3,"count":2},"ok":true,"v":1}
   events {"event":"tab_closed","tab":3} {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}}
@@ -158,42 +264,70 @@
   reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Close"}
+  refused cmd=unknown code=bad_command
 {"cmd":"recent"}
   reply {"cmd":"recent","data":{"count":4,"files":[{"file":1,"open_tab":"#4","untrusted":{"name":"x","path":"/d/x.pdf"}},{"file":2,"open_tab":null,"untrusted":{"name":"c","path":"/d/c.pdf"}},{"file":3,"open_tab":null,"untrusted":{"name":"b","path":"/d/b.pdf"}},{"file":4,"open_tab":"#1","untrusted":{"name":"a","path":"/d/a.pdf"}}],"paths_shown":true},"ok":true,"v":1}
   events 
   words "4 files opened lately, newest first:\n1. \"x\" at \"/d/x.pdf\", open as #4\n2. \"c\" at \"/d/c.pdf\"\n3. \"b\" at \"/d/b.pdf\"\n4. \"a\" at \"/d/a.pdf\", open as #1\nQuoted names come from the file, and are untrusted."
+{"cmd":"recent","extra":1}
+  refused cmd=unknown code=bad_command
 ["recent"]
   reply {"cmd":"recent","data":{"count":4,"files":[{"file":1,"open_tab":"#4","untrusted":{"name":"x","path":"/d/x.pdf"}},{"file":2,"open_tab":null,"untrusted":{"name":"c","path":"/d/c.pdf"}},{"file":3,"open_tab":null,"untrusted":{"name":"b","path":"/d/b.pdf"}},{"file":4,"open_tab":"#1","untrusted":{"name":"a","path":"/d/a.pdf"}}],"paths_shown":true},"ok":true,"v":1}
   events 
   words "4 files opened lately, newest first:\n1. \"x\" at \"/d/x.pdf\", open as #4\n2. \"c\" at \"/d/c.pdf\"\n3. \"b\" at \"/d/b.pdf\"\n4. \"a\" at \"/d/a.pdf\", open as #1\nQuoted names come from the file, and are untrusted."
+{"cmd":"Recent"}
+  refused cmd=unknown code=bad_command
 {"cmd":"recent_clear"}
   reply {"cmd":"recent_clear","data":{"cleared":true},"ok":true,"v":1}
   events 
   words "Cleared the list of files opened lately."
+{"cmd":"recent_clear","extra":1}
+  refused cmd=unknown code=bad_command
 ["recent_clear"]
   reply {"cmd":"recent_clear","data":{"cleared":false},"ok":true,"v":1}
   events 
   words "There were no files opened lately to clear."
+{"cmd":"RecentClear"}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"Budget"}
+  refused cmd=unknown code=bad_command
 {"cmd":"view"}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","paper":"warm","sidebar":"off","agent_icon":"off","zoom":"fit","layout":"two_up"}
+  refused cmd=view code=usage
+{"cmd":"view","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"view","paper":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"view","paper":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","sidebar":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"view","sidebar":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","agent_icon":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"view","agent_icon":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","zoom":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"view","zoom":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+{"cmd":"view","layout":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"view","layout":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
@@ -202,6 +336,10 @@
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
+["view","warm","off","off","fit","two_up"]
+  refused cmd=view code=usage
+{"cmd":"View"}
+  refused cmd=unknown code=bad_command
 {"cmd":"palette"}
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 
@@ -210,10 +348,20 @@
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"palette","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"palette","query":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"palette","query":null}
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"palette","run":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"palette","run":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"palette","limit":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"palette","limit":null}
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 
@@ -226,14 +374,36 @@
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Palette"}
+  refused cmd=unknown code=bad_command
 {"cmd":"find"}
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
+{"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
+  refused cmd=find code=usage
+{"cmd":"find","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","query":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"find","query":null}
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
+{"cmd":"find","next":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","next":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","previous":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","previous":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","close":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","close":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"find","limit":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"find","limit":null}
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
@@ -242,22 +412,40 @@
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
+["find","q",true,true,true,3]
+  refused cmd=find code=usage
+{"cmd":"Find"}
+  refused cmd=unknown code=bad_command
 {"cmd":"compare"}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
   words "One tab showing, no comparison."
+{"cmd":"compare","tabs":"#1,#2","sync":"on","off":true}
+  refused cmd=compare code=usage
+{"cmd":"compare","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"compare","tabs":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"compare","tabs":null}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
   words "One tab showing, no comparison."
+{"cmd":"compare","sync":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"compare","sync":null}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
   words "One tab showing, no comparison."
+{"cmd":"compare","off":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"compare","off":null}
+  refused cmd=unknown code=bad_command
 ["compare"]
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
   words "One tab showing, no comparison."
+["compare","#1,#2","on",true]
+  refused cmd=compare code=usage
 {"cmd":"compare","toggle":"#2"}
   reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
@@ -270,10 +458,14 @@
   reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"compare","toggle":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"compare","toggle":null}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
   words "One tab showing, no comparison."
+{"cmd":"compare","reading":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"compare","reading":null}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 
@@ -282,6 +474,8 @@
   reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Compare"}
+  refused cmd=unknown code=bad_command
 {"cmd":"qa_read","verb":"state"}
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
@@ -290,18 +484,34 @@
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"qa_read","verb":"state","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_read","verb":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_read","verb":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_read"}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_read","verb":"state","out":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"qa_read","verb":"state","out":null}
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"qa_read","verb":"state","timeout_ms":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"qa_read","verb":"state","timeout_ms":null}
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+["qa_read"]
+  refused cmd=unknown code=bad_command
 ["qa_read","state","/d/x.pdf",3]
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"QaRead"}
+  refused cmd=unknown code=bad_command
 {"cmd":"qa_drive","verb":"state","value":"1"}
   reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
@@ -310,14 +520,350 @@
   reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"qa_drive","verb":"state","value":"1","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":{},"value":"1"}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":null,"value":"1"}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","value":"1"}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":"state","value":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":"state","value":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":"state"}
+  refused cmd=unknown code=bad_command
+{"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":null}
   reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+["qa_drive"]
+  refused cmd=unknown code=bad_command
 ["qa_drive","state","1",3]
   reply {"cmd":"qa_drive","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"QaDrive"}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":{},"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":null,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","scale":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","scale":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"out":"/d/x.pdf","anyway":null}
+  refused cmd=unknown code=bad_command
+["render"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Render"}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":{},"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":null,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","rect":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","text":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","scale":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","scale":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","strip_metadata":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","strip_metadata":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"out":"/d/x.pdf","anyway":null}
+  refused cmd=unknown code=bad_command
+["export_svg"]
+  refused cmd=unknown code=bad_command
+{"cmd":"ExportSvg"}
+  refused cmd=unknown code=bad_command
+{"cmd":"images","page":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"images","page":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"images","page":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"images","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"images","page":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"images"}
+  refused cmd=unknown code=bad_command
+["images"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Images"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":{},"number":3,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":null,"number":3,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","number":3,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":{},"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":null,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":null}
+  refused cmd=unknown code=bad_command
+["image"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Image"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":{},"rect":[0,0,10,10],"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":null,"rect":[0,0,10,10],"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","rect":[0,0,10,10],"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":{},"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":null,"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"as":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10]}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","out":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","scale":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","scale":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","anyway":null}
+  refused cmd=unknown code=bad_command
+["snapshot"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Snapshot"}
+  refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"rect":[0,0,10,10],"format":"png"}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","pages":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","dpi":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","dpi":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"print"}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"print","to_pdf":"/d/x.pdf","anyway":null}
+  refused cmd=unknown code=bad_command
+["print"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Print"}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"text"}
+  refused cmd=unknown code=bad_command
+["text"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Text"}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","to_page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","chars":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","at":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","to":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","unit":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","all":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","all":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","anyway":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"Select"}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","to_page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","chars":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","at":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","to":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","unit":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","all":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","all":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","anyway":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","anyway":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"Copy"}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render"}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"first":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"scale":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"scale":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"fresh":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"fresh":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"tiles":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"tiles":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"samples":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"samples":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"limit_mib":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_render","pages":3,"retire_mib":{}}
+  refused cmd=unknown code=bad_command
+["budget_render"]
+  refused cmd=unknown code=bad_command
+{"cmd":"BudgetRender"}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport"}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","first":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","scale":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","scale":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"budget_viewport","viewport":"100x100","strategy":{}}
+  refused cmd=unknown code=bad_command
+["budget_viewport"]
+  refused cmd=unknown code=bad_command
+{"cmd":"BudgetViewport"}
+  refused cmd=unknown code=bad_command
 {"cmd":"where"}
   reply {"cmd":"where","data":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -326,6 +872,12 @@
   reply {"cmd":"where","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"where","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"where","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"where","tab":null}
+  refused cmd=unknown code=bad_command
 ["where"]
   reply {"cmd":"where","data":{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -334,6 +886,8 @@
   reply {"cmd":"where","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Where"}
+  refused cmd=unknown code=bad_command
 {"cmd":"facts"}
   reply {"cmd":"facts","data":{"contents_entries":0,"contents_verdict":"missing","edited":false,"encrypted":false,"encryption_note":null,"file_bytes":1,"file_changed_since_edits":false,"file_pages":10,"has_contents":false,"note":null,"pages":10,"pdf_version":"1.7","structure":"readable","tab":4,"untrusted":{"name":"x","title":null}},"ok":true,"v":1}
   events 
@@ -342,6 +896,12 @@
   reply {"cmd":"facts","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"facts","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"facts","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"facts","tab":null}
+  refused cmd=unknown code=bad_command
 ["facts"]
   reply {"cmd":"facts","data":{"contents_entries":0,"contents_verdict":"missing","edited":false,"encrypted":false,"encryption_note":null,"file_bytes":1,"file_changed_since_edits":false,"file_pages":10,"has_contents":false,"note":null,"pages":10,"pdf_version":"1.7","structure":"readable","tab":4,"untrusted":{"name":"x","title":null}},"ok":true,"v":1}
   events 
@@ -350,6 +910,8 @@
   reply {"cmd":"facts","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Facts"}
+  refused cmd=unknown code=bad_command
 {"cmd":"contents"}
   reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
   events 
@@ -358,18 +920,34 @@
   reply {"cmd":"contents","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"contents","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents","from":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"contents","from":null}
   reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
   events 
   words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","limit":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"contents","limit":null}
   reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
   events 
   words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","depth":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"contents","depth":null}
   reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
   events 
   words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
+{"cmd":"contents","generated":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents","generated":null}
+  refused cmd=unknown code=bad_command
 ["contents"]
   reply {"cmd":"contents","data":{"all_entries":0,"available":true,"deepest":0,"depth_rule":"0 entries, all at one level.","depth_shown":0,"entries":[],"next_from":null,"sections":0,"sections_at":0,"tab":4,"total":0,"truncated":false,"verdict":"missing","verdict_note":"This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."},"ok":true,"v":1}
   events 
@@ -386,10 +964,24 @@
   reply {"cmd":"contents_fold","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"contents_fold","entry":0,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_fold","entry":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_fold","entry":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_fold"}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_fold","entry":0,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_fold","entry":0,"tab":null}
+  refused cmd=unknown code=bad_command
 ["contents_fold",0,"#2"]
   reply {"cmd":"contents_fold","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"ContentsFold","entry":0}
+  refused cmd=unknown code=bad_command
 {"cmd":"contents_show","which":"own"}
   reply {"cmd":"contents_show","data":{"shown":"own","state":null,"tab":4},"ok":true,"v":1}
   events 
@@ -398,6 +990,16 @@
   reply {"cmd":"contents_show","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"contents_show","which":"own","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_show","which":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_show","which":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_show"}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_show","which":"own","tab":{}}
+  refused cmd=unknown code=bad_command
 ["contents_show","generated","#2"]
   reply {"cmd":"contents_show","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
   events 
@@ -410,10 +1012,52 @@
   reply {"cmd":"contents_stop","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"contents_stop","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_stop","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"contents_stop","tab":null}
+  refused cmd=unknown code=bad_command
 ["contents_stop","#2"]
   reply {"cmd":"contents_stop","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Contents"}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"search"}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","pages":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","limit":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","scan":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","scan":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","regex":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","regex":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","rank":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","rank":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"search","query":"q","context":{}}
+  refused cmd=unknown code=bad_command
+["search"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Search"}
+  refused cmd=unknown code=bad_command
 {"cmd":"index"}
   reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -422,6 +1066,16 @@
   reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"index","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"index","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"index","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"index","agent":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"index","agent":null}
+  refused cmd=unknown code=bad_command
 ["index"]
   reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -430,6 +1084,8 @@
   reply {"cmd":"index","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Index"}
+  refused cmd=unknown code=bad_command
 {"cmd":"index_status"}
   reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -438,6 +1094,12 @@
   reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"index_status","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_status","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_status","tab":null}
+  refused cmd=unknown code=bad_command
 ["index_status"]
   reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -446,6 +1108,8 @@
   reply {"cmd":"index_status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"IndexStatus"}
+  refused cmd=unknown code=bad_command
 {"cmd":"index_clear"}
   reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -454,6 +1118,16 @@
   reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"index_clear","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_clear","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_clear","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_clear","all":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"index_clear","all":null}
+  refused cmd=unknown code=bad_command
 ["index_clear"]
   reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
@@ -462,6 +1136,8 @@
   reply {"cmd":"index_clear","error":{"candidates":[],"code":"needs_server","exit":6,"message":"Building an index needs the long-running session.","next":"Start it with `recto serve --background`. `recto search` works without an index."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"IndexClear"}
+  refused cmd=unknown code=bad_command
 {"cmd":"signatures"}
   reply {"cmd":"signatures","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
@@ -470,6 +1146,12 @@
   reply {"cmd":"signatures","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"signatures","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"signatures","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"signatures","tab":null}
+  refused cmd=unknown code=bad_command
 ["signatures"]
   reply {"cmd":"signatures","error":{"candidates":[],"code":"not_found","exit":3,"message":"This file couldn't be found.","next":"Check the path. It's read by the session, and relative paths are taken from where you ran `recto`."},"ok":false,"v":1}
   events 
@@ -478,6 +1160,8 @@
   reply {"cmd":"signatures","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Signatures"}
+  refused cmd=unknown code=bad_command
 {"cmd":"edits"}
   reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -486,6 +1170,12 @@
   reply {"cmd":"edits","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"edits","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"edits","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"edits","tab":null}
+  refused cmd=unknown code=bad_command
 ["edits"]
   reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -494,6 +1184,8 @@
   reply {"cmd":"edits","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Edits"}
+  refused cmd=unknown code=bad_command
 {"cmd":"page_move","pages":"2-3","to":3}
   reply {"cmd":"page_move","data":{"can_redo":false,"can_undo":true,"did":"Moved pages 2-3 to 3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
@@ -502,10 +1194,32 @@
   reply {"cmd":"page_move","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"page_move","pages":"2-3","to":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":"2-3","to":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":"2-3","to":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":{},"to":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":null,"to":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","to":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":"2-3","to":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":"2-3","to":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_move","pages":"2-3"}
+  refused cmd=unknown code=bad_command
+["page_move"]
+  refused cmd=unknown code=bad_command
 ["page_move","#2","2-3",3]
   reply {"cmd":"page_move","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PageMove"}
+  refused cmd=unknown code=bad_command
 {"cmd":"page_rotate","pages":"2-3","degrees":90}
   reply {"cmd":"page_rotate","data":{"can_redo":false,"can_undo":true,"did":"Rotated pages 2-3 by 90 degrees.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
@@ -514,10 +1228,32 @@
   reply {"cmd":"page_rotate","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"page_rotate","pages":"2-3","degrees":90,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":"2-3","degrees":90,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":"2-3","degrees":90,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":{},"degrees":90}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":null,"degrees":90}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","degrees":90}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":"2-3","degrees":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":"2-3","degrees":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_rotate","pages":"2-3"}
+  refused cmd=unknown code=bad_command
+["page_rotate"]
+  refused cmd=unknown code=bad_command
 ["page_rotate","#2","2-3",90]
   reply {"cmd":"page_rotate","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PageRotate"}
+  refused cmd=unknown code=bad_command
 {"cmd":"page_delete","pages":"2-3"}
   reply {"cmd":"page_delete","data":{"can_redo":false,"can_undo":true,"did":"Deleted pages 2-3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
@@ -526,10 +1262,26 @@
   reply {"cmd":"page_delete","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"page_delete","pages":"2-3","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_delete","pages":"2-3","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_delete","pages":"2-3","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_delete","pages":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_delete","pages":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_delete"}
+  refused cmd=unknown code=bad_command
+["page_delete"]
+  refused cmd=unknown code=bad_command
 ["page_delete","#2","2-3"]
   reply {"cmd":"page_delete","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PageDelete"}
+  refused cmd=unknown code=bad_command
 {"cmd":"page_insert","path":"/d/x.pdf","at":3}
   reply {"cmd":"page_insert","data":{"can_redo":false,"can_undo":true,"did":"Added 10 pages at page 3.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":18,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":18,"tab":4}
@@ -538,10 +1290,32 @@
   reply {"cmd":"page_insert","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"page_insert","path":"/d/x.pdf","at":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":"/d/x.pdf","at":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":"/d/x.pdf","at":3,"tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":{},"at":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":null,"at":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","at":3}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":"/d/x.pdf","at":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":"/d/x.pdf","at":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"page_insert","path":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+["page_insert"]
+  refused cmd=unknown code=bad_command
 ["page_insert","#2","/d/x.pdf",3]
   reply {"cmd":"page_insert","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PageInsert"}
+  refused cmd=unknown code=bad_command
 {"cmd":"undo"}
   reply {"cmd":"undo","data":{"can_redo":true,"can_undo":true,"did":"Undid the last edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
@@ -550,6 +1324,12 @@
   reply {"cmd":"undo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"undo","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"undo","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"undo","tab":null}
+  refused cmd=unknown code=bad_command
 ["undo"]
   reply {"cmd":"undo","data":{"can_redo":true,"can_undo":true,"did":"Undid the last edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":4,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
@@ -558,6 +1338,8 @@
   reply {"cmd":"undo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Undo"}
+  refused cmd=unknown code=bad_command
 {"cmd":"redo"}
   reply {"cmd":"redo","data":{"can_redo":true,"can_undo":true,"did":"Redid the last undone edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":8,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":8,"tab":4}
@@ -566,6 +1348,12 @@
   reply {"cmd":"redo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"redo","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"redo","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"redo","tab":null}
+  refused cmd=unknown code=bad_command
 ["redo"]
   reply {"cmd":"redo","data":{"can_redo":false,"can_undo":true,"did":"Redid the last undone edit.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":2,"pages":18,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":18,"tab":4}
@@ -574,6 +1362,8 @@
   reply {"cmd":"redo","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Redo"}
+  refused cmd=unknown code=bad_command
 {"cmd":"discard"}
   reply {"cmd":"discard","data":{"can_redo":false,"can_undo":false,"did":"Threw away this tab's edits.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
@@ -582,6 +1372,12 @@
   reply {"cmd":"discard","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"discard","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"discard","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"discard","tab":null}
+  refused cmd=unknown code=bad_command
 ["discard"]
   reply {"cmd":"discard","data":{"can_redo":false,"can_undo":false,"did":"There were no edits to throw away.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
@@ -590,6 +1386,8 @@
   reply {"cmd":"discard","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Discard"}
+  refused cmd=unknown code=bad_command
 {"cmd":"session_sleep"}
   reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -598,6 +1396,12 @@
   reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"session_sleep","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"session_sleep","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"session_sleep","tab":null}
+  refused cmd=unknown code=bad_command
 ["session_sleep"]
   reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -606,6 +1410,8 @@
   reply {"cmd":"session_sleep","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"SessionSleep"}
+  refused cmd=unknown code=bad_command
 {"cmd":"clear_history"}
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -614,6 +1420,12 @@
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"clear_history","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"clear_history","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"clear_history","tab":null}
+  refused cmd=unknown code=bad_command
 ["clear_history"]
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
@@ -622,6 +1434,8 @@
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"ClearHistory"}
+  refused cmd=unknown code=bad_command
 {"cmd":"save"}
   reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
   events 
@@ -630,10 +1444,22 @@
   reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"save","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"save","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"save","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"save","out":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"save","out":null}
   reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
   events 
   words "{\n  \"can_redo\": false,\n  \"can_undo\": false,\n  \"did\": \"There's nothing unsaved, so nothing was written.\",\n  \"edited\": false,\n  \"file_pages\": 10,\n  \"note\": null,\n  \"page\": 3,\n  \"pages\": 10,\n  \"saved\": true,\n  \"tab\": 4,\n  \"user_edits_undone\": false,\n  \"written\": false\n}"
+{"cmd":"save","replace":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"save","replace":null}
+  refused cmd=unknown code=bad_command
 ["save"]
   reply {"cmd":"save","data":{"can_redo":false,"can_undo":false,"did":"There's nothing unsaved, so nothing was written.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false,"written":false},"ok":true,"v":1}
   events 
@@ -642,6 +1468,10 @@
   reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Save"}
+  refused cmd=unknown code=bad_command
+{"cmd":"edit_mode"}
+  refused cmd=unknown code=bad_command
 {"cmd":"edit_mode","set":"on"}
   reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
   events 
@@ -650,34 +1480,54 @@
   reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":false},"ok":true,"v":1}
   events 
   words "Edit mode is off: the sidebar's Rotate turns every page."
+{"cmd":"edit_mode","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"edit_mode","set":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"edit_mode","set":null}
+  refused cmd=unknown code=bad_command
 ["edit_mode","on"]
   reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
   events 
   words "Edit mode is on: the sidebar shows its tools for editing pages, and its Rotate turns the page being read."
+{"cmd":"EditMode"}
+  refused cmd=unknown code=bad_command
 {"cmd":"sign"}
   reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"sign","extra":1}
+  refused cmd=unknown code=bad_command
 ["sign"]
   reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Sign"}
+  refused cmd=unknown code=bad_command
 {"cmd":"status"}
   reply {"cmd":"status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"status","extra":1}
+  refused cmd=unknown code=bad_command
 ["status"]
   reply {"cmd":"status","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Status"}
+  refused cmd=unknown code=bad_command
 {"cmd":"permission_show"}
   reply {"cmd":"permission_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"permission_show","extra":1}
+  refused cmd=unknown code=bad_command
 ["permission_show"]
   reply {"cmd":"permission_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PermissionShow"}
+  refused cmd=unknown code=bad_command
 {"cmd":"permission_request","level":"full"}
   reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -686,22 +1536,62 @@
   reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"permission_request","level":"full","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"permission_request","level":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"permission_request","level":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"permission_request"}
+  refused cmd=unknown code=bad_command
+{"cmd":"permission_request","level":"full","timeout_ms":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"permission_request","level":"full","timeout_ms":null}
   reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+["permission_request"]
+  refused cmd=unknown code=bad_command
 ["permission_request","full",3]
   reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"PermissionRequest"}
+  refused cmd=unknown code=bad_command
 {"cmd":"level_changed"}
   reply {"cmd":"level_changed","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"level_changed","extra":1}
+  refused cmd=unknown code=bad_command
 ["level_changed"]
   reply {"cmd":"level_changed","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"LevelChanged"}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait"}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","timeout_ms":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"tab_open","timeout_ms":null}
+  refused cmd=unknown code=bad_command
+["wait"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Wait"}
+  refused cmd=unknown code=bad_command
 {"cmd":"watch"}
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -710,14 +1600,22 @@
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"watch","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"watch","events":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"watch","events":null}
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"watch","timeout_ms":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"watch","timeout_ms":null}
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"watch","count":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"watch","count":null}
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -730,14 +1628,20 @@
   reply {"cmd":"watch","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Watch"}
+  refused cmd=unknown code=bad_command
 {"cmd":"watch_stop"}
   reply {"cmd":"watch_stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"watch_stop","extra":1}
+  refused cmd=unknown code=bad_command
 ["watch_stop"]
   reply {"cmd":"watch_stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"WatchStop"}
+  refused cmd=unknown code=bad_command
 {"cmd":"log"}
   reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -746,6 +1650,10 @@
   reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"log","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"log","last":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"log","last":null}
   reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
@@ -758,62 +1666,92 @@
   reply {"cmd":"log","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Log"}
+  refused cmd=unknown code=bad_command
 {"cmd":"stop"}
   reply {"cmd":"stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"stop","extra":1}
+  refused cmd=unknown code=bad_command
 ["stop"]
   reply {"cmd":"stop","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Stop"}
+  refused cmd=unknown code=bad_command
 {"cmd":"session_show"}
   reply {"cmd":"session_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"session_show","extra":1}
+  refused cmd=unknown code=bad_command
 ["session_show"]
   reply {"cmd":"session_show","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"SessionShow"}
+  refused cmd=unknown code=bad_command
 {"cmd":"session_save"}
   reply {"cmd":"session_save","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"session_save","extra":1}
+  refused cmd=unknown code=bad_command
 ["session_save"]
   reply {"cmd":"session_save","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"SessionSave"}
+  refused cmd=unknown code=bad_command
 {"cmd":"session_restore"}
   reply {"cmd":"session_restore","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"session_restore","extra":1}
+  refused cmd=unknown code=bad_command
 ["session_restore"]
   reply {"cmd":"session_restore","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"SessionRestore"}
+  refused cmd=unknown code=bad_command
 {"cmd":"session_check"}
   reply {"cmd":"session_check","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"session_check","extra":1}
+  refused cmd=unknown code=bad_command
 ["session_check"]
   reply {"cmd":"session_check","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"SessionCheck"}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_status"}
   reply {"cmd":"update_status","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"update_status","extra":1}
+  refused cmd=unknown code=bad_command
 ["update_status"]
   reply {"cmd":"update_status","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"UpdateStatus"}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_check"}
   reply {"cmd":"update_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"update_check","extra":1}
+  refused cmd=unknown code=bad_command
 ["update_check"]
   reply {"cmd":"update_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"UpdateCheck"}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_install"}
   reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -822,10 +1760,18 @@
   reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"update_install","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"update_install","zip":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_install","zip":null}
   reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"update_install","now":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"update_install","now":null}
+  refused cmd=unknown code=bad_command
 ["update_install"]
   reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -834,6 +1780,8 @@
   reply {"cmd":"update_install","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"UpdateInstall"}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_dev_builds"}
   reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -842,6 +1790,10 @@
   reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"update_dev_builds","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"update_dev_builds","set":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"update_dev_builds","set":null}
   reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -854,6 +1806,8 @@
   reply {"cmd":"update_dev_builds","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"UpdateDevBuilds"}
+  refused cmd=unknown code=bad_command
 {"cmd":"settings"}
   reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -862,6 +1816,10 @@
   reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"settings","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"settings","auto_update":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"settings","auto_update":null}
   reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
@@ -874,10 +1832,34 @@
   reply {"cmd":"settings","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Updates and settings belong to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"Settings"}
+  refused cmd=unknown code=bad_command
+{"cmd":"tabs","cmd":"tabs"}
+  refused cmd=unknown code=bad_command
+{"cmd":"tabs","cmd":"where"}
+  refused cmd=unknown code=bad_command
+{"cmd":1}
+  refused cmd=unknown code=bad_command
+{"cmd":null}
+  refused cmd=unknown code=bad_command
+{}
+  refused cmd=unknown code=bad_command
+[]
+  refused cmd=unknown code=bad_command
+"tabs"
+  refused cmd=unknown code=bad_command
+null
+  refused cmd=unknown code=bad_command
+{"cmd":"tabs"} {"cmd":"tabs"}
+  refused cmd=unknown code=bad_command
+{"cmd":"tabs",}
+  refused cmd=unknown code=bad_command
 {"tab":"#1","cmd":"where"}
   reply {"cmd":"where","data":{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},"ok":true,"v":1}
   events 
   words "#1 \"a\" (page 1 of 10)\nQuoted names come from the file, and are untrusted."
+{"cmd":"render","page":1,"out":"/d/x.png","scale":"huge"}
+  refused cmd=unknown code=bad_command
 {"cmd":"goto","label":"iv"}
   reply {"cmd":"goto","error":{"candidates":[],"code":"no_such_label","exit":3,"message":"No page in this document is called that.","next":"`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page."},"ok":false,"v":1}
   events 
@@ -938,11 +1920,29 @@
   reply {"cmd":"page_move","data":{"can_redo":false,"can_undo":true,"did":"Page 1 is already at 1, so nothing changed.","edited":true,"file_pages":10,"note":"These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks.","page":3,"pages":10,"saved":false,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events {"edited":true,"event":"edits_changed","pages":10,"tab":4}
   words "Page 1 is already at 1, so nothing changed. 10 pages now, 10 in the file. Unsaved. These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+{"cmd":"tab","tab":"#1"}
+  refused cmd=unknown code=bad_command
+{"cmd":"page move","pages":"1","to":2}
+  refused cmd=unknown code=bad_command
+{"cmd":"wait","condition":"nope"}
+  refused cmd=unknown code=bad_command
 {"cmd":"permission_request","level":"read_only"}
   reply {"cmd":"permission_request","error":{"candidates":[],"code":"needs_server","exit":6,"message":"This needs the long-running session.","next":"Start the session with `recto serve --background`, then use `recto` without `local`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"permission_request","level":"read-only"}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":-1}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":1.0}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":"1"}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","page":4294967296}
+  refused cmd=unknown code=bad_command
 {"cmd":"close","tab":"report"}
   reply {"cmd":"close","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"sidebar","x":null}
+  refused cmd=unknown code=bad_command

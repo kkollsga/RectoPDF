@@ -11,7 +11,7 @@ use recto_agent::commands::sync::{Wait, Watch};
 use recto_agent::commands::updates::UpdateInstall;
 use recto_agent::commands::{Edit, Qa, Rights, Updates, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
-use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
+use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, reply, skill};
 use recto_control::client::Client;
 use recto_control::host::SessionHost;
 use recto_control::log::{self, ActivityLog};
@@ -470,12 +470,9 @@ fn session() -> i32 {
         if line.trim().is_empty() {
             continue;
         }
-        let (tag, result) = match parse(&line) {
+        let (tag, result) = match local::read_line(&mut log, || levels::current(&paths), line.as_bytes()) {
             Ok(command) => (command.tag(), local::run_here(&mut session, &paths, &mut log, &command)),
-            Err(error) => {
-                log.record("unknown", levels::current(&paths), error.code.as_str(), &Value::Null);
-                ("unknown", Err(error))
-            }
+            Err(refused) => (refused.tag, Err(*refused.error)),
         };
         print_out(&reply(tag, &result).to_string());
     }

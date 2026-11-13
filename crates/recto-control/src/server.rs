@@ -14,7 +14,7 @@ use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session:
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
     Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_WAIT_MS, Runs, VERSION, allowed,
-    condition_topics, exit, parse, refusal, reply, table,
+    condition_topics, exit, refusal, reply, table,
 };
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
@@ -555,14 +555,10 @@ impl<H: Host> Loop<H> {
             );
             return;
         }
-        let command = std::str::from_utf8(line)
-            .map_err(|_| AgentError::new(Code::BAD_COMMAND, "That isn't a command RectoPDF knows.", exit::FAILED))
-            .and_then(parse);
-        let command = match command {
+        let command = match crate::local::read_line(&mut self.log, || level, line) {
             Ok(command) => command,
-            Err(error) => {
-                self.log.record("unknown", level, error.code.as_str(), &Value::Null);
-                self.answer(index, "unknown", &Err(error));
+            Err(refused) => {
+                self.answer(index, refused.tag, &Err(*refused.error));
                 return;
             }
         };

@@ -1,4 +1,4 @@
-//! **No command's guarding properties change when commands move into modules** (step R2.2). For every request in `tests/golden/requests.txt` that parses, one line: its tag, level, the tab it holds, whether it draws, whether it reads pages, where it runs, and what goes in the activity log. Then the reply and the plain words of running each one, in turn, on one session of fake files at Full.
+//! **No command's guarding properties change when commands move into modules** (step R2.2). For every request in `tests/golden/requests.txt` that parses, one line: its tag, level, the tab it holds, whether it draws, whether it reads pages, where it runs, and what goes in the activity log. Then the reply and the plain words of running each one, in turn, on one session of fake files at Full; and for a request refused as it's read, the command its reply names and its code.
 //!
 //! Failure caught: a command that forgets `draws()` skips the server's draw cap, the memory rule; one that forgets its tab isn't held, so its tab can go dormant mid-command; a level or a log entry moves, or a reply's bytes change, while code moves between modules.
 //!
@@ -31,8 +31,13 @@ impl DocLoader for Fake {
     }
 }
 
+/// Every request, read: a command, or its refusal as it's read and the command it was for.
+fn requests() -> Vec<(&'static str, Result<Command, Refused>)> {
+    REQUESTS.lines().map(|line| (line, read(line))).collect()
+}
+
 fn commands() -> Vec<(&'static str, Command)> {
-    REQUESTS.lines().filter_map(|line| Some((line, parse(line).ok()?))).collect()
+    requests().into_iter().filter_map(|(line, read)| Some((line, read.ok()?))).collect()
 }
 
 fn route_word(command: &Command) -> &'static str {
@@ -75,7 +80,16 @@ fn replies() -> String {
         session.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap();
     }
     let mut out = String::new();
-    for (line, command) in commands() {
+    for (line, command) in requests() {
+        // A request refused as it's read keeps what its reply says: the command it names and its code, so what a malformed request is answered can't change
+        // unseen (review of R2.5, S1: six replies went from this file when their requests stopped parsing).
+        let command = match command {
+            Ok(command) => command,
+            Err(refused) => {
+                out.push_str(&format!("{line}\n  refused cmd={} code={}\n", refused.tag, refused.error.code));
+                continue;
+            }
+        };
         // What's measured or drawn depends on the machine, and drawing needs a real file and the worker: held elsewhere.
         if command.draws() || matches!(command.tag(), "budget" | "wait") {
             continue;
