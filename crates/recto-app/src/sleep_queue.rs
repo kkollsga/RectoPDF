@@ -10,7 +10,12 @@
 //! - What's held is what's queued and the one being written, which is counted till its write's done, so [`MAX_LEAVING_BYTES`] is all of it.
 //! - A tab queued again keeps only its newest: the older is what the newer says, less up to date. One written straight from the page view, as a flush or being asked has it, is newer than what's queued for it, which goes, or isn't written if it's already been taken for writing.
 //! - Past [`MAX_LEAVING_BYTES`] of pictures, the oldest queued lose theirs first. What's left of them is small, their facts, and writing that keeps the pictures already in their files when they're still of the same pages (`write_with_material`).
-//! - Past [`MAX_LEAVING_TABS`], the oldest queued goes, and is counted. It costs only the quick way back: that tab wakes from its PDF, or from an older file only if that's still about the same document, and shows bare paper till it's drawn. Its state is in the record, which never waits for any of this.
+//! - Past [`MAX_LEAVING_TABS`] queued, the oldest still waiting its cool-down is made due now (counted as `hurried`), so flicking through tabs writes their files
+//!   rather than dropping them. Only when none is waiting (the writer behind, a slow disk) does the oldest queued go, and past [`MAX_QUEUED_TABS`] the oldest goes
+//!   whatever it is (counted as `dropped`). It costs only the quick way back: that tab wakes from its PDF, or from an older file only if that's still about the
+//!   same document, and shows bare paper till it's drawn. Its state is in the record, which never waits for any of this.
+//! - So what's held is at most [`MAX_QUEUED_TABS`] tabs queued and one in flight, and [`MAX_LEAVING_BYTES`] of pictures across all of them, the one in flight
+//!   included.
 
 use crate::lock;
 use recto_reader::SleepMaterial;
@@ -21,9 +26,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// Tabs whose sleep files may wait to be written at once. Each is a tab off screen, so a handful covers going through tabs at any pace a person does; past it, tabs are leaving faster than the disk takes their files, and the oldest go.
+/// **Tabs whose sleep files may wait their cool-down at once.** Each is a tab off screen, so a handful covers going through tabs at any pace a person does; past
+/// it, the oldest still waiting is written now rather than wait, and only with none waiting (the writer behind) does the oldest queued go.
 pub const MAX_LEAVING_TABS: usize = 8;
-/// Pictures that may wait to be written, in all, the one being written with them, whatever comes of the tabs leaving: four tabs' worth at their most (`DocView::left_pictures` keeps 4 MiB a tab), and about twenty letter pages at a Retina window's fit, 730 KiB each.
+/// **Tabs queued at most, whatever they're waiting for:** past it, the oldest goes whatever it is, so what's held never grows with the tabs leaving. One more is
+/// in flight, being written. Twice [`MAX_LEAVING_TABS`], so a full set waiting and a full set made due can both be held.
+pub const MAX_QUEUED_TABS: usize = 2 * MAX_LEAVING_TABS;
+/// Pictures that may wait to be written, in all, the one being written included, whatever comes of the tabs leaving: four tabs' worth at their most (`DocView::left_pictures` keeps 4 MiB a tab), and about twenty letter pages at a Retina window's fit, 730 KiB each.
 pub const MAX_LEAVING_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One tab's sleep file, waiting.
@@ -137,7 +146,7 @@ impl LeavingQueue {
         // sleep file past the eighth was dropped while it waited, and those tabs woke bare). Only when none is waiting, so the writer is behind (a slow disk),
         // does the oldest go; and past twice the cap, the oldest goes whatever it is, so what's held never grows with the tabs leaving.
         while self.queue.len() > MAX_LEAVING_TABS {
-            if self.queue.len() <= 2 * MAX_LEAVING_TABS
+            if self.queue.len() <= MAX_QUEUED_TABS
                 && let Some(waiting) = self.queue.iter_mut().find(|leaving| leaving.due > 0)
             {
                 waiting.due = 0;
@@ -307,6 +316,7 @@ impl LeavingQueue {
             "peak_writers": self.peak_running,
             "writers_started": self.counts.writers_started,
             "cap_tabs": MAX_LEAVING_TABS,
+            "cap_queued_tabs": MAX_QUEUED_TABS,
             "cap_bytes": MAX_LEAVING_BYTES,
             "replaced": self.counts.replaced,
             "pictures_dropped": self.counts.pictures_dropped,
@@ -723,9 +733,9 @@ mod tests {
     #[test]
     fn past_the_cap_on_tabs_the_oldest_waiting_is_written_now_not_dropped() {
         let mut queue = LeavingQueue::default();
-        for id in 1..=(2 * MAX_LEAVING_TABS as u32 + 3) {
+        for id in 1..=(MAX_QUEUED_TABS as u32 + 3) {
             let _ = queue.push_due(facts(id), material(10, 0), 1_000);
-            assert!(queue.queue.len() <= 2 * MAX_LEAVING_TABS, "{} queued", queue.queue.len());
+            assert!(queue.queue.len() <= MAX_QUEUED_TABS, "{} queued", queue.queue.len());
         }
         let report = queue.report();
         assert!(report["hurried"].as_u64().unwrap() >= MAX_LEAVING_TABS as u64, "{report}");
@@ -997,7 +1007,10 @@ mod tests {
             assert!(writer.join().is_err());
             let (all, took) = drained.join().expect("the drain returns");
             assert!(!all, "the second is left, with no writer");
-            assert!(took < Duration::from_millis(2_500), "the drain waited out its limit for a writer that panicked: {took:?}");
+            assert!(
+                took < Duration::from_millis(2_500),
+                "the drain waited out its limit for a writer that panicked: {took:?}"
+            );
         });
         assert_eq!(line.report()["writer_panics"], 1);
     }
