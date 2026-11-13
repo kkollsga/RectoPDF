@@ -198,7 +198,7 @@ impl<L: DocLoader> Session<L> {
                 .map(|(_, added)| added.path.clone())
                 .chain(list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone()))
                 .collect();
-            self.retire_kept(kept);
+            self.journals.retire_kept(kept);
         }
         self.journals.let_go_of_fresh(id);
         self.journals.retire(id);

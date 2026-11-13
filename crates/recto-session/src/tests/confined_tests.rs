@@ -61,7 +61,7 @@ fn a_restored_record_naming_an_outside_file_doesnt_bring_it_back() {
     back.restore(&saved, HashMap::new()).unwrap();
     let names: Vec<_> = back.tabs().iter().map(|tab| tab.name.to_string()).collect();
     assert_eq!(names, ["a", "b"]);
-    assert!(back.tab_for_path(&dir.join("outside.pdf")).is_none());
+    assert!(back.tabs.for_path(&dir.join("outside.pdf")).is_none());
 }
 
 /// Failure: a confined session's tab follows its file when it's found moved out of the run's folders, so the tab then reads and saves a file outside
@@ -132,7 +132,7 @@ fn a_folder_swapped_for_a_link_out_after_the_open_leads_nowhere() {
     s.apply_file_status(tab, FileStatus::Same(now));
     assert_eq!(s.tabs().tab_notice(tab).map(FileNotice::code), Some("file_missing"));
     // The tab is still the tab it was, by its name.
-    assert!(s.tab_for_path(&dir.join("run/docs/a.pdf")).is_some());
+    assert!(s.tabs.for_path(&dir.join("run/docs/a.pdf")).is_some());
     std::fs::remove_file(dir.join("run/docs")).unwrap();
     std::fs::rename(dir.join("run/docs-real"), dir.join("run/docs")).unwrap();
     assert!(s.tabs().path_of(tab).is_some() && s.page_source(tab, 0).is_some());
