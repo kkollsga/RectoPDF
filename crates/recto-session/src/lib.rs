@@ -40,13 +40,21 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
+// The session's components, as the accessors in `parts.rs` hand them out: named here so a caller outside the crate can take one alone, and so their
+// docs are read. Naming one gives no way to build or replace it (R3.5a: no public constructor, and changes go through a `PartMut`).
+pub use dormancy::Dormancy;
 pub use dormant::Dormant;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
+pub use generated::Generated;
+pub use journals::Journals;
+pub use lists::Lists;
+pub use mail::PageViewMail;
 pub use pages::Pages;
 pub use paper::{Paper, WARM_PAPER, contrast_ratio};
 pub use parts::PartMut;
+pub use recent::Recent;
 use record::{
     EditsSummary, FileNotice, FileStatus, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord,
     TabEntry,
@@ -55,11 +63,13 @@ use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 pub use registry::Tabs;
+pub use saves::Saves;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 pub use viewing::Viewing;
+pub use warm::Warm;
 
 /// Tabs that may keep their contents in memory: the active one plus two recent ones.
 pub const MAX_WARM: usize = 3;
