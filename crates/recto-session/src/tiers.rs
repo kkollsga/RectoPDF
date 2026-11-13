@@ -107,7 +107,7 @@ impl<L: DocLoader> Session<L> {
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.tabs.active().filter(|left| *left != id) {
-            let clean = !self.has_list(left);
+            let clean = !self.lists.has_list(left);
             self.touch(left);
             if let Some(tab) = self.tab_mut(left)
                 && ((clean && matches!(tab.file.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))

@@ -152,6 +152,10 @@ fn measure(tabs: usize) {
             id: (if first { "view.zoom_in" } else { "view.zoom_out" }).into(),
         });
     });
+    // View > Hide Sidebar and Show Sidebar, a toggle, by its menu id.
+    case(&app, "sidebar toggle", tabs, nothing, |app, _| {
+        app.act(UiAction::Menu { id: "view.sidebar".into() });
+    });
     // The panel's Rotate, every page as one step, as outside edit mode.
     case(&app, "rotate", tabs, nothing, |app, first| {
         app.act(UiAction::Menu {

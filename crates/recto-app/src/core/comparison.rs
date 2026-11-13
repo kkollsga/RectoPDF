@@ -36,6 +36,17 @@ pub fn reading(tab: TabId) -> Command {
     .into()
 }
 
+/// **The comparison's menu ids** ([`super::menu_rows`]): the context menu's separate or synced scroll is `compare --sync off|on`.
+pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    let crate::menus::Action::SetSynced(on) = asked.action.as_ref()? else {
+        return None;
+    };
+    Some(super::menu_rows::Row::command(Compare {
+        sync: Some(if *on { "on" } else { "off" }.into()),
+        ..Compare::default()
+    }))
+}
+
 impl Inner {
     /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
     pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {
@@ -43,18 +54,6 @@ impl Inner {
             self,
             Compare {
                 toggle: Some(format!("#{}", tab.0)),
-                ..Compare::default()
-            }
-            .into(),
-        );
-    }
-
-    /// The context menu's separate or synced scroll: `compare --sync off|on`.
-    pub fn synced_for_person(self: &Arc<Self>, on: bool) {
-        person::submit(
-            self,
-            Compare {
-                sync: Some(if on { "on" } else { "off" }.into()),
                 ..Compare::default()
             }
             .into(),

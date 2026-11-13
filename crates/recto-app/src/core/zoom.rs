@@ -50,6 +50,23 @@ pub fn word(zoom: Zoom) -> String {
     }
 }
 
+/// **The zoom's menu ids** ([`super::menu_rows`]): `view --zoom`, the person's run here and now, on the thread that asked.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    let Some(menus::Action::Zoom(zoom)) = asked.action else { return None };
+    let command = View {
+        zoom: Some(word(zoom)),
+        ..View::default()
+    };
+    Some(super::menu_rows::Row::own_way(
+        command,
+        "the zoom is the page views', so the person's is run on the thread that asked, taking no lock and queuing nothing",
+        move || {
+            inner.zoom_for_person(zoom);
+            HostAction::None
+        },
+    ))
+}
+
 impl Inner {
     /// **The person's zoom:** `view --zoom`, run for them here and now by the same handler as an agent's. Says whether there was a page to zoom.
     pub fn zoom_for_person(&self, zoom: Zoom) -> bool {

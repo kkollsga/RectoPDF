@@ -15,6 +15,8 @@ mod finding;
 mod input_to_frame;
 mod launch;
 mod levels;
+mod menu_agents;
+mod menu_twins;
 mod navigation;
 mod palette;
 mod passwords;

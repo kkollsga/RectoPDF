@@ -36,8 +36,10 @@ impl Cmd for View {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
+    /// The tab a layout is for: the one named, or the one showing. Which tab it is decides, not how it was named, so a layout of a document withheld from
+    /// agents is refused either way. The paper, the sidebar and the agent icon touch no tab, and a plain look names none.
     fn tab(&self) -> Option<&str> {
-        self.tab.as_deref()
+        self.tab.as_deref().or(self.layout.as_ref().map(|_| "active"))
     }
     /// Asking how things are shown changes nothing, whichever tab's layout it asks for. Changing it is moving around.
     fn access(&self) -> Access {
@@ -81,7 +83,7 @@ impl Cmd for View {
                     .then("It works when `recto` is talking to the app."),
             );
         }
-        set(cx.access, [paper, sidebar, agent_icon, layout], tab.as_deref(), cx.events)
+        set(cx.access, cx.actor, [paper, sidebar, agent_icon, layout], tab.as_deref(), cx.events)
     }
     fn human(data: &Value) -> String {
         format!(
@@ -194,7 +196,14 @@ fn hidden_after(word: Option<&str>, hidden: bool, what: &str) -> Result<bool, Ag
 
 /// Sets what's asked, and says how things are shown now. `[paper, sidebar, agent_icon, layout]`, as `view` has them, and the tab the layout is for, if not the
 /// active one. A change is announced only if something changed.
-pub(crate) fn set<A: SessionAccess>(access: &A, asked: [&Option<String>; 4], tab: Option<&str>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+/// The answer says the layout of the tab laid out or showing, unless it's withheld from `actor`.
+pub(crate) fn set<A: SessionAccess>(
+    access: &A,
+    actor: Actor,
+    asked: [&Option<String>; 4],
+    tab: Option<&str>,
+    events: &mut Vec<Event>,
+) -> Result<Value, AgentError> {
     let [paper, sidebar, agent_icon, layout] = asked;
     access.with(|s| {
             let was = s.view();
@@ -228,7 +237,7 @@ pub(crate) fn set<A: SessionAccess>(access: &A, asked: [&Option<String>; 4], tab
             if view != was {
                 events.push(view_changed(view));
             }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.filter(|id| actor.sees_protected() || !s.withheld_from_agents(*id)).and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         })
 }
 

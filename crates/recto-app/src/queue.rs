@@ -70,8 +70,11 @@ pub struct PersonCommand {
     pub when_run: Option<WhenRun>,
 }
 
-/// Makes a person's command what it is by the session as it is when it runs, on the session thread, just before.
-pub type WhenRun = fn(&recto_session::Session<recto_agent::DrawableLoader>, recto_agent::Command) -> recto_agent::Command;
+/// **Makes a command what it is by the session as it is when it runs,** just before: a person's on the session thread, an agent's on its own. What it reads
+/// it names in the command (the tab, not "the active one"), so whatever comes between this and the run, the command is about what was read; and for an
+/// actor who may not read a tab, it's refused before anything of that tab is read.
+pub type WhenRun =
+    fn(&recto_session::Session<recto_agent::DrawableLoader>, recto_agent::Actor, recto_agent::Command) -> Result<recto_agent::Command, recto_agent::AgentError>;
 
 impl PersonCommand {
     /// What the person just did.

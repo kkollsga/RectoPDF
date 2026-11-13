@@ -128,6 +128,35 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     inner.core.push(super::CoreCall::Events(events));
 }
 
+/// **Saving's menu ids** ([`super::menu_rows`]): File > Save, ⌘S and the Save icon are `save`, the person's on a thread of its own with the window's progress
+/// and problems, and only when Save can be chosen; Save As opens its sheet, whose answer is `UiAction::SaveAs`.
+pub fn row<'a>(inner: &'a Arc<super::Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    match (asked.action.as_ref()?, asked.id) {
+        (crate::menus::Action::Save, _) => Some(Row::own_way(
+            recto_agent::commands::saving::Save {
+                tab: "active".into(),
+                out: None,
+                replace: false,
+            },
+            "the person's Save runs on a thread of its own, with the window's progress and its problems answered in the window",
+            move || {
+                let shown = super::lock(&inner.published).reader.shown_tab;
+                if inner.can_save() && shown != 0 {
+                    start_save(inner, TabId(shown), None, false);
+                }
+                super::HostAction::None
+            },
+        )),
+        (crate::menus::Action::Host(host), "file.save_as") => Some(Row::host(
+            "opens the Save As sheet for the person; its answer is `SaveAs`",
+            super::menu_rows::Agents::ItsOwn("`recto save --out <path>`"),
+            *host,
+        )),
+        _ => None,
+    }
+}
+
 /// **Saving and closing, as the window asks:** Save As's sheet and its answer, what closing a document asks, and a save's problem answered. What they say
 /// is `crate::saving`'s; the save itself, [`start_save`]'s; the prompt's answer, `core/closing.rs`'s.
 impl super::Inner {

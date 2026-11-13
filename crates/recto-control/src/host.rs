@@ -402,11 +402,11 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Undone steps count: they can still be got back, and stopping would lose them.
+        // Undone steps count: they can still be got back, and stopping would lose them. Asked wherever the list is: one asleep says so in its summary.
         session
             .tabs()
             .iter()
-            .filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo))
+            .filter(|tab| session.is_edited(tab.id) || session.undo_and_redo(tab.id).1)
             .map(|tab| (tab.id, tab.name.to_string()))
             .collect()
     }

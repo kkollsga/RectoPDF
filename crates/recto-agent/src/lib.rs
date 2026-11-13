@@ -5,6 +5,7 @@
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
 pub mod actor;
+pub mod close_rule;
 pub use actor::Actor;
 pub mod agreement;
 pub mod effect;
@@ -850,11 +851,11 @@ fn note_agent_at_full<L: DocLoader>(session: &mut Session<L>, actor: Actor) {
 }
 
 /// What asking for Full is for, where only that would do. The one command an agent can run to get there.
-const ASK_FULL: &str = "recto permission request full";
+pub(crate) const ASK_FULL: &str = "recto permission request full";
 
 /// Undone steps can still be got back, and a new edit clears them for good, which is how an agent could erase the user's edits: undo them all, make one edit. So below Full, an edit that would lose an undone step of the user's is refused. Undone steps of agents' own are theirs to lose. SPEC decision log, 2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.
 fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::owner_steps_undone) {
+    if level >= Level::Full || !session.has_undone_owner_steps(id) {
         return Ok(());
     }
     let mut error = AgentError::new(
@@ -868,9 +869,24 @@ fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level
     Err(error)
 }
 
+/// **An agent throws away nothing it can't read** (coordinator, 2026-11-13: unknown is "would lose", not "nothing to lose"). Every command about a tab reads
+/// its list back first, so one still asleep is one whose journal couldn't be read: its summary says some of what's there, not all of it. An agent's
+/// `discard` or `clear-history` of it is refused at every level; the person, whose tab says so, decides.
+fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor, what: &str) -> Result<(), AgentError> {
+    if actor == Actor::Person || !session.list_is_asleep(id) {
+        return Ok(());
+    }
+    Err(AgentError::new(
+        "edits_unreadable",
+        format!("Nothing was {what}: this tab's edits couldn't be read back just now, so what that would throw away can't all be known."),
+        exit::FAILED,
+    )
+    .then("Leave them: the tab tells the user its edits couldn't be read, and what to do with them is theirs. `recto session show` says what's known of them."))
+}
+
 /// `discard` throws away everything on the tab's list, undone or not, and whatever fell off its capped undo list too, since that's still in the page order. Below Full, none of that may be the user's.
 fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits) {
+    if level >= Level::Full || !session.edits_summary(id).is_some_and(|summary| summary.holds_owner_edits) {
         return Ok(());
     }
     let mut error = AgentError::new(
@@ -880,60 +896,6 @@ fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId,
     );
     error.ask = Some(ASK_FULL.into());
     error.next = format!("`recto undo` steps back through them, and keeps them. Run `{ASK_FULL}` to ask for Full access, or tell the user.");
-    Err(error)
-}
-
-/// Stops a close that would lose edits, and says all of what it would lose and every way on that's real. Unsaved edits stop a close at every level: `discard` first, then `close`, so closing never loses them silently. Undone steps stop it below Full only if they're the user's, as they stop an edit.
-fn refuse_close_that_loses_something<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    let edits = session.page_edits(id);
-    let (unsaved, undone) = (session.is_edited(id), edits.is_some_and(recto_session::edit::PageEdits::can_redo));
-    let protected = level < Level::Full;
-    let owners_undone = protected && edits.is_some_and(recto_session::edit::PageEdits::owner_steps_undone);
-    let owners_anywhere = protected && edits.is_some_and(recto_session::edit::PageEdits::holds_owner_edits);
-    if !unsaved && !owners_undone {
-        return Ok(());
-    }
-    let what = match (unsaved, undone) {
-        (true, true) => "unsaved edits and undone steps",
-        (true, false) => "unsaved edits",
-        _ => "undone steps",
-    };
-    let whose = if owners_anywhere { " Some of them are the user's." } else { "" };
-    let mut ways = vec!["Leave the tab open: nothing is lost until the session ends.".to_string()];
-    if undone {
-        ways.push("`recto redo` puts the undone steps back, and that includes anything you undid on purpose.".to_string());
-    }
-    if unsaved {
-        if edits.is_some_and(recto_session::edit::PageEdits::history_dropped) {
-            ways.push("`recto undo` can't take all of it off, because some of it is past the undo limit.".to_string());
-        } else {
-            ways.push("`recto undo` until there's nothing left to undo takes the unsaved edits off, and keeps them as undone steps.".to_string());
-        }
-    }
-    let discard = if undone {
-        "`recto discard` throws all of it away for good, and then the tab can close"
-    } else {
-        "`recto discard` throws them away for good, and then the tab can close"
-    };
-    if owners_anywhere {
-        ways.push(format!(
-            "{discard}, which needs Full access, because it would lose the user's edits: `{ASK_FULL}` asks for it."
-        ));
-    } else {
-        ways.push(format!("{discard}."));
-    }
-    ways.push("`recto save` puts them in the file, if the user wants that.".to_string());
-    let message = format!("This tab wasn't closed: closing it would lose its {what}.{whose}");
-    // The user's undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level, and `discard` is the way on.
-    let mut error = if owners_undone {
-        AgentError::new("would_clear_redo", message, exit::PERMISSION)
-    } else {
-        AgentError::new("unsaved_changes", message, exit::FAILED)
-    };
-    if owners_anywhere {
-        error.ask = Some(ASK_FULL.into());
-    }
-    error.next = ways.join(" ");
     Err(error)
 }
 
