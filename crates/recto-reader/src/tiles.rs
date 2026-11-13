@@ -5703,4 +5703,95 @@ mod tests {
         assert!(after.iter().any(|op| matches!(op, Op::Detach { .. })), "the scroll took tiles off");
         layers_hold("after the window opened again", &after);
     }
+
+    /// What the page view allocates while the reader scrolls, counted on the thread that scrolls.
+    #[allow(unsafe_code)]
+    mod cost {
+        use super::*;
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        struct Counting;
+
+        thread_local! {
+            static ON: Cell<bool> = const { Cell::new(false) };
+            static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+        }
+
+        fn count() {
+            // A thread on its way out has no counter any more.
+            let _ = ON.try_with(|on| {
+                if on.get() {
+                    let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+                }
+            });
+        }
+
+        // SAFETY: forwards to the system allocator, counting each allocation and growth on the thread that makes it while counting is on.
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                count();
+                // SAFETY: the caller's layout, passed on.
+                unsafe { System.alloc(layout) }
+            }
+
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                count();
+                // SAFETY: the caller's layout, passed on.
+                unsafe { System.alloc_zeroed(layout) }
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                count();
+                // SAFETY: the caller's block and sizes, passed on.
+                unsafe { System.realloc(ptr, layout, new_size) }
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                // SAFETY: given back as it was given.
+                unsafe { System.dealloc(ptr, layout) }
+            }
+        }
+
+        #[global_allocator]
+        static COUNTING: Counting = Counting;
+
+        /// Allocations made on this thread by `work`.
+        fn allocations_of(work: impl FnOnce()) -> u64 {
+            let before = ALLOCATIONS.with(Cell::get);
+            ON.with(|on| on.set(true));
+            work();
+            ON.with(|on| on.set(false));
+            ALLOCATIONS.with(Cell::get) - before
+        }
+
+        /// Allocations in 50 steps of scrolling over pages already drawn and kept, each step a viewport, a drain and the host's word that it applied them, as the UI thread makes on every scroll, as counted on `main` before `Reader` was cut into components (2026-11-13). That's 22.5 a step, for a step that draws nothing new: a finding against rule 1, pinned as it is here and not fixed in R3.3.
+        const SCROLL_ALLOCATIONS_ON_MAIN: u64 = 1125;
+
+        /// Failure: scrolling over pages that are drawn and kept allocates more than it did, so something now allocates per frame or per scroll: a component that copies what it used to borrow, a list built where one was walked. Rule 1: nothing new per frame or per scroll.
+        #[test]
+        fn scrolling_over_drawn_pages_allocates_no_more_than_it_did() {
+            let mut reader = reader_on(6);
+            settle(&mut reader);
+            for step in 1..=12 {
+                reader.set_viewport(view(f64::from(step) * 600.0));
+                settle(&mut reader);
+            }
+            reader.set_viewport(view(0.0));
+            settle(&mut reader);
+            let allocations = allocations_of(|| {
+                for step in 0..50u32 {
+                    let y = f64::from(step % 25) * 280.0;
+                    drop(reader.set_viewport(view(y)));
+                    drop(reader.drain(MAX_ATTACH_PER_TURN));
+                    reader.applied();
+                }
+            });
+            println!("50 scroll steps over drawn pages: {allocations} allocations");
+            assert!(
+                allocations <= SCROLL_ALLOCATIONS_ON_MAIN,
+                "{allocations} allocations in 50 steps, against {SCROLL_ALLOCATIONS_ON_MAIN} on main"
+            );
+        }
+    }
 }
