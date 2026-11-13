@@ -16,6 +16,7 @@ mod contents;
 mod dirs;
 mod editing;
 mod files;
+mod generated;
 mod journal;
 mod mail;
 mod pages;
@@ -817,8 +818,8 @@ pub struct Session<L = DiskLoader> {
     saves: saves::Saves,
     /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.
     comparison: Option<compare::Comparison>,
-    /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
-    generated: Vec<(TabId, GeneratedView)>,
+    /// Generated contents the sidebar knows of, for tabs someone asked about.
+    generated: generated::Generated,
     /// Files opened lately, for File > Open Recent and ⌘K.
     recent: recent::Recent,
 }

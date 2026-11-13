@@ -106,7 +106,7 @@ impl<L: DocLoader> Session<L> {
             self.comparison = None;
         }
         // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
-        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
+        self.generated.keep_ready_only_for(id);
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.active.filter(|left| *left != id) {

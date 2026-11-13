@@ -428,7 +428,7 @@ impl<L: DocLoader> Session<L> {
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
     pub fn go_dormant(&mut self, id: TabId) -> bool {
         // A dormant tab holds no list: its generated contents are on disk, and found again when it's shown.
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         if !self.can_go_dormant(id) {
             return false;
         }
@@ -632,7 +632,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         if let Some(tab) = self.tab_mut(id) {
             tab.from_sleep = None;
         }

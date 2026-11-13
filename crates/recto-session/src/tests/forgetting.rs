@@ -22,7 +22,7 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("departing", s.departing.iter().any(|append| append.tab == id)),
         ("saving", s.saves.is_saving(id)),
         ("comparison", s.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))),
-        ("generated", s.generated.iter().any(|(tab, _)| *tab == id)),
+        ("generated", s.generated.view(id).is_some()),
         ("saved_over", s.saves.remembers(id)),
         ("jumps", s.mail.holds_jump_of(id)),
     ];

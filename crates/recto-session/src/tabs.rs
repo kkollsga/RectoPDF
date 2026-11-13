@@ -30,7 +30,7 @@ impl<L: DocLoader> Session<L> {
             departing: Vec::new(),
             history: None,
             agent_at_full: false,
-            generated: Vec::new(),
+            generated: generated::Generated::default(),
             comparison: None,
             saves: saves::Saves::default(),
             recent: recent::Recent::default(),
@@ -212,7 +212,7 @@ impl<L: DocLoader> Session<L> {
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
         self.note_recent(path);
-        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
+        self.generated.keep_ready_only_for(id);
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
         if let Some(history) = history {
@@ -348,7 +348,7 @@ impl<L: DocLoader> Session<L> {
         self.let_go_of_dir_if_unused(closed.dir);
         self.mail.forget(id);
         self.warm.retain(|(tab, _)| *tab != id);
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         self.woken.retain(|(tab, _, _)| *tab != id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
