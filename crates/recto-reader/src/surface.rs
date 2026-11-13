@@ -652,6 +652,8 @@ EngineConfig.pub policy: Option<Policy>
 EngineConfig.pub service: Option<ServiceConfig>
 Entry (pub(super) struct, derives Debug)
 HostQueue (pub(crate) struct, derives Debug)
+HostQueue: Drop (trait impl)
+HostQueue: Drop::fn drop(&mut self)
 HostQueue::pub(crate) fn has_ops(&self) -> bool
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
