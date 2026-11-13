@@ -391,22 +391,23 @@ pub struct PageLook {
 
 const WHOLE_PAGE: [u16; 4] = [0, 0, u16::MAX, u16::MAX];
 
-/// Where a part of a page falls in a picture of it `width` by `height`, rounded outward, so an image's anti-aliased edge isn't taken for the page's paper. Sorted by left side, as [`gaps_in_row`] wants.
-fn pixel_boxes(boxes: impl Iterator<Item = [u16; 4]>, width: u32, height: u32) -> Vec<PixelBox> {
+/// Where a part of a page, `[left, top, right, bottom]` in 65535ths, falls in `width` by `height` pixels: each side rounded down, or with the right and bottom rounded up when `outward`, so an image's anti-aliased edge goes with the image. Never past the size given, as no side is past 65,535.
+fn in_pixels(sides: [u16; 4], width: u32, height: u32, outward: bool) -> [u64; 4] {
     let place = |part: u16, whole: u32, up: bool| {
         let exact = u64::from(part) * u64::from(whole);
-        (if up { exact.div_ceil(65_535) } else { exact / 65_535 }) as usize
+        if up { exact.div_ceil(65_535) } else { exact / 65_535 }
     };
-    let mut found: Vec<PixelBox> = boxes
-        .map(|sides| {
-            [
-                place(sides[0], width, false),
-                place(sides[1], height, false),
-                place(sides[2], width, true).min(width as usize),
-                place(sides[3], height, true).min(height as usize),
-            ]
-        })
-        .collect();
+    [
+        place(sides[0], width, false),
+        place(sides[1], height, false),
+        place(sides[2], width, outward),
+        place(sides[3], height, outward),
+    ]
+}
+
+/// Where parts of a page fall in a picture of it `width` by `height`, rounded outward, so an image's anti-aliased edge isn't taken for the page's paper. Sorted by left side, as [`gaps_in_row`] wants.
+fn pixel_boxes(boxes: impl Iterator<Item = [u16; 4]>, width: u32, height: u32) -> Vec<PixelBox> {
+    let mut found: Vec<PixelBox> = boxes.map(|sides| in_pixels(sides, width, height, true).map(|side| side as usize)).collect();
     found.sort_unstable_by_key(|hole| hole[0]);
     found
 }
@@ -447,15 +448,8 @@ impl PageLook {
     /// Decides from a small picture of the whole page, `width` by `height` of BGRA pixels as drawn for white paper. `boxes` is where its images are, if that's known, and with none known the page is judged whole. With them known, each is judged by itself, and a page whose kept pictures come to [`MOSTLY_PICTURE`] of it or more turns over only if its background is mostly white (owner, 2026-11-13).
     pub fn decide(boxes: Option<&[[u16; 4]]>, pixels: &[u8], stride: usize, width: u32, height: u32) -> Self {
         let sample = |sides: [u16; 4]| {
-            let place = |part: u16, whole: u32| (u64::from(part) * u64::from(whole) / 65_535) as usize;
-            sample_pixels(
-                pixels,
-                stride,
-                place(sides[0], width),
-                place(sides[1], height),
-                place(sides[2], width).min(width as usize),
-                place(sides[3], height).min(height as usize),
-            )
+            let [left, top, right, bottom] = in_pixels(sides, width, height, false).map(|side| side as usize);
+            sample_pixels(pixels, stride, left, top, right, bottom)
         };
         let Some(boxes) = boxes else {
             let whole = sample(WHOLE_PAGE);
@@ -545,12 +539,7 @@ pub enum DarkTile {
 
 /// Where a part of a page falls in a rectangle of it. Rounds outward, so an image's edge isn't turned over.
 fn keep_in(sides: [u16; 4], page: (u32, u32), rect: recto_proto::TileRect) -> Option<Keep> {
-    let place = |part: u16, whole: u32, up: bool| -> u32 {
-        let exact = u64::from(part) * u64::from(whole);
-        (if up { exact.div_ceil(65_535) } else { exact / 65_535 }) as u32
-    };
-    let (left, top) = (place(sides[0], page.0, false), place(sides[1], page.1, false));
-    let (right, bottom) = (place(sides[2], page.0, true), place(sides[3], page.1, true));
+    let [left, top, right, bottom] = in_pixels(sides, page.0, page.1, true).map(|side| side as u32);
     let keep = Keep {
         left: left.max(rect.x) - rect.x,
         top: top.max(rect.y) - rect.y,
