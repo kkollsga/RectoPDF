@@ -286,7 +286,7 @@ fn run(data: &[u8], root: &Path) {
             );
             let written = session.to_record();
             if store.write_record(&written, &PlaceDelta::default(), false).is_ok() {
-                let by_name: HashMap<String, record::EditsRecord> = session.lists_by_journal();
+                let by_name: HashMap<String, record::EditsRecord> = session.journal_look().lists_by_journal();
                 store.next_write_whole();
                 let _ = store.write_record(&written, &PlaceDelta::default(), false);
                 let _ = store.verify(&written, &by_name);
