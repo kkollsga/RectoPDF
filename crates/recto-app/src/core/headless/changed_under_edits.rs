@@ -102,3 +102,25 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     assert_ne!(saved, original, "the turn went in");
     assert!(saved.starts_with(&original), "appended to the version they were made on");
 }
+
+/// Failure (B5): every return to the front read an edited tab's changed file again and reset its contents' folds, as each look took the change in anew. A look
+/// that finds what's already known does nothing: a fold made after the change is taken in stays across looks.
+#[test]
+fn looking_again_at_an_edited_tab_whose_file_changed_changes_nothing() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &super::files::with_sections(6));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "2", "--by", "90"]).expect("rotated");
+    app.settle();
+    replace(&file, &super::files::with_sections(8));
+    look(&app);
+    let tab = app.session_json()["tabs"][0]["id"].as_u64().expect("a tab");
+    app.agent(Level::Control, &format!(r##"{{"cmd":"contents_fold","entry":0,"tab":"#{tab}"}}"##))
+        .expect("folded");
+    app.settle();
+    let folded = app.session_json()["tabs"][0].clone();
+    for _ in 0..3 {
+        look(&app);
+    }
+    assert_eq!(app.session_json()["tabs"][0], folded, "nothing about the tab changed");
+}

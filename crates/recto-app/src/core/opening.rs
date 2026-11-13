@@ -118,10 +118,19 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
 /// `CoreCall::WokenFileIsOther`, on the session thread.
 pub fn woken_file_is_other(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, status: FileStatus) {
     let host = &inner.host;
-    host.session.with_session(|session| {
-        session.apply_file_status(id, status);
-        session.forget_read(id);
+    // `NotLooked` comes from a look before a show that's taken the news in already, and wants the read. Otherwise what's held is forgotten and read again only if
+    // the look found something new.
+    let again = matches!(status, FileStatus::NotLooked);
+    let new = host.session.with_session(|session| {
+        let new = session.apply_file_status(id, status) || again;
+        if new {
+            session.forget_read(id);
+        }
+        new
     });
+    if !new {
+        return;
+    }
     let reread = host.session.with_session(|session| {
         session
             .active()

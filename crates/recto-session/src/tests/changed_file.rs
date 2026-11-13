@@ -173,8 +173,35 @@ fn an_edit_made_before_a_changed_file_is_read_again_is_kept() {
     bed.s.tap(a).unwrap();
     bed.assert_edits_kept_and_said(a, &as_they_were, &journal);
     bed.assert_save_cant_take_the_new_file(a);
-    // Looking again doesn't make the edits about the new file.
-    bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a)));
+    // Looking again doesn't make the edits about the new file, and is nothing new.
+    assert!(!bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.own_stamp(a))));
     assert_eq!(bed.s.tab_notice(a).map(FileNotice::code), Some("file_changed"), "it goes on saying so");
     bed.assert_save_cant_take_the_new_file(a);
+}
+
+/// Failure (B5): every look at an edited tab whose file had changed took the change in again, as the edits keep the old stamp and every look finds the file
+/// isn't that: generated contents forgotten, the folds reset, the sleep file retired, and the app reading the file's structure again, at every return to the
+/// front and every show. A look that finds what's already known is nothing new, and says so, so the app neither forgets nor reads anything for it.
+#[test]
+fn a_look_that_finds_what_is_already_known_is_nothing_new() {
+    let (mut bed, a, _b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    let made_on = bed.stamp_now();
+    replace_file(&bed.path(), b"a shorter version, saved by another app");
+    let look = |bed: &Bed| record::look_at_file(&bed.path(), bed.s.own_stamp(a));
+    assert!(bed.s.apply_file_status(a, look(&bed)), "the first look is news");
+    assert_eq!(bed.s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
+    bed.s.tab_mut(a).unwrap().folds = Some(vec![(1, false)].into_boxed_slice());
+    for _ in 0..3 {
+        assert!(!bed.s.apply_file_status(a, look(&bed)), "the same again isn't");
+    }
+    assert!(bed.s.tab(a).unwrap().folds.is_some(), "folds made since are kept");
+    assert!(!bed.s.apply_file_status(a, FileStatus::NotLooked));
+    assert!(bed.s.is_edited(a));
+    // Gone is news, and so is coming back as the other version again.
+    assert!(bed.s.apply_file_status(a, FileStatus::Missing));
+    assert!(bed.s.apply_file_status(a, look(&bed)));
+    // Back at the version the edits were made on is news too, and the notice goes.
+    assert!(bed.s.apply_file_status(a, FileStatus::Same(made_on)));
+    assert_eq!(bed.s.tab_notice(a), None);
 }

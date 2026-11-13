@@ -14,7 +14,23 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
-    pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) {
+    ///
+    /// **Says whether anything was new.** A look that finds what's already known (an edited tab already saying its file changed, finding it changed; one already
+    /// saying it's gone, finding it gone; edits with no stamp, finding a file) changes nothing, and callers forget what's held of the file and read it again only
+    /// on new: every return to the front and every show of such a tab would otherwise read the file's structure again (rule 1).
+    pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) -> bool {
+        let has_edits = self.lists.has_list(id);
+        let notice = self.tab(id).and_then(|tab| tab.file.notice.as_deref().map(FileNotice::code));
+        let known = match &status {
+            FileStatus::NotLooked => true,
+            FileStatus::Changed(_) => self.is_edited(id) && notice == Some("file_changed"),
+            FileStatus::Missing => notice == Some("file_missing"),
+            FileStatus::Same(_) => has_edits && self.own_stamp(id).is_none(),
+            FileStatus::Moved(..) => false,
+        };
+        if known {
+            return false;
+        }
         // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
             self.generated.forget(id);
@@ -23,15 +39,11 @@ impl<L: DocLoader> Session<L> {
                 tab.folds = None;
             }
         }
-        let has_edits = self.lists.has_list(id);
         match status {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
-                    // Edits with no stamp aren't known to be about any version of the file (see `activate`), so whatever's there now doesn't become theirs.
-                    if has_edits && tab.file.stamp.is_none() {
-                        return;
-                    }
+                    let was = (tab.file.stamp, tab.file.notice.is_some());
                     tab.file.stamp = Some(now);
                     // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
                     if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing))
@@ -39,6 +51,7 @@ impl<L: DocLoader> Session<L> {
                     {
                         tab.file.notice = None;
                     }
+                    return was != (tab.file.stamp, tab.file.notice.is_some());
                 }
             }
             FileStatus::Moved(path, now) => {
@@ -47,7 +60,7 @@ impl<L: DocLoader> Session<L> {
                     if let Some(tab) = self.tab_mut(id) {
                         tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }
-                    return;
+                    return true;
                 }
                 let from = self.path_of(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
@@ -76,6 +89,7 @@ impl<L: DocLoader> Session<L> {
                 }
             }
         }
+        true
     }
 
     /// Every tab's file and what's known of it, for one pass by one thread after a restore. No thread or handle per tab.

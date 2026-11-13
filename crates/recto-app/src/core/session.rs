@@ -158,8 +158,7 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
             let status = look_at_file(&path, stamp);
             let is_as_it_was = matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) || matches!(status, FileStatus::NotLooked);
             if !is_as_it_was {
-                inner.host.session.with_session(|session| session.apply_file_status(id, status));
-                changed = true;
+                changed |= inner.host.session.with_session(|session| session.apply_file_status(id, status));
             }
         }
         if changed {

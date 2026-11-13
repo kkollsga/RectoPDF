@@ -546,11 +546,11 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
         inner.sleeper.looks.finish(id);
         return;
     }
-    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
-        inner.host.session.with_session(|session| {
-            session.apply_file_status(id, status);
-            session.forget_read(id);
-        });
+    // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
+    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE)
+        && inner.host.session.with_session(|session| session.apply_file_status(id, status))
+    {
+        inner.host.session.with_session(|session| session.forget_read(id));
         inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked));
     }
 }
