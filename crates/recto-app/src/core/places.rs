@@ -14,7 +14,8 @@
 //! last one the session took in for that tab is older than what it has, and its places are skipped (the look still takes its moved pages and sends its
 //! jumps). A jump the look sends is where the reader is from its send until a read stamped at or past the send is taken in, by whichever caller: there's
 //! no look after a scroll that stays on the page, so a command's read or the saver's tells of it as well as a look's. A follow synced scroll left pending
-//! for the page view's thread hasn't moved the view yet: a read before it is applied says where the view is, and its own tick comes when it's applied.
+//! for a busy page view's thread is already asked for by the person's scroll in the other pane: a read of that view applies it first, under the view's
+//! lock, so its tick comes before the read's stamp and the read says where the person has sent the view (`recto_reader::Engine::places`).
 
 use super::*;
 use crate::panes::ViewGiven;
