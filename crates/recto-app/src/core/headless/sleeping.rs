@@ -596,6 +596,36 @@ fn an_agents_save_leaves_the_cool_down_alone_and_a_quit_still_writes_it() {
     drop(app.quit());
 }
 
+/// Failure (the cool-down's review, 2026-11-13, S4): after a sleep writer panicked, what it left queued had no thread; a quit's drain waited for it to its
+/// limit and nothing started one, so the queued files were never written and the tab on screen's waited behind them. A writer that panics as it starts, a tab
+/// left waiting in its cool-down, then a quit's flush: the drain starts a writer, everything queued is written, the tab on screen's file is there, and the flush
+/// takes nothing like its limit.
+#[test]
+fn a_quit_after_a_sleep_writer_panicked_writes_what_waits_and_the_tab_on_screen() {
+    let disk = Disk::new();
+    let docs: Vec<_> = ["a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).start();
+    app.core().sleeper.panic_next_leaving_writer();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    app.wait_until("the writer gone, panicked", || {
+        let leaving = app.record_json()["sleep"]["leaving"].clone();
+        leaving["writer_panics"] == 1 && leaving["writer"] == false
+    });
+    assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 1, "{}", app.record_json()["sleep"]);
+    let limit = std::time::Duration::from_secs(20);
+    let began = std::time::Instant::now();
+    app.core().saver.flush(false, limit).expect("the state written");
+    let took = began.elapsed();
+    let leaving = app.record_json()["sleep"]["leaving"].clone();
+    assert_eq!(leaving["queued"], 0, "what waited was never written: {leaving}");
+    assert!(active_has_a_sleep_file(&app), "{}", app.record_json()["sleep"]);
+    assert!(took < limit / 2, "the quit waited out its limit for a writer there wasn't: {took:?}");
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

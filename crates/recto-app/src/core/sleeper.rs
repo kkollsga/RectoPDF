@@ -183,6 +183,12 @@ impl Sleeper {
         self.leaving.drain(until)
     }
 
+    /// The next sleep writer panics as it starts, for a test of what's left after one.
+    #[cfg(test)]
+    pub fn panic_next_leaving_writer(&self) {
+        self.leaving.panic_next_writer();
+    }
+
     /// The app's gone to the background: what's waiting is written at the writer's next look. The UI thread's: an atomic, no lock.
     pub fn hurry_leaving_soon(&self) {
         self.leaving.hurry_soon();
