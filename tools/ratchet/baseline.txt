@@ -58,7 +58,7 @@ sleep crates/recto-cli/tests/app/quiet.rs 4
 sleep crates/recto-cli/tests/common/app.rs 5
 sleep crates/recto-cli/tests/compare.rs 3
 sleep crates/recto-cli/tests/find.rs 1
-sleep crates/recto-cli/tests/index.rs 14
+sleep crates/recto-cli/tests/index.rs 11
 sleep crates/recto-cli/tests/levels.rs 1
 sleep crates/recto-cli/tests/long_session.rs 2
 sleep crates/recto-cli/tests/memory.rs 12
