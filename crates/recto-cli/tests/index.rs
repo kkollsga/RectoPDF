@@ -1111,7 +1111,10 @@ fn lowering_to_off_stops_indexing() {
         assert!(Instant::now() < deadline, "the build never ended: {status}");
         std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
-    assert!(pages_done(&root, running_key) < 1200, "it kept writing at Off");
+    assert!(
+        matches!(recto_index::corpus::disk_state(&root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
+        "it kept writing at Off, to the end"
+    );
     assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
