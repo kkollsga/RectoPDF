@@ -416,3 +416,34 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     let _ = other;
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Failure (review of the branch, round 2, F-c): a confined session wakes a dormant tab's list from its journal, and the journal names a PDF outside the
+/// run's folders as one whose pages were inserted, so those pages come back and the outside file is read when they're drawn, searched or saved; the wall
+/// on a restore and a taken-up history doesn't cover a wake. Woken, the list is unreadable, as a journal that can't be read is: the tab says so, it has no
+/// list and no page from outside, and nothing was read to find that out.
+#[test]
+fn a_woken_list_naming_an_outside_file_is_unreadable() {
+    let dir = recto_testpdf::TempDir::new("recto-confined-wake-");
+    std::fs::create_dir(dir.join("run")).unwrap();
+    let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let mut s = journaled(3);
+    s.set_history_source(Arc::new(MemorySource(Arc::clone(&files))));
+    let a = s.open(&dir.join("run/a.pdf")).unwrap();
+    // Written before the session was confined, as a journal in the state folder can say anything.
+    s.insert_pdf(a, 0, &dir.join("outside.pdf")).unwrap();
+    let mut plain = HashMap::new();
+    write_journal(&mut s, &mut plain);
+    *files.lock().unwrap() = plain;
+    s.open(&dir.join("run/b.pdf")).unwrap();
+    assert!(s.go_dormant(a), "the list goes to its journal");
+    s.confinement().confine(recto_platform::run_folders::RunFolders::of(&[&dir.join("run")]));
+    let loads = s.loader().loads.get();
+    assert!(!s.wake_list(a), "the list naming the outside file was woken");
+    assert!(s.page_edits(a).is_none(), "it's in memory");
+    assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("edits_unreadable"));
+    assert!(
+        (0..s.pages_in(a)).all(|page| s.page_source(a, page).is_none_or(|source| source.path == dir.join("run/a.pdf"))),
+        "a page comes from outside"
+    );
+    assert_eq!(s.loader().loads.get(), loads, "a file was read to wake it");
+}
