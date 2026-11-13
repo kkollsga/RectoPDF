@@ -268,14 +268,6 @@ impl Engine {
         true
     }
 
-    /// Sends the view to a place in a page, for synced scroll. Says which page, held to the document.
-    pub fn follow(&self, page: u32, within: f64) -> Option<u32> {
-        let mut reader = lock(&self.shared.reader);
-        let went = reader.follow(page, within);
-        self.after(reader);
-        went
-    }
-
     /// Whether two handles are the same page view.
     pub fn same_as(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.shared, &other.shared)
