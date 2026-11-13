@@ -1,5 +1,6 @@
 //! **What's drawn next,** most wanted first: sizes, the links under the pointer, the text a selection is waiting on, then each visible page's preview and tiles, and text when there's nothing else; and whether what's running is still wanted.
 
+use super::sleep_draw::SleepDraws;
 use super::{DocView, DrawKind, JobPlan, MAX_PREVIEW_BYTES, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER};
 use crate::selection::Urgency;
 use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
@@ -10,6 +11,10 @@ impl Reader {
     /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
     pub fn running_is_wanted(&self) -> bool {
         let Some(running) = &self.work.running else { return true };
+        // Drawn for a tab left at a place it has no picture of, as long as the view wants nothing: a size, a weight or a preview, the only jobs asked for that. A tile or a region for the tab just left is the tab showing's no longer, and goes.
+        if !running.text && (running.preview || running.rect.is_none()) && SleepDraws::wants(self, running.tab, running.position) {
+            return true;
+        }
         if running.text {
             // Only a check goes for what's more wanted: it can take seconds, where reading is quick, and it's what's asked for when there's nothing better to do.
             return self.hot == Some(running.tab) && self.window_open && !(running.check && self.view_needs_something());
@@ -69,44 +74,12 @@ impl Reader {
         }
     }
 
-    /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase.
+    /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase. When the tab showing has nothing to do, a tab left at a place it has no picture of has that drawn ([`SleepDraws`]).
     pub fn next_plan(&mut self) -> Option<JobPlan> {
         if !self.window_open || self.work.hold_drawing {
             return None;
         }
-        let tab = self.hot?;
-        let doc = self.docs.get(&tab)?;
-        if doc.drawing.problem.is_some() || self.viewport.height <= 0.0 {
-            return None;
-        }
-        let visible = self.visible_pages(doc);
-        let (first, last) = (*visible.start(), *visible.end());
-        if first > last {
-            return None;
-        }
-        if let Some(plan) = self.size_plan(tab, visible)? {
-            return Some(plan);
-        }
-        let now = Instant::now();
-        let scale = self.docs.get(&tab)?.drawing.tile_scale;
-        if scale <= 0.0 {
-            return None;
-        }
-        if let Some(plan) = self.links_plan(tab) {
-            return Some(plan);
-        }
-        // A selection the reader is making comes before tiles: it answers their hand.
-        if let Some(plan) = self.text_plan(tab, Urgency::Now) {
-            return Some(plan);
-        }
-        let doc = self.docs.get(&tab)?;
-        let pages: Vec<u32> = self.visible_pages(doc).collect();
-        for page in pages {
-            if let Some(plan) = self.page_plan(tab, page, scale, now)? {
-                return Some(plan);
-            }
-        }
-        self.text_plan(tab, Urgency::WhenIdle)
+        hot_plan(self).or_else(|| SleepDraws::plan(self))
     }
 
     /// Sizes first: nothing is shown or drawn before them. The first page known sets the fit, so where a reader lands is asked first, and then the pages around it. `None` when there's nothing to do now, as [`Self::next_plan`] says, and `Some(None)` to go on.
@@ -311,4 +284,41 @@ impl Reader {
         (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES)
             .then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
     }
+}
+
+/// What the tab showing wants next, most wanted first.
+fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
+    let tab = reader.hot?;
+    let doc = reader.docs.get(&tab)?;
+    if doc.drawing.problem.is_some() || reader.viewport.height <= 0.0 {
+        return None;
+    }
+    let visible = reader.visible_pages(doc);
+    let (first, last) = (*visible.start(), *visible.end());
+    if first > last {
+        return None;
+    }
+    if let Some(plan) = reader.size_plan(tab, visible)? {
+        return Some(plan);
+    }
+    let now = Instant::now();
+    let scale = reader.docs.get(&tab)?.drawing.tile_scale;
+    if scale <= 0.0 {
+        return None;
+    }
+    if let Some(plan) = reader.links_plan(tab) {
+        return Some(plan);
+    }
+    // A selection the reader is making comes before tiles: it answers their hand.
+    if let Some(plan) = reader.text_plan(tab, Urgency::Now) {
+        return Some(plan);
+    }
+    let doc = reader.docs.get(&tab)?;
+    let pages: Vec<u32> = reader.visible_pages(doc).collect();
+    for page in pages {
+        if let Some(plan) = reader.page_plan(tab, page, scale, now)? {
+            return Some(plan);
+        }
+    }
+    reader.text_plan(tab, Urgency::WhenIdle)
 }

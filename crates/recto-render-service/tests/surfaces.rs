@@ -212,6 +212,10 @@ fn image_boxes_say_when_they_dont_know() {
     let file = TempPdf::new("boxes.pdf", &pages(&[Page::new(text_lines(&["No images here"]))]));
     let mut stale = doc(&file);
     stale.cancel_handle().cancel_before(5);
-    assert_eq!(stale.image_boxes(0, 2), None, "stale, so nobody knows");
-    assert_eq!(stale.image_boxes(0, 9), Some(Vec::new()), "and that wasn't an answer: asked again, it's known");
+    assert_eq!(stale.image_boxes(0, 2), Ok(None), "stale, so nobody knows");
+    assert_eq!(
+        stale.image_boxes(0, 9),
+        Ok(Some(Vec::new())),
+        "and that wasn't an answer: asked again, it's known"
+    );
 }

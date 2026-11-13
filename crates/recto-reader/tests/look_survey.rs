@@ -48,7 +48,7 @@ fn survey() {
                 println!("{name} p{} didn't draw", page + 1);
                 continue;
             }
-            let boxes = doc.image_boxes(page, 1);
+            let boxes = doc.image_boxes(page, 1).ok().flatten();
             let stride = surface.stride() as usize;
             surface
                 .with_pixels(|pixels| {

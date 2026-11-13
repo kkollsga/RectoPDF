@@ -1,9 +1,9 @@
 //! **Waking and sleep pictures:** what a tab's first frame shows from its sleep file, how its wake goes until it's sharp, and the pictures of its pages that go into the sleep file, from its previews or put together from its tiles.
 
+use super::PageMap;
 use super::{DocView, DrawKind, MAX_PREVIEW_BYTES, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
-use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TileRect, device_size};
 use recto_render_service::TileKind;
@@ -116,6 +116,33 @@ pub struct WakeReport {
 pub const WAKE_REPORT_BYTES: usize = 48;
 const _: () = assert!(std::mem::size_of::<WakeReport>() <= WAKE_REPORT_BYTES);
 
+/// **Where a tab off screen is, as its sleep file and its wake have it:** the pages there (at most [`MAX_SLEEP_SHOTS`]), from where, and how tall its own view is: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't. Where its wake sends it, by the one rule, [`Reader::place_y`]: its exact place while its layout is the one that place was taken in, and otherwise as far down its page as it was. A tab off screen's anchor is the one it was left at, as only the tab showing's moves, and coming back puts back the one noted as it left, which is the same. One reckoning, so what's drawn for a tab before it sleeps ([`super::sleep_draw`]) is what its sleep file takes and what its wake shows, a size learned meanwhile included.
+pub(super) fn left_place(reader: &Reader, doc: &DocView) -> (Vec<u32>, f64, f64) {
+    let y = Reader::place_y(doc);
+    let window_height = reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE);
+    let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
+    let pages = if doc.layout.count() == 0 {
+        Vec::new()
+    } else {
+        // Only as many as a sleep file takes: a hostile file's slivers can put thousands in view.
+        doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).take(MAX_SLEEP_SHOTS).collect()
+    };
+    (pages, y.max(0.0), height)
+}
+
+/// Of these pages, those a picture is owed to: the part of each in the view from `from`, `height` tall, being at least [`MIN_SHARE_OF_VIEW`] of it.
+pub(super) fn in_view_of(doc: &DocView, pages: &[u32], from: f64, height: f64) -> Vec<u32> {
+    pages
+        .iter()
+        .copied()
+        .filter(|page| {
+            let rect = doc.layout.rect(*page);
+            let showing = rect.y.max(from)..(rect.y + rect.height).min(from + height);
+            showing.end - showing.start >= height * MIN_SHARE_OF_VIEW
+        })
+        .collect()
+}
+
 /// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn shrink_into(
@@ -168,6 +195,8 @@ pub(super) struct Waking {
     pub(super) last_wake: Option<WakeReport>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
     pub(super) window_up: bool,
+    /// A tab left at a place it has no picture of, and what's drawn for it.
+    pub(super) draws: super::sleep_draw::SleepDraws,
 }
 
 impl Waking {
@@ -317,11 +346,20 @@ impl Reader {
 
     /// **What a tab's sleep file gets from what's here.** Sizes, and a picture for each page at its place: its preview, if the system has left it, or else put together from whatever of its tiles are here, so a heavy page, which has no preview, has one too. A short lock: a picture's a few milliseconds at the worst.
     ///
-    /// `own` is what the session says the tab's file is now. If that's not what this is a view of, what's here is of another file, and nothing goes in its sleep file.
-    pub fn sleep_material(&mut self, tab: u32, own: Option<FileStamp>) -> Option<SleepMaterial> {
+    /// `now` is what the session says the tab's pages are now. If its file isn't what this is a view of, what's here is of another file, and nothing goes in its sleep file. **If its pages aren't the pages here** (deleted, moved, added or turned while it was off screen, which a view held warm hears of only when it's shown again), what's here is filed under places that are other pages now, and a picture of the wrong page is worse than bare paper: its facts go, and no picture or size.
+    pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial> {
         let doc = self.docs.get(&tab)?;
-        if doc.map.own != own {
+        if doc.map.own != now.own {
             return None;
+        }
+        if !doc.map.same_pages(now) || doc.map.turns != now.turns {
+            return Some(SleepMaterial {
+                version: None,
+                usual: None,
+                sizes: Vec::new(),
+                pictures: Vec::new(),
+                in_view: Vec::new(),
+            });
         }
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
@@ -329,30 +367,9 @@ impl Reader {
         let (pages, from, height): (Vec<u32>, f64, f64) = if self.hot == Some(tab) {
             (self.visible_pages(doc).take(MAX_SLEEP_SHOTS).collect(), self.viewport.y, self.viewport.height)
         } else {
-            let y = doc
-                .place
-                .exact_y
-                .map_or_else(|| doc.place.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
-            // Its own view: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't.
-            let window_height = self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE);
-            let height = (window_height / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
-            let pages = if doc.layout.count() == 0 {
-                Vec::new()
-            } else {
-                // Only as many as a sleep file takes: a hostile file's slivers can put thousands in view.
-                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).take(MAX_SLEEP_SHOTS).collect()
-            };
-            (pages, y.max(0.0), height)
+            left_place(self, doc)
         };
-        let in_view: Vec<u32> = pages
-            .iter()
-            .copied()
-            .filter(|page| {
-                let rect = doc.layout.rect(*page);
-                let showing = rect.y.max(from)..(rect.y + rect.height).min(from + height);
-                showing.end - showing.start >= height * MIN_SHARE_OF_VIEW
-            })
-            .collect();
+        let in_view = in_view_of(doc, &pages, from, height);
         // What it was left with first, page by page: what's here now may have been taken by the system since.
         let mut left = doc.drawing.left_pictures.clone().unwrap_or_default();
         let mut pictures = Vec::new();

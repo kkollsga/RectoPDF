@@ -3,12 +3,13 @@
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
 use crate::selection::Notice;
+use crate::tiles::sleep_draw::SleepDraws;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, SavedPlace, Viewport, Zoom};
 use recto_index::select::PageText;
 use recto_platform::isolate;
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
-use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult, Workers};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -119,9 +120,6 @@ const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone t
 const MAX_PANICS_IN_A_ROW: u32 = 4;
 /// A panic this long after the last one is a new story.
 const PANICS_FORGOTTEN_AFTER: Duration = Duration::from_secs(60);
-
-/// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
-const BIG_WORKER_REST: Duration = Duration::from_secs(3);
 
 struct Shared {
     reader: Mutex<Reader>,
@@ -370,8 +368,8 @@ impl Engine {
     }
 
     /// What a tab's sleep file gets from here.
-    pub fn sleep_material(&self, tab: u32, own: Option<recto_platform::FileStamp>) -> Option<crate::tiles::SleepMaterial> {
-        lock(&self.shared.reader).sleep_material(tab, own)
+    pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial> {
+        lock(&self.shared.reader).sleep_material(tab, now)
     }
 
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
@@ -745,7 +743,7 @@ impl Engine {
         lock(&self.shared.reader).report()
     }
 
-    /// Blocks until everything visible is settled, or the time runs out. Never for the UI thread.
+    /// Blocks until everything visible is settled, or the time runs out. Never for the UI thread. Drawing for a tab off screen's place isn't waited for: it's nothing visible, and how long it takes is a file's to say. `qa state`'s `reader.sleep_draws.under_way` says whether it's going.
     pub fn wait_settled(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut reader = lock(&self.shared.reader);
@@ -926,7 +924,16 @@ fn run(shared: &Shared) {
             rest(shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
-        resting_since = None;
+        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
+        let workers = if SleepDraws::is_for(&lock(&shared.reader), job.tab) {
+            if big_workers_rest(&mut renderers, &policy, &mut resting_since).is_some_and(|left| left.is_zero()) {
+                publish_workers(shared, &mut renderers);
+            }
+            Workers::OnlyTheOneThere
+        } else {
+            resting_since = None;
+            Workers::MayStart
+        };
         lock(&shared.reader).note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
@@ -949,7 +956,7 @@ fn run(shared: &Shared) {
             match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
                 Ok(open) => {
                     lock(&shared.reader).set_cancel(open.doc.cancel_handle());
-                    let outcome = do_job(open, &job);
+                    let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {
                         open.looks.clear();
@@ -1019,7 +1026,7 @@ fn run(shared: &Shared) {
     }
 }
 
-/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory, which is let go after [`BIG_WORKER_REST`].
+/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
 fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
     shared.settled.notify_all();
     if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
@@ -1028,27 +1035,31 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         }
         publish_workers(shared, renderers);
     }
-    // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
-    let big = renderers
-        .values_mut()
-        .any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
-    if !big {
-        std::thread::park();
-        *resting_since = None;
-        return;
+    match big_workers_rest(renderers, policy, resting_since) {
+        None => std::thread::park(),
+        // Let go just now: the loop says so before it rests again.
+        Some(left) if left.is_zero() => {}
+        Some(left) => std::thread::park_timeout(left),
     }
-    let since = *resting_since.get_or_insert_with(Instant::now);
-    let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
+}
+
+/// **A worker holding a heavy page's memory, which only goes when it does, is let go once nothing's been done for the person for as long as a heavy worker's idle rule** (`Policy::heavy_idle_exit`, 3 s), for the same reason: long enough to bridge a pause in scrolling, and then a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule. Looked at when there's nothing to do, and between the jobs for a tab off screen's place, which aren't the person's. Says how long is left, zero when they've just been let go, or `None` when there's none.
+fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) -> Option<Duration> {
+    let big = |open: &mut OpenDoc| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes);
+    if !renderers.values_mut().any(&big) {
+        *resting_since = None;
+        return None;
+    }
+    let left = policy.heavy_idle_exit.saturating_sub(resting_since.get_or_insert_with(Instant::now).elapsed());
     if left.is_zero() {
         for open in renderers.values_mut() {
-            if open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
+            if big(open) {
                 open.doc.kill_worker();
             }
         }
         *resting_since = None;
-    } else {
-        std::thread::park_timeout(left);
     }
+    Some(left)
 }
 
 /// A page's links, read from the file's structure, here and with no worker.
@@ -1117,18 +1128,26 @@ const MAX_LOOKS: usize = 4096;
 /// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
 const LOOK_PICTURE_EDGE: f32 = 512.0;
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. `None` means this job went stale on the way, which says nothing about the page, and nothing is kept.
-fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
+/// Why there's no look for a page from this job, and nothing's kept: neither is about the page.
+enum NoLook {
+    /// The job went stale on the way.
+    Stale,
+    /// What it's decided from wasn't asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't, a heavy one if `heavy`.
+    Unstarted { heavy: bool },
+}
+
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't.
+fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Result<Arc<PageLook>, NoLook> {
     // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
     if open.doc.take_image_places_cleared() {
         open.looks.clear();
     }
     if let Some(known) = open.looks.get(&page) {
-        return Some(Arc::clone(known));
+        return Ok(Arc::clone(known));
     }
-    let boxes = open.doc.image_boxes(page, generation);
+    let boxes = open.doc.image_boxes(page, generation).map_err(unstarted)?;
     if open.doc.is_stale(generation) {
-        return None;
+        return Err(NoLook::Stale);
     }
     let look = if boxes.as_ref().is_some_and(Vec::is_empty) {
         PageLook::text()
@@ -1139,7 +1158,11 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
             .unwrap_or_else(|_| PageLook::unknown())
     } else {
         let doc = &mut open.doc;
-        let picture = doc.page_size(page).ok().and_then(|(width, height)| {
+        let size = match doc.page_size(page) {
+            Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
+            size => size.ok(),
+        };
+        let picture = size.and_then(|(width, height)| {
             let scale = (LOOK_PICTURE_EDGE / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
             let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
             let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
@@ -1172,7 +1195,8 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
                         .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height))
                         .unwrap_or_else(|_| PageLook::unknown())
                 }
-                Ok(TileResult::Cancelled { .. }) => return None,
+                Ok(TileResult::Cancelled { .. }) => return Err(NoLook::Stale),
+                Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
                 Err(_) => PageLook::unknown(),
             },
             None => PageLook::unknown(),
@@ -1183,7 +1207,14 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
     }
     let look = Arc::new(look);
     open.looks.insert(page, Arc::clone(&look));
-    Some(look)
+    Ok(look)
+}
+
+/// A refusal for want of a worker, as [`page_look`] says it. Only [`RenderFailure::WouldStart`] comes here.
+fn unstarted(failure: RenderFailure) -> NoLook {
+    NoLook::Unstarted {
+        heavy: matches!(failure, RenderFailure::WouldStart { heavy: true }),
+    }
 }
 
 /// Why there's no renderer for a job, for now or for good.
@@ -1288,6 +1319,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
+            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(failure) => Outcome::PageFailed {
                 message: failure.message(),
@@ -1298,6 +1330,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
             Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
+            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
@@ -1331,11 +1364,17 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         let whole = (*what == DrawKind::Preview && low_res.is_none()).then_some(*rect);
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
-                        let look = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)));
-                        let page = look
-                            .as_ref()
-                            .and_then(|_| open.doc.page_size(job.source_page).ok())
-                            .and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
+                        let look = match page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect))) {
+                            Ok(look) => Some(look),
+                            Err(NoLook::Stale) => None,
+                            Err(NoLook::Unstarted { heavy }) => return Outcome::Unstarted { heavy },
+                        };
+                        let size = match look.as_ref().map(|_| open.doc.page_size(job.source_page)) {
+                            Some(Err(RenderFailure::WouldStart { heavy })) => return Outcome::Unstarted { heavy },
+                            size => size.and_then(Result::ok),
+                        };
+                        let page = size.and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
                         // Replaced after it was drawn, while its look or size was being asked: the tile's of the old file, and the look may be of either, or of a draw that failed for it. Neither is kept, and the tile's drawn again.
                         if seen_replaced(open) {
                             return Outcome::Cancelled;
@@ -1349,6 +1388,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
+                Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
                 Err(failure) if whole_file(failure) => document_failed(failure),
                 Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
                     message: failure.message(),

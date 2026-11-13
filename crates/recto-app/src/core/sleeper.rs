@@ -263,11 +263,14 @@ impl Inner {
     }
 
     fn write_sleep_now_for(&self, id: TabId, by: By, until: Option<Instant>) {
-        let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
+        let Some((facts, now)) = self
+            .host
+            .session
+            .with_session(|session| Some((session.sleep_facts(id)?, pages_now(session, id)?)))
+        else {
             return;
         };
-        let own = Some(version_of(facts.sleep.file));
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, &now) else {
             return;
         };
         // What's queued for it is older than this.
@@ -318,8 +321,10 @@ impl Inner {
         let left = self.host.session.with_session(|session| session.take_left_warm());
         let mut start = false;
         for facts in left {
-            let own = Some(version_of(facts.sleep.file));
-            if let Some(material) = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, own) {
+            let Some(now) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
+                continue;
+            };
+            if let Some(material) = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, &now) {
                 start |= lock(&self.sleeper.leaving).push(facts, material);
             }
         }
@@ -330,11 +335,14 @@ impl Inner {
 
     /// A tab going dormant by itself: its sleep file, from what's on hand now, queued for the one writer.
     fn queue_sleep_for(&self, id: TabId) {
-        let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
+        let Some((facts, now)) = self
+            .host
+            .session
+            .with_session(|session| Some((session.sleep_facts(id)?, pages_now(session, id)?)))
+        else {
             return;
         };
-        let own = Some(version_of(facts.sleep.file));
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, &now) else {
             return;
         };
         if lock(&self.sleeper.leaving).push(facts, material) {
@@ -598,6 +606,11 @@ pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     if spawned.is_err() {
         inner.sleeper.looks.finish(id);
     }
+}
+
+/// **What the session says a tab's pages are now,** as its page view would be given them: what a sleep file's pictures are checked against, so that none is of a page that's been deleted, moved or turned since it was drawn.
+fn pages_now<L: recto_session::DocLoader>(session: &recto_session::Session<L>, id: TabId) -> Option<recto_reader::tiles::PageMap> {
+    crate::model::pane_snapshot(session, id, false, &[]).map(|shown| shown.map)
 }
 
 #[cfg(test)]

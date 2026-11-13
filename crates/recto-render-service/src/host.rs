@@ -1,6 +1,10 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
 pub mod contents;
+mod slot;
+
+pub use slot::HeavySlot;
+use slot::{HeavyTicket, SlotWaitEnd};
 
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
@@ -16,8 +20,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The memory holding a tile's pixels: written by the worker, read by the host. Host-owned, because the host hands it over for one job at a time.
@@ -147,109 +151,13 @@ pub struct ServiceConfig {
     pub replace_args: Option<Vec<OsString>>,
 }
 
-/// The one place a heavy worker may run. A viewer takes it without waiting: whoever finds it taken draws a lower-resolution version for now. An export waits for it, on its own job
-/// thread, and ahead of viewers while it does. Goes free when the heavy process has really gone, however it went.
-#[derive(Clone, Debug, Default)]
-pub struct HeavySlot(Arc<SlotShared>);
-
-#[derive(Debug, Default)]
-struct SlotShared {
-    taken: Mutex<bool>,
-    freed: Condvar,
-    /// Outside the lock, so a cancel with nobody waiting stays one atomic read.
-    waiting: AtomicU32,
-}
-
-/// Why a wait for the slot ended without it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SlotWaitEnd {
-    Cancelled,
-    TimedOut,
-}
-
-impl HeavySlot {
-    /// A slot of its own, for a test that shouldn't meet other tests' heavy workers.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The session's slot, shared by every document in this process.
-    fn session() -> Self {
-        static SLOT: OnceLock<HeavySlot> = OnceLock::new();
-        SLOT.get_or_init(Self::new).clone()
-    }
-
-    fn taken(&self) -> MutexGuard<'_, bool> {
-        self.0.taken.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    pub fn is_taken(&self) -> bool {
-        *self.taken()
-    }
-
-    /// How many exports are waiting for it.
-    pub fn waiting(&self) -> u32 {
-        self.0.waiting.load(Ordering::SeqCst)
-    }
-
-    /// For a viewer: at once or not at all, and never ahead of an export that's waiting.
-    fn try_take(&self) -> Option<HeavyTicket> {
-        let mut taken = self.taken();
-        if *taken || self.waiting() > 0 {
-            return None;
-        }
-        *taken = true;
-        Some(HeavyTicket(self.clone()))
-    }
-
-    /// For an export: sleeps until the slot frees, the time runs out, or `is_cancelled` says so. Blocks its caller, with no polling. Its place in the wait goes with it on every way out.
-    fn wait_take(&self, limit: Duration, is_cancelled: impl Fn() -> bool) -> Result<HeavyTicket, SlotWaitEnd> {
-        struct Place<'a>(&'a AtomicU32);
-        impl Drop for Place<'_> {
-            fn drop(&mut self) {
-                self.0.fetch_sub(1, Ordering::SeqCst);
-            }
-        }
-        // Counted before `is_cancelled` is read. A canceller stores first and reads this after, so at least one of the two sees the other.
-        self.0.waiting.fetch_add(1, Ordering::SeqCst);
-        let _place = Place(&self.0.waiting);
-        let deadline = Instant::now() + limit;
-        let mut taken = self.taken();
-        loop {
-            if is_cancelled() {
-                return Err(SlotWaitEnd::Cancelled);
-            }
-            if !*taken {
-                *taken = true;
-                return Ok(HeavyTicket(self.clone()));
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(SlotWaitEnd::TimedOut);
-            }
-            taken = self.0.freed.wait_timeout(taken, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
-        }
-    }
-
-    /// Wakes anyone waiting, so a cancel doesn't have to wait for the slot or the time to run out. Costs one atomic read if there's nobody.
-    fn wake_waiters(&self) {
-        if self.waiting() > 0 {
-            // Taking the lock means a waiter is either before its check or asleep, so this can't slip between them.
-            drop(self.taken());
-            self.0.freed.notify_all();
-        }
-    }
-}
-
-/// Holds the slot. Lives as long as the heavy process: dropped by the end action when it has gone, however it went.
-#[derive(Debug)]
-struct HeavyTicket(HeavySlot);
-
-impl Drop for HeavyTicket {
-    fn drop(&mut self) {
-        *self.0.taken() = false;
-        self.0.0.freed.notify_all();
-    }
+/// **Whether a job may start a worker.** A job for nobody looking (the place of a tab left, drawn before it sleeps) is done by the worker that's there or not at all (owner, 2026-11-13: "no file is opened again for it").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Workers {
+    #[default]
+    MayStart,
+    /// Only by the worker that's running, as it is. None is started, opened again for a replaced file, made heavy or tried again in a new one, and one waiting to retire takes nothing for another page than the one it drew last: each of those ends the job with [`RenderFailure::WouldStart`].
+    OnlyTheOneThere,
 }
 
 /// What a drawing is for. It decides what happens when a page can't have the larger limit.
@@ -404,6 +312,10 @@ pub enum RenderFailure {
     DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
+    /// Done only by a worker that's there, and it would have needed another, a heavy one if `heavy`: nothing was started. See [`Workers::OnlyTheOneThere`].
+    WouldStart {
+        heavy: bool,
+    },
 }
 
 /// Why a worker's walls weren't up. Only the first says the app is signed wrong.
@@ -542,6 +454,8 @@ impl RenderFailure {
             Self::NotDrawableNow { .. } => "page_not_drawable_now",
             Self::DocumentStopped => "document_stopped",
             Self::TookTooLong => "render_took_too_long",
+            Self::WouldStart { heavy: false } => "would_start_renderer",
+            Self::WouldStart { heavy: true } => "would_start_heavy_renderer",
         }
     }
 
@@ -600,6 +514,7 @@ impl RenderFailure {
             Self::NotDrawableNow { page, .. } => format!("Page {} can't be drawn right now: this Mac is short of the memory it needs. It may draw when more is free.", page + 1),
             Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
+            Self::WouldStart { .. } => "Nothing was drawn: it would have taken another renderer, and none is started for this.".into(),
         }
     }
 }
@@ -805,6 +720,14 @@ struct KnownOpenFailure {
     try_again_at: Option<Instant>,
 }
 
+/// Where a document's caps count from: what [`DocRenderer::forget_failures`] last moved them to.
+#[derive(Clone, Copy, Debug, Default)]
+struct CountedFrom {
+    kills: u32,
+    /// Of [`RenderStats::heavy_pages`].
+    heavy_pages: u32,
+}
+
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
     config: ServiceConfig,
@@ -826,14 +749,15 @@ pub struct DocRenderer {
     next_job: u32,
     slot_wait_total: Duration,
     /// Where the caps start from, moved by `forget_failures`.
-    kills_counted_from: u32,
+    counted_from: CountedFrom,
     /// Of those since then, what the hidden-text check took.
     check_kills: u32,
     /// Of those since then, deadlines the Mac was too busy for the worker to meet: nothing about the document, so they don't count towards stopping it.
     busy_kills: u32,
     /// `image_places` has been forgotten, past its cap, and nobody's been told.
     image_places_cleared: bool,
-    heavy_retries_counted_from: u32,
+    /// Whether the job under way may start a worker: [`Self::with_workers`].
+    workers: Workers,
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
@@ -902,8 +826,8 @@ impl DocRenderer {
             repaired: None,
             next_job: 0,
             slot_wait_total: Duration::ZERO,
-            kills_counted_from: 0,
-            heavy_retries_counted_from: 0,
+            counted_from: CountedFrom::default(),
+            workers: Workers::MayStart,
             remembered: Vec::new(),
             traits: Vec::new(),
             image_places: HashMap::new(),
@@ -959,10 +883,13 @@ impl DocRenderer {
         }
     }
 
-    /// Whether a worker is running. Never true for a cold tab, because a cold tab has no `DocRenderer`.
-    pub fn has_worker(&mut self) -> bool {
-        self.reap_if_gone();
-        self.worker.is_some()
+    /// **Runs `job` under `workers`,** on this renderer as `renderer` finds it in `holder`, and puts it back to [`Workers::MayStart`] after, however `job` ends, a panic included: a job for nobody looking can't leave the next one without a worker. Every job of the page view's goes through here, so it's held that none starts with the mode left on.
+    pub fn with_workers<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut Self, workers: Workers, job: impl FnOnce(&mut T) -> R) -> R {
+        debug_assert_eq!(renderer(holder).workers, Workers::MayStart, "a job began with another's mode left on");
+        renderer(holder).workers = workers;
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
+        renderer(holder).workers = Workers::MayStart;
+        done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
     /// The process id of the current worker, if there is one.
@@ -1001,10 +928,10 @@ impl DocRenderer {
     pub fn forget_failures(&mut self) {
         self.remembered.clear();
         self.open_failure = None;
-        self.kills_counted_from = self.kills();
+        self.counted_from.kills = self.kills();
         self.check_kills = 0;
         self.busy_kills = 0;
-        self.heavy_retries_counted_from = self.stats.heavy_pages;
+        self.counted_from.heavy_pages = self.stats.heavy_pages;
     }
 
     /// The page count, if a worker's said. Asks nothing.
@@ -1014,13 +941,13 @@ impl DocRenderer {
 
     /// **Whether PDFium rebuilt the file's cross-reference data by scanning it,** for the agreement gate. Starts a worker if none is running.
     pub fn repaired(&mut self) -> Result<bool, RenderFailure> {
-        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
+        self.ensure_worker(WorkerClass::Normal, None, None).map_err(RenderFailure::from)?;
         self.repaired.ok_or(RenderFailure::Unavailable)
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
     pub fn page_count(&mut self) -> Result<u32, RenderFailure> {
-        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
+        self.ensure_worker(WorkerClass::Normal, None, None).map_err(RenderFailure::from)?;
         self.page_count.ok_or(RenderFailure::Unavailable)
     }
 
@@ -1137,14 +1064,14 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
-    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. `Err` is only [`RenderFailure::WouldStart`]: not asked, as the job may use only the worker that's there ([`Workers::OnlyTheOneThere`]) and that one couldn't. That's no answer about the page either, and a caller mustn't decide anything from it and keep it, as it would from `None`.
+    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
         if let Some(known) = self.image_places.get(&page) {
-            return known.clone();
+            return Ok(known.clone());
         }
         // Stale says nothing about the page, so nothing's remembered.
         if self.control.is_stale(generation) {
-            return None;
+            return Ok(None);
         }
         // Only a page that can't be drawn as it is goes unasked. One that needed the larger limit is an ordinary page of a certain size, a page of text with a large figure say.
         let state = self.page_draw_state(page);
@@ -1170,10 +1097,12 @@ impl DocRenderer {
                 }
                 _ => Err(ProtoError("the wrong kind of reply to an images request")),
             });
-            if self.control.is_stale(generation) {
-                return None;
+            // Stale, or not asked for want of a worker: neither is about the page, so nothing's remembered.
+            match reply {
+                _ if self.control.is_stale(generation) => return Ok(None),
+                Err(JobFailure::Failed(failure @ RenderFailure::WouldStart { .. })) => return Err(failure),
+                reply => reply.ok(),
             }
-            reply.ok()
         };
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.image_places.len() >= MAX_IMAGE_PLACES {
@@ -1181,7 +1110,7 @@ impl DocRenderer {
             self.image_places_cleared = true;
         }
         self.image_places.insert(page, boxes.clone());
-        boxes
+        Ok(boxes)
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
@@ -1237,6 +1166,10 @@ impl DocRenderer {
             if !matches!(state, PageDrawState::Failed(_)) && self.stopped() {
                 return Err(RenderFailure::DocumentStopped);
             }
+            // Past the normal limit is a heavy worker's, or a lower resolution after one: neither is for a job only the worker there may do.
+            if self.workers == Workers::OnlyTheOneThere && matches!(state, PageDrawState::NeedsHeavy | PageDrawState::LowResOnly) {
+                return Err(RenderFailure::WouldStart { heavy: true });
+            }
             match state {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
                 PageDrawState::LowResOnly => match purpose {
@@ -1258,7 +1191,7 @@ impl DocRenderer {
                     other => return other_result(other),
                 },
                 PageDrawState::NeedsHeavy => {
-                    let retries = self.stats.heavy_pages - self.heavy_retries_counted_from;
+                    let retries = self.stats.heavy_pages - self.counted_from.heavy_pages;
                     let counted = self.remembered(page).is_some_and(|memory| memory.counted_as_heavy);
                     let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
                     if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes
@@ -1320,7 +1253,7 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        (self.kills() - self.kills_counted_from)
+        (self.kills() - self.counted_from.kills)
             .saturating_sub(self.check_kills)
             .saturating_sub(self.busy_kills)
             >= self.policy.max_kills_per_document
@@ -1590,7 +1523,8 @@ impl DocRenderer {
 
     /// Retires a worker waiting to go, if this job is for another page.
     fn retire_if_other_page(&mut self, page: u32) {
-        if self.retire_after_page.is_some_and(|last| last != page) {
+        // It goes as it would have, and [`Self::ensure_worker`] gives it nothing more.
+        if self.workers == Workers::MayStart && self.retire_after_page.is_some_and(|last| last != page) {
             self.stats.retirements += 1;
             self.bury_worker();
         }
@@ -1635,10 +1569,11 @@ impl DocRenderer {
     ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
         // Past twice the cap it goes whatever page it's on: a one-page file would otherwise never get to its retirement.
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2))
+        if self.workers == Workers::MayStart
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2))
         {
             self.stats.retirements += 1;
             self.bury_worker();
@@ -1646,7 +1581,7 @@ impl DocRenderer {
         let mut retried = false;
         let mut idle_retries = 0;
         loop {
-            self.ensure_worker(class, generation)?;
+            self.ensure_worker(class, Some(page), generation)?;
             let Some(worker) = self.worker.as_mut() else {
                 return Err(RenderFailure::Unavailable.into());
             };
@@ -1791,8 +1726,18 @@ impl DocRenderer {
     }
 
     /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the other way round. A failure
-    /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `generation` is the job this is for, so a long open can be cancelled.
-    fn ensure_worker(&mut self, class: WorkerClass, generation: Option<u64>) -> Result<(), JobFailure> {
+    /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `page` is the page the job is about, if it's about one, and `generation` the job, so a long open can be cancelled.
+    fn ensure_worker(&mut self, class: WorkerClass, page: Option<u32>, generation: Option<u64>) -> Result<(), JobFailure> {
+        if self.workers == Workers::OnlyTheOneThere {
+            self.reap_if_gone();
+            let fits = self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Normal || worker.heavy);
+            // One waiting to retire (heavy, past its line or its surfaces) takes nothing for another page, by the rule [`Self::retire_if_other_page`] keeps outside this mode: what's still of the page it drew last, that page's image boxes and size, it does, as it would have. One with another file than what's at its path now isn't drawn from.
+            let (retiring, heavy) = (self.retire_after_page.is_some_and(|last| page != Some(last)), class == WorkerClass::Heavy);
+            if !fits || retiring || file_stamp(&self.path).ok() != self.opened_stamp {
+                return Err(RenderFailure::WouldStart { heavy }.into());
+            }
+            return Ok(());
+        }
         if let Some(failure) = self.known_open_failure() {
             return Err(failure.into());
         }

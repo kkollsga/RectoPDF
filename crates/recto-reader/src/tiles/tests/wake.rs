@@ -101,7 +101,7 @@ fn a_sleep_file_covers_the_view_side_by_side_too() {
     settle(&mut reader);
     let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).collect();
     assert!(shown.len() > 6 && shown.len() <= 12, "the view shows {} pages", shown.len());
-    let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+    let pictures: Vec<u32> = reader.sleep_material(1, &map()).unwrap().pictures.iter().map(|picture| picture.page).collect();
     assert_eq!(pictures, shown, "a picture for each page shown");
 }
 
@@ -135,7 +135,7 @@ fn a_tab_off_screen_gets_pictures_for_its_own_view() {
     );
     reader.set_viewport(view(0.0));
     settle(&mut reader);
-    let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+    let pictures: Vec<u32> = reader.sleep_material(1, &map()).unwrap().pictures.iter().map(|picture| picture.page).collect();
     assert_eq!(pictures, shown, "a picture for each page it showed");
 }
 
@@ -178,7 +178,7 @@ fn a_tab_left_keeps_its_pictures_when_the_system_takes_its_tiles() {
             .filter_map(|entry| entry.surface.as_ref())
             .all(PixelSurface::was_emptied)
     );
-    let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+    let pictures: Vec<u32> = reader.sleep_material(1, &map()).unwrap().pictures.iter().map(|picture| picture.page).collect();
     assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
     // Shown again, it's drawn again, and what was kept for its sleep file goes.
     reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
@@ -213,7 +213,7 @@ fn pictures_kept_of_a_tab_left_go_with_its_version() {
     reader.note_version(Path::new("/d/a.pdf"), 2);
     assert!(reader.docs[&1].drawing.left_pictures.is_none());
     assert!(
-        reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+        reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
         "nothing of version 1 is left to give"
     );
 }
@@ -223,22 +223,25 @@ fn pictures_kept_of_a_tab_left_go_with_its_version() {
 fn a_picture_for_sleep_comes_from_a_preview_or_the_tiles() {
     let mut reader = reader_on(5);
     assert!(
-        reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+        reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
         "no worker's said what version this is, so no picture can say"
     );
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
-    let material = reader.sleep_material(1, None).expect("a tab it holds");
+    let material = reader.sleep_material(1, &map()).expect("a tab it holds");
     assert!(
         reader
             .sleep_material(
                 1,
-                Some(FileStamp {
-                    size: 1,
-                    mtime_ns: 1,
-                    device: 0,
-                    inode: 1
-                })
+                &PageMap {
+                    own: Some(FileStamp {
+                        size: 1,
+                        mtime_ns: 1,
+                        device: 0,
+                        inode: 1
+                    }),
+                    ..map()
+                }
             )
             .is_none(),
         "what's here is of another version of the file than that"
@@ -248,7 +251,7 @@ fn a_picture_for_sleep_comes_from_a_preview_or_the_tiles() {
     let picture = &material.pictures[0];
     assert_eq!(picture.page, 0);
     assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
-    assert!(reader.sleep_material(99, None).is_none());
+    assert!(reader.sleep_material(99, &map()).is_none());
     // Pixels from a tile, shrunk by two: a block of 2 by 2 comes to one, and their average, and it lands at the tile's place.
     let mut tile = vec![0u8; 4 * 4 * 4];
     for pixel in tile.as_chunks_mut::<4>().0 {
@@ -431,7 +434,7 @@ fn a_tab_left_at_a_place_not_drawn_names_the_pages_that_owe_a_picture() {
     reader.note_version(Path::new("/d/a.pdf"), 1);
     reader.set_viewport(view(0.0));
     settle(&mut reader);
-    let here = reader.sleep_material(1, None).unwrap();
+    let here = reader.sleep_material(1, &map()).unwrap();
     assert!(
         !here.pictures.is_empty() && here.in_view == vec![0],
         "page 0 is drawn and owed: {:?}",
@@ -451,7 +454,7 @@ fn a_tab_left_at_a_place_not_drawn_names_the_pages_that_owe_a_picture() {
         None,
         Spread::Single,
     );
-    let left = reader.sleep_material(1, None).unwrap();
+    let left = reader.sleep_material(1, &map()).unwrap();
     let owed = &left.in_view;
     assert!(!owed.is_empty() && !owed.contains(&0), "the pages at the new place: {owed:?}");
     assert!(
