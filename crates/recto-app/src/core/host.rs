@@ -138,7 +138,7 @@ impl AppHost {
                 Some(qa) => qa.run(asked),
                 None => Err(recto_agent::qa_needs_app()),
             },
-            Command::Move(Move::View(asked @ View { zoom: Some(word), .. })) => self.zoom(actor, asked, word, events),
+            Command::Move(Move::View(asked @ View { zoom: Some(_), .. })) => self.zoom(actor, asked, events),
             Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(actor, query, run, limit, events),
             Command::Updates(_) => self.saver.inner().ok_or_else(recto_agent::update_needs_app)?.update_command(command),
             // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
@@ -146,31 +146,18 @@ impl AppHost {
         }
     }
 
-    /// Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-    fn zoom(&self, actor: Actor, asked: &View, word: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let zoom = menus::zoom_from_word(word).ok_or_else(|| {
-            AgentError::new(
-                "usage",
-                format!(
-                    "`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.",
-                    recto_core::clean_line(word)
-                ),
-                recto_agent::exit::USAGE,
-            )
-        })?;
+    /// Zoom is about what's on the screen, so it's the page views': [`super::zoom::run`], as the person's is. The rest of the command is the session's.
+    fn zoom(&self, actor: Actor, asked: &View, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        // A word that isn't a zoom is refused before anything else is done.
+        if asked.zoom.as_deref().and_then(menus::zoom_from_word).is_none() {
+            return super::zoom::run(self, asked);
+        }
         let rest = Command::from(View { zoom: None, ..asked.clone() });
         let mut answer = self.session.run(actor, &rest, events)?;
-        let inner = self.saver.inner();
-        let reading = inner
-            .as_ref()
-            .map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
-        let value = inner
-            .as_ref()
-            .map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom))
-            .ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
-        answer["zoom"] = json!(value);
-        if let Some(fit) = reading.fit() {
-            answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
+        let zoomed = super::zoom::run(self, asked)?;
+        answer["zoom"] = zoomed["zoom"].clone();
+        if !zoomed["zoom_level"].is_null() {
+            answer["zoom_level"] = zoomed["zoom_level"].clone();
         }
         self.core.push(CoreCall::Reconcile);
         Ok(answer)

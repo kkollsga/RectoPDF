@@ -1,12 +1,14 @@
 //! **Tests of the app on the headless kit** ([`crate::testkit::headless`]): what the app decides, run in this process on the core the window runs on, a file per
 //! feature. Each names the app-launching test it stands in for, where it replaced one.
 
+mod controls;
 mod exits;
 mod files;
 mod find;
 mod input_to_frame;
 mod launch;
 mod levels;
+mod navigation;
 mod palette;
 mod passwords;
 mod protected_save;
@@ -15,4 +17,6 @@ mod reading_later;
 mod recent;
 mod selection;
 mod sidebar;
+mod twins;
 mod update;
+mod view;

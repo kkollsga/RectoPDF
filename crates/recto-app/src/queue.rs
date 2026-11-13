@@ -10,8 +10,8 @@ use recto_agent::Event;
 use recto_control::record_store::Loaded;
 use recto_core::{DocFacts, OpenError};
 use recto_platform::FileStamp;
-use recto_session::record::{self, FileStatus};
-use recto_session::{Paper, TabId};
+use recto_session::TabId;
+use recto_session::record::FileStatus;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,17 +31,7 @@ pub enum CoreCall {
     Unlocked(crate::passwords::Ask, Result<DocFacts, OpenError>, Option<FileStamp>, Arc<recto_core::Password>),
     /// The app's come to the front: the files showing are looked at, as another app may have changed them.
     LookAtShown,
-    /// A jump, which Back comes back from: a contents entry, a link, or the go-to field, to a page and how far down it.
-    Jump(TabId, u32, f64),
-    /// What the go-to field had typed in it, for the tab showing.
-    JumpTyped(TabId, String),
-    /// Back, or forward, in the tab showing's trail: ⌘[ and ⌘], a swipe, or a link that says so.
-    Step(bool),
     Open(PathBuf),
-    /// The sidebar hidden, or not.
-    SetSidebarHidden(bool),
-    /// A tab laid out another way: the pane being read's when it was chosen, or the active tab's.
-    SetSpread(Option<TabId>, record::Spread),
     /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
     CompareClick(TabId),
     /// The reader's moved into another pane.
@@ -52,8 +42,6 @@ pub enum CoreCall {
     Rotate(i32),
     /// Edit > Undo or Redo, by the owner: true for Undo.
     UndoOrRedo(bool),
-    SetPaper(Paper),
-    ToggleAgentIcon,
     ClearEditHistory,
     /// Those tabs go dormant.
     SleepTabs(Vec<TabId>, crate::sleeper::Why),
@@ -137,19 +125,12 @@ impl CoreCall {
         match self {
             Self::Tap(_)
             | Self::ClearRecent
-            | Self::Jump(..)
-            | Self::JumpTyped(..)
-            | Self::Step(_)
             | Self::Open(_)
-            | Self::SetSidebarHidden(_)
-            | Self::SetSpread(..)
             | Self::CompareClick(_)
             | Self::FocusPane(_)
             | Self::SetSynced(_)
             | Self::Rotate(_)
             | Self::UndoOrRedo(_)
-            | Self::SetPaper(_)
-            | Self::ToggleAgentIcon
             | Self::ClearEditHistory
             // Closing a tab, by File > Close or the close prompt's answer: a save or a throwing away of edits that the state already written wouldn't know of.
             | Self::CloseTab(..)
@@ -351,7 +332,9 @@ mod tests {
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
         queue.push(CoreCall::Tap(TabId(2)));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetSidebarHidden(true));
+        queue.push(CoreCall::Run(PersonCommand::input(
+            recto_agent::parse(r#"{"cmd":"view","sidebar":"off"}"#).expect("a command"),
+        )));
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
@@ -385,11 +368,13 @@ mod tests {
         let queue = CoreQueue::default();
         queue.frozen.store(true, Ordering::SeqCst);
         queue.push(CoreCall::Tap(TabId(1)));
-        queue.push(CoreCall::Jump(TabId(1), 2, 0.0));
+        queue.push(CoreCall::Run(PersonCommand::input(
+            recto_agent::parse(r##"{"cmd":"goto","tab":"#1","page":2}"##).expect("a command"),
+        )));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetSidebarHidden(true));
-        queue.push(CoreCall::SetPaper(Paper::Dark));
-        queue.push(CoreCall::ToggleAgentIcon);
+        queue.push(CoreCall::Run(PersonCommand::input(
+            recto_agent::parse(r#"{"cmd":"view","paper":"dark"}"#).expect("a command"),
+        )));
         assert_eq!(lock(&queue.calls).len(), 0);
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
@@ -443,19 +428,12 @@ mod tests {
                 Arc::new(recto_core::Password::new("pw").unwrap()),
             ),
             CoreCall::LookAtShown,
-            CoreCall::Jump(tab, 2, 0.0),
-            CoreCall::JumpTyped(tab, "3".into()),
-            CoreCall::Step(true),
             CoreCall::Open(PathBuf::from("/d/a.pdf")),
-            CoreCall::SetSidebarHidden(true),
-            CoreCall::SetSpread(None, record::Spread::TwoUp),
             CoreCall::CompareClick(tab),
             CoreCall::FocusPane(tab),
             CoreCall::SetSynced(true),
             CoreCall::Rotate(1),
             CoreCall::UndoOrRedo(true),
-            CoreCall::SetPaper(Paper::Dark),
-            CoreCall::ToggleAgentIcon,
             CoreCall::ClearEditHistory,
             CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
             CoreCall::MemoryPressure(false),
@@ -500,54 +478,47 @@ mod tests {
             CoreCall::ClearRecent => 2,
             CoreCall::Unlocked(..) => 3,
             CoreCall::LookAtShown => 4,
-            CoreCall::Jump(..) => 5,
-            CoreCall::JumpTyped(..) => 6,
-            CoreCall::Step(_) => 7,
-            CoreCall::Open(_) => 8,
-            CoreCall::SetSidebarHidden(_) => 9,
-            CoreCall::SetSpread(..) => 10,
-            CoreCall::CompareClick(_) => 11,
-            CoreCall::FocusPane(_) => 12,
-            CoreCall::SetSynced(_) => 13,
-            CoreCall::Rotate(_) => 14,
-            CoreCall::UndoOrRedo(_) => 15,
-            CoreCall::SetPaper(_) => 16,
-            CoreCall::ToggleAgentIcon => 17,
-            CoreCall::ClearEditHistory => 18,
-            CoreCall::SleepTabs(..) => 19,
-            CoreCall::MemoryPressure(_) => 20,
-            CoreCall::WokenFileIsOther(..) => 21,
-            CoreCall::FileLength(..) => 22,
-            CoreCall::LookAgain(_) => 23,
-            CoreCall::Page(..) => 24,
-            CoreCall::Read(_) => 25,
-            CoreCall::Flush(_) => 26,
-            CoreCall::Restored(_) => 27,
-            CoreCall::RestorePatienceOver => 28,
-            CoreCall::Events(_) => 29,
-            CoreCall::CloseTab(..) => 30,
-            CoreCall::CloseAnswered(..) => 31,
-            CoreCall::CloseAfterSave(_) => 32,
-            CoreCall::ContentsAction(..) => 33,
-            CoreCall::GeneratedFinished => 34,
-            CoreCall::GeneratedView(..) => 35,
-            CoreCall::ToggleSection(..) => 36,
+            CoreCall::Open(_) => 5,
+            CoreCall::CompareClick(_) => 6,
+            CoreCall::FocusPane(_) => 7,
+            CoreCall::SetSynced(_) => 8,
+            CoreCall::Rotate(_) => 9,
+            CoreCall::UndoOrRedo(_) => 10,
+            CoreCall::ClearEditHistory => 11,
+            CoreCall::SleepTabs(..) => 12,
+            CoreCall::MemoryPressure(_) => 13,
+            CoreCall::WokenFileIsOther(..) => 14,
+            CoreCall::FileLength(..) => 15,
+            CoreCall::LookAgain(_) => 16,
+            CoreCall::Page(..) => 17,
+            CoreCall::Read(_) => 18,
+            CoreCall::Flush(_) => 19,
+            CoreCall::Restored(_) => 20,
+            CoreCall::RestorePatienceOver => 21,
+            CoreCall::Events(_) => 22,
+            CoreCall::CloseTab(..) => 23,
+            CoreCall::CloseAnswered(..) => 24,
+            CoreCall::CloseAfterSave(_) => 25,
+            CoreCall::ContentsAction(..) => 26,
+            CoreCall::GeneratedFinished => 27,
+            CoreCall::GeneratedView(..) => 28,
+            CoreCall::ToggleSection(..) => 29,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 37,
-                crate::find::FindCall::Open => 38,
-                crate::find::FindCall::Close => 39,
-                crate::find::FindCall::Step(..) => 40,
-                crate::find::FindCall::Choose(_) => 41,
-                crate::find::FindCall::News => 42,
-                crate::find::FindCall::Reveal(..) => 43,
+                crate::find::FindCall::Typed(_) => 30,
+                crate::find::FindCall::Open => 31,
+                crate::find::FindCall::Close => 32,
+                crate::find::FindCall::Step(..) => 33,
+                crate::find::FindCall::Choose(_) => 34,
+                crate::find::FindCall::News => 35,
+                crate::find::FindCall::Reveal(..) => 36,
             },
-            CoreCall::SetEditMode(_) => 44,
+            CoreCall::SetEditMode(_) => 37,
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 45,
-                Origin::Finishing => 46,
+                Origin::Input => 38,
+                Origin::Finishing => 39,
             },
         };
-        (place, 47)
+        (place, 40)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -567,19 +538,12 @@ mod tests {
                     call,
                     CoreCall::Tap(_)
                         | CoreCall::ClearRecent
-                        | CoreCall::Jump(..)
-                        | CoreCall::JumpTyped(..)
-                        | CoreCall::Step(_)
                         | CoreCall::Open(_)
-                        | CoreCall::SetSidebarHidden(_)
-                        | CoreCall::SetSpread(..)
                         | CoreCall::CompareClick(_)
                         | CoreCall::FocusPane(_)
                         | CoreCall::SetSynced(_)
                         | CoreCall::Rotate(_)
                         | CoreCall::UndoOrRedo(_)
-                        | CoreCall::SetPaper(_)
-                        | CoreCall::ToggleAgentIcon
                         | CoreCall::ClearEditHistory
                         | CoreCall::CloseTab(..)
                         | CoreCall::CloseAnswered(..)

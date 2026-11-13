@@ -101,10 +101,10 @@ impl Inner {
     }
 
     /// A row was tapped.
-    pub fn tap_row(&self, row: SidebarRow) {
+    pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
         let call = match (row.kind, row.page) {
             (crate::RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
-            (crate::RowKind::Contents, Some(page)) => CoreCall::Jump(TabId(row.tab), page.saturating_sub(1), 0.0),
+            (crate::RowKind::Contents, Some(page)) => return self.contents_tapped(TabId(row.tab), page),
             (crate::RowKind::Contents, None) => return,
             (crate::RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
                 Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
@@ -115,7 +115,7 @@ impl Inner {
     }
 
     /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
-    pub fn tap_row_adding(&self, row: SidebarRow) {
+    pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow) {
         match row.kind {
             crate::RowKind::Tab => self.core.push(CoreCall::CompareClick(TabId(row.tab))),
             crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),

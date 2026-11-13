@@ -447,6 +447,10 @@ pub trait SessionAccess {
     fn reads_later(&self) -> Option<&dyn later::ReadLater> {
         None
     }
+    /// **Takes in where the window's page views are now,** before a jump or a step in the trail marks where it leaves: what the reader has scrolled to that
+    /// the session hasn't heard yet, so Back comes back to the place that was showing (R2.3, accident A1). Called without the session held, as it takes it
+    /// itself. A session with no window has nothing to take in.
+    fn take_places(&self) {}
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -737,13 +741,13 @@ fn read_soon<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loa
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
 /// `recto goto`: a jump, so Back comes here again, as following a link does.
-fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, by: Author) -> Result<(), AgentError> {
+fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f64, by: Author) -> Result<(), AgentError> {
     let position = page
         .checked_sub(1)
         .filter(|position| *position < session.pages_in(id))
         .ok_or_else(no_such_page)?;
-    // An agent's mark gives way to the person's in the trail.
-    session.jump_as(id, position, 0.0, by)?;
+    // An agent's mark gives way to the person's in the trail. How far down is clamped to the page there, as a link's is.
+    session.jump_as(id, position, within, by)?;
     Ok(())
 }
 
@@ -1624,6 +1628,7 @@ mod tests {
                 tab: tab(),
                 page: Some(1),
                 label: None,
+                within: None,
             }),
             Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
             Command::from(crate::commands::linking::Follow { tab: tab(), page: 1, link: 1 }),
@@ -1804,6 +1809,7 @@ mod tests {
                 agent_icon: None,
                 zoom: None,
                 layout: None,
+                tab: None,
             }),
             Command::from(crate::commands::qa::QaRead {
                 verb: "state".into(),
@@ -1906,7 +1912,8 @@ mod tests {
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::ReadOnly)
@@ -1917,7 +1924,8 @@ mod tests {
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::Control)
@@ -1928,7 +1936,8 @@ mod tests {
                 sidebar: Some("off".into()),
                 agent_icon: None,
                 zoom: None,
-                layout: None
+                layout: None,
+                tab: None
             })
             .access(),
             Access::At(Level::Control)
@@ -3208,6 +3217,7 @@ mod tests {
                 tab: "#1".into(),
                 page: Some(11),
                 label: None,
+                within: None,
             }),
         )
         .unwrap_err();
@@ -3219,7 +3229,8 @@ mod tests {
                 &Command::from(crate::commands::linking::Goto {
                     tab: "#1".into(),
                     page: Some(0),
-                    label: None
+                    label: None,
+                    within: None,
                 })
             )
             .unwrap_err()
@@ -3233,7 +3244,8 @@ mod tests {
                 &Command::from(crate::commands::linking::Goto {
                     tab: "#1".into(),
                     page: Some(10),
-                    label: None
+                    label: None,
+                    within: None,
                 })
             )
             .unwrap()["page"],
@@ -3458,11 +3470,13 @@ mod protected_tests {
                     tab: tab.clone(),
                     page: Some(2),
                     label: None,
+                    within: None,
                 }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: None,
                     label: Some("ii".into()),
+                    within: None,
                 }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::from(crate::commands::linking::Follow {

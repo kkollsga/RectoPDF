@@ -141,11 +141,20 @@ impl Inner {
                 waiting_server: Mutex::new(server),
                 stopper: Mutex::new(stopper),
                 announcer: Mutex::new(announcer),
+                #[cfg(any(test, feature = "testkit"))]
+                heard: Mutex::new(None),
             },
             window: WindowParts::new(watchdog),
             tools: Tools::new(&save_step),
         });
         saver.attach(Arc::downgrade(&inner));
+        // A jump or a step in the trail, whoever's it is, first takes in where the page views are (R2.3, accident A1).
+        let places = Arc::downgrade(&inner);
+        host.session.set_places(Arc::new(move || {
+            if let Some(inner) = places.upgrade() {
+                inner.take_places();
+            }
+        }));
         update_hooks.attach(Arc::downgrade(&inner));
         if let Some(qa) = &inner.qa {
             qa.attach(Arc::downgrade(&inner));

@@ -6,6 +6,11 @@
 //! Each case times the window's own call (the UI thread's part: it must never wait) and then a flush of the session thread's queue, which returns once the call
 //! and the look after it are done: what the frame waits for. The window's calls as it makes them, `UiAction`s (which before C4 were the bridge's own methods, the
 //! same calls), before and after R2.3 moves a person's actions onto commands, so the runs compare.
+//!
+//! **What two builds' numbers can't tell apart:** this runs in `recto-app`'s test binary with every other test of the crate, so a build whose app code is the
+//! same but whose tests aren't lays the code out differently, and that alone moves the 1,000-tab medians by up to 10 µs (2026-11-13: the first slice's
+//! "unexplained 5 to 10 µs" on contents jump, typed page and Find typing was this, bisected to a commit and then reproduced with only its test files added
+//! to the commit before: 46.0 to 55.0 µs typed page, the app's code byte for byte the same). A difference that size between builds is the layout, not the app.
 
 use crate::RowKind;
 use crate::core::controls::UiAction;
@@ -86,6 +91,20 @@ fn measure(tabs: usize) {
             row: contents(if first { 7 } else { 3 }),
             adding: false,
         });
+    });
+    // A click on a link to a page of this document, as the page view reports the hit: here, a link on the first page.
+    case(&app, "link click", tabs, nothing, |app, first| {
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let hit = recto_reader::links::LinkHit {
+            page: 0,
+            rect: [72.0, 112.0, 300.0, 128.0],
+            target: recto_core::nav::LinkTarget::Page {
+                page: if first { 8 } else { 4 },
+                within: Some(0.3),
+            },
+        };
+        crate::core::follow_link(inner, 0, &engine, hit);
     });
     case(&app, "typed page", tabs, nothing, |app, first| {
         app.act(UiAction::PageTyped {

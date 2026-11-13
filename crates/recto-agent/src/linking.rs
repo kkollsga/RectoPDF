@@ -98,6 +98,8 @@ pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value
 /// `recto follow`: what a click on a link does, within the document. A web address is the person's to open, and never an agent's.
 pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &str, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let (id, position, found) = read(access, tab, page)?;
+    // After the read, which can take a while on a slow disk, so the place taken in is the one showing as it goes.
+    access.take_places();
     let chosen = link.checked_sub(1).and_then(|at| found.links.get(at as usize)).ok_or_else(|| {
         AgentError::new("no_such_link", format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND)
             .then("`recto links --page N` lists them, counted from 1.")

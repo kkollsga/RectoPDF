@@ -2,15 +2,18 @@
 
 use super::*;
 
-/// A change to how pages are shown, as `recto view` makes it.
+/// A change to how pages are shown, as `recto view` makes it: announced only if something changed (R2.3, accident A2), as `view`'s is.
 pub fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut ViewSettings)) {
-    let view = inner.host.session.with_session(|session| {
-        let mut view = session.view();
+    let (was, view) = inner.host.session.with_session(|session| {
+        let was = session.view();
+        let mut view = was;
         change(&mut view);
         session.set_view(view);
-        view
+        (was, view)
     });
-    events.push(recto_agent::view_changed(view));
+    if view != was {
+        events.push(recto_agent::view_changed(view));
+    }
 }
 
 /// What a ⌘-click on a tab does, once whatever it needs from disk is here. Too many panes is said by the page, and goes by itself.
@@ -54,17 +57,17 @@ pub struct PaneSynced {
 }
 
 /// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
-pub fn follow_link(inner: &Inner, pane: usize, engine: &Engine, hit: recto_reader::links::LinkHit) {
+pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_reader::links::LinkHit) {
     if inner.core.frozen.load(Ordering::SeqCst) {
         return;
     }
     let Some(tab) = inner.panes.tab_of(pane) else { return };
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.position_in_same_file(hit.page, page) {
-            Some(position) => inner.core.push(CoreCall::Jump(tab, position, within.map_or(0.0, f64::from))),
+            Some(position) => inner.link_to_page(tab, position, within),
             None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
         },
-        recto_core::nav::LinkTarget::History { back } => inner.core.push(CoreCall::Step(back)),
+        recto_core::nav::LinkTarget::History { back } => inner.step_for_person(back),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts.ask_link(&address);
             inner.core.push(CoreCall::Reconcile);

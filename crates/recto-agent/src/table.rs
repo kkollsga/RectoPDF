@@ -73,6 +73,8 @@ pub enum Kind {
     Size,
     /// `x,y,width,height` in points.
     Rect,
+    /// A share of something, from `0` to `1`, as `0.3`.
+    Fraction,
     /// Everything left on the line.
     Rest,
 }
@@ -1143,6 +1145,10 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             }
         }
         Kind::Duration => duration_ms(value).map(|ms| json!(ms)),
+        Kind::Fraction => match value.parse::<f64>() {
+            Ok(share) if (0.0..=1.0).contains(&share) => Ok(json!(share)),
+            _ => Err(format!("`{}` should be a number from 0 to 1, such as 0.3.", recto_core::clean_line(value))),
+        },
         Kind::Degrees => {
             let degrees: i32 = value
                 .strip_suffix("deg")
@@ -1390,6 +1396,7 @@ mod tests {
             Kind::Path => "/d/out.png",
             Kind::Scale | Kind::ScaleOrMax => "2x",
             Kind::Duration => "5s",
+            Kind::Fraction => "0.3",
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
