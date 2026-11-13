@@ -409,7 +409,14 @@ impl Inner {
 
     /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]), and an agent's is measured against its share before
     /// it's written. Says what came of it.
+    ///
+    /// **Only a copy that keeps the record writes one** ([`super::keeping::may_write`], the rule every writer of the record goes by): the queue's writer and an
+    /// asked sleep aren't behind the saver's gate, and the store's own refusal goes by its lock, which a copy can hold while it doesn't keep the record (a late
+    /// keep's read, or its read past its patience). So nothing's written then, and nothing's said to have been.
     fn write_holding_lock(&self, mut facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
+        if !super::keeping::may_write(self) {
+            return None;
+        }
         let material = crate::sleep_writer::allowed_material(&mut facts, material);
         let SleepFacts {
             id,
@@ -542,9 +549,11 @@ impl Inner {
                 let _one_at_a_time = lock(&self.sleeper.writing);
                 if leaving.still_wanted() {
                     let (stamp, path) = (facts.sleep.file, facts.path.clone());
-                    let _ = self.write_holding_lock(facts, material, By::Queue(caused_by));
-                    // Retired as it was written: the saver may have removed the file before this landed, so it goes now.
-                    if leaving.retired_in_flight() {
+                    let wrote = self
+                        .write_holding_lock(facts, material, By::Queue(caused_by))
+                        .is_some_and(|outcome| outcome.write != Write::PutOff);
+                    // Retired as it was written: the saver may have removed the file before this landed, so it goes now. Only one this wrote.
+                    if wrote && leaving.retired_in_flight() {
                         self.saver.store.remove_sleep(stamp, &path);
                     }
                 }

@@ -948,6 +948,66 @@ fn going_to_the_background_after_a_sleep_writer_panicked_writes_what_waits() {
     drop(app.quit());
 }
 
+/// Failure (the sleep branch's second review, 2026-11-13, with the record's-lock retry merged): the queue's writer and asked sleeps aren't behind the saver's
+/// gate, and the store's own refusal goes by its lock alone, which a copy can hold while it doesn't keep the record (a late keep's read past its patience
+/// keeps the lock until its thread is out of the read). So a tab pushed out then, and a sleep asked for, wrote sleep files into a record this copy was letting
+/// go of. A late keep's read held past its patience, the person's opens that waited run and push a tab out of the warm ones, and a sleep is asked for the
+/// tab on screen: the record's folder is byte for byte as it was.
+#[test]
+fn a_copy_letting_the_record_go_writes_no_sleep_file() {
+    use super::late_lock::{a_saved_session, record_folder, the_copy_before};
+    use crate::lifecycle::keeping::{RESTORING_PATIENCE_MS, TRY_EVERY_MS};
+    let disk = a_saved_session();
+    let before = the_copy_before(&disk);
+    let on_disk = record_folder(&disk);
+    let app = disk.builder().another_keeps().start();
+    recto_platform::slow::gate::hold(&[Seam::State]);
+    drop(before);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the saved session's read held", || app.waiting(Seam::State) > 0);
+    assert!(app.core().life.keeping().restoring());
+    for name in ["c", "d", "e", "f"] {
+        let doc = app.disk().pdf(&format!("{name}.pdf"), 3);
+        let _ = app.act(crate::core::controls::UiAction::Open {
+            path: doc.display().to_string(),
+        });
+    }
+    app.advance(RESTORING_PATIENCE_MS);
+    app.wait_until("the restore over", || app.core().life.keeping().not_kept());
+    app.settle();
+    assert!(
+        app.core().saver.store.holds_the_record(),
+        "the lock stays with the read while it's inside: the moment tested"
+    );
+    let pushed = app.record_json()["sleep"]["leaving"]["writers_started"].as_u64().unwrap();
+    assert!(
+        pushed >= 1,
+        "a tab pushed out of the warm ones went to the queue: {}",
+        app.record_json()["sleep"]
+    );
+    app.wait_until("the queue's writer done", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    assert_eq!(
+        record_folder(app.disk()),
+        on_disk,
+        "a pushed-out tab's sleep file written into a record this copy doesn't keep"
+    );
+    let on_screen = app
+        .core()
+        .host
+        .session
+        .with_session(|session| session.tabs().active())
+        .expect("a tab on screen");
+    assert_eq!(
+        app.core()
+            .write_sleep_for(on_screen, crate::sleep_writer::By::Asked(recto_agent::Actor::Person)),
+        None
+    );
+    assert_eq!(record_folder(app.disk()), on_disk, "a sleep file written into a record this copy doesn't keep");
+    app.let_through(Seam::State, 1);
+    app.wait_until("the lock let go", || !app.core().saver.store.holds_the_record());
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
