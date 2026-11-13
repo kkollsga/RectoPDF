@@ -40,3 +40,34 @@ pub const DESCRIBED: &str = "registered in this checkout";
 pub fn describe(_all: &[Registered], _checkout: &Path, _temp: &Path) -> String {
     format!("{DESCRIBED}: nothing is registered here\n")
 }
+
+/// How a forgetting is settled, where there is nothing to forget: gone at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settling;
+
+/// What a look came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    NotYet,
+    Gone,
+    GaveUp,
+}
+
+impl Settling {
+    pub const CLEAN: u32 = 2;
+    pub const MAX_LOOKS: u32 = 12;
+
+    pub fn after_look(&mut self, _clean: bool) -> Settled {
+        Settled::Gone
+    }
+
+    #[must_use]
+    pub fn looks(self) -> u32 {
+        0
+    }
+}
+
+/// One look, where nothing is registered: clean.
+pub fn forget_and_look(_bundle: &Path) -> bool {
+    true
+}
