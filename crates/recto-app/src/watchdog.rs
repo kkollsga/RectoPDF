@@ -413,7 +413,11 @@ mod tests {
         dog.note_verb(None);
         dog.note_verb(Some("state"));
         dog.look_at(2_250);
-        assert_eq!(dog.worst_stall().unwrap().verb, "stall", "the next verb, in the same stretch, isn't the one that stalled it");
+        assert_eq!(
+            dog.worst_stall().unwrap().verb,
+            "stall",
+            "the next verb, in the same stretch, isn't the one that stalled it"
+        );
         dog.note_verb(None);
         dog.look_at(2_300);
         assert_eq!(dog.worst_stall().unwrap().verb, "stall");
