@@ -707,7 +707,7 @@ impl HeadlessApp {
 
     /// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still
     /// running; nothing queued for the session thread is taken; every held seam opens, so what waited there goes on to find it can't write; the page views end;
-    /// and every thread that held the core lets go of it.
+    /// and every thread that held the core, or the updater, lets go of it.
     fn end(&mut self) -> Disk {
         if let Some(inner) = self.inner.take() {
             inner.saver.store.let_go();
@@ -722,6 +722,19 @@ impl HeadlessApp {
                     began.elapsed() < WAIT_LIMIT,
                     "the core is still held by {} other(s) {WAIT_LIMIT:?} after it was ended",
                     Arc::strong_count(&inner) - 1
+                );
+                std::thread::sleep(LOOK_EVERY); // ratchet: poll
+            }
+            // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
+            // and looks at whether its app has ended instead.
+            let updater = Arc::downgrade(&inner.updates);
+            drop(inner);
+            let began = Instant::now();
+            while updater.strong_count() > 0 {
+                assert!(
+                    began.elapsed() < WAIT_LIMIT,
+                    "the updater is still held by {} {WAIT_LIMIT:?} after its app ended: an update's thread that didn't end with it",
+                    updater.strong_count()
                 );
                 std::thread::sleep(LOOK_EVERY); // ratchet: poll
             }
