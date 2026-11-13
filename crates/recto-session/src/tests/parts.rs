@@ -249,6 +249,7 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "PartMut<Recent>: impl in recent.rs",
         "PartMut<Recent>: pub fn clear",
         "PartMut<Tabs>: impl in registry.rs",
+        "PartMut<Tabs>: pub fn keep_confinement",
         "PartMut<Tabs>: pub fn note_password_used",
         "PartMut<Tabs>: pub fn set_spread",
         "PartMut<Tabs>: pub fn set_view_rotation",

@@ -238,3 +238,35 @@ fn a_restore_keeps_the_confinement_cell_the_host_shares() {
     std::os::unix::fs::symlink(dir.join("outside/a.pdf"), dir.join("run/a.pdf")).unwrap();
     assert_eq!(back.tabs().path_of(tab), None);
 }
+
+/// **Failure (R3.5a): putting the host's cell back is a way to widen a session**, as `keep_confinement` is public and takes any cell: a confined session
+/// handed a free one (a `Confinement::default()` made for the purpose) comes out free, or one handed a cell confined to wider folders comes out with
+/// those. A free cell takes the session's folders before it's taken; a wider one isn't taken; the same or narrower is.
+#[test]
+fn keeping_the_hosts_cell_never_widens_a_session() {
+    let (mut s, dir) = confined();
+    let run = s.confinement().folders().cloned().unwrap();
+
+    let free = confined::Confinement::default();
+    assert!(!s.tabs_mut().keep_confinement(&free), "it wasn't the session's");
+    assert_eq!(
+        free.folders().map(|f| f.roots().to_vec()),
+        Some(run.roots().to_vec()),
+        "the free cell took the session's folders"
+    );
+    assert!(s.confinement().is(&free));
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
+
+    let wider = confined::Confinement::default();
+    wider.confine(RunFolders::of(&[dir.path()]));
+    assert!(!s.tabs_mut().keep_confinement(&wider));
+    assert!(s.confinement().is(&free), "a wider cell isn't taken");
+    assert_eq!(s.open(&dir.join("outside/a.pdf")), Err(SessionError::OutsideQuietRun));
+
+    let narrower = confined::Confinement::default();
+    std::fs::create_dir(dir.join("run/deeper")).unwrap();
+    narrower.confine(RunFolders::of(&[&dir.join("run/deeper")]));
+    assert!(!s.tabs_mut().keep_confinement(&narrower));
+    assert!(s.confinement().is(&narrower), "a narrower one is");
+    assert!(s.tabs_mut().keep_confinement(&narrower.shared()), "the same cell again is the session's");
+}

@@ -260,6 +260,20 @@ impl crate::parts::PartMut<'_, Tabs> {
         }
     }
 
+    /// **The host's confinement cell, put back if a step it ran with the session in hand swapped another session in** (R3.5a): the host's cell is the
+    /// authority, as it's what the host reads with no lock. Says whether it was the session's already, which is always so unless something replaced the
+    /// whole session. Never widens: a cell that would let the session use more than it may now isn't taken ([`Confinement::may_replace`]), and the
+    /// session keeps its own.
+    pub fn keep_confinement(&mut self, host: &Confinement) -> bool {
+        if self.0.confinement.is(host) {
+            return true;
+        }
+        if host.may_replace(&self.0.confinement) {
+            self.0.confinement = host.shared();
+        }
+        false
+    }
+
     /// [`Tabs::note_password_used`], which the session's own unlocking calls too.
     pub fn note_password_used(&mut self, id: TabId) {
         self.0.note_password_used(id);
