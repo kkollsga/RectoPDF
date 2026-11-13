@@ -9,4 +9,5 @@ mod palette;
 mod passwords;
 mod quit;
 mod recent;
+mod selection;
 mod update;
