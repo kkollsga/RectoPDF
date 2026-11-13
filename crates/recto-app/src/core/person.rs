@@ -1,6 +1,9 @@
 //! **The person's commands, on the session thread** (step R2.3): what the window asks for, run as the command an agent would send, by the one executor, as
 //! the person's ([`Actor::Person`]). What one needs from a file is read off this thread, as the window's taps and opens always have been, and the command runs
 //! again once it's in ([`recto_agent::later`]): a file on a dead volume holds up neither this thread nor a later tap.
+//!
+//! What the window does around a person's command, beyond the command, is each feature's, one line each in the lists below: before it runs ([`BEFORE`]), and
+//! once it has ([`ANSWERED`]), as the words a refusal is said in, a password asked for or a list kept at once.
 
 use super::{FileReads, Inner, lock};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
@@ -31,28 +34,55 @@ fn on_its_own_thread(inner: &Arc<Inner>, command: Command) {
     let _ = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
         let mut events = Vec::new();
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
-        if let Err(error) = &result {
-            tell(&inner, error, &command);
-        }
+        answered(&inner, &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
     });
 }
 
-/// **What a person's command that didn't go is said to them as,** in their own words, from the feature it's about: each feature's words, one line each. A
-/// failure no feature has words for is said nothing of, as the window's own calls said nothing (an Undo with nothing to undo); an agent's words, which name
-/// `recto` commands and levels, are never shown to a person.
-const WORDS: &[fn(&AgentError, &Command) -> Option<String>] = &[super::navigation::words];
+/// A person's command, as it ran: what it was, where it came from, and what it came to.
+pub struct Ran<'a> {
+    pub command: &'a Command,
+    pub origin: Origin,
+    pub result: &'a Result<Value, AgentError>,
+}
 
-fn tell(inner: &Inner, error: &AgentError, command: &Command) {
-    if let Some(words) = WORDS.iter().find_map(|words| words(error, command)) {
-        *lock(&inner.window.action_notice) = Some(words);
-        inner.core.push(CoreCall::Reconcile);
+impl Ran<'_> {
+    /// What it was refused for, unless it's only waiting for a read, which is nothing yet.
+    pub fn refused(&self) -> Option<&AgentError> {
+        self.result.as_ref().err().filter(|error| !recto_agent::later::is_later(error))
     }
+}
+
+/// **The window's own steps before a person's command runs,** feature by feature, one line each, for what the person just did (not a command running again
+/// once its read is in): a tap's wake timed from now, and the tab last asked for.
+const BEFORE: &[fn(&Inner, &mut FileReads, &Command)] = &[super::opening::before];
+
+/// **What the window does with how a person's command went,** feature by feature, one line each: a failure in the person's own words, from the feature
+/// it's about, and the window's own steps after (a list kept at once). A failure no feature has words for is said nothing of, as the window's own calls said
+/// nothing (an Undo with nothing to undo); an agent's words, which name `recto` commands and levels, are never shown to a person.
+const ANSWERED: &[fn(&Inner, &Ran<'_>)] = &[super::navigation::answered, super::opening::answered];
+
+fn answered(inner: &Inner, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+    let ran = Ran { command, origin, result };
+    for answer in ANSWERED {
+        answer(inner, &ran);
+    }
+}
+
+/// A line by the page in the person's words, which goes by itself.
+pub fn say(inner: &Inner, words: String) {
+    *lock(&inner.window.action_notice) = Some(words);
+    inner.core.push(CoreCall::Reconcile);
 }
 
 /// Runs a person's command now. Its answer is nobody's but a test's: the window draws what the session publishes.
 pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let PersonCommand { command, fetched, .. } = run;
+    let PersonCommand { command, fetched, origin } = run;
+    if origin == Origin::Input {
+        for before in BEFORE {
+            before(inner, reads, &command);
+        }
+    }
     let later = Later {
         inner,
         reads: RefCell::new(reads),
@@ -60,11 +90,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         fetched: RefCell::new(fetched),
     };
     let result = inner.host.session.run_reading_later(Actor::Person, &command, events, &later);
-    if let Err(error) = &result
-        && !recto_agent::later::is_later(error)
-    {
-        tell(inner, error, &command);
-    }
+    answered(inner, &command, origin, &result);
     result
 }
 
@@ -99,11 +125,12 @@ impl ReadLater for Later<'_> {
     }
 }
 
-/// What a read finished for a person's command does: it runs again, with what was read, unless it's been left behind.
-pub fn read_in(inner: &Inner, command: Command, fetched: Option<(PathBuf, Fetched)>) {
-    inner.core.push(crate::queue::CoreCall::Run(Box::new(PersonCommand {
+/// What a read finished for a person's command comes to: the command again, with what was read, to run in the same call that took the read in, as the
+/// window's own tap and open did then. So a tap the person makes after the read lands, but before anything else, still comes after it and wins.
+pub fn read_in(command: Command, fetched: Option<(PathBuf, Fetched)>) -> PersonCommand {
+    PersonCommand {
         command,
         origin: Origin::Finishing,
         fetched,
-    })));
+    }
 }

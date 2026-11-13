@@ -62,7 +62,7 @@ impl Inner {
                 return HostAction::FocusPalette;
             }
             menus::Action::OpenRecent(key) => self.open_recent(key),
-            menus::Action::ClearRecent => self.core.push(CoreCall::ClearRecent),
+            menus::Action::ClearRecent => super::opening::clear_recent(self),
             menus::Action::FindOpen => {
                 self.core.push(CoreCall::Find(find::FindCall::Open));
                 return HostAction::FocusFind;

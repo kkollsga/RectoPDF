@@ -81,6 +81,9 @@ fn every_control_returns_while_the_session_is_held() {
         },
         UiAction::ToggleSidebar,
         UiAction::PaletteRun { id: "view.zoom_in".into() },
+        // The palette's tab row is a person's `tap`, and Clear Menu `recent clear` (C5c).
+        UiAction::PaletteRun { id: format!("tab:{tab}") },
+        UiAction::Menu { id: "recent.clear".into() },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,

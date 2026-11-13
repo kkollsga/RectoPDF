@@ -239,10 +239,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Reconcile => {}
             CoreCall::LookAtShown => look_at_shown(inner),
             CoreCall::Unlocked(ask, loaded, stamp, password) => unlocked(inner, ask, loaded, stamp, password, &mut events),
-            CoreCall::ClearRecent => {
-                host.session.with_session(|session| session.clear_recent());
-                inner.saver.write_soon();
-            }
             CoreCall::Restored(loaded) => {
                 let ready = apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
                 // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
@@ -257,9 +253,13 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 deferred.push(path);
                 continue;
             }
-            CoreCall::Tap(id) => tap(inner, &mut reads, id, &mut events),
             CoreCall::Open(path) => open(inner, &mut reads, path),
-            CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
+            CoreCall::Read(read) => {
+                // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
+                if let Some(run) = reads.finished(inner, *read, &mut events) {
+                    let _ = person::run(inner, &mut reads, run, &mut events);
+                }
+            }
             CoreCall::SleepTabs(tabs, why) => {
                 inner.go_dormant(&tabs, why);
             }
@@ -445,7 +445,8 @@ impl FileReads {
         }
     }
 
-    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) {
+    /// Takes a read in, and says the person's command it was for, if one's to run again now.
+    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
         inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
         let host = &inner.host;
@@ -478,7 +479,7 @@ impl FileReads {
                     if self.wanted_tab == Some(tab) {
                         self.wanted_tab = None;
                         host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                        person::read_in(inner, *command, None);
+                        return Some(person::read_in(*command, None));
                     }
                 } else if self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
@@ -511,7 +512,7 @@ impl FileReads {
                     history: read.history,
                     unlocked: read.unlocked,
                 };
-                person::read_in(inner, *command, Some((path, fetched)));
+                return Some(person::read_in(*command, Some((path, fetched))));
             }
             Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
                 host.session.with_session(|session| {
@@ -532,6 +533,7 @@ impl FileReads {
                 Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
             },
         }
+        None
     }
 }
 

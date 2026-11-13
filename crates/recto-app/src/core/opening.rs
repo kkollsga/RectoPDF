@@ -1,6 +1,40 @@
 //! **Opening and waking files, as the session thread does them:** a tap, an open, and a file that turned out other than the one asleep, each read off the thread.
+//! A tap on a tab's row and File > Open Recent > Clear Menu are `tap` and `recent clear`, the commands an agent sends, run for the person (R2.3, C5c), with the
+//! window's own steps around them here: [`before`] and [`answered`].
 
 use super::*;
+use recto_agent::commands::Move;
+use recto_agent::commands::tabs::{RecentClear, Tap};
+
+/// The tab a person's tap is for, as the window names it, `#3`.
+fn tap(tab: TabId) -> Command {
+    Tap { tab: format!("#{}", tab.0) }.into()
+}
+
+/// **The window's steps before a person's tap:** the tab's wake is timed from now, for how long it takes to show, as a tap always timed it; and it's the tab
+/// last asked for from here, so a read for another tab asked for before, landing later, doesn't take the window there. A tap that needs its tab read says
+/// it's wanted again as its read starts.
+pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
+    if let Command::Move(Move::Tap(Tap { tab })) = command {
+        reads.wanted_tab = None;
+        if let Some(id) = tab.strip_prefix('#').and_then(|id| id.parse().ok()) {
+            inner.engine.note_wake(id, Instant::now());
+        }
+    }
+}
+
+/// **What the window does once a person's tab command has run:** a list of files opened lately that's been cleared is written at once, as Clear Menu always
+/// had it, and not when the record's next due. A tap that can't be done (a tab closed meanwhile) says nothing, as it never did.
+pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+    if let (Ok(_), Command::Move(Move::RecentClear(_))) = (ran.result, ran.command) {
+        inner.saver.write_soon();
+    }
+}
+
+/// File > Open Recent > Clear Menu: `recent clear`.
+pub fn clear_recent(inner: &Arc<Inner>) {
+    person::submit(inner, RecentClear {}.into());
+}
 
 /// `CoreCall::LookAtShown`, on the session thread.
 pub fn look_at_shown(inner: &Arc<Inner>) {
@@ -8,23 +42,6 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
     if let Some(inner) = inner.saver.inner() {
         for id in host.session.with_session(|session| session.panes()) {
             sleeper::check_woken_file(&inner, id);
-        }
-    }
-}
-
-/// `CoreCall::Tap`, on the session thread.
-pub fn tap(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    inner.engine.note_wake(id.0, Instant::now());
-    // A cold tab's file is read on a thread of its own, as an `open` is, so a file on a dead volume holds up neither this thread nor anything that asks about tabs, and a later tap goes ahead.
-    match host.session.with_session(|session| session.wake_for_tap(id)) {
-        Some((tab, path)) => {
-            reads.wanted_tab = Some(tab);
-            reads.start(inner, Reading::Tab(tab), path);
-        }
-        None => {
-            reads.wanted_tab = None;
-            tap_now(inner, id, events);
         }
     }
 }
@@ -100,10 +117,15 @@ impl Inner {
         self.core.push(CoreCall::Open(path));
     }
 
-    /// A row was tapped.
+    /// A tab's row in the palette, run: `tap`, as a click on the row is.
+    pub fn tap_tab(self: &Arc<Self>, tab: TabId) {
+        person::submit(self, tap(tab));
+    }
+
+    /// A row was tapped: a tab's is `tap`.
     pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
         let call = match (row.kind, row.page) {
-            (crate::RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
+            (crate::RowKind::Tab, _) => return person::submit(self, tap(TabId(row.tab))),
             (crate::RowKind::Contents, Some(page)) => return self.contents_tapped(TabId(row.tab), page),
             (crate::RowKind::Contents, None) => return,
             (crate::RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {

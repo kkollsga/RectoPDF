@@ -24,9 +24,6 @@ pub const MAX_QUEUED_CALLS: usize = 4096;
 #[derive(Debug)]
 pub enum CoreCall {
     Reconcile,
-    Tap(TabId),
-    /// File > Open Recent > Clear Menu.
-    ClearRecent,
     /// A password typed for a protected file has been tried: what it opened, or that it didn't.
     Unlocked(crate::passwords::Ask, Result<DocFacts, OpenError>, Option<FileStamp>, Arc<recto_core::Password>),
     /// The app's come to the front: the files showing are looked at, as another app may have changed them.
@@ -123,9 +120,7 @@ impl CoreCall {
     #[must_use]
     pub fn is_user_action(&self) -> bool {
         match self {
-            Self::Tap(_)
-            | Self::ClearRecent
-            | Self::Open(_)
+            Self::Open(_)
             | Self::CompareClick(_)
             | Self::FocusPane(_)
             | Self::SetSynced(_)
@@ -322,6 +317,13 @@ pub struct FileRead {
 mod tests {
     use super::*;
 
+    /// A person's tap on a tab's row, as the window queues it.
+    fn tap(tab: u32) -> CoreCall {
+        CoreCall::Run(PersonCommand::input(
+            recto_agent::parse(&format!(r##"{{"cmd":"tap","tab":"#{tab}"}}"##)).expect("a command"),
+        ))
+    }
+
     /// Failure: notes of tiles drawn fill the session thread's queue, and past the cap what a person did is thrown away: a tap, an open, the appearance. A look dropped when it's full leaves "a look is queued" set, so none is ever queued again. Only those notes can go, and repeats of one don't take a place.
     #[test]
     fn a_full_queue_loses_only_notes_of_pages_drawn() {
@@ -330,7 +332,7 @@ mod tests {
             queue.push(CoreCall::Page(page, None, TabId(1)));
         }
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
-        queue.push(CoreCall::Tap(TabId(2)));
+        queue.push(tap(2));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
         queue.push(CoreCall::Run(PersonCommand::input(
             recto_agent::parse(r#"{"cmd":"view","sidebar":"off"}"#).expect("a command"),
@@ -353,7 +355,7 @@ mod tests {
     #[test]
     fn an_abandoned_queue_takes_nothing_more() {
         let queue = CoreQueue::default();
-        queue.push(CoreCall::Tap(TabId(1)));
+        queue.push(tap(1));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
         queue.push(CoreCall::Reconcile);
         queue.abandon();
@@ -367,7 +369,7 @@ mod tests {
     fn a_frozen_queue_takes_nothing_a_person_does() {
         let queue = CoreQueue::default();
         queue.frozen.store(true, Ordering::SeqCst);
-        queue.push(CoreCall::Tap(TabId(1)));
+        queue.push(tap(1));
         queue.push(CoreCall::Run(PersonCommand::input(
             recto_agent::parse(r##"{"cmd":"goto","tab":"#1","page":2}"##).expect("a command"),
         )));
@@ -380,7 +382,7 @@ mod tests {
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
         assert_eq!(lock(&queue.calls).len(), 2);
         queue.frozen.store(false, Ordering::SeqCst);
-        queue.push(CoreCall::Tap(TabId(1)));
+        queue.push(tap(1));
         assert_eq!(lock(&queue.calls).len(), 3);
     }
 
@@ -419,8 +421,6 @@ mod tests {
         };
         vec![
             CoreCall::Reconcile,
-            CoreCall::Tap(tab),
-            CoreCall::ClearRecent,
             CoreCall::Unlocked(
                 ask,
                 Err(recto_core::OpenError::NotFound),
@@ -474,51 +474,49 @@ mod tests {
     fn place(call: &CoreCall) -> (usize, usize) {
         let place = match call {
             CoreCall::Reconcile => 0,
-            CoreCall::Tap(_) => 1,
-            CoreCall::ClearRecent => 2,
-            CoreCall::Unlocked(..) => 3,
-            CoreCall::LookAtShown => 4,
-            CoreCall::Open(_) => 5,
-            CoreCall::CompareClick(_) => 6,
-            CoreCall::FocusPane(_) => 7,
-            CoreCall::SetSynced(_) => 8,
-            CoreCall::Rotate(_) => 9,
-            CoreCall::UndoOrRedo(_) => 10,
-            CoreCall::ClearEditHistory => 11,
-            CoreCall::SleepTabs(..) => 12,
-            CoreCall::MemoryPressure(_) => 13,
-            CoreCall::WokenFileIsOther(..) => 14,
-            CoreCall::FileLength(..) => 15,
-            CoreCall::LookAgain(_) => 16,
-            CoreCall::Page(..) => 17,
-            CoreCall::Read(_) => 18,
-            CoreCall::Flush(_) => 19,
-            CoreCall::Restored(_) => 20,
-            CoreCall::RestorePatienceOver => 21,
-            CoreCall::Events(_) => 22,
-            CoreCall::CloseTab(..) => 23,
-            CoreCall::CloseAnswered(..) => 24,
-            CoreCall::CloseAfterSave(_) => 25,
-            CoreCall::ContentsAction(..) => 26,
-            CoreCall::GeneratedFinished => 27,
-            CoreCall::GeneratedView(..) => 28,
-            CoreCall::ToggleSection(..) => 29,
+            CoreCall::Unlocked(..) => 1,
+            CoreCall::LookAtShown => 2,
+            CoreCall::Open(_) => 3,
+            CoreCall::CompareClick(_) => 4,
+            CoreCall::FocusPane(_) => 5,
+            CoreCall::SetSynced(_) => 6,
+            CoreCall::Rotate(_) => 7,
+            CoreCall::UndoOrRedo(_) => 8,
+            CoreCall::ClearEditHistory => 9,
+            CoreCall::SleepTabs(..) => 10,
+            CoreCall::MemoryPressure(_) => 11,
+            CoreCall::WokenFileIsOther(..) => 12,
+            CoreCall::FileLength(..) => 13,
+            CoreCall::LookAgain(_) => 14,
+            CoreCall::Page(..) => 15,
+            CoreCall::Read(_) => 16,
+            CoreCall::Flush(_) => 17,
+            CoreCall::Restored(_) => 18,
+            CoreCall::RestorePatienceOver => 19,
+            CoreCall::Events(_) => 20,
+            CoreCall::CloseTab(..) => 21,
+            CoreCall::CloseAnswered(..) => 22,
+            CoreCall::CloseAfterSave(_) => 23,
+            CoreCall::ContentsAction(..) => 24,
+            CoreCall::GeneratedFinished => 25,
+            CoreCall::GeneratedView(..) => 26,
+            CoreCall::ToggleSection(..) => 27,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 30,
-                crate::find::FindCall::Open => 31,
-                crate::find::FindCall::Close => 32,
-                crate::find::FindCall::Step(..) => 33,
-                crate::find::FindCall::Choose(_) => 34,
-                crate::find::FindCall::News => 35,
-                crate::find::FindCall::Reveal(..) => 36,
+                crate::find::FindCall::Typed(_) => 28,
+                crate::find::FindCall::Open => 29,
+                crate::find::FindCall::Close => 30,
+                crate::find::FindCall::Step(..) => 31,
+                crate::find::FindCall::Choose(_) => 32,
+                crate::find::FindCall::News => 33,
+                crate::find::FindCall::Reveal(..) => 34,
             },
-            CoreCall::SetEditMode(_) => 37,
+            CoreCall::SetEditMode(_) => 35,
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 38,
-                Origin::Finishing => 39,
+                Origin::Input => 36,
+                Origin::Finishing => 37,
             },
         };
-        (place, 40)
+        (place, 38)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -536,9 +534,7 @@ mod tests {
             matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
                 || matches!(
                     call,
-                    CoreCall::Tap(_)
-                        | CoreCall::ClearRecent
-                        | CoreCall::Open(_)
+                    CoreCall::Open(_)
                         | CoreCall::CompareClick(_)
                         | CoreCall::FocusPane(_)
                         | CoreCall::SetSynced(_)

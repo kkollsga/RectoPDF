@@ -1,7 +1,7 @@
 //! **⌘K's palette, as the window and `recto palette` reach it:** the rows it finds from what's published, and what running one does. The ranking, the words and
 //! the routes are `crate::palette`'s, the records the bridge's.
 
-use super::{CoreCall, HostAction, Inner, ReaderView, RecentFile, lock};
+use super::{HostAction, Inner, ReaderView, RecentFile, lock};
 use crate::palette as app;
 use crate::palette::{ForWhom, PaletteView};
 use recto_session::TabId;
@@ -79,7 +79,7 @@ pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
     let frozen = inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
     match app::route(id, super::find::is_open(inner), frozen) {
         app::Run::Tap(tab) => {
-            inner.core.push(CoreCall::Tap(TabId(tab)));
+            inner.tap_tab(TabId(tab));
             HostAction::None
         }
         app::Run::OpenRecent(key) => {
