@@ -223,7 +223,7 @@ fn production_lines(source: &str) -> Vec<(usize, &str)> {
 }
 
 /// Whether a line compares something with the quoted word `code`: `== "code"`, `"code" !=`, `Some("code")` beside one, a match arm or pattern, `matches!`,
-/// `.eq(` or `contains(`. A code given out (`=> "code"`, `code: "code"`) isn't a comparison.
+/// `.eq(`, `contains(`, `starts_with(` or `ends_with(`. A code given out (`=> "code"`, `code: "code"`) isn't a comparison.
 fn compares(line: &str, code: &str) -> bool {
     line.match_indices(code).any(|(at, _)| {
         let before = line[..at].trim_end();
@@ -234,6 +234,8 @@ fn compares(line: &str, code: &str) -> bool {
             || before.ends_with("!=")
             || before.ends_with("eq(")
             || before.ends_with("contains(")
+            || before.ends_with("starts_with(")
+            || before.ends_with("ends_with(")
             || before.ends_with('|')
             || line[..at].contains("matches!(")
             || ["==", "!=", "=>", "|"].iter().any(|op| after.starts_with(op))
@@ -266,8 +268,9 @@ const NOT_A_CODE: &[(&str, &str)] = &[
     ("recto-control/src/generating.rs", "Some(\"changed\") => Outcome::Changed"),
 ];
 
-/// Failure (review of R2.3): the window routes a refusal by comparing its code's string (`error.code == "unsaved_changes"`), or its message's words
-/// (`error.message == too_long.message`), which a reworded message or a mistyped code breaks with nothing failing. No production line outside the table's
+/// Failure (review of R2.3, and of R2.5, F4): the window routes a refusal by comparing its code's string (`error.code == "unsaved_changes"`), or its
+/// message's words (`error.message == too_long.message`), or a piece of either (`.message.ends_with(…)`, `.code.as_str().starts_with("bad_")`), which a
+/// reworded message or a mistyped code breaks with nothing failing. No production line outside the table's
 /// own module compares a listed code's word or a refusal's message.
 #[test]
 fn nothing_decides_by_a_codes_string_or_a_messages_words() {
@@ -305,10 +308,14 @@ fn nothing_decides_by_a_codes_string_or_a_messages_words() {
                 {
                     continue;
                 }
-                let by_message = [".message ==", ".message !=", "== error.message", ".message.contains(", ".message.starts_with("]
-                    .iter()
-                    .any(|pattern| line.contains(pattern));
-                if by_message || words.iter().any(|word| compares(line, word)) {
+                let by_message = [".message ==", ".message !=", "== error.message"].iter().any(|pattern| line.contains(pattern));
+                // A piece of a message or of a code's word: `.message.ends_with(`, `.code.as_str().starts_with(` and the like, whatever is looked for.
+                let by_piece = [".message", ".code.as_str()", ".code.to_string()"].iter().any(|of| {
+                    [".contains(", ".starts_with(", ".ends_with(", ".strip_prefix(", ".strip_suffix(", ".find("]
+                        .iter()
+                        .any(|piece| line.contains(&format!("{of}{piece}")))
+                });
+                if by_message || by_piece || words.iter().any(|word| compares(line, word)) {
                     found.push(format!("{shown}:{line_number}: {}", line.trim()));
                 }
             }
