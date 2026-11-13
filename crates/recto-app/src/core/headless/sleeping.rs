@@ -297,7 +297,7 @@ fn woken_at_once(app: &crate::testkit::headless::HeadlessApp, tab: u64, view: &m
 /// came inside its sleep file's write gap, so the file wasn't written again and still held pictures for the other paper, which the page view keeps but never puts
 /// on a page of this paper. On the app's own core, the window up so a bare frame counts: three cycles of sleep and wake for one tab, white, white again, then
 /// dark paper, each wake's first frame (drawing held) covered from its sleep file, the dark one written once inside the gap for its paper; and then the look
-/// changed back while it's asleep, which no write can put right: it wakes with nothing from its file and says so, never that it had a picture it didn't show.
+/// changed back while it's asleep, which no write can put right: it wakes bare and says it had nothing, never that it had a picture it didn't show.
 #[test]
 fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     let disk = Disk::new();
@@ -346,7 +346,8 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
         "a sleep file written inside the gap for the change of look: {} bytes",
         written["sleep_bytes_written"].as_u64().unwrap() - bytes_before_dark
     );
-    // Asleep with dark pictures, the look goes back to white: woken, nothing from its file is shown or held, and it says so.
+    // Asleep with dark pictures, the look goes back to white: woken, nothing from its file covers a page of this paper, and it says so. (Its pictures are
+    // still given: at a launch the paper can turn after the first frame is asked for, and the pictures are what it then shows.)
     full(&app, &["tap", &format!("#{b}")]);
     host_turns(&app, &mut view, true);
     full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
@@ -355,7 +356,8 @@ fn a_tab_woken_again_after_the_look_changed_shows_a_picture_at_once() {
     host_turns(&app, &mut view, true);
     let wake = woken_at_once(&app, a, &mut view);
     assert_eq!(wake["tab"], a, "{wake}");
-    assert_eq!((wake["had"].as_str(), wake["sleep_pictures"].as_u64()), (Some("nothing"), Some(0)), "{wake}");
+    assert_eq!(wake["had"], "nothing", "{wake}");
+    assert!(wake["blank_frames"].as_u64().unwrap() > 0, "it was bare, and says so: {wake}");
     assert_eq!(wake["bare_with_picture"], 0, "{wake}");
     drop(app.quit());
 }

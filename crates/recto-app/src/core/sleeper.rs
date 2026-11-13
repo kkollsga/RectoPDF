@@ -410,18 +410,16 @@ impl Inner {
         {
             return;
         }
-        let (pages, mark, chosen) = self
+        let (pages, mark) = self
             .host
             .session
-            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id), session.viewing().view().paper));
+            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }
-        // Only those for the paper shown now: one for the other is never put on a page, so no surface is made for it, and the wake says it had none.
-        let dark = crate::paper_look(chosen, self.window.dark.load(std::sync::atomic::Ordering::SeqCst)).kind == PaperKind::Dark;
         let page_box = |(width, height): (f32, f32)| PageBox { width, height };
         let mut pictures = Vec::with_capacity(sleep.pictures.len());
-        for picture in sleep.pictures.iter().filter(|picture| picture.dark == dark) {
+        for picture in &sleep.pictures {
             if let Some(surface) = surface_of(picture) {
                 pictures.push(SleepShot {
                     page: picture.page,
