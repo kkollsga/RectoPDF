@@ -626,6 +626,36 @@ fn a_quit_after_a_sleep_writer_panicked_writes_what_waits_and_the_tab_on_screen(
     drop(app.quit());
 }
 
+/// Failure (the cool-down's review, 2026-11-13, S7): a quit drained the cool-down before it wrote the tab on screen's file, so on a slow disk the queued files
+/// used its limit and the one file the next launch's first frame needs was skipped. With every sleep file's write held at its seam (a disk that answers when
+/// the test says), three tabs waiting their cool-down, and a quit's flush with a short limit: the first write to arrive is let through, and the limit then
+/// cuts the drain; the tab on screen's file is there, as it was written first.
+#[test]
+fn a_quit_writes_the_tab_on_screens_sleep_file_before_what_waits() {
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..6).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
+    let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).hold(&[Seam::SleepWrite]).start();
+    for doc in &docs {
+        app.open(doc);
+        app.settle();
+    }
+    assert_eq!(app.record_json()["sleep"]["leaving"]["queued"], 3, "{}", app.record_json()["sleep"]);
+    assert_eq!(app.waiting(Seam::SleepWrite), 0, "nothing written while they wait");
+    std::thread::scope(|scope| {
+        let flushed = scope.spawn(|| app.core().saver.flush(false, std::time::Duration::from_millis(1_500)));
+        app.wait_until("the first sleep file of the quit held", || app.waiting(Seam::SleepWrite) > 0);
+        recto_platform::slow::gate::let_through(Seam::SleepWrite, 1);
+        flushed.join().expect("the flush returns").expect("the state written");
+    });
+    assert!(
+        active_has_a_sleep_file(&app),
+        "the tab on screen's file was skipped behind what waited: {}",
+        app.record_json()["sleep"]
+    );
+    recto_platform::slow::gate::open(Seam::SleepWrite);
+    drop(app.quit());
+}
+
 /// The sleep files in the state folder, by name, wherever under it they are.
 fn sleep_files_on_disk(app: &crate::testkit::headless::HeadlessApp) -> Vec<String> {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

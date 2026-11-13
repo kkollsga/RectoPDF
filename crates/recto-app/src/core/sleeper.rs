@@ -319,18 +319,19 @@ impl Inner {
         self.write_sleep_now_for(id, by, None);
     }
 
-    /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written: what's waiting in the cool-down, hurried and
-    /// waited for within the flush's time, and the tab on screen's, the next launch's first frame, waiting for another being written only until `until` and
-    /// counted as skipped past it (a quit waited its 5 s behind sleep files queued for a slow disk and went without the state, slow mode 2026-11-11). Skipped,
-    /// the next launch's first frame is bare paper, which the count says. **Asked for by an agent** (`session save`), the cool-down is left alone (what waits
-    /// stays waiting) and the tab on screen's file is held to the agent's share of the hour: an agent's save in a loop cut every cool-down short on demand.
+    /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written. **The tab on screen's first**, the next launch's
+    /// first frame, waiting for another being written only until `until` and counted as skipped past it (a quit waited its 5 s behind sleep files queued for a
+    /// slow disk and went without the state, slow mode 2026-11-11); **then what's waiting in the cool-down**, hurried and waited for within what's left of the
+    /// time. The other way round, on a slow disk the queued files used the limit and the one file the next launch needs was skipped (review, 2026-11-13).
+    /// **Asked for by an agent** (`session save`), the cool-down is left alone (what waits stays waiting) and the tab on screen's file is held to the agent's
+    /// share of the hour: an agent's save in a loop cut every cool-down short on demand.
     pub fn sleep_at_flush(&self, asked_by: Option<recto_agent::Actor>, until: Instant) {
         let agent = asked_by.filter(|actor| matches!(actor, recto_agent::Actor::Agent(_)));
-        if agent.is_none() {
-            self.sleeper.drain_leaving(until, || self.start_sleep_writer());
-        }
         if let Some(id) = self.host.session.with_session(|session| session.tabs().active()) {
             self.write_sleep_now_for(id, agent.map_or(By::Flush, By::Asked), Some(until));
+        }
+        if agent.is_none() {
+            self.sleeper.drain_leaving(until, || self.start_sleep_writer());
         }
     }
 
