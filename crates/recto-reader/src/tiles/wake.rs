@@ -168,6 +168,62 @@ pub(super) struct Waking {
     pub(super) window_up: bool,
 }
 
+impl Waking {
+    /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
+    pub(super) fn pictures_exist_for(reader: &Reader, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {
+        let (top, bottom) = (reader.viewport.y, reader.viewport.y + reader.viewport.height);
+        let have: std::collections::HashSet<u32> = reader
+            .cache
+            .entries
+            .values()
+            .filter(|entry| entry.tab == doc.tab && (entry.surface.is_some() || entry.rgb.is_some()))
+            .map(|entry| entry.page)
+            .collect();
+        pages.into_iter().all(|page| {
+            let rect = doc.layout.rect(page);
+            let showing = rect.y.max(top)..(rect.y + rect.height).min(bottom);
+            showing.end - showing.start < reader.viewport.height * MIN_SHARE_OF_VIEW || have.contains(&page)
+        })
+    }
+
+    /// **What the wake under way had to show,** once, as its tab is made the hot one and has been sent to its place: the pages in view there, as a sleep file would have taken them, and whether a picture of each is here and where from.
+    pub(super) fn note_stock(reader: &mut Reader, tab: u32) {
+        let Some((_, report)) = reader.wake.waking else { return };
+        if report.tab != tab || report.had != WakeStock::NotLooked {
+            return;
+        }
+        let Some(doc) = reader.docs.get(&tab) else { return };
+        let y = Reader::place_y(doc).max(0.0);
+        let height =
+            (reader.viewport.height * reader.viewport.magnification.max(f64::MIN_POSITIVE) / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
+        let in_view: Vec<u32> = if doc.layout.count() == 0 {
+            Vec::new()
+        } else {
+            doc.layout.pages_between(y, y + height).take(MAX_SLEEP_SHOTS).collect()
+        };
+        let have: std::collections::HashMap<u32, bool> = reader
+            .cache
+            .entries
+            .values()
+            .filter(|entry| entry.tab == tab && (entry.surface.is_some() || entry.rgb.is_some()))
+            .fold(std::collections::HashMap::new(), |mut have, entry| {
+                *have.entry(entry.page).or_insert(false) |= reader.cache.from_sleep.contains(&entry.id);
+                have
+            });
+        let sleep_in_view = in_view.iter().filter(|page| have.get(page) == Some(&true)).count();
+        let whole = !in_view.is_empty() && in_view.iter().all(|page| have.contains_key(page));
+        let had = match (whole, sleep_in_view > 0) {
+            (false, _) => WakeStock::Nothing,
+            (true, true) => WakeStock::SleepFile,
+            (true, false) => WakeStock::Cache,
+        };
+        if let Some((_, report)) = &mut reader.wake.waking {
+            report.had = had;
+            report.sleep_in_view = u16::try_from(sleep_in_view).unwrap_or(u16::MAX);
+        }
+    }
+}
+
 impl Reader {
     /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
     pub fn give_sleep(&mut self, tab: u32, view: SleepView) {
@@ -243,7 +299,7 @@ impl Reader {
                 report.first_frame_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
             } else if !covered && report.first_frame_us.is_none() && self.wake.window_up {
                 report.blank_frames += 1;
-                if self.pictures_exist_for(doc, self.visible_pages(doc)) {
+                if Waking::pictures_exist_for(self, doc, self.visible_pages(doc)) {
                     report.bare_with_picture = report.bare_with_picture.saturating_add(1);
                 }
             }
@@ -255,59 +311,6 @@ impl Reader {
             return;
         }
         self.wake.waking = Some((began, report));
-    }
-
-    /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
-    fn pictures_exist_for(&self, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {
-        let (top, bottom) = (self.viewport.y, self.viewport.y + self.viewport.height);
-        let have: std::collections::HashSet<u32> = self
-            .cache
-            .entries
-            .values()
-            .filter(|entry| entry.tab == doc.tab && (entry.surface.is_some() || entry.rgb.is_some()))
-            .map(|entry| entry.page)
-            .collect();
-        pages.into_iter().all(|page| {
-            let rect = doc.layout.rect(page);
-            let showing = rect.y.max(top)..(rect.y + rect.height).min(bottom);
-            showing.end - showing.start < self.viewport.height * MIN_SHARE_OF_VIEW || have.contains(&page)
-        })
-    }
-
-    /// **What the wake under way had to show,** once, as its tab is made the hot one and has been sent to its place: the pages in view there, as a sleep file would have taken them, and whether a picture of each is here and where from.
-    pub(super) fn note_wake_stock(&mut self, tab: u32) {
-        let Some((_, report)) = self.wake.waking else { return };
-        if report.tab != tab || report.had != WakeStock::NotLooked {
-            return;
-        }
-        let Some(doc) = self.docs.get(&tab) else { return };
-        let y = Self::place_y(doc).max(0.0);
-        let height = (self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE) / doc.place.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
-        let in_view: Vec<u32> = if doc.layout.count() == 0 {
-            Vec::new()
-        } else {
-            doc.layout.pages_between(y, y + height).take(MAX_SLEEP_SHOTS).collect()
-        };
-        let have: std::collections::HashMap<u32, bool> = self
-            .cache
-            .entries
-            .values()
-            .filter(|entry| entry.tab == tab && (entry.surface.is_some() || entry.rgb.is_some()))
-            .fold(std::collections::HashMap::new(), |mut have, entry| {
-                *have.entry(entry.page).or_insert(false) |= self.cache.from_sleep.contains(&entry.id);
-                have
-            });
-        let sleep_in_view = in_view.iter().filter(|page| have.get(page) == Some(&true)).count();
-        let whole = !in_view.is_empty() && in_view.iter().all(|page| have.contains_key(page));
-        let had = match (whole, sleep_in_view > 0) {
-            (false, _) => WakeStock::Nothing,
-            (true, true) => WakeStock::SleepFile,
-            (true, false) => WakeStock::Cache,
-        };
-        if let Some((_, report)) = &mut self.wake.waking {
-            report.had = had;
-            report.sleep_in_view = u16::try_from(sleep_in_view).unwrap_or(u16::MAX);
-        }
     }
 
     /// **What a tab's sleep file gets from what's here.** Sizes, and a picture for each page at its place: its preview, if the system has left it, or else put together from whatever of its tiles are here, so a heavy page, which has no preview, has one too. A short lock: a picture's a few milliseconds at the worst.

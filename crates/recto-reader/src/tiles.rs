@@ -498,7 +498,7 @@ impl Reader {
         self.jump_to_anchor(page);
         self.host.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
-        self.note_wake_stock(tab);
+        wake::Waking::note_stock(self, tab);
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
