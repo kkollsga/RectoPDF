@@ -102,7 +102,7 @@ pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
             HostAction::None
         }
         app::Run::OpenRecent(key) => {
-            super::opening::open_recent(&inner.published, &inner.core, &key);
+            super::opening::open_recent(&inner.published, &inner.life, &inner.core, &key);
             HostAction::None
         }
         app::Run::Perform { focus_find_if_nothing } => match inner.perform(id.to_string()) {

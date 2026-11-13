@@ -90,7 +90,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
                     },
                     "an open is read off the session thread, on its own queue, as every open the window makes is",
                     move || {
-                        open(&inner.core, path);
+                        open_for_person(&inner.life, &inner.core, path);
                         HostAction::None
                     },
                 )
@@ -167,8 +167,8 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
     }
 }
 
-/// **A file the person opens:** the Open panel's, a drop, the Finder's. `open`, queued for the session thread, as [`open`]; and asked for before the state's
-/// read, it's what a launch that goes back passes on.
+/// **A file the person opens:** the Open panel's, a drop, the Finder's, File > Open Recent's and the palette's recent file, all this one way. `open`, queued
+/// for the session thread, as [`open`]; and asked for before the state's read, it's what a launch that goes back passes on.
 pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
     if !life.state_read() {
         updates::note_asked_to_open(std::slice::from_ref(&path));
@@ -178,10 +178,10 @@ pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
 
 /// **Opens a file from the files opened lately by its key,** as File > Open Recent and the palette's row do: the very file that was offered, however the
 /// list has moved since, and nothing if it's left the list. From what the session thread last published: it never waits.
-pub fn open_recent(published: &Mutex<Published>, core: &CoreQueue, key: &str) {
+pub fn open_recent(published: &Mutex<Published>, life: &Lifecycle, core: &CoreQueue, key: &str) {
     let path = lock(published).recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path));
     if let Some(path) = path {
-        open(core, path);
+        open_for_person(life, core, path);
     }
 }
 
@@ -198,5 +198,41 @@ pub fn row_command(row: SidebarRow, adding: bool, panes: &panes::Panes, engine: 
             .as_deref()
             .and_then(recto_session::ContentsAction::from_id)
             .map(|action| super::contents::note_command(TabId(row.tab), action)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recto_update::updater::Host as _;
+
+    /// Failure (R3.7, the coordinator's answer to Q1): a file the person opens before the state's been read isn't passed on to a launch that goes back,
+    /// because the way it came in (File > Open Recent, the palette's recent row) pushed the open itself where the Open panel's way noted it first. Every
+    /// way in is [`open_for_person`]: the Open panel's, a drop and the Finder's directly, and File > Open Recent's and the palette's by [`open_recent`]; each
+    /// notes what's asked for before the state's read, and queues the open.
+    #[test]
+    fn every_way_a_person_opens_a_file_is_noted_before_the_states_read() {
+        let life = Lifecycle::new(Arc::new(crate::clock::SystemClock::new()));
+        assert!(!life.state_read(), "a launch's life, before the state's read");
+        let core = CoreQueue::default();
+        let mut published = Published::empty();
+        published.recent = Arc::new(vec![RecentFile {
+            key: "k1".into(),
+            name: "recent".into(),
+            folder: "/files".into(),
+            path: "/files/recent.pdf".into(),
+            open: false,
+        }]);
+        let published = Mutex::new(published);
+        open_for_person(&life, &core, PathBuf::from("/files/panel.pdf"));
+        open_recent(&published, &life, &core, "k1");
+        open_recent(&published, &life, &core, "a key that's left the list");
+        let asked = super::updates::Hooks::new(Arc::new(super::updates::RealInstaller)).documents_asked_for();
+        assert_eq!(asked, [PathBuf::from("/files/panel.pdf"), PathBuf::from("/files/recent.pdf")]);
+        let mut opened = Vec::new();
+        while let Some(CoreCall::Run(run)) = core.next_or_due(|| Some(Duration::ZERO)) {
+            opened.push(run.command.wire());
+        }
+        assert_eq!(opened.len(), 2, "each queued its open, and a key that's left the list nothing: {opened:?}");
     }
 }

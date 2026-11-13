@@ -94,7 +94,7 @@ impl Inner {
                 return Acted::DONE;
             }
             UiAction::OpenRecent { key } => {
-                super::opening::open_recent(&self.published, &self.core, &key);
+                super::opening::open_recent(&self.published, &self.life, &self.core, &key);
                 return Acted::DONE;
             }
             UiAction::FindTyped { text } => Some(super::find::typed(text)),
