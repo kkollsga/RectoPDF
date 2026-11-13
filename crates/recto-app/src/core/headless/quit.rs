@@ -1,6 +1,5 @@
 //! **A quit, as the app's life steps it** (step R1.4): its freeze, its write, its answers, and what the updater is told of each, on the app's own core.
 
-use crate::queue::CoreCall;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use crate::testkit::update_bed::{OLD, UpdateBed};
 use recto_platform::slow::Seam;
@@ -47,7 +46,7 @@ fn quit_anyway_isnt_an_early_end_and_stay_is_watched_again() {
     let doc = disk.pdf("edited.pdf", 3);
     let app = disk.builder().update(&bed).start();
     app.open(&doc);
-    app.send(CoreCall::Rotate(1));
+    app.act(crate::core::controls::UiAction::Menu { id: "rotate.right".into() });
     app.settle();
     assert!(probation().running_since_ms.is_some(), "this run's watched");
     record_folder_writable(&app, false);

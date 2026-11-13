@@ -76,9 +76,9 @@ impl Inner {
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
             menus::Action::SetSpread(spread) => self.set_layout(spread),
-            menus::Action::Rotate(turns) => self.core.push(CoreCall::Rotate(turns)),
-            menus::Action::Undo => self.core.push(CoreCall::UndoOrRedo(true)),
-            menus::Action::Redo => self.core.push(CoreCall::UndoOrRedo(false)),
+            menus::Action::Rotate(turns) => self.rotate_for_person(turns),
+            menus::Action::Undo => self.undo_or_redo_for_person(true),
+            menus::Action::Redo => self.undo_or_redo_for_person(false),
             menus::Action::ToggleAgentIcon => self.toggle_agent_icon(),
             menus::Action::SetPaper(paper) => self.set_paper(paper),
             menus::Action::TogglePanel => {

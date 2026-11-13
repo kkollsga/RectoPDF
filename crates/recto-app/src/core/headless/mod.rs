@@ -3,6 +3,7 @@
 
 mod closing;
 mod controls;
+mod editing;
 mod exits;
 mod files;
 mod find;

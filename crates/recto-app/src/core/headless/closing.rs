@@ -3,7 +3,7 @@
 
 use super::twins::{Twins, names};
 use crate::core::controls::UiAction;
-use crate::queue::{CoreCall, Origin, PersonCommand};
+use crate::queue::{CoreCall, PersonCommand};
 use crate::saving::CloseChoice;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::{Event, Level};
@@ -100,11 +100,10 @@ fn only_the_close_after_a_save_says_the_tab_stayed() {
     app.settle();
     assert_eq!(app.tabs().len(), 1, "it stays, with its edit");
     assert_eq!(crate::lock(&app.core().window.action_notice).clone(), None, "a plain close says nothing");
-    app.send(CoreCall::Run(Box::new(PersonCommand {
-        command: recto_agent::parse(r##"{"cmd":"close","tab":"#1"}"##).expect("a command"),
-        origin: Origin::Finishing,
-        fetched: None,
-    })));
+    app.send(CoreCall::Run(Box::new(PersonCommand::finishing(
+        recto_agent::parse(r##"{"cmd":"close","tab":"#1"}"##).expect("a command"),
+        None,
+    ))));
     app.settle();
     assert_eq!(app.tabs().len(), 1, "it stays");
     assert_eq!(

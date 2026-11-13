@@ -35,10 +35,6 @@ pub enum CoreCall {
     FocusPane(TabId),
     /// Synced scroll, or separate.
     SetSynced(bool),
-    /// The panel's Rotate, by the owner.
-    Rotate(i32),
-    /// Edit > Undo or Redo, by the owner: true for Undo.
-    UndoOrRedo(bool),
     ClearEditHistory,
     /// Those tabs go dormant.
     SleepTabs(Vec<TabId>, crate::sleeper::Why),
@@ -84,7 +80,12 @@ pub struct PersonCommand {
     pub origin: Origin,
     /// A file it's opening, read off the session thread, for it to take up as it runs again.
     pub fetched: Option<(PathBuf, recto_agent::later::Fetched)>,
+    /// What it comes to by what the session holds when it runs, not when it was asked: the panel's Rotate, every page or, in edit mode, the page being read.
+    pub when_run: Option<WhenRun>,
 }
+
+/// Makes a person's command what it is by the session as it is when it runs, on the session thread, just before.
+pub type WhenRun = fn(&recto_session::Session<recto_agent::DrawableLoader>, recto_agent::Command) -> recto_agent::Command;
 
 impl PersonCommand {
     /// What the person just did.
@@ -94,7 +95,19 @@ impl PersonCommand {
             command,
             origin: Origin::Input,
             fetched: None,
+            when_run: None,
         })
+    }
+
+    /// The end of something under way: a command running again once its read is in, with what was read, or the close after a save.
+    #[must_use]
+    pub fn finishing(command: recto_agent::Command, fetched: Option<(PathBuf, recto_agent::later::Fetched)>) -> Self {
+        Self {
+            command,
+            origin: Origin::Finishing,
+            fetched,
+            when_run: None,
+        }
     }
 }
 
@@ -118,8 +131,6 @@ impl CoreCall {
             | Self::CompareClick(_)
             | Self::FocusPane(_)
             | Self::SetSynced(_)
-            | Self::Rotate(_)
-            | Self::UndoOrRedo(_)
             | Self::ClearEditHistory
             // The note over the contents, and a section's chevron: both kept in the record.
             | Self::ContentsAction(..)
@@ -421,8 +432,6 @@ mod tests {
             CoreCall::CompareClick(tab),
             CoreCall::FocusPane(tab),
             CoreCall::SetSynced(true),
-            CoreCall::Rotate(1),
-            CoreCall::UndoOrRedo(true),
             CoreCall::ClearEditHistory,
             CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
             CoreCall::MemoryPressure(false),
@@ -448,11 +457,10 @@ mod tests {
             CoreCall::Find(crate::find::FindCall::Reveal(1, hit)),
             CoreCall::SetEditMode(true),
             CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
-            CoreCall::Run(Box::new(PersonCommand {
-                command: recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
-                origin: Origin::Finishing,
-                fetched: None,
-            })),
+            CoreCall::Run(Box::new(PersonCommand::finishing(
+                recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
+                None,
+            ))),
         ]
     }
 
@@ -466,40 +474,38 @@ mod tests {
             CoreCall::CompareClick(_) => 4,
             CoreCall::FocusPane(_) => 5,
             CoreCall::SetSynced(_) => 6,
-            CoreCall::Rotate(_) => 7,
-            CoreCall::UndoOrRedo(_) => 8,
-            CoreCall::ClearEditHistory => 9,
-            CoreCall::SleepTabs(..) => 10,
-            CoreCall::MemoryPressure(_) => 11,
-            CoreCall::WokenFileIsOther(..) => 12,
-            CoreCall::FileLength(..) => 13,
-            CoreCall::LookAgain(_) => 14,
-            CoreCall::Page(..) => 15,
-            CoreCall::Read(_) => 16,
-            CoreCall::Flush(_) => 17,
-            CoreCall::Restored(_) => 18,
-            CoreCall::RestorePatienceOver => 19,
-            CoreCall::Events(_) => 20,
-            CoreCall::ContentsAction(..) => 21,
-            CoreCall::GeneratedFinished => 22,
-            CoreCall::GeneratedView(..) => 23,
-            CoreCall::ToggleSection(..) => 24,
+            CoreCall::ClearEditHistory => 7,
+            CoreCall::SleepTabs(..) => 8,
+            CoreCall::MemoryPressure(_) => 9,
+            CoreCall::WokenFileIsOther(..) => 10,
+            CoreCall::FileLength(..) => 11,
+            CoreCall::LookAgain(_) => 12,
+            CoreCall::Page(..) => 13,
+            CoreCall::Read(_) => 14,
+            CoreCall::Flush(_) => 15,
+            CoreCall::Restored(_) => 16,
+            CoreCall::RestorePatienceOver => 17,
+            CoreCall::Events(_) => 18,
+            CoreCall::ContentsAction(..) => 19,
+            CoreCall::GeneratedFinished => 20,
+            CoreCall::GeneratedView(..) => 21,
+            CoreCall::ToggleSection(..) => 22,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 25,
-                crate::find::FindCall::Open => 26,
-                crate::find::FindCall::Close => 27,
-                crate::find::FindCall::Step(..) => 28,
-                crate::find::FindCall::Choose(_) => 29,
-                crate::find::FindCall::News => 30,
-                crate::find::FindCall::Reveal(..) => 31,
+                crate::find::FindCall::Typed(_) => 23,
+                crate::find::FindCall::Open => 24,
+                crate::find::FindCall::Close => 25,
+                crate::find::FindCall::Step(..) => 26,
+                crate::find::FindCall::Choose(_) => 27,
+                crate::find::FindCall::News => 28,
+                crate::find::FindCall::Reveal(..) => 29,
             },
-            CoreCall::SetEditMode(_) => 32,
+            CoreCall::SetEditMode(_) => 30,
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 33,
-                Origin::Finishing => 34,
+                Origin::Input => 31,
+                Origin::Finishing => 32,
             },
         };
-        (place, 35)
+        (place, 33)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -521,8 +527,6 @@ mod tests {
                         | CoreCall::CompareClick(_)
                         | CoreCall::FocusPane(_)
                         | CoreCall::SetSynced(_)
-                        | CoreCall::Rotate(_)
-                        | CoreCall::UndoOrRedo(_)
                         | CoreCall::ClearEditHistory
                         | CoreCall::ContentsAction(..)
                         | CoreCall::ToggleSection(..)

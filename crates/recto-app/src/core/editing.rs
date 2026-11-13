@@ -1,46 +1,69 @@
-//! **The window's edits, as the session thread does them:** the history cleared, a rotation, Undo and Redo.
+//! **The window's edits:** the panel's Rotate, Edit > Undo and Redo are `page rotate`, `undo` and `redo`, the commands an agent sends, run for the person
+//! (R2.3, C5d), and so the owner's, as a person's edits always are; Clear History is still the session thread's own.
 
 use super::*;
+use recto_agent::commands::Edit;
+use recto_agent::commands::editing::{PageRotate, Redo, Undo};
+
+/// The panel's Rotate, a quarter turn each way: every page, or in edit mode the page being read, by the session as it is when it runs, so an edit mode
+/// turned on just before is the one it goes by. Its tab is the one being read.
+fn rotate(turns: i32) -> Command {
+    PageRotate {
+        tab: "active".into(),
+        pages: "all".into(),
+        degrees: turns.saturating_mul(90),
+    }
+    .into()
+}
+
+/// [`rotate`]'s pages, as the session has them when it runs: in edit mode, the page the tab being read is on.
+fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, command: Command) -> Command {
+    match command {
+        Command::Edit(Edit::PageRotate(mut asked)) if session.edit_mode() => {
+            if let Some(tab) = session.active().and_then(|id| session.tab(id)) {
+                asked.pages = (tab.page + 1).to_string();
+            }
+            asked.into()
+        }
+        other => other,
+    }
+}
+
+/// **What the window says of a person's Rotate:** why it couldn't, by the page, in the session's words; and once it has, any line that was there goes, as
+/// the panel's Rotate always had it. An Undo or Redo with nothing to do says nothing, as before.
+pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+    if !matches!(ran.command, Command::Edit(Edit::PageRotate(_))) {
+        return;
+    }
+    match (ran.result, ran.refused()) {
+        (Ok(_), _) => *lock(&inner.window.action_notice) = None,
+        (Err(_), Some(error)) => {
+            if let Some(words) = person::session_words(error) {
+                person::say(inner, format!("Couldn't rotate: {words}"));
+            }
+        }
+        (Err(_), None) => {}
+    }
+}
+
+impl Inner {
+    /// The panel's Rotate: `page rotate`, every page or in edit mode the page being read.
+    pub fn rotate_for_person(self: &Arc<Self>, turns: i32) {
+        person::submit_when_run(self, rotate(turns), rotate_pages_now);
+    }
+
+    /// Edit > Undo, or Redo: `undo` or `redo`, on the tab being read.
+    pub fn undo_or_redo_for_person(self: &Arc<Self>, undo: bool) {
+        let tab = "active".to_string();
+        person::submit(self, if undo { Undo { tab }.into() } else { Redo { tab }.into() });
+    }
+}
 
 /// `CoreCall::ClearEditHistory`, on the session thread.
 pub fn clear_edit_history(inner: &Arc<Inner>) {
     inner.host.session.with_session(|session| {
         if let Some(id) = session.active() {
             session.clear_history(id, recto_session::ClearReason::UserAsked);
-        }
-    });
-}
-
-/// `CoreCall::Rotate`, on the session thread.
-pub fn rotate(inner: &Arc<Inner>, turns: i32, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    let refused = host.session.with_session(|session| match session.active() {
-        None => Some(recto_session::SessionError::NoSuchTab),
-        Some(id) => match session.rotate_from_panel(id, turns) {
-            Ok(()) => {
-                events.push(recto_agent::edits_changed(session, id));
-                None
-            }
-            Err(error) => Some(error),
-        },
-    });
-    // It says why, by the page, and goes by itself.
-    *lock(&inner.window.action_notice) = refused.map(|error| format!("Couldn't rotate: {}", error.message()));
-}
-
-/// `CoreCall::UndoOrRedo`, on the session thread.
-pub fn undo_or_redo(inner: &Arc<Inner>, undo: bool, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    host.session.with_session(|session| {
-        if let Some(id) = session.active()
-            && (if undo {
-                session.undo_edit_as(id, recto_session::Author::Owner)
-            } else {
-                session.redo_edit_as(id, recto_session::Author::Owner)
-            })
-            .unwrap_or(false)
-        {
-            events.push(recto_agent::edits_changed(session, id));
         }
     });
 }

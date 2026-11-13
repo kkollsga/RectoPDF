@@ -84,6 +84,10 @@ fn every_control_returns_while_the_session_is_held() {
         // The palette's tab row is a person's `tap`, and Clear Menu `recent clear` (C5c).
         UiAction::PaletteRun { id: format!("tab:{tab}") },
         UiAction::Menu { id: "recent.clear".into() },
+        // The panel's Rotate is a person's `page rotate`, resolved when it runs, and Undo and Redo `undo` and `redo` (C5d).
+        UiAction::Menu { id: "rotate.right".into() },
+        UiAction::Menu { id: "edit.undo".into() },
+        UiAction::Menu { id: "edit.redo".into() },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,

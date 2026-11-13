@@ -279,8 +279,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
             CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
-            CoreCall::Rotate(turns) => rotate(inner, turns, &mut events),
-            CoreCall::UndoOrRedo(undo) => undo_or_redo(inner, undo, &mut events),
             CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
             CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
             CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),

@@ -30,11 +30,7 @@ pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
 /// The close after the prompt's Save, once the save's done: the end of something already under way, so a hand-off's freeze lets it through, or a quit that
 /// stays would leave the saved tab open.
 pub fn after_save(inner: &Inner, tab: TabId) {
-    inner.core.push(CoreCall::Run(Box::new(PersonCommand {
-        command: close(tab),
-        origin: Origin::Finishing,
-        fetched: None,
-    })));
+    inner.core.push(CoreCall::Run(Box::new(PersonCommand::finishing(close(tab), None))));
 }
 
 impl Inner {
