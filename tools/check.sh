@@ -20,6 +20,16 @@
 # The compile gate is what runs first, before any test is queued: the layout (rustfmt, outside the queue, as it builds nothing), then clippy and the Windows
 # compile check as a quick job of their own. An error there costs seconds and no test job is ever queued for it, nor a full run counted.
 # The queue (tools/sysguard/heavy.sh) refuses to run a check again on code that hasn't changed since it failed.
+#
+# The app tier is held by one check at a time, machine-wide (2026-11-13: three full runs reached their app tests together, each launched the real app
+# four at a time, the load went to 139 on 10 cores and lifecycle tests failed from starvation; three in a row are faster than three at once). The stages
+# that launch the real app (app-tests, slow, registrations, and a --like-ci round of an app test) take the lock `recto-app-tier.lock` in the git common
+# dir, which every worktree of this repository shares: a directory made with mkdir, holding the owner's pids, worktree, stage and start time. Builds and
+# in-process tests are not held. A waiter says who holds it and for how long, then what it waited. A dead owner (or a pid that isn't a check any more)
+# is taken over, with a line saying so; the holder's exit, failed or interrupted, removes it. The time waited is said apart and is not in the stage's
+# seconds (`check.sh --slow`, the budgets), nor in the ledger's. On CI (CI set) the lock is taken over and never waited on.
+#   CHECK_APP_TIER=free        no lock at all: the coordinator's solo measurements.
+#   CHECK_APP_TIER_WAIT=<s>    how long a waiter waits before it stops (default 2700): exit 5, nothing tested, never a run, a failure or a ledger line.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
@@ -65,6 +75,10 @@ if [ -n "$why_given" ] && [ -z "$why" ]; then
 fi
 
 common_dir=$(git rev-parse --git-common-dir)
+app_tier_dir="$(cd "$common_dir" && pwd)/recto-app-tier.lock"
+# The check this is, for the lock's owner line: the queue's job is a child of it, and says its own pid there.
+CHECK_TOP_PID=$$
+export app_tier_dir CHECK_TOP_PID
 checked="$common_dir/recto-checked"
 # fingerprint, commit, time, scope: a line per pass on a clean tree. Scope is `all` (a pass of everything), or `sel:` and a hash of the selection (tools/check-scope.sh).
 # A line without a scope is from before selection, and was a pass of everything.
@@ -195,6 +209,99 @@ crates_in() {
 . tools/check-rerun.sh
 # shellcheck source=tools/check-like-ci.sh
 . tools/check-like-ci.sh
+# ---- The app tier lock (see the header). ----
+# The owner file: pid (the job taking it), top (the check.sh it belongs to), start time, stage, worktree.
+app_tier_owner() { cat "$app_tier_dir/owner" 2>/dev/null || true; }
+# Why the lock's owner no longer holds it, or nothing if it still does: a lock with no owner line for 10 s is one whose taker died between mkdir and writing.
+app_tier_stale() {
+  local pid top rest
+  read -r pid top rest < <(app_tier_owner) || true
+  if [ -z "${pid:-}" ]; then
+    local made
+    made=$(stat -f %m "$app_tier_dir" 2>/dev/null || date +%s)
+    [ $(($(date +%s) - made)) -gt 10 ] && echo "it has no owner" || true
+    return 0
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then echo "its owner (process $pid) is gone"; return 0; fi
+  case "$(ps -p "$top" -o command= 2>/dev/null || true)" in
+    *check.sh*) ;;
+    *) echo "process $top is no check any more" ;;
+  esac
+}
+app_tier_held_by() {
+  local pid top began stage tree
+  read -r pid top began stage tree < <(app_tier_owner) || true
+  echo "${tree:-an unknown tree} (${stage:-?}, $(($(date +%s) - ${began:-$(date +%s)})) s)"
+}
+# Takes the lock for a stage, waiting for it. Sets app_tier_waited to the seconds waited and adds them to the run's wait file. A tree-wide failure to write
+# anywhere never fails the check: only the bound does (exit 5).
+app_tier_take() {
+  app_tier_waited=0
+  [ "${CHECK_APP_TIER:-}" != free ] || return 0
+  local began now said="" why moved
+  began=$(date +%s)
+  if [ -n "${CI:-}" ]; then
+    # One check at a time on CI, so nothing to wait for; what a cancelled run left on a reused runner is taken over.
+    rm -rf "$app_tier_dir" 2>/dev/null || true
+  fi
+  while ! mkdir "$app_tier_dir" 2>/dev/null; do
+    if [ ! -d "$app_tier_dir" ]; then
+      # mkdir failed and nothing's there: the folder can't be made (read-only, say). The check goes on without the lock rather than fail on it.
+      echo "check: the app tier lock can't be made at $app_tier_dir, so this run goes on without it."
+      return 0
+    fi
+    why=$(app_tier_stale)
+    if [ -n "$why" ]; then
+      echo "check: the app tier lock is stale ($why; held by $(app_tier_held_by)), so this run takes it over."
+      moved="$app_tier_dir.stale.$$"
+      # One mv wins when two waiters take over together. If what was moved turns out to be a live owner's (a new one made in between), it goes back.
+      if mv "$app_tier_dir" "$moved" 2>/dev/null; then
+        if [ -n "$(app_tier_stale_of "$moved")" ]; then rm -rf "$moved"; else mv "$moved" "$app_tier_dir" 2>/dev/null || rm -rf "$moved"; fi
+      fi
+      continue
+    fi
+    now=$(date +%s)
+    if [ $((now - began)) -ge "${CHECK_APP_TIER_WAIT:-2700}" ]; then
+      echo "check: stopped after waiting $((now - began)) s for the app tier, held by $(app_tier_held_by). Nothing was tested. Run it again when that check is done (CHECK_APP_TIER_WAIT=<s> sets how long to wait, CHECK_APP_TIER=free skips the lock)." >&2
+      # Marked for the check that started the job, which exits 5 for it: the queue would hold a failure against unchanged code and refuse the next run.
+      : > "$app_tier_dir.bound.$CHECK_TOP_PID" 2>/dev/null || true
+      return 143
+    fi
+    if [ -z "$said" ]; then said=1; echo "check: waiting for the app tier, held by $(app_tier_held_by)"; fi
+    sleep "${CHECK_APP_TIER_POLL:-2}"
+  done
+  printf '%s %s %s %s %s\n' "$$" "$CHECK_TOP_PID" "$(date +%s)" "$1" "$PWD" > "$app_tier_dir/owner" 2>/dev/null || true
+  app_tier_waited=$(($(date +%s) - began))
+  if [ "$app_tier_waited" -ge 1 ] && [ -n "$said" ]; then echo "check: got the app tier after waiting $app_tier_waited s"; fi
+  [ -z "${check_mark:-}" ] || echo "$app_tier_waited" >> "$check_mark.waited" 2>/dev/null || true
+}
+app_tier_stale_of() { local d=$app_tier_dir r; app_tier_dir=$1; r=$(app_tier_stale); app_tier_dir=$d; echo "$r"; }
+# After the queue's job: it gave up waiting for the app tier (its message is above). That is not a result of any code: exit 5, nothing recorded.
+app_tier_stopped() {
+  [ -e "$app_tier_dir.bound.$CHECK_TOP_PID" ] || return 0
+  rm -f "$app_tier_dir.bound.$CHECK_TOP_PID"
+  exit 5
+}
+# A --like-ci round of an app test launches the app, so it holds the tier for its rounds. tools/check-like-ci.sh's own function runs inside; the lock is
+# around it so that file stays as it is.
+eval "app_tier_like_inner() $(declare -f like_ci_rounds | tail -n +2)"
+like_ci_rounds() {
+  local rc=0
+  if [ "${LIKE_APP:-0}" = 1 ]; then
+    trap app_tier_release EXIT
+    app_tier_take like-ci || return $?
+  fi
+  app_tier_like_inner || rc=$?
+  app_tier_release
+  return "$rc"
+}
+# Removes the lock if it is this job's or this check's. Safe to call twice, and from the outer exit trap.
+app_tier_release() {
+  local pid top rest
+  [ -d "$app_tier_dir" ] || return 0
+  read -r pid top rest < <(app_tier_owner) || true
+  if [ "${pid:-}" = "$$" ] || [ "${top:-}" = "$CHECK_TOP_PID" ]; then rm -rf "$app_tier_dir" 2>/dev/null || true; fi
+}
 # Where a failing test that started the app leaves its evidence, one folder a test under its stage's name (crates/recto-cli/tests/common/evidence.rs): the tree's
 # own, emptied at each run's start, or RECTO_EVIDENCE's, as CI gives it to upload. And how often a failed stage's tests run again to measure the failure:
 # CI 4 times (tools/check-rerun.sh has the bounds), here only when asked.
@@ -335,9 +442,10 @@ case "$mode" in
     esac
     ;;
   --like-ci)
-    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_rounds like_ci_note
+    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_rounds app_tier_like_inner like_ci_note app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_release
     status=0
     like_ci_main "${like_args[@]}" || status=$?
+    app_tier_stopped
     evidence_report "$status"
     exit "$status"
     ;;
@@ -369,7 +477,8 @@ tracked_tree() {
 stage() {
   local at
   at=$(date +%s)
-  [ -z "${stage_name:-}" ] || echo "check: $stage_name took $((at - stage_started)) s"
+  [ -z "${stage_name:-}" ] || echo "check: $stage_name took $((at - stage_started)) s${stage_waited:+ (waited $stage_waited s for the app tier)}"
+  stage_waited=""
   [ -z "${stage_name:-}" ] || echo "$stage_name $((at - stage_started))" >> "$check_mark.stages"
   stage_name=$1
   stage_started=$at
@@ -436,6 +545,10 @@ run() {
     # A failure here doesn't hide the registrations stage below, which is about what these tests left (a leak seen one run in three on CI, 2026-11-12):
     # it runs anyway, and the run fails with this stage's name. The slow stage, the same tests late, is left out after a failure here.
     stage app-tests
+    # Only one check at a time launches the app (the header). The stage's clock starts when the lock is had, so the wait isn't in its seconds.
+    trap app_tier_release EXIT
+    app_tier_take app-tests || return $?
+    if [ "$app_tier_waited" -gt 0 ]; then stage_waited=$app_tier_waited; stage_started=$(date +%s); fi
     local app_status=0
     case "$app_mode" in
       both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 || app_status=$? ;;
@@ -461,6 +574,7 @@ run() {
       stage registrations
       RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test registrations
     fi
+    app_tier_release
     [ "$app_status" = 0 ] || { echo "check: app-tests failed (above), and the stages after it that don't depend on it ran." >&2; return "$app_status"; }
   fi
   stage done
@@ -468,7 +582,7 @@ run() {
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
-trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed"; ci_budget_warning' EXIT
+trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed" "$check_mark.waited"; app_tier_release; ci_budget_warning' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
@@ -530,11 +644,12 @@ if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
-export check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
+export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
+export app_tier_dir CHECK_TOP_PID check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
+app_tier_stopped
 evidence_report "$status"
 [ "$mode" = --full ] || exit "$status"
 # Nothing ran: the queue refused it, or it was stopped while waiting. So there's no run to count.
@@ -578,5 +693,5 @@ if [ "$ledger_commit" = "$started_commit" ]; then
     fi
   fi
 fi
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" "$([ "$scope_key" = all ] && echo all || echo selective)" >> "$ledger"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started - $(awk '{ t += $1 } END { print t + 0 }' "$check_mark.waited" 2>/dev/null || echo 0)))" "${why:--}" "$([ "$scope_key" = all ] && echo all || echo selective)" >> "$ledger"
 exit "$status"

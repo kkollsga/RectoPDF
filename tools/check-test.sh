@@ -8,7 +8,7 @@
 # the prologue and carries state only inside itself: a segment's header says what it starts from, and a new case goes in the segment whose state it needs
 # (or a new one). Run with no argument, the script starts every segment as a process of its own, CHECK_TEST_JOBS at a time (default 3: CI's cores), keeps each one's
 # output in its own file, and prints them all, in order, whole. CHECK_TEST_SEGMENT=<name> runs one alone. The longest are first, so none starts last.
-SEGMENTS="N1 J2 D K1 C N2 J1 F B A L M I K2 G O"
+SEGMENTS="N1 J2 D K1 C N2 J1 F B A L M I K2 G O P"
 set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "${CHECK_TEST_SEGMENT:-}" ]; then
@@ -81,6 +81,8 @@ if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && [[ "$*" == 
   printf '<testsuites>\n<testsuite name="recto-cli::app">\n<testcase name="flaky_one" classname="recto-cli::app" timestamp="2026-11-12T10:00:00.000+01:00" time="1.0"/>\n</testsuite>\n</testsuites>\n' > "$junit"
   exit 0
 fi
+# STUB_APP_HOOK runs while the app's tests do (the first app run of a check: the window, lifecycle or both tiers' nextest run of the app binary).
+if [ -n "${STUB_APP_HOOK:-}" ] && [[ "$*" == *"--test app "* ]] && [ -z "${RECTO_QA_SLOW:-}" ]; then bash -c "$STUB_APP_HOOK"; fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
 [[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
@@ -1289,6 +1291,111 @@ rm -f "$CALLS.policy"; : > "$CALLS"
 LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' > /dev/null 2>&1
 check "with the limits off (LIKE_CI_LIMITS=''), no taskpolicy, and 3 at once for a test that isn't the app's" "no 1" "$([ -s "$CALLS.policy" ] && echo yes || echo no) $(grep -c -- '--workspace -j 3 -E test(=t1)' "$CALLS")"
 
+}
+
+# Segment P. Starts from: branch main as the prologue leaves it. The app tier lock: one check at a time launches the app, machine-wide (2026-11-13: three full
+# runs at once, load 139 on 10 cores, lifecycle tests failing from starvation). Each case makes its own branch from main and clears the lock before and after.
+seg_P() {
+LOCK="$(git rev-parse --git-common-dir)/recto-app-tier.lock"
+export CHECK_APP_TIER_POLL=1 CHECK_APP_TIER_WAIT=20 # a rule broken fails in seconds, not after the 45-minute default
+mkdir -p "$X/fake"
+# A holder that looks like a live check: a process whose command has check.sh in it, with the lock owned by it.
+printf '#!/usr/bin/env bash\nsleep "${1:-60}"\n' > "$X/fake/check.sh"
+hold_live() { # seconds
+  bash "$X/fake/check.sh" "$1" & HOLDER=$!
+  rm -rf "$LOCK"; mkdir "$LOCK"; echo "$HOLDER $HOLDER $(date +%s) app-tests /other/tree" > "$LOCK/owner"
+}
+drop_holder() { kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$LOCK"; }
+tfull() { CHECK_AGAIN=1 CHECK_ALL=1 tools/check.sh --full --why "app tier case" "$@" 2>&1; }
+branch_with tier-cases
+commit_code tier
+
+# Failure (2026-11-13): three checks' app tests ran at once and starved each other. Two checks in two worktrees of one repository: the second's app stage starts
+# only after the first's ends, and says why it waits.
+git worktree add -q -b tier-a "$X/wt-a" tier-cases; git worktree add -q -b tier-b "$X/wt-b" tier-cases
+MARKS="$X/marks"; : > "$MARKS"
+( cd "$X/wt-a" && STUB_APP_HOOK="echo A-start >> $MARKS; sleep 3; echo A-end >> $MARKS" CHECK_AGAIN=1 CHECK_ALL=1 tools/check.sh --full --why a > "$X/a.out" 2>&1; echo $? > "$X/a.rc" ) &
+for _ in $(seq 1 100); do grep -q A-start "$MARKS" && break; sleep 0.1; done
+( cd "$X/wt-b" && STUB_APP_HOOK="echo B-start >> $MARKS; sleep 1; echo B-end >> $MARKS" CHECK_AGAIN=1 CHECK_ALL=1 tools/check.sh --full --why b > "$X/b.out" 2>&1; echo $? > "$X/b.rc" ) &
+wait
+check "two checks at once: the second's app stage starts after the first's ends" "A-start A-end B-start B-end" "$(tr '\n' ' ' < "$MARKS" | sed 's/ $//')"
+check "both pass" "0 0" "$(cat "$X/a.rc") $(cat "$X/b.rc")"
+has "the waiter says who holds it, and for how long" "wt-a (app-tests, " "$(cat "$X/b.out")"
+has "and says when it has it" "check: got the app tier after waiting" "$(cat "$X/b.out")"
+check "and the lock is gone at the end" "no" "$([ -e "$LOCK" ] && echo yes || echo no)"
+git worktree remove --force "$X/wt-a"; git worktree remove --force "$X/wt-b"
+
+# Failure: the lock held for the whole check, so a quick check, a build or an in-process part waits for an app test it has none of.
+hold_live 60
+out=$(CHECK_APP_TIER_WAIT=1 tfull); rc=$?
+out2=$(CHECK_APP_TIER_WAIT=1 CHECK_PART=core tfull); rc2=$?
+CHECK_APP_TIER_WAIT=1 tools/check.sh --quick > "$X/q.out" 2>&1; rc3=$?
+check "the app tier held by another: a full run with app tests waits and is stopped (exit 5)" "5" "$rc"
+check "a core part (builds and in-process tests only) is not held" "0 no" "$rc2 $(printf '%s' "$out2" | grep -q 'waiting for the app tier' && echo yes || echo no)"
+check "and a quick check is not held" "0 no" "$rc3 $(grep -q 'app tier' "$X/q.out" && echo yes || echo no)"
+drop_holder
+
+# Failure: a lock left by a check that died blocks every later check for ever. A dead owner, and a pid that is some other process now, are taken over, said.
+rm -rf "$LOCK"; mkdir "$LOCK"; sleep 0 & dead=$!; wait "$dead"
+echo "$dead $dead $(date +%s) app-tests /gone/tree" > "$LOCK/owner"
+out=$(tfull); rc=$?
+check "a lock whose owner is dead is taken over" "0" "$rc"
+has "and the line says so and who had it" "the app tier lock is stale (its owner (process $dead) is gone; held by /gone/tree (app-tests," "$out"
+check "and the taker's lock is removed at the end" "no" "$([ -e "$LOCK" ] && echo yes || echo no)"
+sleep 30 & reused=$!
+rm -rf "$LOCK"; mkdir "$LOCK"; echo "$reused $reused $(date +%s) app-tests /reused/tree" > "$LOCK/owner"
+out=$(tfull); rc=$?
+kill "$reused" 2>/dev/null; wait "$reused" 2>/dev/null
+check "a lock whose pid is alive but isn't a check (pid reuse) is taken over" "0" "$rc"
+has "and says it is no check any more" "process $reused is no check any more" "$out"
+rm -rf "$LOCK"
+
+# Failure: a holder that fails or is stopped keeps the lock, and everyone else waits the bound out.
+out=$(STUB_FAIL='--test app' tfull); rc=$?
+check "a check whose app tests fail leaves no lock" "yes no" "$([ "$rc" != 0 ] && echo yes) $([ -e "$LOCK" ] && echo yes || echo no)"
+STUB_APP_HOOK='sleep 3' CHECK_AGAIN=1 CHECK_ALL=1 tools/check.sh --full --why stopped > "$X/int.out" 2>&1 &
+holder=$!
+for _ in $(seq 1 100); do [ -d "$LOCK" ] && break; sleep 0.1; done
+had=$([ -d "$LOCK" ] && echo yes || echo no)
+kill -TERM "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+check "a check stopped from outside while it holds the lock: it had it, and leaves none" "yes no" "$had $([ -e "$LOCK" ] && echo yes || echo no)"
+sleep 3.5 # the stopped check's children finish what they were doing before the next case
+rm -rf "$LOCK"
+
+# Failure: a waiter waits for ever behind a holder that never ends. The bound stops it with its own exit code, says nothing was tested, names the holder,
+# records no run, and leaves the holder's lock alone.
+fresh_ledger
+hold_live 60
+before=$(cat "$LOCK/owner")
+out=$(CHECK_APP_TIER_WAIT=2 tfull); rc=$?
+check "the wait bound stops with exit 5" "5" "$rc"
+has "naming the holder and that nothing was tested" "held by /other/tree (app-tests," "$out"
+has "and says so plainly" "Nothing was tested." "$out"
+check "it is not a run in the ledger, and not a failure" "0" "$(runs_in_ledger)"
+check "and the holder's lock is untouched" "$before" "$(cat "$LOCK/owner" 2>/dev/null)"
+drop_holder
+
+# Failure: the time waited counted as the stage's own, so the budgets and --slow read a busy machine's queue as slow tests.
+fresh_ledger
+rm -rf "$LOCK"
+bash "$X/fake/check.sh" 5 & HOLDER=$!
+mkdir "$LOCK"; echo "$HOLDER $HOLDER $(date +%s) app-tests /other/tree" > "$LOCK/owner"
+( sleep 3; rm -rf "$LOCK" ) &
+out=$(tfull); rc=$?
+wait
+took=$(printf '%s\n' "$out" | sed -nE 's/^check: app-tests took ([0-9]+) s \(waited ([0-9]+) s for the app tier\)$/\1 \2/p')
+check "the stage's seconds are its own and the wait is said apart" "yes" "$([ -n "$took" ] && [ "${took% *}" -le 1 ] && [ "${took#* }" -ge 2 ] && echo yes)"
+check "and the ledger's seconds leave the wait out too" "yes" "$([ "$(last_ledger_field 5)" -le 1 ] && echo yes)"
+drop_holder
+
+# The coordinator's solo measurements, and CI: no lock with CHECK_APP_TIER=free; on CI a lock is taken over and never waited on.
+hold_live 60
+before=$(cat "$LOCK/owner")
+out=$(CHECK_APP_TIER=free CHECK_APP_TIER_WAIT=1 tfull); rc=$?
+check "CHECK_APP_TIER=free: no wait, no lock taken or touched" "0 $before" "$rc $(cat "$LOCK/owner" 2>/dev/null)"
+out=$(CI=1 CHECK_APP_TIER_WAIT=1 tfull); rc=$?
+check "on CI a lock is never waited on" "0 no" "$rc $(printf '%s' "$out" | grep -q 'waiting for the app tier' && echo yes || echo no)"
+drop_holder
 }
 
 seg_"$CHECK_TEST_SEGMENT"
