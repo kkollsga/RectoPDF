@@ -609,25 +609,6 @@ fn an_agents_change_while_it_tries_is_refused_and_the_trying_goes_on() {
     drop(app.quit());
 }
 
-/// Failure (review, 2026-11-13): an agent's change under way at the moment of a try (counted, and past its look before the try) lands after the lock's taken, as
-/// the saved session's read, and is replaced by it. A try that finds one under way is a try that didn't get the lock, and the next one, with none, does.
-#[test]
-fn a_try_with_an_agents_change_under_way_waits_for_the_next() {
-    let disk = a_saved_session();
-    let before = the_copy_before(&disk);
-    let app = disk.builder().another_keeps().start();
-    drop(before);
-    app.core().host.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    next_try_fails(&app);
-    assert!(!app.core().saver.store.holds_the_record(), "not taken under an agent's change");
-    app.core().host.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    app.advance(TRY_EVERY_MS);
-    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
-    app.settle();
-    assert_eq!(tab_names(&app), ["a", "b"]);
-    drop(app.quit());
-}
-
 /// What can come between a late try taking the record's lock and the app deciding to keep it.
 #[derive(Clone, Copy, Debug)]
 enum Between {
@@ -700,6 +681,94 @@ fn a_try_held_on_the_disk_holds_up_nothing_and_what_comes_meanwhile_wins() {
         );
         comes_back_at_the_next_launch(disk);
     }
+}
+
+/// Failure (review, 2026-11-13, S2): agents can keep a late try from ever getting the lock, so the person's saved session isn't restored: every refused change
+/// of an agent's was counted as under way before it was refused, and a try that found one under way was a try that didn't get the lock; and an agent's
+/// `session save`, which only asks, wasn't refused, took the saver's gate and gathered, and a try that found the gate held didn't get the lock either. Eight
+/// agents loop changes and saves for the whole ten seconds of the fake clock: every try is made, each refused change says `busy`, and the lock let go before the
+/// ninth try is kept there and the saved session comes back.
+#[test]
+fn eight_agents_looping_changes_and_saves_dont_stop_the_tries() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let disk = a_saved_session();
+    let before = the_copy_before(&disk);
+    let app = disk.builder().another_keeps().start();
+    let c = app.disk().pdf("c.pdf", 2);
+    let stop = Arc::new(AtomicBool::new(false));
+    let busy = Arc::new(AtomicU32::new(0));
+    let agents: Vec<_> = (0..8)
+        .map(|agent| {
+            let (core, stop, busy) = (Arc::clone(app.core()), Arc::clone(&stop), Arc::clone(&busy));
+            let lines = [
+                format!(r#"{{"cmd":"open","path":"{}"}}"#, c.display()),
+                r#"{"cmd":"session_save"}"#.to_owned(),
+                r#"{"cmd":"view","paper":"dark"}"#.to_owned(),
+                r#"{"cmd":"goto","page":2}"#.to_owned(),
+            ];
+            std::thread::Builder::new()
+                .name(format!("test-agent-{agent}"))
+                .spawn(move || {
+                    let mut sent = agent;
+                    while !stop.load(Ordering::SeqCst) {
+                        let command = recto_agent::parse(&lines[sent % lines.len()]).expect("a command");
+                        let answer = recto_control::host::Host::run(&*core.host, recto_agent::Actor::Agent(Level::Full), &command, &mut Vec::new());
+                        if answer.is_err_and(|refused| refused.code == "busy") {
+                            busy.fetch_add(1, Ordering::SeqCst);
+                        }
+                        sent += 1;
+                    }
+                })
+                .expect("a thread")
+        })
+        .collect();
+    for _ in 1..9 {
+        next_try_fails(&app);
+        assert_eq!(
+            app.core().host.running.load(Ordering::SeqCst),
+            0,
+            "no agent's change is ever counted as under way while it tries"
+        );
+    }
+    assert_eq!(tries(&app), Some(8), "every try made with the agents at it");
+    drop(before);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the record kept at the ninth try", || app.core().life.keeping() == Keeping::Keeps);
+    stop.store(true, Ordering::SeqCst);
+    for agent in agents {
+        agent.join().expect("an agent's thread");
+    }
+    app.settle();
+    assert!(busy.load(Ordering::SeqCst) > 0, "the agents' changes were refused busy while it tried");
+    assert_eq!(&tab_names(&app)[..2], ["a", "b"], "the saved session came back");
+    assert_eq!(app.reader().note, None, "and nothing was said to the person");
+    drop(app.quit());
+}
+
+/// Failure (S2, with the agents' count gone from the try): a person's command running on its own thread (an export, a check for updates), whose change isn't in
+/// to be looked at yet, is under way as a try comes back with the lock; the restore then replaces what it does, or what it does lands on the restored session
+/// as an agent's would. The lock is given back, for now, and not let go for good: the trying goes on, nothing is said, and the next try, with nothing under way,
+/// keeps the record and the saved session comes back.
+#[test]
+fn a_try_back_with_a_persons_command_under_way_gives_the_lock_back_for_the_next() {
+    use std::sync::atomic::Ordering;
+    let disk = a_saved_session();
+    let before = the_copy_before(&disk);
+    let app = disk.builder().another_keeps().hold(&[Seam::RecordLock]).start();
+    drop(before);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
+    app.core().life.persons_running.fetch_add(1, Ordering::SeqCst);
+    app.let_through(Seam::RecordLock, 1);
+    app.wait_until("given back", || tries(&app) == Some(1) && !app.core().saver.store.holds_the_record());
+    assert_eq!(app.reader().note, None, "nothing said");
+    app.core().life.persons_running.fetch_sub(1, Ordering::SeqCst);
+    recto_platform::slow::gate::open(Seam::RecordLock);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the record kept at the next try", || app.core().life.keeping() == Keeping::Keeps);
+    app.settle();
+    assert_eq!(tab_names(&app), ["a", "b"]);
+    drop(app.quit());
 }
 
 /// Failure (review, 2026-11-13: only opening a file was tested): the person changes the paper, or the appearance, before the lock comes, and the restore then

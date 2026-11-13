@@ -49,6 +49,16 @@ impl AppHost {
 impl Host for AppHost {
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let asks_only = command.only_asks();
+        // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
+        // (`keeping::answers_agents`).
+        if matches!(actor, Actor::Agent(_))
+            && !super::keeping::answers_agents(command)
+            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
+        {
+            return Err(
+                AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
+            );
+        }
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
@@ -57,13 +67,6 @@ impl Host for AppHost {
                 return Err(
                     AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
                         .then("Try again in a moment, when it's back."),
-                );
-            }
-            // Counted first, and then looked, as above: a late try at the record's lock that sees no count can't have this slip past (`lifecycle::keeping`).
-            if matches!(actor, Actor::Agent(_)) && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes()) {
-                self.running.fetch_sub(1, Ordering::SeqCst);
-                return Err(
-                    AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
                 );
             }
         }

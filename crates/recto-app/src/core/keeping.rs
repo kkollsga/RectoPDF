@@ -82,8 +82,9 @@ pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
     if inner.life.step(LifeEvent::Keeping(KeepingEvent::Asking)) != Some(crate::lifecycle::Out::Keeping(KeepingOut::Ask)) {
         return;
     }
-    // An agent's change under way, or a hand-off's: a try that didn't get the lock.
-    if inner.host.running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst) {
+    // A person's command under way on its own thread, whose change isn't in to be looked at yet, or a hand-off's: a try that didn't get the lock. No agent's
+    // change can be under way: every one is refused while it tries, before it's counted (`answers_agents`).
+    if busy(inner) {
         back(inner, reads, false, None);
         return;
     }
@@ -110,6 +111,7 @@ fn ask(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &st
     match heard.recv() {
         Ok(Verdict::Read) => launching::read_state(inner),
         Ok(Verdict::LetGo) => inner.saver.store.let_go(),
+        Ok(Verdict::GiveBack) => inner.saver.store.give_back(),
         // The session thread ended without deciding: the app's going, and the process takes the lock with it.
         Err(_) => {}
     }
@@ -122,6 +124,8 @@ pub enum Verdict {
     Read,
     /// The trying stopped while it was out: let it go again, writing nothing.
     LetGo,
+    /// Not now (a person's command came under way while it was out): give it back, and try again on the next turn.
+    GiveBack,
 }
 
 /// A try back from its thread: whether it got the lock, and where the decision about it goes.
@@ -149,12 +153,15 @@ pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back_from: TryBack
 }
 
 fn back(inner: &Arc<Inner>, reads: &FileReads, got: bool, verdict: Option<&std::sync::mpsc::Sender<Verdict>>) {
+    let mut given_back = false;
     if inner.life.keeping().trying() {
         let now_as = as_done(inner, reads);
         let _ = step(inner, KeepingEvent::Looked { now_as });
+        given_back = got && inner.life.keeping().trying() && busy(inner);
     }
-    let out = inner.life.step(LifeEvent::Keeping(KeepingEvent::Tried { got }));
+    let out = inner.life.step(LifeEvent::Keeping(KeepingEvent::Tried { got: got && !given_back }));
     let decided = match out {
+        _ if given_back => Some(Verdict::GiveBack),
         Some(crate::lifecycle::Out::Keeping(KeepingOut::Restore)) => Some(Verdict::Read),
         Some(crate::lifecycle::Out::Keeping(KeepingOut::LetGo)) => Some(Verdict::LetGo),
         out => {
@@ -167,6 +174,21 @@ fn back(inner: &Arc<Inner>, reads: &FileReads, got: bool, verdict: Option<&std::
         let _ = verdict.send(decided);
     }
     inner.core.push(CoreCall::Reconcile);
+}
+
+/// Something under way that a late try's restore would replace or lose: a person's command on its own thread (its change isn't in to be looked at), or a
+/// hand-off.
+fn busy(inner: &Inner) -> bool {
+    inner.life.persons_running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst)
+}
+
+/// **Whether an agent's command is answered while keeping the record is settling** (trying or restoring, [`crate::lifecycle::keeping::Keeping::refuses_agents_changes`]):
+/// only those that are purely a look at the state, which are the ones that only ask, but `session save`, which writes. Everything else is refused `busy` before
+/// it's counted as under way, so no agent's change is ever under way while it tries: a page's text, a measure and a wait included, as each reads a tab that
+/// the restore is about to replace. `qa drive` acts as the person, in a quiet run, through the methods the window calls, so what it does counts as the person's:
+/// it can stop the trying as their own action would, which is what it's for.
+pub(crate) fn answers_agents(command: &recto_agent::Command) -> bool {
+    command.only_asks() && !matches!(command, recto_agent::Command::Record(recto_agent::commands::Record::SessionSave(_)))
 }
 
 /// **Whether a writer of the record may write now:** this copy holds the record's lock and keeps the record, from the launch or since a late try's saved session

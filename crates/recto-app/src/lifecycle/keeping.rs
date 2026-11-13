@@ -23,14 +23,17 @@
 //! waits for the next launch (the narrowed rule). What doesn't count, and is replaced by the restore as a launch would set it: the window's frame, full screen and
 //! focus, the sidebar shown or hidden and its width, the panel, and the Settings window.
 //!
-//! **While it's settling an agent changes nothing** ([`Keeping::refuses_agents_changes`]: trying, or restoring): its commands that change anything are refused
-//! `busy`, to try again in a moment, and those that only ask are answered. An agent's action never counts as the person's, so it can neither stop the trying (and
-//! show the person a notice) nor be replaced by the restore, its tab number then naming one of the owner's tabs. The app counts a change of an agent's that's
-//! under way, and a try that finds one is a try that didn't get the lock (`core::keeping`).
+//! **While it's settling an agent changes nothing** ([`Keeping::refuses_agents_changes`]: trying, or restoring): every command of an agent's but a look at the
+//! state is refused `busy`, to try again in a moment, before it's counted as under way (`core::keeping::answers_agents`). Answered: `session show`, `session
+//! check`, `update status`, `settings` and `update dev-builds` with no value, `qa read`, and `qa drive`, which acts as the person in a quiet run and so counts as
+//! the person's. Refused: everything else, a page's text, a measure, a wait and `session save` included. An agent's action never counts as the person's, so it
+//! can neither stop the trying (and show the person a notice) nor be replaced by the restore, its tab number then naming one of the owner's tabs. A person's
+//! command under way on its own thread, whose change isn't in to be looked at yet, makes a try one that didn't get the lock (`core::keeping`).
 //!
-//! **Nothing writes over the record between the try and the restore.** The try is made holding the saver's gate, which every writer of the record holds from
-//! gathering what it writes to writing it (a writer that has it makes the try one that didn't get the lock), and while it's restoring the writers write nothing
-//! (`core::saver`): so a writer either gathered first and is refused (it doesn't keep the record yet), or gathers the restored session.
+//! **Nothing writes over the record between the try and the restore.** Every writer of the record writes only while this copy holds the lock and keeps the
+//! record ([`Keeping::writes`]), looked at before the saver's gate and again under it, where it holds from gathering to writing: never while it tries (a try
+//! may be back with the lock and not yet decided on), restores, or has settled not to (`core::saver`). So a writer either gathers the restored session or
+//! writes nothing.
 //!
 //! Pure: the state, an event and `now` in milliseconds of the app's clock. The app holds it in [`super::Life`] and carries out the [`Out`]
 //! (`core::keeping`).

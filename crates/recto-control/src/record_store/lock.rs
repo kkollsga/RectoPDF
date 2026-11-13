@@ -105,8 +105,9 @@ impl RecordStore {
     }
 
     /// **Lets go of the record's lock, as a process that ends does:** from here this store writes nothing, whatever's still running, and another can take the
-    /// record at once, whatever copies of its descriptor are still open. For good: a straggler of the ended app asking for it again doesn't get it back. Only a
-    /// test's kill calls it (the headless kit's), as the app's own process ending does this.
+    /// record at once, whatever copies of its descriptor are still open. For good: a straggler of the ended app asking for it again doesn't get it back. A test's
+    /// kill calls it (the headless kit's), as the app's own process ending does this; and a late try that came back with the lock once the app had settled not to
+    /// keep the record (`recto-app`'s `core::keeping`).
     pub fn let_go(&self) {
         self.gone.store(true, Ordering::SeqCst);
         let file = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -129,6 +130,16 @@ impl RecordStore {
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
             self.ask_for_lock();
         }
+    }
+
+    /// **Gives the lock back for now,** unlocked and closed as [`Self::let_go`] does it, but not for good: a later try may take it again. For a late try that got it
+    /// at a moment it can't be kept (`recto-app`'s `core::keeping`: a person's command under way, whose change isn't in yet), and tries again on its next turn.
+    pub fn give_back(&self) {
+        let file = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(file) = file {
+            release(&self.lock_path, self.number, file);
+        }
+        *self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some("given back by a late try, to try again".to_owned());
     }
 
     /// **One try at the lock, never waiting:** a `try_lock`, and whether this store keeps the record now. For a launch that didn't get it at the start and tries
