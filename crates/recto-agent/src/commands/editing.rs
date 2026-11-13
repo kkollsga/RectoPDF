@@ -1,4 +1,4 @@
-//! Changing pages: `page move`, `page delete`, `page insert`, `edits` and `discard`. Rotate, undo, redo, clear-history and save join when the app's own code stops naming them.
+//! Changing pages: `page rotate`, `page move`, `page delete`, `page insert`, `edits`, `discard`, `undo`, `redo` and `clear-history`. Saving is `saving.rs`'s.
 
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
@@ -374,3 +374,267 @@ fn edits_words(data: &Value) -> String {
     }
     out
 }
+
+/// Turns pages clockwise. `all` turns every page as one step, as the panel's Rotate does outside edit mode.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageRotate {
+    #[serde(default = "crate::active_tab")]
+    pub tab: String,
+    pub pages: String,
+    pub degrees: i32,
+}
+
+impl Cmd for PageRotate {
+    const TAG: &'static str = "page_rotate";
+    const ROWS: &'static [Spec] = ROWS_PAGE_ROTATE;
+    const DRAWS: bool = false;
+    const READS_PAGES: bool = false;
+    const PROTECTED_OK: bool = false;
+    fn tab(&self) -> Option<&str> {
+        Some(&self.tab)
+    }
+    fn access(&self) -> Access {
+        row_access(Self::TAG)
+    }
+    fn route(&self) -> Runs {
+        Runs::Session
+    }
+    fn log_details(&self) -> Value {
+        let Self { tab, pages, degrees } = self;
+        json!({ "tab": super::log_tab(tab), "pages": crate::clean_range(pages), "degrees": degrees })
+    }
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let Self { tab, pages, degrees } = self;
+        let (access, level, events) = (cx.access, cx.level, &mut *cx.events);
+        let turns = quarter_turns(*degrees)?;
+        // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
+        if pages == "all" {
+            return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| {
+                e.rotate(0, e.len(), turns)
+            });
+        }
+        let (start, len) = parse_pages(pages, false)?;
+        edit(
+            access,
+            level,
+            tab,
+            events,
+            format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")),
+            |e| e.rotate(start, len, turns),
+        )
+    }
+    fn human(data: &Value) -> String {
+        edit_state(data)
+    }
+}
+
+/// Reverses the last page edit.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Undo {
+    #[serde(default = "crate::active_tab")]
+    pub tab: String,
+}
+
+impl Cmd for Undo {
+    const TAG: &'static str = "undo";
+    const ROWS: &'static [Spec] = ROWS_UNDO;
+    const DRAWS: bool = false;
+    const READS_PAGES: bool = false;
+    const PROTECTED_OK: bool = false;
+    fn tab(&self) -> Option<&str> {
+        Some(&self.tab)
+    }
+    fn access(&self) -> Access {
+        row_access(Self::TAG)
+    }
+    fn route(&self) -> Runs {
+        Runs::Session
+    }
+    fn log_details(&self) -> Value {
+        json!({ "tab": super::log_tab(&self.tab) })
+    }
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let (level, events) = (cx.level, &mut *cx.events);
+        cx.access.with(|s| {
+            let id = select(s, &self.tab)?;
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.undo_edit_as(id, Author::Agent)? {
+                return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
+            }
+            events.push(edits_changed(s, id));
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Undid the last edit.");
+            Ok(with_place_note(s, id, data))
+        })
+    }
+    fn human(data: &Value) -> String {
+        edit_state(data)
+    }
+}
+
+/// Repeats the last undone page edit.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Redo {
+    #[serde(default = "crate::active_tab")]
+    pub tab: String,
+}
+
+impl Cmd for Redo {
+    const TAG: &'static str = "redo";
+    const ROWS: &'static [Spec] = ROWS_REDO;
+    const DRAWS: bool = false;
+    const READS_PAGES: bool = false;
+    const PROTECTED_OK: bool = false;
+    fn tab(&self) -> Option<&str> {
+        Some(&self.tab)
+    }
+    fn access(&self) -> Access {
+        row_access(Self::TAG)
+    }
+    fn route(&self) -> Runs {
+        Runs::Session
+    }
+    fn log_details(&self) -> Value {
+        json!({ "tab": super::log_tab(&self.tab) })
+    }
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let (level, events) = (cx.level, &mut *cx.events);
+        cx.access.with(|s| {
+            let id = select(s, &self.tab)?;
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.redo_edit_as(id, Author::Agent)? {
+                return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
+            }
+            events.push(edits_changed(s, id));
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Redid the last undone edit.");
+            Ok(with_place_note(s, id, data))
+        })
+    }
+    fn human(data: &Value) -> String {
+        edit_state(data)
+    }
+}
+
+/// Clears a tab's edit history: every step undo or redo could take, and its file. Unsaved edits stay. Below Full it refuses if any are the user's.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClearHistory {
+    #[serde(default = "crate::active_tab")]
+    pub tab: String,
+}
+
+impl Cmd for ClearHistory {
+    const TAG: &'static str = "clear_history";
+    const ROWS: &'static [Spec] = ROWS_CLEAR_HISTORY;
+    const DRAWS: bool = false;
+    const READS_PAGES: bool = false;
+    const PROTECTED_OK: bool = false;
+    fn tab(&self) -> Option<&str> {
+        Some(&self.tab)
+    }
+    fn access(&self) -> Access {
+        row_access(Self::TAG)
+    }
+    fn route(&self) -> Runs {
+        Runs::Session
+    }
+    fn log_details(&self) -> Value {
+        json!({ "tab": super::log_tab(&self.tab) })
+    }
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let (level, events) = (cx.level, &mut *cx.events);
+        cx.access.with(|s| {
+            let id = select(s, &self.tab)?;
+            refuse_discard_of_owners_edits(s, id, level)?;
+            let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
+            s.clear_history(id, recto_session::ClearReason::UserAsked);
+            events.push(edits_changed(s, id));
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!(if had_any {
+                "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now."
+            } else {
+                "There was no edit history to clear."
+            });
+            Ok(with_place_note(s, id, data))
+        })
+    }
+    fn human(data: &Value) -> String {
+        edit_state(data)
+    }
+}
+
+pub(crate) const ROWS_PAGE_ROTATE: &[Spec] = &[Spec {
+    name: "page rotate",
+    tag: "page_rotate",
+    group: GROUP_EDIT,
+    access: Access::At(Level::Control),
+    summary: "Turns pages clockwise. `all` turns every page as one step, as Rotate in the sidebar does outside edit mode.",
+    args: &[
+        Arg {
+            key: "pages",
+            flag: None,
+            kind: Kind::Pages,
+            required: true,
+            help: "Which: `4`, `4-6`, or `all`.",
+        },
+        Arg {
+            key: "degrees",
+            flag: Some("--by"),
+            kind: Kind::Degrees,
+            required: true,
+            help: "`90`, `180`, `270`, or `-90` for the other way.",
+        },
+        TAB,
+    ],
+    data: EDIT_STATE,
+    emits: &["edits_changed"],
+    examples: &[
+        "recto page rotate 2 --by 90",
+        "recto page rotate 1-4 --by -90 --json",
+        "recto page rotate all --by 90",
+    ],
+    ..BASE
+}];
+
+pub(crate) const ROWS_UNDO: &[Spec] = &[Spec {
+    name: "undo",
+    tag: "undo",
+    group: GROUP_EDIT,
+    access: Access::At(Level::Control),
+    summary: "Reverses the last page edit. It can be redone until a new edit clears it. Below Full, a new edit may clear only agents' undone steps: if the user's are among them it's refused until you've redone them.",
+    args: &[TAB],
+    data: EDIT_STATE,
+    emits: &["edits_changed"],
+    examples: &["recto undo"],
+    ..BASE
+}];
+
+pub(crate) const ROWS_REDO: &[Spec] = &[Spec {
+    name: "redo",
+    tag: "redo",
+    group: GROUP_EDIT,
+    access: Access::At(Level::Control),
+    summary: "Repeats the last undone page edit.",
+    args: &[TAB],
+    data: EDIT_STATE,
+    emits: &["edits_changed"],
+    examples: &["recto redo"],
+    ..BASE
+}];
+
+pub(crate) const ROWS_CLEAR_HISTORY: &[Spec] = &[Spec {
+    name: "clear-history",
+    tag: "clear_history",
+    group: GROUP_EDIT,
+    access: Access::At(Level::Control),
+    summary: "Clears a tab's edit history: every step undo or redo could take, and its file on disk. Unsaved edits stay. Below Full it's refused, and clears nothing, if any steps are the user's.",
+    args: &[TAB],
+    data: EDIT_STATE,
+    emits: &["edits_changed"],
+    examples: &["recto clear-history --tab report"],
+    ..BASE
+}];

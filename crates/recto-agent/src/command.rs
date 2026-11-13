@@ -1,7 +1,7 @@
 //! The top-level command: a family's, or one of the commands the app's own code still builds and matches by their fields (`recto-ffi`, `recto-app`). Those move into families when the window runs commands itself (step R2.2's next slice, then R2.3). Every list here is spelled out for every command, with no default arm, so a command can't be left out of one.
 
 use crate::table::{self, Access};
-use crate::{Command, Level, clean_range, file_label};
+use crate::{Command, Level, file_label};
 use serde_json::{Value, json};
 
 impl Command {
@@ -16,24 +16,8 @@ impl Command {
             Self::Waits(command) => command.tag(),
             Self::Rights(command) => command.tag(),
             Self::Session(command) => command.tag(),
-            Self::Open { .. } => "open",
-            Self::Tap { .. } => "tap",
-            Self::View { .. } => "view",
-            Self::Compare { .. } => "compare",
-            Self::Palette { .. } => "palette",
-            Self::Find { .. } => "find",
-            Self::QaRead { .. } => "qa_read",
-            Self::QaDrive { .. } => "qa_drive",
-            Self::PageRotate { .. } => "page_rotate",
-            Self::Undo { .. } => "undo",
-            Self::Redo { .. } => "redo",
-            Self::ClearHistory { .. } => "clear_history",
-            Self::SessionSleep { .. } => "session_sleep",
-            Self::Save { .. } => "save",
-            Self::SessionShow {} => "session_show",
-            Self::SessionSave {} => "session_save",
-            Self::SessionRestore {} => "session_restore",
-            Self::SessionCheck {} => "session_check",
+            Self::Qa(command) => command.tag(),
+            Self::Record(command) => command.tag(),
             Self::UpdateStatus {} => "update_status",
             Self::UpdateCheck {} => "update_check",
             Self::UpdateInstall { .. } => "update_install",
@@ -55,48 +39,13 @@ impl Command {
             Self::Waits(command) => command.access(),
             Self::Rights(command) => command.access(),
             Self::Session(command) => command.access(),
-            // Asking how things are shown changes nothing. Changing it is moving around.
-            Self::View {
-                paper: None,
-                sidebar: None,
-                agent_icon: None,
-                zoom: None,
-                layout: None,
-            } => row(),
-            Self::View { .. } => Access::At(Level::Control),
-            Self::Compare {
-                tabs: None,
-                sync: None,
-                off: false,
-            } => row(),
-            Self::Compare { .. } => Access::At(Level::Control),
-            // Running a command is doing it, as its menu item would.
-            Self::Palette { run: true, .. } => Access::At(Level::Control),
+            Self::Qa(command) => command.access(),
+            Self::Record(command) => command.access(),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // The same for development builds: the switch is what lets a build that isn't a release replace the app.
             Self::UpdateDevBuilds { set: Some(_) } => Access::At(Level::Full),
-            Self::Palette { .. }
-            | Self::Settings { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::SessionSleep { .. }
-            | Self::Save { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. } => row(),
+            Self::Settings { .. } | Self::UpdateDevBuilds { .. } | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } => row(),
         }
     }
 
@@ -111,29 +60,9 @@ impl Command {
             Self::Waits(command) => command.draws(),
             Self::Rights(command) => command.draws(),
             Self::Session(command) => command.draws(),
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::SessionSleep { .. }
-            | Self::Save { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. } => false,
+            Self::Qa(command) => command.draws(),
+            Self::Record(command) => command.draws(),
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
         }
     }
 
@@ -148,29 +77,9 @@ impl Command {
             Self::Waits(command) => command.reads_pages(),
             Self::Rights(command) => command.reads_pages(),
             Self::Session(command) => command.reads_pages(),
-            Self::Open { .. }
-            | Self::Tap { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::SessionSleep { .. }
-            | Self::Save { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. } => false,
+            Self::Qa(command) => command.reads_pages(),
+            Self::Record(command) => command.reads_pages(),
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
         }
     }
 
@@ -185,29 +94,9 @@ impl Command {
             Self::Waits(command) => command.protected_ok(),
             Self::Rights(command) => command.protected_ok(),
             Self::Session(command) => command.protected_ok(),
-            Self::Tap { .. } => true,
-            Self::Open { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::PageRotate { .. }
-            | Self::Undo { .. }
-            | Self::Redo { .. }
-            | Self::ClearHistory { .. }
-            | Self::SessionSleep { .. }
-            | Self::Save { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. } => false,
+            Self::Qa(command) => command.protected_ok(),
+            Self::Record(command) => command.protected_ok(),
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => false,
         }
     }
 
@@ -222,36 +111,14 @@ impl Command {
             Self::Waits(command) => command.tab(),
             Self::Rights(command) => command.tab(),
             Self::Session(command) => command.tab(),
-            Self::Tap { tab }
-            | Self::PageRotate { tab, .. }
-            | Self::Undo { tab }
-            | Self::Redo { tab }
-            | Self::ClearHistory { tab }
-            | Self::SessionSleep { tab }
-            | Self::Save { tab, .. } => Some(tab),
-            Self::Open { .. }
-            | Self::View { .. }
-            | Self::Compare { .. }
-            | Self::Palette { .. }
-            | Self::Find { .. }
-            | Self::QaRead { .. }
-            | Self::QaDrive { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {}
-            | Self::UpdateInstall { .. }
-            | Self::UpdateDevBuilds { .. }
-            | Self::Settings { .. } => None,
+            Self::Qa(command) => command.tab(),
+            Self::Record(command) => command.tab(),
+            Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall { .. } | Self::UpdateDevBuilds { .. } | Self::Settings { .. } => None,
         }
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
     pub fn log_details(&self) -> Value {
-        let file = crate::commands::log_file;
-        let tab_of = crate::commands::log_tab;
         match self {
             Self::Measure(command) => command.log_details(),
             Self::Edit(command) => command.log_details(),
@@ -261,32 +128,12 @@ impl Command {
             Self::Waits(command) => command.log_details(),
             Self::Rights(command) => command.log_details(),
             Self::Session(command) => command.log_details(),
-            Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
-            Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
-            Self::Tap { tab }
-            | Self::Undo { tab }
-            | Self::Redo { tab }
-            | Self::ClearHistory { tab }
-            | Self::SessionSleep { tab }
-            | Self::Save { tab, out: None, .. } => json!({ "tab": tab_of(tab) }),
-            Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
+            Self::Qa(command) => command.log_details(),
+            Self::Record(command) => command.log_details(),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::UpdateDevBuilds { set } => json!({ "set": set.as_deref().map(recto_core::clean_line) }),
             Self::UpdateInstall { zip, now } => json!({ "build": zip.as_deref().map(file_label), "now": now }),
-            Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
-            Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
-            // Not what's looked for: that's the document's business, as a search's words are.
-            Self::Find {
-                query, next, previous, close, ..
-            } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
-            Self::View { .. }
-            | Self::SessionShow {}
-            | Self::SessionSave {}
-            | Self::SessionRestore {}
-            | Self::SessionCheck {}
-            | Self::UpdateStatus {}
-            | Self::UpdateCheck {} => Value::Null,
+            Self::UpdateStatus {} | Self::UpdateCheck {} => Value::Null,
         }
     }
 }

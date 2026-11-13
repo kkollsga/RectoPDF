@@ -156,10 +156,10 @@ fn a_query_started_mid_run_stops_the_first() {
     let file = doc("overlap.pdf", 400, "alpha");
     host.run(
         Level::Full,
-        &Command::Open {
+        &Command::from(recto_agent::commands::tabs::Open {
             path: file.0.clone(),
             page: None,
-        },
+        }),
         &mut Vec::new(),
     )
     .unwrap();
@@ -209,10 +209,10 @@ fn a_stopped_query_stops_at_the_next_page() {
     recto_agent::run(
         &mut session,
         Level::Full,
-        &Command::Open {
+        &Command::from(recto_agent::commands::tabs::Open {
             path: file.0.clone(),
             page: None,
-        },
+        }),
     )
     .unwrap();
     let id = session.active().unwrap();

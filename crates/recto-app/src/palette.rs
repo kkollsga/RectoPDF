@@ -258,12 +258,14 @@ pub struct Showing {
 pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<recto_agent::Command> {
     use recto_agent::Command;
     let active = || "active".to_string();
-    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| Command::View {
-        paper: paper.map(str::to_string),
-        sidebar: sidebar.map(str::to_string),
-        agent_icon: agent_icon.map(str::to_string),
-        zoom: zoom.map(str::to_string),
-        layout: layout.map(str::to_string),
+    let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| {
+        Command::from(recto_agent::commands::view::View {
+            paper: paper.map(str::to_string),
+            sidebar: sidebar.map(str::to_string),
+            agent_icon: agent_icon.map(str::to_string),
+            zoom: zoom.map(str::to_string),
+            layout: layout.map(str::to_string),
+        })
     };
     Some(match id {
         "view.zoom_in" => view(None, None, None, Some("in"), None),
@@ -278,48 +280,48 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
         "paper.white" => view(Some("white"), None, None, None, None),
         "paper.warm" => view(Some("warm"), None, None, None, None),
         "paper.dark" => view(Some("dark"), None, None, None, None),
-        "compare.separate" => Command::Compare {
+        "compare.separate" => Command::from(recto_agent::commands::compare::Compare {
             tabs: None,
             sync: Some("off".into()),
             off: false,
-        },
-        "compare.synced" => Command::Compare {
+        }),
+        "compare.synced" => Command::from(recto_agent::commands::compare::Compare {
             tabs: None,
             sync: Some("on".into()),
             off: false,
-        },
-        "edit.undo" => Command::Undo { tab: active() },
-        "edit.redo" => Command::Redo { tab: active() },
-        "edit.clear_history" => Command::ClearHistory { tab: active() },
-        "file.save" => Command::Save {
+        }),
+        "edit.undo" => Command::from(recto_agent::commands::editing::Undo { tab: active() }),
+        "edit.redo" => Command::from(recto_agent::commands::editing::Redo { tab: active() }),
+        "edit.clear_history" => Command::from(recto_agent::commands::editing::ClearHistory { tab: active() }),
+        "file.save" => Command::from(recto_agent::commands::saving::Save {
             tab: active(),
             out: None,
             replace: false,
-        },
-        "find.next" | "find.previous" => Command::Find {
+        }),
+        "find.next" | "find.previous" => Command::from(recto_agent::commands::finding::Find {
             query: None,
             next: id == "find.next",
             previous: id == "find.previous",
             close: false,
             limit: None,
-        },
-        "rotate.left" if !reader.edit_mode => Command::PageRotate {
+        }),
+        "rotate.left" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),
             pages: "all".into(),
             degrees: -90,
-        },
-        "rotate.right" if !reader.edit_mode => Command::PageRotate {
+        }),
+        "rotate.right" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),
             pages: "all".into(),
             degrees: 90,
-        },
-        file if file.starts_with(RECENT) => Command::Open {
+        }),
+        file if file.starts_with(RECENT) => Command::from(recto_agent::commands::tabs::Open {
             path: recent.iter().find(|(key, _)| *key == &file[RECENT.len()..])?.1.into(),
             page: None,
-        },
-        tab if tab.starts_with("tab:") => Command::Tap {
+        }),
+        tab if tab.starts_with("tab:") => Command::from(recto_agent::commands::tabs::Tap {
             tab: format!("#{}", tab.trim_start_matches("tab:")),
-        },
+        }),
         _ => return None,
     })
 }
