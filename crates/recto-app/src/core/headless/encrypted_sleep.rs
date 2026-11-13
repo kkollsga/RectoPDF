@@ -93,7 +93,9 @@ fn drawn(app: &HeadlessApp) {
 
 /// Opens a file as the person does, typing `password` into the sheet when it's asked for (`None`: the sheet's left unanswered), and draws it.
 fn opened_by_the_person(app: &HeadlessApp, file: &std::path::Path, password: Option<&str>) {
-    app.core().open_file(file.to_path_buf());
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let prompt = app.reader().password_prompt;
     match (prompt, password) {
