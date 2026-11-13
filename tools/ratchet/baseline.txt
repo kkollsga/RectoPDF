@@ -3,7 +3,6 @@ ffi crates/recto-ffi/src 2313
 file crates/recto-core/src/save.rs 2271
 file crates/recto-ffi/src/lib.rs 1599
 file crates/recto-index/src/corpus.rs 1686
-file crates/recto-reader/src/tiles.rs 1821
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-session/src/record.rs 1561
@@ -30,7 +29,7 @@ impl crates/recto-ffi/src/lib.rs::AppCore 131
 impl crates/recto-reader/src/engine.rs::Engine 81
 impl crates/recto-reader/src/layout.rs::PageLayout 49
 impl crates/recto-reader/src/selection.rs::Selecting 41
-impl crates/recto-reader/src/tiles.rs::Reader 63
+impl crates/recto-reader/src/tiles.rs::Reader 50
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69
@@ -106,7 +105,6 @@ struct crates/recto-control/src/server.rs::Loop 21
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
 struct crates/recto-reader/src/tiles.rs::DocView 18
-struct crates/recto-reader/src/tiles.rs::Reader 17
 struct crates/recto-render-service/src/budget.rs::BudgetReport 20
 struct crates/recto-render-service/src/host.rs::DocRenderer 26
 struct crates/recto-render-service/src/host.rs::Policy 16
