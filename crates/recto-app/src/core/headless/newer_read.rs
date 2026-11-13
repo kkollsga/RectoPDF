@@ -279,7 +279,10 @@ fn back_overtaken_by_synced_scroll(pages_down: f64, followed_to: u32) {
     app.hear_events();
     a_engine.qa().hold_asks(Ask::Jump, true);
     std::thread::scope(|scope| {
-        let back = scope.spawn(|| agent(&app, r#"{"cmd":"back"}"#));
+        let back = std::thread::Builder::new()
+            .name("test-back".into())
+            .spawn_scoped(scope, || agent(&app, r#"{"cmd":"back"}"#))
+            .expect("a thread for the agent's back");
         assert!(a_engine.qa().wait_for_held_asks(1), "the look sent Back's jump to a's page view");
         // The person's own scroll in b, from 0.5 of its page 5 down: a follows, to the same page from its own page 5.
         drop(
