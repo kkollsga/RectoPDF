@@ -207,6 +207,9 @@ pub struct SavedPlace {
     pub page_size: Option<PageBox>,
 }
 
+#[cfg(test)]
+pub(crate) use jobs::surface_seam;
+
 /// Counts for QA and the budgets.
 #[derive(Clone, Debug, Default)]
 pub struct ReaderCounts {
@@ -257,8 +260,9 @@ pub(crate) struct Reader {
 }
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+// Raised by 8 bytes the same day for `Work::surfaces` (a page in view waiting for a surface the system refused): one a page view, not a tab.
 #[cfg(target_os = "macos")]
-const _: () = assert!(size_of::<Reader>() <= 2096, "the page view grew");
+const _: () = assert!(size_of::<Reader>() <= 2104, "the page view grew");
 
 /// What a page says once the thread that draws has given up.
 const CANT_DRAW: &str = "RectoPDF can't draw pages right now, because something went wrong too many times. Quit and open it again.";

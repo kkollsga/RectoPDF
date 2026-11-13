@@ -52,6 +52,7 @@ impl Reader {
             "scroll_x": self.viewport.x,
             "paper": match self.paper { PaperKind::White => "white", PaperKind::Dark => "dark" },
             "settled": self.is_settled(),
+            "surfaces": self.work.surfaces.report(),
             "note": self.note,
             "low_res_pages": low_res_pages,
             "tiles": {

@@ -856,6 +856,10 @@ SleepView.pub pictures: Vec<SleepShot>
 SleepView.pub sizes: Vec<(u32, PageBox)>
 SleepView.pub usual: Option<PageBox>
 SleepView.pub version: Option<u64>
+SurfaceRetry (pub(crate) struct, derives Debug, Default)
+SurfaceRetry::pub(crate) fn clear(&mut self)
+SurfaceRetry::pub(crate) fn refused(&mut self) -> std::time::Duration
+SurfaceRetry::pub(crate) fn report(&self) -> serde_json::Value
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
@@ -903,6 +907,7 @@ Waking::pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView)
 Waking::pub(crate) fn last_wake(&self) -> Option<WakeReport>
 Waking::pub(crate) fn window_up(&mut self)
 Work (pub(crate) struct, derives Debug)
+Work.pub(crate) surfaces: SurfaceRetry
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)

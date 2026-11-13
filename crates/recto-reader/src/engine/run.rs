@@ -104,13 +104,22 @@ fn run(shared: &Shared) {
             changed.tell(shared);
         }
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
+        let planned = plan.is_some();
         let job = plan.and_then(JobPlan::ready);
         // Only hot and warm tabs' files keep a renderer. Dropping one kills its worker and closes its file.
         renderers.retain(|path, _| wanted.contains(path));
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            rest(shared, &mut renderers, &policy, &mut resting_since);
+            if planned {
+                // The system had no surface for it: waited out and asked again, only while it's planned (`SurfaceRetry`, in `tiles/jobs.rs`).
+                let wait = lock(&shared.reader).work.surfaces.refused();
+                shared.settled.notify_all();
+                std::thread::park_timeout(wait);
+            } else {
+                lock(&shared.reader).work.surfaces.clear();
+                rest(shared, &mut renderers, &policy, &mut resting_since);
+            }
             continue;
         };
         // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
@@ -123,7 +132,11 @@ fn run(shared: &Shared) {
             resting_since = None;
             Workers::MayStart
         };
-        lock(&shared.reader).work.note_started(&job, None);
+        {
+            let mut reader = lock(&shared.reader);
+            reader.work.surfaces.clear();
+            reader.work.note_started(&job, None);
+        }
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
             continue;

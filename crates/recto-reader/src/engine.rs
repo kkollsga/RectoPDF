@@ -1477,4 +1477,73 @@ mod tests {
         let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::Dim, true);
         assert!(matches!(kind, TileKind::Blank { rgb } if rgb == dim_rgb(0xFF_FF_FF)), "{kind:?}");
     }
+
+    /// Failure (2026-11-13, the scripted hour of tab switching: `IOSurfaceCreate` "out of memory" for a preview): a page in view whose surface the system
+    /// refused parked the thread that draws for good with the job still planned, so the page stayed bare paper and the view never settled, until something
+    /// else woke the thread. With the next three surfaces refused (the first wait 20 ms, not a second, by the test's seam), the page is drawn once they
+    /// can be made and the view settles; while one's waited for, the view isn't settled and `reader.surfaces` says a retry is pending; after, it says how
+    /// many were refused and that none is pending, so a view at rest has no timed wake.
+    #[test]
+    fn a_page_whose_surface_was_refused_is_drawn_once_one_can_be_made() {
+        let file = recto_testpdf::TempPdf::new(
+            "refused.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[
+                "A page, drawn once a surface can be made",
+            ]))]),
+        );
+        crate::tiles::surface_seam::refuse(3, Duration::from_millis(20));
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let view = crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        };
+        let release = |ops: Vec<Op>| {
+            for op in ops {
+                if let Op::Attach { surface, .. } = op {
+                    recto_platform::surface::PixelSurface::release_for_host(surface);
+                }
+            }
+        };
+        release(engine.set_viewport(view));
+        let (began, mut saw_pending) = (Instant::now(), false);
+        loop {
+            release(engine.drain());
+            engine.applied();
+            let report = engine.report().0;
+            if report["surfaces"]["retry_pending"] == true {
+                saw_pending = true;
+                assert_eq!(report["settled"], false, "waiting for a surface isn't settled: {report}");
+            }
+            if engine.wait_settled(Duration::from_millis(10)) {
+                break;
+            }
+            // Far past the 140 ms the three waits take: only a thread that never asks again reaches it.
+            assert!(began.elapsed() < Duration::from_secs(20), "the page was never drawn: {report}");
+        }
+        let report = engine.report().0;
+        assert!(saw_pending, "{report}");
+        assert_eq!(report["surfaces"]["refused"], 3, "{report}");
+        assert_eq!(report["surfaces"]["retry_pending"], false, "{report}");
+        assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "{report}");
+        engine.shut_down();
+    }
 }
