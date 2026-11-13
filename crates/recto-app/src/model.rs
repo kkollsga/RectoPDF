@@ -899,8 +899,9 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
     let warm: Vec<u32> = if first { warm_beside_panes(session.warm().ids(), panes) } else { Vec::new() };
     let problem = session
-        .tab_notice_message(id)
-        .map(str::to_string)
+        .notices()
+        .said(id)
+        .map(|said| said.message.to_string())
         .or_else(|| tab.problem.map(|problem| problem.message().to_string()));
     let saved = session.tabs().place_to_show(id).map(|place| SavedPlace {
         page: place.page,

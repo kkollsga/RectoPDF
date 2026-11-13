@@ -99,6 +99,36 @@ fn a_replaced_file_is_drawn_as_it_is_now() {
     assert!(doc.take_file_changed() || drawn.is_err(), "it's seen to be another");
 }
 
+/// Failure (B4, 2026-11-13): a file seen to have changed under the renderer (opened again, with another page count than the one it had) answered "this file
+/// changed on disk while it was open" for every job from then on, even after the change had been taken and the reader told, and even with the old version put
+/// back: only dropping the renderer ended it, which a tab with unsaved edits, whose stamp never moves, never gets. The change is said once, as the failure of the
+/// job that saw it; once it's been taken, the next job opens what's there afresh.
+#[test]
+fn a_file_seen_to_change_while_open_is_opened_afresh_once_thats_been_taken() {
+    // Padded to one length, so the rewrite keeps the size: with its time put back and the same number, no stamp can tell.
+    let padded = |list: &[Page], len: usize| {
+        let mut bytes = pages(list);
+        assert!(bytes.len() <= len);
+        bytes.resize(len, b'\n');
+        bytes
+    };
+    let two = [Page::new(text_lines(&["One"])), Page::new(text_lines(&["Two"]))];
+    let three = [Page::new(text_lines(&["A"])), Page::new(text_lines(&["B"])), Page::new(text_lines(&["C"]))];
+    let len = pages(&two).len().max(pages(&three).len()) + 64;
+    let file = TempPdf::new("shifting.pdf", &padded(&two, len));
+    let mut doc = renderer(&file.0, Policy::default());
+    assert_eq!(doc.page_count().unwrap(), 2);
+    let modified = std::fs::metadata(&file.0).unwrap().modified().unwrap();
+    std::fs::write(&file.0, padded(&three, len)).unwrap();
+    std::fs::File::options().write(true).open(&file.0).unwrap().set_modified(modified).unwrap();
+    doc.kill_worker();
+    let seen = doc.render_tile(&tile_request(0, 0), &tile_surface());
+    assert!(matches!(seen, Err(RenderFailure::SourceChanged)), "the job that sees it says so: {seen:?}");
+    assert!(doc.take_file_changed(), "and it's there to be taken");
+    assert_eq!(doc.page_count().unwrap(), 3, "taken, the file's opened as it is now");
+    draws(&mut doc, 2);
+}
+
 /// Failure: pixels don't reach the host's surface through the shared memory, the whole point of the worker.
 #[test]
 fn a_tile_drawn_in_the_worker_arrives_in_the_hosts_surface() {

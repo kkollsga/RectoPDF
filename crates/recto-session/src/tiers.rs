@@ -95,10 +95,10 @@ impl<L: DocLoader> Session<L> {
             let clean = !self.lists.has_list(left);
             self.touch(left);
             if let Some(tab) = self.tab_mut(left)
-                && ((clean && matches!(tab.file.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.file.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
+                && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff)))
             {
-                tab.file.notice = None;
+                tab.file.set_notice(None);
             }
         }
         self.tabs.set_active(Some(id));
@@ -113,26 +113,7 @@ impl<L: DocLoader> Session<L> {
                 (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
             }
         };
-        // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
-        if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
-            && self.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
-            && list.file_pages() != facts.page_count
-        {
-            self.let_go_of_list(id);
-            if let Some(tab) = self.tab_mut(id) {
-                tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
-            }
-        }
-        // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
-        if let (Some(now), Some(list)) = (stamp, self.lists.get(id))
-            && !list.is_edited()
-            && self.tab(id).and_then(|tab| tab.file.stamp).is_some_and(|known| !known.same_contents(now))
-        {
-            self.clear_history(id, ClearReason::FileChanged);
-            if let Some(tab) = self.tab_mut(id) {
-                tab.file.notice = Some(Box::new(FileNotice::Changed));
-            }
-        }
+        self.compare_read_with_edits(id, loaded.as_ref().ok().map(|facts| facts.page_count), stamp);
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
         let pages_with_edits = self.lists.get(id).map(PageEdits::len);
         let mut replaced = None;
@@ -149,13 +130,13 @@ impl<L: DocLoader> Session<L> {
                     tab.renderer_only = facts.renderer_only;
                     tab.file.encrypted = facts.encrypted;
                     tab.place_dirty = true;
-                    if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing | FileNotice::NeedsPassword)) {
-                        tab.file.notice = None;
+                    if matches!(tab.file.notice(), Some(FileNotice::Missing | FileNotice::NeedsPassword)) {
+                        tab.file.set_notice(None);
                     }
                     // With edits, the numbers in them are about the version they were made on, and that must stay known.
                     if pages_with_edits.is_none() {
                         replaced = tab.file.stamp.filter(|known| stamp.is_some_and(|now| !known.same_contents(now)));
-                        tab.file.stamp = stamp;
+                        tab.file.take_version(stamp);
                     }
                 }
                 // Another version of the file than the sleep file's about, which won't be read again.
@@ -169,10 +150,85 @@ impl<L: DocLoader> Session<L> {
                     tab.problem = Some(problem);
                     // A password is never kept, so a protected file asks again, and says that's why.
                     if problem == OpenError::PasswordNeeded {
-                        tab.file.notice = Some(Box::new(FileNotice::NeedsPassword));
+                        tab.file.set_notice(Some(FileNotice::NeedsPassword));
                     }
                 }
             }
+        }
+    }
+
+    /// **What a wake read, against what the tab's list is about** (`pages` and `read` are the file's length and stamp as read). Only history, made on another
+    /// version than what was read, doesn't apply to it and goes. Unsaved edits are never let go for it, as a file changing never takes a person's edits: the tab
+    /// knows they don't fit ([`Self::edits_fit`]), and nothing is written. Where the version they were made on is still known it stays their stamp, so putting it
+    /// back makes them fit again; where it isn't, the stamp goes, so nothing takes this file as theirs.
+    fn compare_read_with_edits(&mut self, id: TabId, pages: Option<u32>, read: Option<FileStamp>) {
+        let (Some(pages), Some(read), Some(list)) = (pages, read, self.lists.get(id)) else {
+            return;
+        };
+        let (edited, list_pages) = (list.is_edited(), list.file_pages());
+        let Some(own) = self.tabs.tab(id).map(|tab| tab.file.stamp) else { return };
+        let other_version = own.is_some_and(|own| !own.same_contents(read));
+        // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp
+        // and its read, an edit landed between a change being noticed and the read, or a journal says what isn't so.
+        let other_length = own == Some(read) && list_pages != pages;
+        if !edited {
+            // Only history, about another version than what was read or another length: its steps don't apply to this, whichever way it's noticed, and it
+            // goes. Nothing unsaved was there, so nothing says any was kept: the file changed, if a look says so, or else undo can't go back as far.
+            if other_version || other_length {
+                let replaced = other_version
+                    || self
+                        .tabs
+                        .path_of(id)
+                        .and_then(|path| file_stamp(&path).ok())
+                        .is_some_and(|now| !now.same_contents(read));
+                self.clear_history(id, ClearReason::FileChanged);
+                if let Some(tab) = self.tab_mut(id) {
+                    tab.file
+                        .set_notice(Some(if replaced { FileNotice::Changed } else { FileNotice::HistoryRolledOff }));
+                }
+            }
+            return;
+        }
+        let Some(tab) = self.tabs.tab(id) else { return };
+        let heard_changed = matches!(tab.file.notice(), Some(FileNotice::Changed)) || tab.file.elsewhere().is_some_and(|elsewhere| elsewhere.file_changed);
+        let elsewhere = if other_version || own.is_none() {
+            // Another version than the edits' own, or edits that name none: what's held is of this one.
+            Some((own, read, heard_changed || other_version))
+        } else if other_length {
+            // Replaced mid-read, the stamp is still the version the edits were made on, and a stat, in this one rare case, says so. Otherwise the stamp is the
+            // file's as it is, which the edits aren't about, and it goes. The file's said to have changed only where that's known.
+            match self
+                .tabs
+                .path_of(id)
+                .and_then(|path| file_stamp(&path).ok())
+                .filter(|now| !now.same_contents(read))
+            {
+                Some(now) => Some((own, now, true)),
+                None => Some((None, read, heard_changed)),
+            }
+        } else {
+            None
+        };
+        let Some(tab) = self.tab_mut(id) else { return };
+        match elsewhere {
+            Some((stamp, seen, file_changed)) => {
+                tab.file.stamp = stamp;
+                tab.file.set_elsewhere(Some(fit::Elsewhere {
+                    seen: Some(seen),
+                    file_changed,
+                }));
+                if file_changed {
+                    tab.file.set_notice(Some(FileNotice::Changed));
+                }
+            }
+            // The version the edits were made on, at their length, as when it's been put back since a look: they fit it.
+            None if tab.file.elsewhere().is_some() => {
+                tab.file.set_elsewhere(None);
+                if matches!(tab.file.notice(), Some(FileNotice::Changed)) {
+                    tab.file.set_notice(None);
+                }
+            }
+            None => {}
         }
     }
 

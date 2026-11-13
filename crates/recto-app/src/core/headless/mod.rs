@@ -2,6 +2,7 @@
 //! feature. Each names the app-launching test it stands in for, where it replaced one.
 
 mod back_after_a_jump;
+mod changed_under_edits;
 mod closing;
 mod compare;
 mod contents;

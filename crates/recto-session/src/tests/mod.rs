@@ -3,6 +3,7 @@ use recto_core::TocLine;
 use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
 use std::cell::Cell;
 
+mod changed_file;
 mod compare_tests;
 mod confined_tests;
 mod contents;
@@ -58,7 +59,7 @@ fn journaled(pages: u32) -> Session<FakeLoader> {
 }
 
 /// What the journal-writing thread does, into plain memory: what comes back from a crash is whatever it had got to.
-fn write_journal(s: &mut Session<FakeLoader>, files: &mut HashMap<String, Vec<u8>>) {
+fn write_journal<L: DocLoader>(s: &mut Session<L>, files: &mut HashMap<String, Vec<u8>>) {
     let work = s.journal_work();
     for name in work.retired {
         files.remove(&name);
@@ -191,7 +192,7 @@ fn bare_tab(id: u32, page_count: u32) -> TabRecord {
             dir: 0,
             file_name: OsStr::new("bare.pdf").into(),
             stamp: None,
-            notice: None,
+            news: None,
             encrypted: false,
             password: false,
         },

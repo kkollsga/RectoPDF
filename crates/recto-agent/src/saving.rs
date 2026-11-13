@@ -84,7 +84,8 @@ fn from_save(error: &SaveError) -> AgentError {
         _ => exit::FAILED,
     };
     let next = match error {
-        SaveError::FileChanged => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
+        SaveError::FileChanged => crate::unfit::CHANGED_UNDER_EDITS_NEXT,
+        SaveError::ChangedSinceOpened => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
         SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
             "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."
@@ -187,6 +188,34 @@ pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(),
     }
 }
 
+/// The tab to save, unless its edits were made on another version of the file than the one there: those are saved nowhere, here or as a copy, as they'd
+/// land on its pages. What's known decides ([`recto_session::Notices::fit`]); a change since the last look is the save's own to find.
+fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &str) -> Result<recto_session::TabId, AgentError> {
+    let id = select(s, tab)?;
+    match crate::unfit::refusal(s.notices().fit(id), crate::unfit::Asked::Save) {
+        Some(refused) => Err(refused),
+        None => Ok(id),
+    }
+}
+
+/// **What a refused save is said to be.** The writer can't tell edits from a copy of the document as it is, nor whose file changed under it: a copy with no edits
+/// isn't said to be about edits, and the tab's own file changing under a save of edits, before it or while it ran, is that file changing after they were made.
+/// A target being replaced that changed is neither.
+fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveError {
+    let whole_file = request.added.is_empty()
+        && usize::try_from(request.file_pages).is_ok_and(|pages| pages == request.pages.len())
+        && request
+            .pages
+            .iter()
+            .zip(0..)
+            .all(|(page, at)| page.source == 0 && page.page == at && page.quarter_turns == 0);
+    match error {
+        SaveError::FileChanged if whole_file => SaveError::ChangedSinceOpened,
+        SaveError::ChangedSinceOpened if !whole_file && !matches!(to, SaveTo::As { replace: true, .. }) => SaveError::FileChanged,
+        error => error,
+    }
+}
+
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
@@ -232,7 +261,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         return Err(refusal);
     }
     let (id, snapshot) = access.with(|s| {
-        let id = select(s, tab)?;
+        let id = tab_to_save(s, tab)?;
         let snapshot = s.begin_save(id, matches!(to, SaveTo::As { .. }))?;
         Ok::<_, AgentError>((id, snapshot))
     })?;
@@ -314,7 +343,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         }
         Err(error) => {
             drop(ending);
-            return Err(from_save(&error));
+            return Err(from_save(&as_said(error, &request, to)));
         }
     };
     let saved_as = match to {
@@ -528,5 +557,52 @@ mod ending_tests {
         session.with(|s| s.begin_save(id, true)).expect("the second save").expect("something to save");
         drop(ending);
         assert!(session.with(|s| s.saves().is_saving(id)), "the second save is still under way");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (F4c, review round 1): "This file changed on disk after these edits were made ... your edits are kept" was said of a Save As with no edits (no
+    /// stamp, or the file moved on since), of a source that couldn't be read or opened, and of a `--replace` target that changed, and the app stopped offering
+    /// Save As for those. The edits' sentence is said only of edits whose own file changed; the rest keep the earlier words, with Save As offered.
+    #[test]
+    fn the_edits_sentence_is_said_only_of_edits_whose_file_changed() {
+        let whole = [0, 1].map(|page| PageRef {
+            source: 0,
+            page,
+            quarter_turns: 0,
+        });
+        let turned = [0, 1].map(|page| PageRef {
+            source: 0,
+            page,
+            quarter_turns: u8::from(page == 1),
+        });
+        fn request(pages: &[PageRef]) -> SaveRequest<'_> {
+            SaveRequest {
+                path: Path::new("/d/doc.pdf"),
+                stamp: None,
+                file_pages: 2,
+                pages,
+                added: &[],
+            }
+        }
+        let (whole, turned) = (&whole[..], &turned[..]);
+        let replace = SaveTo::As {
+            out: "/d/other.pdf".into(),
+            replace: true,
+        };
+        let cases = [
+            (SaveError::FileChanged, whole, &SaveTo::Same, "changed_since_opened"),
+            (SaveError::ChangedSinceOpened, whole, &SaveTo::Same, "changed_since_opened"),
+            (SaveError::FileChanged, turned, &SaveTo::Same, "file_changed"),
+            (SaveError::ChangedSinceOpened, turned, &SaveTo::Same, "file_changed"),
+            (SaveError::ChangedSinceOpened, turned, &replace, "changed_since_opened"),
+        ];
+        for (error, pages, to, said) in cases {
+            assert_eq!(as_said(error.clone(), &request(pages), to).code(), said, "{error:?}, {pages:?}, {to:?}");
+        }
+        assert!(!SaveError::ChangedSinceOpened.message().contains("edits"));
     }
 }
