@@ -8,8 +8,8 @@
 
 use crate::layout::{PageBox, PageLayout, Spread};
 use crate::paper::PaperKind;
-use crate::selection::{Notice, Selecting, Urgency};
-use recto_index::select::{PagePoint, Range};
+use crate::selection::Urgency;
+use recto_index::select::PagePoint;
 use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
@@ -22,10 +22,12 @@ use std::time::{Duration, Instant};
 
 mod host;
 mod place;
+mod pointer;
 mod zoom;
 
 use host::{HostQueue, Placement};
 use place::Place;
+use pointer::Pointer;
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -559,16 +561,10 @@ pub struct Reader {
     running: Option<Running>,
     next_generation: u64,
     place: Place,
-    /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
-    selection_before_change: Option<(u32, recto_index::select::Range)>,
-    /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, the hit, and whether its page was jumped to for it, which then places it whatever it shows.
-    revealing: Option<(u32, recto_index::select::Range, bool)>,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
-    selecting: Selecting,
-    /// Links on the tab showing, read as they're pointed at.
-    linking: crate::links::Linking,
+    pointer: Pointer,
     /// The thread that draws has failed too many times to go on trying, and this says so.
     gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
@@ -622,13 +618,10 @@ impl Reader {
             running: None,
             next_generation: 1,
             place: Place::new(),
-            selection_before_change: None,
-            revealing: None,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
             note: None,
-            selecting: Selecting::default(),
-            linking: crate::links::Linking::default(),
+            pointer: Pointer::default(),
             gave_up: false,
             sleep_view: None,
             reopen_files: Vec::new(),
@@ -1138,7 +1131,7 @@ impl Reader {
         // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
         let staying = self.hot == Some(tab);
         // What was selected when a renderer saw the file replaced, for a save that turns out to have written what was shown.
-        let selected_before_change = self.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
+        let selected_before_change = self.pointer.selection_before_change.take().filter(|(of, _)| *of == tab).map(|(_, range)| range);
         if staying && let Some(doc) = self.docs.get_mut(&tab) {
             // Across the page, as the view has it now: what's taken up again goes back there.
             doc.scroll_x = self.viewport.x;
@@ -1163,8 +1156,8 @@ impl Reader {
             self.place.last_view_page = None;
             self.place.moved_page = None;
             // A selection is in what's on screen, and a tab off screen holds none.
-            self.selecting.reset();
-            self.linking.clear();
+            self.pointer.selecting.reset();
+            self.pointer.linking.clear();
         }
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
@@ -1239,7 +1232,7 @@ impl Reader {
             if carried {
                 // **A save leaves the view as it was** (owner: "perfect" state recovery): the pages keep their sizes as shown, so the fit, the zoom shown, the place and the layout don't move. Only what's drawn is of the new file, and is drawn again.
                 doc.layout = doc.layout.as_saved();
-                carried_selection = self.selecting.range().or(selected_before_change);
+                carried_selection = self.pointer.selecting.range().or(selected_before_change);
             } else {
                 doc.layout = PageLayout::with_spread(pages, spread);
             }
@@ -1259,10 +1252,10 @@ impl Reader {
             self.drop_tab_entries(tab);
             self.clear_screen();
             // Its pages are other pages now, so what was selected on them isn't there. After a save they're the same pages, so it is, and its text is read again from the new file.
-            self.selecting.reset();
-            self.linking.clear();
+            self.pointer.selecting.reset();
+            self.pointer.linking.clear();
             if let Some(range) = carried_selection {
-                self.selecting.set_range(range);
+                self.pointer.selecting.set_range(range);
             }
         }
         // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
@@ -1383,7 +1376,7 @@ impl Reader {
         self.hot = None;
         self.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
-        self.selecting.reset();
+        self.pointer.selecting.reset();
     }
 
     fn drop_tab_entries(&mut self, tab: u32) {
@@ -1405,7 +1398,7 @@ impl Reader {
             }
         }
         self.host.shown.clear();
-        self.selecting.layers_gone();
+        self.pointer.selecting.layers_gone();
     }
 
     /// The host's view moved. Called on every scroll, on the UI thread: a few map lookups per visible tile, and at most [`MAX_ATTACH_PER_TURN`] surfaces reclaimed. What it returns is for the host to apply now.
@@ -1473,6 +1466,7 @@ impl Reader {
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
         if self
+            .pointer
             .selecting
             .wanted(Urgency::Now, &visible, doc.layout.count(), |page| {
                 doc.heavy.get(&page).copied().unwrap_or(false)
@@ -1854,7 +1848,7 @@ impl Reader {
     fn hide_page(&mut self, page: u32) {
         self.host.ops.push_back(Op::HidePage { page });
         self.host.shown.remove(&page);
-        self.selecting.page_hidden(page);
+        self.pointer.selecting.page_hidden(page);
         for id in self.attached.remove(&page).unwrap_or_default() {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.attached = false;
@@ -2022,7 +2016,7 @@ impl Reader {
             cancel.cancel_before(running.generation + 1);
         }
         self.wanted_files = Arc::new(Vec::new());
-        self.selecting.drop_texts();
+        self.pointer.selecting.drop_texts();
     }
 
     /// The window is back: everything is asked for again.
@@ -2089,7 +2083,7 @@ impl Reader {
             return None;
         }
         // The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
-        if let Some(page) = self.linking.next_wanted()
+        if let Some(page) = self.pointer.linking.next_wanted()
             && let Some(doc) = self.docs.get(&tab)
             && page < doc.layout.count()
             && let Some((file, source_page)) = doc.map.source(page)
@@ -2237,6 +2231,7 @@ impl Reader {
         let doc = self.docs.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
         let wanted = self
+            .pointer
             .selecting
             .wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
         let (file, source_page) = doc.map.source(wanted.page)?;
@@ -2249,19 +2244,6 @@ impl Reader {
             generation,
             kind: PlanKind::Text { check: wanted.check },
         })
-    }
-
-    /// Tells the host what's changed about highlights. A short look at nothing, with nothing selected.
-    fn highlight_ops(&mut self) {
-        if self.selecting.nothing_to_draw() {
-            return;
-        }
-        let pages: Vec<u32> = self.host.shown.keys().copied().collect();
-        for page in pages {
-            if let Some(rects) = self.selecting.layer_update(page) {
-                self.host.ops.push_back(Op::Highlight { page, rects });
-            }
-        }
     }
 
     /// Where a point in the document is on a page as it's shown. It stays with the page it's nearest, past the page's edges if it must, which is what a drag off the side needs.
@@ -2327,50 +2309,6 @@ impl Reader {
         Some(doc.layout.from_page(page, x, y))
     }
 
-    /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
-    pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
-        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point));
-        self.linking.press(if shift { None } else { point }, clicks);
-        match self.point_on_page(x, y) {
-            Some(point) => self.selecting.press(point, clicks, shift),
-            None => self.selecting.clear(),
-        }
-        self.highlight_ops();
-        self.cancel_if_unwanted();
-    }
-
-    pub fn selection_drag(&mut self, x: f64, y: f64) {
-        self.linking.drag(self.point_on_page(x, y));
-        if let Some(point) = self.point_on_page(x, y) {
-            self.selecting.drag(point);
-            self.highlight_ops();
-            self.cancel_if_unwanted();
-        }
-    }
-
-    pub fn selection_release(&mut self) {
-        self.linking.release();
-        self.selecting.release();
-    }
-
-    /// Whether a point is on its page, and not in the margin or the gap between pages.
-    fn is_on_its_page(&self, point: PagePoint) -> bool {
-        let Some(doc) = self.doc() else { return false };
-        let size = doc.layout.raw_size(point.page);
-        point.x >= 0.0 && point.y >= 0.0 && point.x <= size.width && point.y <= size.height
-    }
-
-    /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
-    pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
-        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point))?;
-        self.linking.at(point)
-    }
-
-    /// The link a click has just landed on, taken once.
-    pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit> {
-        self.linking.take_clicked()
-    }
-
     /// Where a file page of the same file as the page at `from` is now, counted as the view counts: what a link on that page means by its page. Nothing if it's not in the document.
     pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
         let doc = self.doc()?;
@@ -2395,178 +2333,14 @@ impl Reader {
         }
     }
 
-    /// Pages whose links are held, for QA.
-    pub fn link_pages_held(&self) -> usize {
-        self.linking.pages_held()
-    }
-
-    /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
-    pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool {
-        let Some(point) = self.point_on_page(x, y) else { return false };
-        let Some(doc) = self.doc() else { return false };
-        // Only on a page: the margin and the gap between pages are neither.
-        let size = doc.layout.raw_size(point.page);
-        if point.x < 0.0 || point.y < 0.0 || point.x > size.width || point.y > size.height {
-            return false;
-        }
-        self.selecting.is_over_text(point)
-    }
-
-    /// The whole document, as a Mac PDF reader takes ⌘A. It reads nothing until something's showing.
-    pub fn select_all(&mut self) {
-        let Some(pages) = self.doc().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else {
-            return;
-        };
-        self.selecting.set_range(Range::all(pages));
-        self.highlight_ops();
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.selecting.clear();
-        self.highlight_ops();
-    }
-
-    /// What's selected on the tab showing, for the state record.
-    pub fn selection_range(&self) -> Option<recto_index::select::Range> {
-        self.selecting.range()
-    }
-
-    /// Puts back what was selected, from the state record. It's held to the document's pages, as a record can say anything.
-    pub fn restore_selection(&mut self, range: recto_index::select::Range) {
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
-        if range.start.page < pages && range.end.page < pages && (range.start.page, range.start.at) <= (range.end.page, range.end.at) {
-            self.selecting.set_range(range);
-            self.highlight_ops();
-        }
-    }
-
-    pub fn has_selection(&self) -> bool {
-        self.selecting.has_selection()
-    }
-
-    /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the hit is put a third of the way down the view. A hit already showing, away from the view's edges, stays where it is, so stepping through hits on one screen doesn't move it. Held to the document's pages.
-    pub fn reveal_range(&mut self, range: recto_index::select::Range) {
-        let Some(tab) = self.hot else { return };
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
-        if range.start.page >= pages || range.end.page >= pages || (range.start.page, range.start.at) > (range.end.page, range.end.at) {
-            return;
-        }
-        self.selecting.set_range(range);
-        self.highlight_ops();
-        let shows = self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
-        self.revealing = Some((tab, range, !shows));
-        if !self.try_reveal() && !shows {
-            self.follow(range.start.page, 0.0);
-        }
-    }
-
-    /// Moves the view to Find's hit if its place on the page is known now. Says whether it's settled, gone there or not needed.
-    fn try_reveal(&mut self) -> bool {
-        let Some((tab, range, jumped)) = self.revealing else { return true };
-        if self.hot != Some(tab) {
-            self.revealing = None;
-            return true;
-        }
-        let end = if range.end.page == range.start.page { range.end.at } else { u32::MAX };
-        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else {
-            return false;
-        };
-        self.revealing = None;
-        let Some(bounds) = bounds else { return true };
-        let Some(doc) = self.doc() else { return true };
-        let rect = doc.layout.rect(range.start.page);
-        let fit = doc.layout.fit();
-        let (top, bottom) = (rect.y + f64::from(bounds.y) * fit, rect.y + f64::from(bounds.y + bounds.height) * fit);
-        let (view_top, view_height) = (self.viewport.y, self.viewport.height);
-        // Away from the edges: a tenth of the view at the top, a fifth at the bottom, where the page number and a notice sit.
-        if !jumped && view_height > 0.0 && top >= view_top + view_height * 0.1 && bottom <= view_top + view_height * 0.8 {
-            return true;
-        }
-        let want_top = (top - view_height / 3.0).max(0.0);
-        let within = ((want_top - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0);
-        let page = if want_top < rect.y { doc.layout.page_at(want_top) } else { range.start.page };
-        let within = if page == range.start.page { within } else { doc.layout.anchor_at(want_top).1 };
-        self.follow(page, within);
-        true
-    }
-
     pub fn has_document(&self) -> bool {
         self.doc().is_some_and(|doc| doc.layout.count() > 0)
-    }
-
-    fn heavy_pages(&self) -> HashMap<u32, bool> {
-        self.doc().map(|doc| doc.heavy.clone()).unwrap_or_default()
-    }
-
-    /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.
-    pub fn start_copy(&mut self, anyway: bool) {
-        let Some(pages) = self.doc().map(|doc| doc.layout.count()) else { return };
-        let heavy = self.heavy_pages();
-        self.selecting.start_copy(anyway, pages, |page| heavy.get(&page).copied().unwrap_or(false));
-    }
-
-    pub fn take_copy_signal(&mut self) -> bool {
-        self.selecting.take_copy_signal()
-    }
-
-    pub fn take_copied(&mut self) -> Option<recto_index::select::CopiedText> {
-        self.selecting.take_copied()
-    }
-
-    /// The selection's text if it's all here, for what can't wait for it.
-    pub fn selection_text_now(&self) -> Option<String> {
-        self.selecting.text_now(self.doc()?.layout.count())
-    }
-
-    pub fn selection_can_be_sent(&self) -> bool {
-        self.doc().is_some_and(|doc| self.selecting.can_offer(doc.layout.count()))
-    }
-
-    pub fn selection_notice(&self) -> Option<Notice> {
-        self.selecting.notice().cloned()
-    }
-
-    pub fn dismiss_selection_notice(&mut self) {
-        self.selecting.dismiss_notice();
-    }
-
-    /// Text arrived, or couldn't be read.
-    fn take_text(&mut self, tab: u32, position: u32, outcome: Option<(Arc<recto_index::select::PageText>, bool)>) {
-        if self.hot != Some(tab) || !self.window_open {
-            return;
-        }
-        let visible: Vec<u32> = self.doc().map(|doc| self.visible_pages(doc).collect()).unwrap_or_default();
-        match outcome {
-            Some((text, checked)) => self.selecting.page_read(position, text, checked, &visible),
-            None => self.selecting.page_failed(position, &visible),
-        }
-        if self.revealing.is_some_and(|(_, range, _)| range.start.page == position) {
-            self.try_reveal();
-        }
-        self.advance_copy();
-    }
-
-    fn advance_copy(&mut self) {
-        let pages = self.doc().map_or(0, |doc| doc.layout.count());
-        let heavy = self.heavy_pages();
-        self.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
-    }
-
-    /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
-    pub fn file_changed(&mut self, tab: u32) {
-        if self.hot == Some(tab) {
-            self.linking.clear();
-            // Kept aside until the session says what the new version is: a save of what was shown keeps it (see [`Self::activate`]), anything else lets it go.
-            self.selection_before_change = self.selecting.range().map(|range| (tab, range));
-            self.selecting.file_changed();
-            self.highlight_ops();
-        }
     }
 
     /// The thread that draws panicked and is starting over, or, with `give_up`, isn't. What it was doing is gone, and everything it would come back to is asked for again.
     pub fn thread_restarted(&mut self, give_up: bool) {
         self.running = None;
-        self.selecting.thread_restarted();
+        self.pointer.selecting.thread_restarted();
         self.gave_up |= give_up;
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -2649,9 +2423,9 @@ impl Reader {
             // About the tab showing, as it is, or about nothing.
             match outcome {
                 Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => {
-                    self.linking.take(position, links)
+                    self.pointer.linking.take(position, links)
                 }
-                _ => self.linking.cancelled(position),
+                _ => self.pointer.linking.cancelled(position),
             }
             return;
         }
@@ -2834,6 +2608,7 @@ impl Reader {
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
         if !self
+            .pointer
             .selecting
             .is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))
         {
@@ -2922,7 +2697,7 @@ impl Reader {
             "left_picture_bytes": self.docs.values().filter_map(|doc| doc.left_pictures.as_ref()).flatten().map(|picture| picture.bgra.len()).sum::<usize>(),
             "last_wake": self.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames })),
             "window_open": self.window_open,
-            "selection": self.selecting.report(),
+            "selection": self.pointer.selecting.report(),
         }))
     }
 
