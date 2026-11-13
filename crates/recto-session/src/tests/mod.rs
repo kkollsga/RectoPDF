@@ -12,6 +12,7 @@ mod forgetting;
 mod journal;
 mod pages;
 mod paper;
+mod parts;
 mod recent;
 mod restore;
 mod saving;
