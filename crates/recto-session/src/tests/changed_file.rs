@@ -233,6 +233,37 @@ fn a_list_asleep_when_its_file_changes_wakes_whole() {
     bed.assert_save_cant_take_the_new_file(a);
 }
 
+/// Failure (rule 5): a tab's list is asleep on disk, another program replaces the file with a version of the same length, and the tab is shown while its
+/// journal can't be read for a moment, so the list stays asleep. The read took "no list in memory" for "no edits": it took the new version as the edits'
+/// own (stamp and all), so when the list woke its edits, made on the first version, fitted the second and Save would have appended them onto it. A list
+/// that couldn't be woken is still the tab's edits: the read never makes another version theirs.
+#[test]
+fn a_list_that_couldnt_be_woken_never_takes_a_new_version_as_its_own() {
+    let (mut bed, a, b) = Bed::new(10);
+    let journals = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    bed.s
+        .journals_mut()
+        .set_history(Arc::new(super::sleep_tests::MemorySource(Arc::clone(&journals))));
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    let made_on = bed.stamp_now();
+    bed.s.tap(b).unwrap();
+    bed.write_journal();
+    assert!(bed.s.go_dormant(a));
+    assert!(bed.s.lists().is_asleep(a));
+    replace_file(&bed.path(), b"v2, as long, saved by another app");
+    // The journal isn't readable just now (`journals` is empty): the wake fails and the read goes on.
+    bed.s.warm.clear_contents();
+    bed.s.tap(a).unwrap();
+    assert!(bed.s.lists().is_asleep(a), "the wake failed");
+    assert_eq!(bed.s.tabs().own_stamp(a), Some(made_on), "the edits still name the version they were made on");
+    assert!(!bed.s.notices().fit(a).fits(), "and don't fit the one read");
+    // Later the journal reads, and the list wakes.
+    journals.lock().unwrap().clone_from(&bed.files);
+    assert!(bed.s.wake_list(a));
+    assert_eq!(bed.s.notices().fit(a), EditsFit::FileChanged, "v1's edits never fit v2");
+    bed.assert_save_cant_take_the_new_file(a);
+}
+
 /// Bed's `an_edit_made_before_a_changed_file_is_read_again_is_kept` ordering, which leaves `a` edited with no stamp: its file is five pages under a list of ten.
 fn dropped_stamp() -> (Bed, TabId, TabId) {
     let (mut bed, a, b) = Bed::new(10);
